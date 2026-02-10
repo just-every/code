@@ -12,6 +12,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::rollout::catalog::{self as rollout_catalog, SessionIndexEntry};
+use crate::rollout::{ARCHIVED_SESSIONS_SUBDIR, SESSIONS_SUBDIR};
 
 /// Query parameters for catalog lookups.
 #[derive(Debug, Clone, Default)]
@@ -140,6 +141,103 @@ impl SessionCatalog {
         Ok(updated)
     }
 
+    /// Archive a session by moving its rollout (and optional snapshot) under
+    /// `archived_sessions/` and marking the catalog entry archived.
+    pub async fn archive_conversation(
+        &self,
+        session_id: Uuid,
+        rollout_path: &Path,
+    ) -> Result<bool> {
+        if !rollout_path.exists() {
+            return Ok(false);
+        }
+
+        let code_home = &self.code_home;
+        let rel = rollout_path
+            .strip_prefix(code_home)
+            .context("rollout_path must be under code_home")?;
+
+        let expected_id = rel
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|stem| stem.rsplit_once('-').map(|(_, id)| id.to_string()));
+        if expected_id
+            .as_deref()
+            .is_some_and(|id| !session_id.to_string().eq_ignore_ascii_case(id))
+        {
+            anyhow::bail!("conversation_id does not match rollout_path");
+        }
+
+        let sessions_prefix = Path::new(SESSIONS_SUBDIR);
+        let archived_prefix = Path::new(ARCHIVED_SESSIONS_SUBDIR);
+
+        let already_archived = rel.starts_with(archived_prefix);
+        let suffix = if rel.starts_with(sessions_prefix) {
+            rel.strip_prefix(sessions_prefix)
+                .context("failed to strip sessions prefix")?
+        } else if already_archived {
+            rel.strip_prefix(archived_prefix)
+                .context("failed to strip archived prefix")?
+        } else {
+            anyhow::bail!("rollout_path must be under sessions/ or archived_sessions/");
+        };
+
+        let new_rel = archived_prefix.join(suffix);
+        let new_abs = code_home.join(&new_rel);
+
+        if !already_archived {
+            if let Some(parent) = new_abs.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .context("failed to create archive directory")?;
+            }
+
+            move_file(rollout_path, &new_abs)
+                .await
+                .context("failed to move rollout file")?;
+
+            let snapshot_old = rollout_path.with_extension("snapshot.json");
+            if snapshot_old.exists() {
+                let snapshot_new = new_abs.with_extension("snapshot.json");
+                if let Some(parent) = snapshot_new.parent() {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .context("failed to create archive directory")?;
+                }
+                move_file(&snapshot_old, &snapshot_new)
+                    .await
+                    .context("failed to move snapshot file")?;
+            }
+        }
+
+        // Update catalog entry.
+        let mut catalog = self.load_inner().await?;
+        let Some(mut entry) = catalog.entries.get(&session_id).cloned() else {
+            return Ok(false);
+        };
+
+        entry.archived = true;
+        entry.rollout_path = new_rel;
+        let snapshot_new_abs = new_abs.with_extension("snapshot.json");
+        entry.snapshot_path = snapshot_new_abs
+            .exists()
+            .then(|| {
+                snapshot_new_abs
+                    .strip_prefix(code_home)
+                    .ok()
+                    .map(|p| p.to_path_buf())
+            })
+            .flatten();
+
+        catalog
+            .upsert(entry)
+            .context("failed to persist updated catalog entry")?;
+
+        let mut guard = self.cache.lock().await;
+        *guard = Some(catalog);
+        Ok(true)
+    }
+
     async fn load_inner(&self) -> Result<rollout_catalog::SessionCatalog> {
         {
             let mut guard = self.cache.lock().await;
@@ -166,6 +264,21 @@ impl SessionCatalog {
         let mut guard = self.cache.lock().await;
         *guard = Some(catalog.clone());
         Ok(catalog)
+    }
+}
+
+async fn move_file(old: &Path, new: &Path) -> Result<()> {
+    match tokio::fs::rename(old, new).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            tokio::fs::copy(old, new)
+                .await
+                .context("copy failed")?;
+            tokio::fs::remove_file(old)
+                .await
+                .context("remove failed")?;
+            Ok(())
+        }
     }
 }
 

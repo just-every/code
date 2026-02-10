@@ -26,7 +26,6 @@ use code_core::config::ConfigOverrides;
 use code_core::config_types::AutoDriveContinueMode;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::git_info::get_git_repo_root;
-use code_core::git_info::recent_commits;
 use code_core::review_coord::{
     bump_snapshot_epoch_for,
     clear_stale_lock_if_dead,
@@ -43,7 +42,6 @@ use code_core::protocol::Op;
 use code_core::protocol::ReviewOutputEvent;
 use code_core::protocol::ReviewRequest;
 use code_core::protocol::TaskCompleteEvent;
-use code_core::protocol::ReviewContextMetadata;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use code_protocol::protocol::SessionSource;
@@ -345,19 +343,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
     }
 
-    if auto_review {
-        if let Some(req) = review_request.as_mut() {
-            let mut metadata = req.metadata.clone().unwrap_or_default();
-            metadata.auto_review = Some(true);
-            req.metadata = Some(metadata);
-        }
-    }
-
-    let is_auto_review = review_request
-        .as_ref()
-        .and_then(|req| req.metadata.as_ref())
-        .and_then(|meta| meta.auto_review)
-        .unwrap_or(auto_review);
+    let is_auto_review = auto_review;
 
     if is_auto_review {
         if config.auto_review_use_chat_model {
@@ -406,8 +392,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         if review_auto_resolve_requested {
             Some(AutoResolveState::new_with_limit(
                 req.prompt.clone(),
-                req.user_facing_hint.clone(),
-                req.metadata.clone(),
+                req.user_facing_hint.clone().unwrap_or_default(),
+                None,
                 max_auto_resolve_attempts,
             ))
         } else {
@@ -491,7 +477,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
 
     let auth_manager = AuthManager::shared_with_mode_and_originator(
         config.code_home.clone(),
-        code_protocol::mcp_protocol::AuthMode::ApiKey,
+        code_app_server_protocol::AuthMode::ApiKey,
         config.responses_originator_header.clone(),
     );
     let conversation_manager = ConversationManager::new(auth_manager.clone(), SessionSource::Exec);
@@ -971,23 +957,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             continue;
                                         }
                                     }
-                                    if state.metadata.as_ref().and_then(|m| m.commit.as_ref()).is_some()
-                                        && state.snapshot_epoch.is_none()
-                                    {
-                                        eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
-                                        auto_resolve_state = None;
-                                        auto_resolve_base_snapshot = None;
-                                        request_shutdown(
-                                            &conversation,
-                                            &auto_review_tracker,
-                                            &mut shutdown_pending,
-                                            &mut shutdown_sent,
-                                            &mut shutdown_deadline,
-                                            auto_review_grace_enabled,
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
                                 }
                                 match capture_snapshot_against_base(
                                     &config.cwd,
@@ -1077,30 +1046,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     )
                                     .await?;
                                     continue;
-                                }
-                                let current_epoch = current_snapshot_epoch_for(&config.cwd);
-                                if let Some(state) = auto_resolve_state.as_ref() {
-                                    if state
-                                        .metadata
-                                        .as_ref()
-                                        .and_then(|m| m.commit.as_ref())
-                                        .is_some()
-                                        && current_epoch > state.attempt as u64
-                                    {
-                                        eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
-                                        auto_resolve_state = None;
-                                        auto_resolve_base_snapshot = None;
-                                        request_shutdown(
-                                            &conversation,
-                                            &auto_review_tracker,
-                                            &mut shutdown_pending,
-                                            &mut shutdown_sent,
-                                            &mut shutdown_deadline,
-                                            auto_review_grace_enabled,
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
                                 }
                                 match capture_snapshot_against_base(
                                     &config.cwd,
@@ -2187,38 +2132,11 @@ fn apply_commit_scope_to_review_request(
     }
 
     request.prompt = prompt;
-    request.user_facing_hint = format!("commit {short_commit} (parent {short_parent})");
-
-    let mut metadata = request.metadata.unwrap_or_default();
-    metadata.scope = Some("commit".to_string());
-    metadata.commit = Some(commit.to_string());
-    request.metadata = Some(metadata);
+    request.user_facing_hint = Some(format!("commit {short_commit} (parent {short_parent})"));
+    request.target = code_protocol::protocol::ReviewTarget::Custom {
+        instructions: request.prompt.clone(),
+    };
     request
-}
-
-fn extract_commit_from_prompt(prompt: &str) -> Option<String> {
-    let mut words = prompt.split_whitespace().peekable();
-    while let Some(word) = words.next() {
-        if word.eq_ignore_ascii_case("commit") {
-            if let Some(next) = words.peek() {
-                let candidate = next.trim_matches(|c: char| c == '.' || c == ',' || c == ';');
-                let len_ok = (7..=40).contains(&candidate.len());
-                let is_hex = candidate.chars().all(|c| c.is_ascii_hexdigit());
-                if len_ok && is_hex {
-                    return Some(candidate.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-async fn head_commit_with_subject(cwd: &Path) -> Option<(String, Option<String>)> {
-    let mut commits = recent_commits(cwd, 1).await.into_iter();
-    let entry = commits.next()?;
-    let subject = entry.subject.trim();
-    let subject = (!subject.is_empty()).then(|| subject.to_string());
-    Some((entry.sha, subject))
 }
 
 fn capture_snapshot_against_base(
@@ -2302,22 +2220,23 @@ fn head_is_ancestor_of_base(cwd: &Path, base_commit: &str) -> bool {
 
 async fn build_followup_review_request(
     state: &AutoResolveState,
-    cwd: &Path,
+    _cwd: &Path,
     snapshot: Option<&GhostCommit>,
     diff_paths: Option<&[String]>,
     parent_commit: Option<&str>,
 ) -> ReviewRequest {
     let mut prompt = strip_scope_from_prompt(&state.prompt);
 
-    let mut user_facing_hint = state.hint.clone();
-    let mut metadata = state.metadata.clone().unwrap_or_default();
+    let mut user_facing_hint = (!state.hint.trim().is_empty()).then(|| state.hint.clone());
 
     if let (Some(snapshot), Some(parent)) = (snapshot, parent_commit) {
         let updated = apply_commit_scope_to_review_request(
             ReviewRequest {
+                target: code_protocol::protocol::ReviewTarget::Custom {
+                    instructions: prompt.clone(),
+                },
                 prompt: prompt.clone(),
                 user_facing_hint: user_facing_hint.clone(),
-                metadata: Some(metadata.clone()),
             },
             snapshot.id(),
             parent,
@@ -2325,7 +2244,6 @@ async fn build_followup_review_request(
         );
         prompt = updated.prompt;
         user_facing_hint = updated.user_facing_hint;
-        metadata = updated.metadata.unwrap_or_default();
     }
 
     // Strip lingering references to earlier commits so follow-up /review scopes to
@@ -2335,41 +2253,10 @@ async fn build_followup_review_request(
     if let Some(last) = state.last_reviewed_commit.as_deref() {
         commit_ids.push(last);
     }
-    if let Some(meta_commit) = metadata.commit.as_deref() {
-        commit_ids.push(meta_commit);
-    }
     if let Some(parent) = parent_commit {
         commit_ids.push(parent);
     }
     prompt = strip_commit_mentions(&prompt, &commit_ids);
-
-    // Ensure commit metadata matches the snapshot we will review.
-    if let Some(snapshot) = snapshot {
-        metadata.commit = Some(snapshot.id().to_string());
-        metadata.scope = Some("commit".to_string());
-    } else if metadata.commit.is_none() {
-        if let Some(commit) = extract_commit_from_prompt(&prompt) {
-            metadata.commit = Some(commit);
-        }
-    }
-
-    if metadata.scope.is_none() && metadata.commit.is_some() {
-        metadata.scope = Some("commit".to_string());
-    }
-
-    let scope_is_commit = metadata
-        .scope
-        .as_ref()
-        .is_some_and(|scope| scope.eq_ignore_ascii_case("commit"));
-
-    if scope_is_commit && metadata.commit.is_none() {
-        if let Some((head_sha, _)) = head_commit_with_subject(cwd).await {
-            metadata.commit = Some(head_sha.clone());
-            if metadata.current_branch.is_none() {
-                metadata.current_branch = current_branch_name(cwd).await;
-            }
-        }
-    }
 
     if let Some(last_review) = state.last_review.as_ref() {
         let recap = format_review_findings(last_review);
@@ -2384,16 +2271,13 @@ async fn build_followup_review_request(
         prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
     }
 
-    let metadata = if metadata == ReviewContextMetadata::default() {
-        None
-    } else {
-        Some(metadata)
+    let target = code_protocol::protocol::ReviewTarget::Custom {
+        instructions: prompt.clone(),
     };
-
     ReviewRequest {
-        prompt,
+        target,
         user_facing_hint,
-        metadata,
+        prompt,
     }
 }
 
@@ -2473,6 +2357,8 @@ fn make_user_message(text: String) -> ResponseItem {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
+        end_turn: None,
+        phase: None,
     }
 }
 
@@ -2481,6 +2367,8 @@ fn make_assistant_message(text: String) -> ResponseItem {
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText { text }],
+        end_turn: None,
+        phase: None,
     }
 }
 

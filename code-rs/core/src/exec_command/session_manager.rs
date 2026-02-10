@@ -224,11 +224,11 @@ pub enum ExitStatus {
 pub fn result_into_payload(result: Result<ExecCommandOutput, String>) -> FunctionCallOutputPayload {
     match result {
         Ok(output) => FunctionCallOutputPayload {
-            content: output.to_text_output(),
+            body: code_protocol::models::FunctionCallOutputBody::Text(output.to_text_output()),
             success: Some(true),
         },
         Err(err) => FunctionCallOutputPayload {
-            content: err,
+            body: code_protocol::models::FunctionCallOutputBody::Text(err),
             success: Some(false),
         },
     }

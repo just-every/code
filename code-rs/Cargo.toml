@@ -12,6 +12,7 @@ members = [
     "cloud-tasks",
     "cloud-tasks-client",
     "cli",
+    "codex-experimental-api-macros",
     "common",
     "core",
     "exec",
@@ -32,6 +33,10 @@ members = [
     "otel",
     "tui",
     "git-apply",
+    "utils/absolute-path",
+    "utils/cache",
+    "utils/cargo-bin",
+    "utils/image",
     "utils/json-to-toml",
     "utils/readiness",
 ]
@@ -44,6 +49,7 @@ version = "0.0.0"
 # crates created with `cargo new -w ...` automatically inherit the 2024
 # edition.
 edition = "2024"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal
@@ -60,6 +66,12 @@ code-backend-client = { path = "backend-client" }
 code-backend-openapi-models = { path = "code-backend-openapi-models" }
 code-cloud-tasks = { path = "cloud-tasks" }
 code-cloud-tasks-client = { path = "cloud-tasks-client" }
+code-execpolicy = { path = "execpolicy" }
+code-experimental-api-macros = { path = "codex-experimental-api-macros", package = "codex-experimental-api-macros" }
+code-utils-absolute-path = { path = "utils/absolute-path", package = "codex-utils-absolute-path" }
+code-utils-cache = { path = "utils/cache", package = "codex-utils-cache" }
+code-utils-cargo-bin = { path = "utils/cargo-bin", package = "codex-utils-cargo-bin" }
+code-utils-image = { path = "utils/image", package = "codex-utils-image" }
 code-exec = { path = "exec" }
 code-file-search = { path = "file-search" }
 code-git-tooling = { path = "git-tooling" }
@@ -114,17 +126,20 @@ encoding_rs = "0.8.35"
 eventsource-stream = "0.2.3"
 filetime = "0.2"
 futures = "0.3"
+icu_provider = "2.0.0"
 icu_decimal = "2.0.0"
 icu_locale_core = "2.0.0"
 ignore = "0.4.23"
 image = { version = "^0.25.8", default-features = false }
 indexmap = "2.6.0"
 insta = "1.43.2"
+inventory = "0.3"
 itertools = "0.14.0"
 landlock = "0.4.1"
 lazy_static = "1"
 libc = "0.2.175"
 log = "0.4"
+lru = "0.12"
 maplit = "1.0.2"
 mime_guess = "2.0.5"
 multimap = "0.10.0"
@@ -144,12 +159,15 @@ pathdiff = "0.2"
 portable-pty = "0.9.0"
 predicates = "3"
 pretty_assertions = "1.4.1"
+proc-macro2 = "1"
 pulldown-cmark = "0.10"
+quote = "1"
 rand = "0.9"
 ratatui = "0.29.0"
 regex = "1"
 regex-lite = "0.1.7"
 reqwest = "0.12"
+runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 schemars = "0.8.22"
 seccompiler = "0.5.0"
 serde = "1"
@@ -163,6 +181,7 @@ starlark = "0.13.0"
 strum = "0.27.2"
 strum_macros = "0.27.2"
 supports-color = "3.0.2"
+syn = { version = "2", features = ["full", "extra-traits"] }
 sys-locale = "0.3.2"
 tempfile = "3.23.0"
 textwrap = "0.16.2"

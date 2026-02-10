@@ -95,11 +95,15 @@ async fn run_llm_request(
         id: None,
         role: "developer".to_string(),
         content: vec![ContentItem::InputText { text: args.developer.clone() }],
+        end_turn: None,
+        phase: None,
     });
     input.push(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: args.message.clone() }],
+        end_turn: None,
+        phase: None,
     });
 
     // Resolve schema

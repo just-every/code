@@ -25,7 +25,7 @@ use code_protocol::protocol::TurnAbortReason;
 use code_core::protocol::TurnDiffEvent;
 use code_core::protocol::WebSearchBeginEvent;
 use code_core::protocol::WebSearchCompleteEvent;
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
@@ -247,7 +247,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     ts_println!(
                         self,
                         "tokens used: {}",
-                        format_with_separators(usage_info.total_token_usage.blended_total())
+                        format_with_separators_u64(usage_info.total_token_usage.blended_total())
                     );
                 }
             }
@@ -607,7 +607,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 println!();
             }
             EventMsg::PlanUpdate(plan_update_event) => {
-                let UpdatePlanArgs { name, plan } = plan_update_event;
+                let UpdatePlanArgs { name, plan, .. } = plan_update_event;
                 ts_println!(self, "name: {name:?}");
                 ts_println!(self, "plan: {plan:?}");
             }
@@ -692,15 +692,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "review".style(self.magenta),
                     "started".style(self.bold),
                 );
-                if let Some(scope) = request
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.scope.as_ref())
-                {
-                    println!("{} {}", "scope:".style(self.dimmed), scope.style(self.dimmed));
-                }
-                if !request.user_facing_hint.trim().is_empty() {
-                    println!("{}", request.user_facing_hint.trim().style(self.dimmed));
+                if let Some(hint) = request.user_facing_hint.as_deref() {
+                    let trimmed = hint.trim();
+                    if !trimmed.is_empty() {
+                        println!("{}", trimmed.style(self.dimmed));
+                    }
                 }
             }
             EventMsg::ExitedReviewMode(event) => {

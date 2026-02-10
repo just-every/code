@@ -7,8 +7,15 @@ use code_core::AuthManager;
 use code_core::CodexConversation;
 use code_core::ConversationManager;
 use code_core::NewConversation;
+use code_core::RolloutRecorder;
+use code_core::Cursor;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
+use code_core::config::ConfigToml;
+use code_core::config_edit::{CONFIG_KEY_EFFORT, CONFIG_KEY_MODEL};
+use code_core::exec;
+use code_core::exec_env;
+use code_core::get_platform_sandbox;
 use code_core::git_info::git_diff_to_remote;
 use code_core::protocol::ApplyPatchApprovalRequestEvent;
 use code_core::protocol::Event;
@@ -53,24 +60,46 @@ use code_protocol::mcp_protocol::InterruptConversationParams;
 use code_protocol::mcp_protocol::InterruptConversationResponse;
 // Unused login-related and diff param imports removed
 use code_protocol::mcp_protocol::GitDiffToRemoteResponse;
+use code_protocol::mcp_protocol::GetAuthStatusParams;
+use code_protocol::mcp_protocol::GetAuthStatusResponse;
+use code_protocol::mcp_protocol::GetUserAgentResponse;
+use code_protocol::mcp_protocol::GetUserSavedConfigResponse;
+use code_protocol::mcp_protocol::ListConversationsParams;
+use code_protocol::mcp_protocol::ListConversationsResponse;
+use code_protocol::mcp_protocol::LoginApiKeyParams;
+use code_protocol::mcp_protocol::LoginApiKeyResponse;
 use code_protocol::mcp_protocol::NewConversationParams;
 use code_protocol::mcp_protocol::NewConversationResponse;
+use code_protocol::mcp_protocol::ResumeConversationParams;
+use code_protocol::mcp_protocol::ResumeConversationResponse;
+use code_protocol::mcp_protocol::ArchiveConversationParams;
+use code_protocol::mcp_protocol::ArchiveConversationResponse;
 use code_protocol::mcp_protocol::RemoveConversationListenerParams;
 use code_protocol::mcp_protocol::RemoveConversationSubscriptionResponse;
+use code_protocol::mcp_protocol::SetDefaultModelParams;
+use code_protocol::mcp_protocol::SetDefaultModelResponse;
 use code_protocol::mcp_protocol::SendUserMessageParams;
 use code_protocol::mcp_protocol::SendUserMessageResponse;
 use code_protocol::mcp_protocol::SendUserTurnParams;
 use code_protocol::mcp_protocol::SendUserTurnResponse;
+use code_protocol::mcp_protocol::UserInfoResponse;
+use code_protocol::mcp_protocol::ExecOneOffCommandParams;
+use code_protocol::mcp_protocol::ExecArbitraryCommandResponse;
+use code_protocol::mcp_protocol::ConversationSummary;
+use code_protocol::mcp_protocol::UserSavedConfig;
+use code_protocol::mcp_protocol::Profile;
+use code_protocol::mcp_protocol::SandboxSettings;
+use code_protocol::mcp_protocol::Tools;
 
 // Removed deprecated ChatGPT login support scaffolding
 
 /// Handles JSON-RPC messages for Codex conversations.
 pub struct CodexMessageProcessor {
-    _auth_manager: Arc<AuthManager>,
+    auth_manager: Arc<AuthManager>,
     conversation_manager: Arc<ConversationManager>,
     outgoing: Arc<OutgoingMessageSender>,
     code_linux_sandbox_exe: Option<PathBuf>,
-    _config: Arc<Config>,
+    config: Arc<Config>,
     conversation_listeners: HashMap<Uuid, oneshot::Sender<()>>,
     // Queue of pending interrupt requests per conversation. We reply when TurnAborted arrives.
     pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
@@ -87,11 +116,11 @@ impl CodexMessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         Self {
-            _auth_manager: auth_manager,
+            auth_manager,
             conversation_manager,
             outgoing,
             code_linux_sandbox_exe,
-            _config: config,
+            config,
             conversation_listeners: HashMap::new(),
             pending_interrupts: Arc::new(Mutex::new(HashMap::new())),
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
@@ -100,14 +129,28 @@ impl CodexMessageProcessor {
 
     pub async fn process_request(&mut self, request: ClientRequest) {
         match request {
-            ClientRequest::Initialize { .. } => {
-                panic!("Initialize should be handled in MessageProcessor");
+            ClientRequest::Initialize { request_id, .. } => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "already initialized".to_string(),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
             }
             ClientRequest::NewConversation { request_id, params } => {
                 // Do not tokio::spawn() to process new_conversation()
                 // asynchronously because we need to ensure the conversation is
                 // created before processing any subsequent messages.
                 self.process_new_conversation(request_id, params).await;
+            }
+            ClientRequest::ListConversations { request_id, params } => {
+                self.list_conversations(request_id, params).await;
+            }
+            ClientRequest::ResumeConversation { request_id, params } => {
+                self.resume_conversation(request_id, params).await;
+            }
+            ClientRequest::ArchiveConversation { request_id, params } => {
+                self.archive_conversation(request_id, params).await;
             }
             ClientRequest::SendUserMessage { request_id, params } => {
                 self.send_user_message(request_id, params).await;
@@ -124,6 +167,9 @@ impl CodexMessageProcessor {
             ClientRequest::SendUserTurn { request_id, params } => {
                 self.send_user_turn_compat(request_id, params).await;
             }
+            ClientRequest::FuzzyFileSearch { request_id, params } => {
+                self.fuzzy_file_search(request_id, params).await;
+            }
             ClientRequest::LoginChatGpt { request_id, .. } => {
                 let error = JSONRPCErrorError {
                     code: INVALID_REQUEST_ERROR_CODE,
@@ -131,6 +177,9 @@ impl CodexMessageProcessor {
                     data: None,
                 };
                 self.outgoing.send_error(request_id, error).await;
+            }
+            ClientRequest::LoginApiKey { request_id, params } => {
+                self.login_api_key(request_id, params).await;
             }
             ClientRequest::CancelLoginChatGpt { request_id, .. } => {
                 let error = JSONRPCErrorError {
@@ -149,24 +198,30 @@ impl CodexMessageProcessor {
                 };
                 self.outgoing.send_error(request_id, error).await;
             }
-            ClientRequest::GetAuthStatus { request_id, .. } => {
-                // Not supported by this server implementation
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: "auth status is not supported by this server".to_string(),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
+            ClientRequest::GetAuthStatus { request_id, params } => {
+                self.get_auth_status(request_id, params).await;
+            }
+            ClientRequest::GetUserSavedConfig { request_id, .. } => {
+                self.get_user_saved_config(request_id).await;
+            }
+            ClientRequest::SetDefaultModel { request_id, params } => {
+                self.set_default_model(request_id, params).await;
+            }
+            ClientRequest::GetUserAgent { request_id, .. } => {
+                self.get_user_agent(request_id).await;
+            }
+            ClientRequest::UserInfo { request_id, .. } => {
+                self.user_info(request_id).await;
             }
             ClientRequest::GitDiffToRemote { request_id, params } => {
                 self.git_diff_to_origin(request_id, params.cwd).await;
             }
-            _ => { /* ignore unsupported methods */ }
+            ClientRequest::ExecOneOffCommand { request_id, params } => {
+                self.exec_one_off_command(request_id, params).await;
+            }
         }
     }
 
-    // Upstream added utility endpoints (user info, set default model, one-off exec).
-    // Our fork does not expose them via this server; omit to preserve behavior.
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
         let config = match derive_config_from_params(params, self.code_linux_sandbox_exe.clone()) {
             Ok(config) => config,
@@ -193,7 +248,7 @@ impl CodexMessageProcessor {
                     model: session_configured.model,
                     reasoning_effort: None,
                     // We do not expose the underlying rollout file path in this fork; provide the sessions root.
-                    rollout_path: self._config.code_home.join("sessions"),
+                    rollout_path: self.config.code_home.join("sessions"),
                 };
                 self.outgoing.send_response(request_id, response).await;
             }
@@ -425,12 +480,457 @@ impl CodexMessageProcessor {
         }
     }
 
+    async fn list_conversations(&self, request_id: RequestId, params: ListConversationsParams) {
+        let page_size = params.page_size.unwrap_or(50).min(200);
+        let cursor: Option<Cursor> = match params.cursor {
+            Some(cursor) => match serde_json::from_value::<Cursor>(serde_json::Value::String(cursor)) {
+                Ok(cursor) => Some(cursor),
+                Err(_) => {
+                    let error = JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: "invalid cursor".to_string(),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            },
+            None => None,
+        };
+
+        let page = match RolloutRecorder::list_conversations(
+            &self.config.code_home,
+            page_size,
+            cursor.as_ref(),
+            &[],
+        )
+        .await
+        {
+            Ok(page) => page,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to list conversations: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let mut out = Vec::new();
+        for item in page.items {
+            let conversation_id = match conversation_id_from_rollout_path(&item.path) {
+                Some(id) => id,
+                None => continue,
+            };
+            let preview = snippet_from_rollout_tail(&item.tail).unwrap_or_default();
+            out.push(ConversationSummary {
+                conversation_id,
+                path: item.path,
+                preview,
+                timestamp: item.created_at,
+            });
+        }
+
+        let next_cursor = page.next_cursor.and_then(|cursor| {
+            serde_json::to_value(cursor)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        });
+
+        self.outgoing
+            .send_response(
+                request_id,
+                ListConversationsResponse {
+                    items: out,
+                    next_cursor,
+                },
+            )
+            .await;
+    }
+
+    async fn resume_conversation(&self, request_id: RequestId, params: ResumeConversationParams) {
+        let overrides = params.overrides.unwrap_or_default();
+        let config = match derive_config_from_params(overrides, self.code_linux_sandbox_exe.clone()) {
+            Ok(config) => config,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!("error deriving config: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match self
+            .conversation_manager
+            .resume_conversation_from_rollout(
+                config,
+                params.path,
+                Arc::clone(&self.auth_manager),
+            )
+            .await
+        {
+            Ok(NewConversation {
+                conversation_id,
+                session_configured,
+                ..
+            }) => {
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ResumeConversationResponse {
+                            conversation_id,
+                            model: session_configured.model,
+                            initial_messages: None,
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("error resuming conversation: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn archive_conversation(
+        &self,
+        request_id: RequestId,
+        params: ArchiveConversationParams,
+    ) {
+        let ArchiveConversationParams {
+            conversation_id,
+            rollout_path,
+        } = params;
+
+        if self
+            .conversation_manager
+            .get_conversation(conversation_id)
+            .await
+            .is_ok()
+        {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "cannot archive an active conversation".to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let catalog = code_core::SessionCatalog::new(self.config.code_home.clone());
+        match catalog
+            .archive_conversation(uuid::Uuid::from(conversation_id), &rollout_path)
+            .await
+        {
+            Ok(true) => {
+                self.outgoing
+                    .send_response(request_id, ArchiveConversationResponse {})
+                    .await;
+            }
+            Ok(false) => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "conversation not found".to_string(),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to archive conversation: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn login_api_key(&self, request_id: RequestId, params: LoginApiKeyParams) {
+        let api_key = params.api_key.trim();
+        if api_key.is_empty() {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "api_key is required".to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        if let Err(err) = code_core::auth::login_with_api_key(&self.config.code_home, api_key) {
+            let error = JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to persist api key: {err}"),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        self.auth_manager.reload();
+        self.outgoing
+            .send_response(request_id, LoginApiKeyResponse {})
+            .await;
+    }
+
+    async fn get_auth_status(&self, request_id: RequestId, params: GetAuthStatusParams) {
+        let requires_openai_auth = self.config.model_provider.requires_openai_auth;
+
+        if params.refresh_token.unwrap_or(false) {
+            let _ = self.auth_manager.refresh_token().await;
+        }
+
+        let auth = self.auth_manager.auth();
+        let mut auth_method = auth.as_ref().map(|a| map_auth_mode_to_wire(a.mode));
+        let mut auth_token = None;
+
+        if !requires_openai_auth {
+            auth_method = None;
+        } else if params.include_token.unwrap_or(false) {
+            if let Some(auth) = auth.as_ref() {
+                if let Ok(token) = auth.get_token().await {
+                    if !token.trim().is_empty() {
+                        auth_token = Some(token);
+                    }
+                }
+            }
+        }
+
+        self.outgoing
+            .send_response(
+                request_id,
+                GetAuthStatusResponse {
+                    auth_method,
+                    auth_token,
+                    requires_openai_auth: Some(requires_openai_auth),
+                },
+            )
+            .await;
+    }
+
+    async fn get_user_saved_config(&self, request_id: RequestId) {
+        let cfg: ConfigToml = match code_core::config::load_config_as_toml_with_cli_overrides(
+            &self.config.code_home,
+            Vec::new(),
+        ) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to load config: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let config = UserSavedConfig {
+            approval_policy: cfg.approval_policy.map(map_ask_for_approval_to_wire),
+            sandbox_mode: cfg.sandbox_mode,
+            sandbox_settings: cfg.sandbox_workspace_write.as_ref().map(|s| SandboxSettings {
+                writable_roots: s.writable_roots.clone(),
+                network_access: Some(s.network_access),
+                exclude_tmpdir_env_var: Some(s.exclude_tmpdir_env_var),
+                exclude_slash_tmp: Some(s.exclude_slash_tmp),
+            }),
+            model: cfg.model,
+            model_reasoning_effort: cfg
+                .model_reasoning_effort
+                .map(map_reasoning_effort_to_wire),
+            model_reasoning_summary: cfg
+                .model_reasoning_summary
+                .map(map_reasoning_summary_to_wire),
+            model_verbosity: cfg.model_text_verbosity.map(map_verbosity_to_wire),
+            tools: cfg.tools.map(|t| Tools {
+                web_search: t.web_search,
+                view_image: t.view_image,
+            }),
+            profile: cfg.profile,
+            profiles: cfg
+                .profiles
+                .into_iter()
+                .map(|(name, profile)| {
+                    (
+                        name,
+                        Profile {
+                            model: profile.model,
+                            model_provider: profile.model_provider,
+                            approval_policy: profile
+                                .approval_policy
+                                .map(map_ask_for_approval_to_wire),
+                            model_reasoning_effort: profile
+                                .model_reasoning_effort
+                                .map(map_reasoning_effort_to_wire),
+                            model_reasoning_summary: profile
+                                .model_reasoning_summary
+                                .map(map_reasoning_summary_to_wire),
+                            model_verbosity: profile
+                                .model_text_verbosity
+                                .map(map_verbosity_to_wire),
+                            chatgpt_base_url: profile.chatgpt_base_url,
+                        },
+                    )
+                })
+                .collect(),
+        };
+
+        self.outgoing
+            .send_response(request_id, GetUserSavedConfigResponse { config })
+            .await;
+    }
+
+    async fn set_default_model(&self, request_id: RequestId, params: SetDefaultModelParams) {
+        let effort_value = params.reasoning_effort.map(|effort| match effort {
+            code_protocol::config_types::ReasoningEffort::None => "minimal".to_string(),
+            _ => effort.to_string(),
+        });
+        let model_value = params.model;
+
+        let effort_ref = effort_value.as_deref();
+        let model_ref = model_value.as_deref();
+
+        let overrides = [
+            (&[CONFIG_KEY_MODEL][..], model_ref),
+            (&[CONFIG_KEY_EFFORT][..], effort_ref),
+        ];
+
+        if let Err(err) = code_core::config_edit::persist_overrides_and_clear_if_none(
+            &self.config.code_home,
+            self.config.active_profile.as_deref(),
+            &overrides,
+        )
+        .await
+        {
+            let error = JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to persist config: {err}"),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        self.outgoing
+            .send_response(request_id, SetDefaultModelResponse {})
+            .await;
+    }
+
+    async fn get_user_agent(&self, request_id: RequestId) {
+        let originator = self.config.responses_originator_header.trim();
+        let user_agent = code_core::default_client::get_code_user_agent(
+            (!originator.is_empty()).then_some(originator),
+        );
+        self.outgoing
+            .send_response(request_id, GetUserAgentResponse { user_agent })
+            .await;
+    }
+
+    async fn user_info(&self, request_id: RequestId) {
+        let mut alleged_user_email = None;
+        if let Some(auth) = self.auth_manager.auth() {
+            if auth.mode.is_chatgpt() {
+                alleged_user_email = auth
+                    .get_token_data()
+                    .await
+                    .ok()
+                    .and_then(|t| t.id_token.email);
+            }
+        }
+        self.outgoing
+            .send_response(request_id, UserInfoResponse { alleged_user_email })
+            .await;
+    }
+
+    async fn exec_one_off_command(&self, request_id: RequestId, params: ExecOneOffCommandParams) {
+        if params.command.is_empty() {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "command is required".to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        if params.sandbox_policy.is_some() {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "sandbox_policy override is not supported".to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let cwd = params.cwd.unwrap_or_else(|| self.config.cwd.clone());
+        let env = exec_env::create_env(&self.config.shell_environment_policy);
+
+        let exec_params = exec::ExecParams {
+            command: params.command,
+            cwd,
+            timeout_ms: params.timeout_ms,
+            env,
+            with_escalated_permissions: None,
+            justification: None,
+        };
+        let sandbox_type = get_platform_sandbox().unwrap_or(exec::SandboxType::None);
+
+        match exec::process_exec_tool_call(
+            exec_params,
+            sandbox_type,
+            &self.config.sandbox_policy,
+            self.config.cwd.as_path(),
+            &self.config.code_linux_sandbox_exe,
+            None,
+        )
+        .await
+        {
+            Ok(output) => {
+                let exec::ExecToolCallOutput {
+                    exit_code,
+                    stdout,
+                    stderr,
+                    ..
+                } = output;
+                self.outgoing
+                    .send_response(
+                        request_id,
+                        ExecArbitraryCommandResponse {
+                            exit_code,
+                            stdout: stdout.text,
+                            stderr: stderr.text,
+                        },
+                    )
+                    .await;
+            }
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("exec failed: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
     async fn git_diff_to_origin(&self, request_id: RequestId, cwd: PathBuf) {
         let diff = git_diff_to_remote(&cwd).await;
         match diff {
             Some(value) => {
                 let response = GitDiffToRemoteResponse {
-                    sha: value.sha,
+                    sha: code_protocol::mcp_protocol::GitSha::new(&value.sha.0),
                     diff: value.diff,
                 };
                 self.outgoing.send_response(request_id, response).await;
@@ -571,14 +1071,12 @@ async fn apply_bespoke_event_handling(
                         code_core::protocol::FileChange::Update {
                             unified_diff,
                             move_path,
-                            original_content,
-                            new_content,
+                            original_content: _,
+                            new_content: _,
                         } => {
                             code_protocol::protocol::FileChange::Update {
                                 unified_diff,
                                 move_path,
-                                original_content,
-                                new_content,
                             }
                         }
                     };
@@ -837,10 +1335,43 @@ async fn on_exec_approval_response(
 fn map_review_decision_from_wire(d: code_protocol::protocol::ReviewDecision) -> core_protocol::ReviewDecision {
     match d {
         code_protocol::protocol::ReviewDecision::Approved => core_protocol::ReviewDecision::Approved,
+        code_protocol::protocol::ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
+            core_protocol::ReviewDecision::Approved
+        }
         code_protocol::protocol::ReviewDecision::ApprovedForSession => core_protocol::ReviewDecision::ApprovedForSession,
         code_protocol::protocol::ReviewDecision::Denied => core_protocol::ReviewDecision::Denied,
         code_protocol::protocol::ReviewDecision::Abort => core_protocol::ReviewDecision::Abort,
     }
+}
+
+trait IntoWireAuthMode {
+    fn into_wire(self) -> code_protocol::mcp_protocol::AuthMode;
+}
+
+impl IntoWireAuthMode for code_app_server_protocol::AuthMode {
+    fn into_wire(self) -> code_protocol::mcp_protocol::AuthMode {
+        match self {
+            code_app_server_protocol::AuthMode::ApiKey => {
+                code_protocol::mcp_protocol::AuthMode::ApiKey
+            }
+            code_app_server_protocol::AuthMode::Chatgpt => {
+                code_protocol::mcp_protocol::AuthMode::ChatGPT
+            }
+            code_app_server_protocol::AuthMode::ChatgptAuthTokens => {
+                code_protocol::mcp_protocol::AuthMode::ChatgptAuthTokens
+            }
+        }
+    }
+}
+
+impl IntoWireAuthMode for code_protocol::mcp_protocol::AuthMode {
+    fn into_wire(self) -> code_protocol::mcp_protocol::AuthMode {
+        self
+    }
+}
+
+fn map_auth_mode_to_wire<M: IntoWireAuthMode>(mode: M) -> code_protocol::mcp_protocol::AuthMode {
+    mode.into_wire()
 }
 
 fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) -> core_protocol::AskForApproval {
@@ -850,6 +1381,104 @@ fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) ->
         code_protocol::protocol::AskForApproval::OnRequest => core_protocol::AskForApproval::OnRequest,
         code_protocol::protocol::AskForApproval::Never => core_protocol::AskForApproval::Never,
     }
+}
+
+fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protocol::protocol::AskForApproval {
+    match a {
+        core_protocol::AskForApproval::UnlessTrusted => code_protocol::protocol::AskForApproval::UnlessTrusted,
+        core_protocol::AskForApproval::OnFailure => code_protocol::protocol::AskForApproval::OnFailure,
+        core_protocol::AskForApproval::OnRequest => code_protocol::protocol::AskForApproval::OnRequest,
+        core_protocol::AskForApproval::Never => code_protocol::protocol::AskForApproval::Never,
+    }
+}
+
+fn map_reasoning_effort_to_wire(
+    effort: code_core::config_types::ReasoningEffort,
+) -> code_protocol::config_types::ReasoningEffort {
+    match effort {
+        code_core::config_types::ReasoningEffort::Minimal => {
+            code_protocol::config_types::ReasoningEffort::Minimal
+        }
+        code_core::config_types::ReasoningEffort::Low => code_protocol::config_types::ReasoningEffort::Low,
+        code_core::config_types::ReasoningEffort::Medium => {
+            code_protocol::config_types::ReasoningEffort::Medium
+        }
+        code_core::config_types::ReasoningEffort::High => code_protocol::config_types::ReasoningEffort::High,
+        code_core::config_types::ReasoningEffort::XHigh => {
+            code_protocol::config_types::ReasoningEffort::XHigh
+        }
+        code_core::config_types::ReasoningEffort::None => {
+            code_protocol::config_types::ReasoningEffort::Minimal
+        }
+    }
+}
+
+fn map_reasoning_summary_to_wire(
+    summary: code_core::config_types::ReasoningSummary,
+) -> code_protocol::config_types::ReasoningSummary {
+    match summary {
+        code_core::config_types::ReasoningSummary::Auto => code_protocol::config_types::ReasoningSummary::Auto,
+        code_core::config_types::ReasoningSummary::Concise => {
+            code_protocol::config_types::ReasoningSummary::Concise
+        }
+        code_core::config_types::ReasoningSummary::Detailed => {
+            code_protocol::config_types::ReasoningSummary::Detailed
+        }
+        code_core::config_types::ReasoningSummary::None => code_protocol::config_types::ReasoningSummary::None,
+    }
+}
+
+fn map_verbosity_to_wire(
+    verbosity: code_core::config_types::TextVerbosity,
+) -> code_protocol::config_types::Verbosity {
+    match verbosity {
+        code_core::config_types::TextVerbosity::Low => code_protocol::config_types::Verbosity::Low,
+        code_core::config_types::TextVerbosity::Medium => {
+            code_protocol::config_types::Verbosity::Medium
+        }
+        code_core::config_types::TextVerbosity::High => code_protocol::config_types::Verbosity::High,
+    }
+}
+
+fn conversation_id_from_rollout_path(path: &std::path::Path) -> Option<ConversationId> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, id) = stem.rsplit_once('-')?;
+    ConversationId::from_string(id).ok()
+}
+
+fn snippet_from_rollout_tail(tail: &[serde_json::Value]) -> Option<String> {
+    for value in tail.iter().rev() {
+        let item = match serde_json::from_value::<code_protocol::protocol::RolloutItem>(value.clone()) {
+            Ok(item) => item,
+            Err(_) => continue,
+        };
+        if let code_protocol::protocol::RolloutItem::ResponseItem(
+            code_protocol::models::ResponseItem::Message { role, content, .. },
+        ) = item
+            && role.eq_ignore_ascii_case("user")
+        {
+            if let Some(snippet) = snippet_from_content(&content)
+                && !snippet.starts_with("== System Status ==")
+            {
+                return Some(snippet);
+            }
+        }
+    }
+    None
+}
+
+fn snippet_from_content(content: &[code_protocol::models::ContentItem]) -> Option<String> {
+    content.iter().find_map(|item| match item {
+        code_protocol::models::ContentItem::InputText { text }
+        | code_protocol::models::ContentItem::OutputText { text } => {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.chars().take(100).collect())
+            }
+        }
+        _ => None,
+    })
 }
 
 // Unused legacy mappers removed to avoid warnings.

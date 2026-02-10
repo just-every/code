@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::code_message_processor::CodexMessageProcessor;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
-use code_protocol::mcp_protocol::AuthMode;
+use code_app_server_protocol::AuthMode;
 use code_protocol::mcp_protocol::ClientInfo;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::InitializeResponse;

@@ -21,6 +21,7 @@ code-common = { workspace = true, features = ["cli"] }
 code-core = { workspace = true }
 code-file-search = { workspace = true }
 code-login = { workspace = true }
+code-app-server-protocol = { workspace = true }
 code-protocol = { workspace = true }
 code-utils-json-to-toml = { workspace = true }
 # We should only be using mcp-types for JSON-RPC types: it would be nice to

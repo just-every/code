@@ -85,6 +85,7 @@ pub(crate) async fn stream_chat_completions(
             ResponseItem::CustomToolCall { .. } => {}
             ResponseItem::CustomToolCallOutput { .. } => {}
             ResponseItem::WebSearchCall { .. } => {}
+            ResponseItem::GhostSnapshot { .. } => {}
         }
     }
 
@@ -250,7 +251,7 @@ pub(crate) async fn stream_chat_completions(
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": output.content,
+                    "content": output.to_string(),
                 }));
             }
             ResponseItem::CustomToolCall {
@@ -280,6 +281,7 @@ pub(crate) async fn stream_chat_completions(
             }
             ResponseItem::Reasoning { .. }
             | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::Other => {
                 // Omit these items from the conversation history.
                 continue;
@@ -558,8 +560,7 @@ async fn process_chat_sse<S>(
                 content: vec![ContentItem::OutputText {
                     text: std::mem::take(assistant_text),
                 }],
-                id: current_item_id.clone(),
-            };
+                id: current_item_id.clone(), end_turn: None, phase: None};
             let _ = tx_event
                 .send(Ok(ResponseEvent::OutputItemDone {
                     item,
@@ -882,8 +883,7 @@ async fn process_chat_sse<S>(
                                 content: vec![ContentItem::OutputText {
                                     text: std::mem::take(&mut assistant_text),
                                 }],
-                                id: current_item_id.clone(),
-                            };
+                                id: current_item_id.clone(), end_turn: None, phase: None};
                             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
                         }
                         // Also emit a terminal Reasoning item so UIs can finalize raw reasoning.
@@ -1056,8 +1056,7 @@ where
                             role: "assistant".to_string(),
                             content: vec![code_protocol::models::ContentItem::OutputText {
                                 text: std::mem::take(&mut this.cumulative),
-                            }],
-                        };
+                            }], end_turn: None, phase: None};
                         this.pending
                             .push_back(ResponseEvent::OutputItemDone { item: aggregated_message, sequence_number: None, output_index: None });
                         emitted_any = true;

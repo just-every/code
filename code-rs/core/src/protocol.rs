@@ -667,15 +667,19 @@ fn rate_limit_snapshot_to_protocol(
         used_percent: snapshot.primary_used_percent,
         window_minutes: Some(snapshot.primary_window_minutes),
         resets_in_seconds: snapshot.primary_reset_after_seconds,
+        resets_at: None,
     };
     let secondary = code_protocol::protocol::RateLimitWindow {
         used_percent: snapshot.secondary_used_percent,
         window_minutes: Some(snapshot.secondary_window_minutes),
         resets_in_seconds: snapshot.secondary_reset_after_seconds,
+        resets_at: None,
     };
     code_protocol::protocol::RateLimitSnapshot {
         primary: Some(primary),
         secondary: Some(secondary),
+        credits: None,
+        plan_type: None,
     }
 }
 

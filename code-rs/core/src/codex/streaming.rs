@@ -1028,7 +1028,16 @@ pub(super) async fn submission_loop(
                     }
                 };
 
-                let tools = sess.mcp_connection_manager.list_all_tools();
+                let tools = sess
+                    .mcp_connection_manager
+                    .list_all_tools()
+                    .into_iter()
+                    .filter_map(|(name, tool)| {
+                        let value = serde_json::to_value(tool).ok()?;
+                        let converted = code_protocol::mcp::Tool::from_mcp_value(value).ok()?;
+                        Some((name, converted))
+                    })
+                    .collect();
                 let server_tools = sess.mcp_connection_manager.list_tools_by_server();
                 let server_failures = sess.mcp_connection_manager.list_server_failures();
 
@@ -1039,6 +1048,9 @@ pub(super) async fn submission_loop(
                         tools,
                         server_tools: Some(server_tools),
                         server_failures: Some(server_failures),
+                        resources: std::collections::HashMap::new(),
+                        resource_templates: std::collections::HashMap::new(),
+                        auth_statuses: std::collections::HashMap::new(),
                     }),
                     order: None,
                 };
@@ -1090,21 +1102,45 @@ pub(super) async fn submission_loop(
                 .await
                 .unwrap_or_default();
 
-                let skills: Vec<code_protocol::skills::Skill> = skill_load_outcome
+                let skills: Vec<code_protocol::protocol::SkillMetadata> = skill_load_outcome
                     .skills
                     .into_iter()
-                    .map(|skill| code_protocol::skills::Skill {
+                    .map(|skill| code_protocol::protocol::SkillMetadata {
                         name: skill.name,
                         description: skill.description,
+                        short_description: None,
+                        interface: None,
+                        dependencies: None,
                         path: skill.path,
                         scope: match skill.scope {
-                            crate::skills::model::SkillScope::Repo => code_protocol::skills::SkillScope::Repo,
-                            crate::skills::model::SkillScope::User => code_protocol::skills::SkillScope::User,
-                            crate::skills::model::SkillScope::System => code_protocol::skills::SkillScope::System,
+                            crate::skills::model::SkillScope::Repo => {
+                                code_protocol::protocol::SkillScope::Repo
+                            }
+                            crate::skills::model::SkillScope::User => {
+                                code_protocol::protocol::SkillScope::User
+                            }
+                            crate::skills::model::SkillScope::System => {
+                                code_protocol::protocol::SkillScope::System
+                            }
                         },
-                        content: skill.content,
+                        enabled: true,
                     })
                     .collect();
+
+                let errors: Vec<code_protocol::protocol::SkillErrorInfo> = skill_load_outcome
+                    .errors
+                    .into_iter()
+                    .map(|error| code_protocol::protocol::SkillErrorInfo {
+                        path: error.path,
+                        message: error.message,
+                    })
+                    .collect();
+
+                let skills = vec![code_protocol::protocol::SkillsListEntry {
+                    cwd: sess.get_cwd().to_path_buf(),
+                    skills,
+                    errors,
+                }];
 
                 let event = Event {
                     id: sub.id.clone(),
@@ -1407,8 +1443,7 @@ async fn exit_review_mode(
     let developer_message = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: developer_text.clone() }],
-    };
+        content: vec![ContentItem::InputText { text: developer_text.clone() }], end_turn: None, phase: None};
 
     session
         .record_conversation_items(&[developer_message])
@@ -2308,8 +2343,7 @@ async fn run_turn(
                             attempt_input.push(ResponseItem::Message {
                                 id: None,
                                 role: "user".to_string(),
-                                content: vec![ContentItem::InputText { text: hint }],
-                            });
+                                content: vec![ContentItem::InputText { text: hint }], end_turn: None, phase: None});
                         }
                     }
                 };
@@ -2931,9 +2965,8 @@ async fn handle_response_item(
                     return Ok(Some(ResponseInputItem::FunctionCallOutput {
                         call_id: "".to_string(),
                         output: FunctionCallOutputPayload {
-                            content: "LocalShellCall without call_id or id".to_string(),
-                            success: None,
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("LocalShellCall without call_id or id".to_string()),
+                            success: None},
                     }));
                 }
             };
@@ -2958,9 +2991,8 @@ async fn handle_response_item(
             Some(ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: format!("Custom tool '{name}' is not supported in this build"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Custom tool '{name}' is not supported in this build")),
+                    success: Some(false)},
             })
         }
         ResponseItem::FunctionCallOutput { .. } => {
@@ -2984,6 +3016,7 @@ async fn handle_response_item(
             }
             None
         }
+        ResponseItem::GhostSnapshot { .. } => None,
         ResponseItem::Other => None,
     };
     Ok(output)
@@ -3152,9 +3185,8 @@ async fn handle_function_call(
                     ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!("unsupported call: {name}"),
-                            success: None,
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("unsupported call: {name}")),
+                            success: None},
                     }
                 }
             }
@@ -3176,9 +3208,8 @@ async fn handle_request_user_input(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("invalid request_user_input arguments: {err}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("invalid request_user_input arguments: {err}")),
+                    success: Some(false)},
             };
         }
     };
@@ -3187,9 +3218,8 @@ async fn handle_request_user_input(
         return ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: "request_user_input requires at least one question".to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("request_user_input requires at least one question".to_string()),
+                success: Some(false)},
         };
     }
 
@@ -3201,10 +3231,9 @@ async fn handle_request_user_input(
         return ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: "request_user_input requires non-empty options for every question"
-                    .to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("request_user_input requires non-empty options for every question"
+                    .to_string()),
+                success: Some(false)},
         };
     }
     for question in &mut args.questions {
@@ -3217,9 +3246,8 @@ async fn handle_request_user_input(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: err,
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(err),
+                    success: Some(false)},
             };
         }
     };
@@ -3240,9 +3268,8 @@ async fn handle_request_user_input(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "request_user_input was cancelled before receiving a response".to_string(),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("request_user_input was cancelled before receiving a response".to_string()),
+                    success: Some(false)},
             };
         }
     };
@@ -3253,9 +3280,8 @@ async fn handle_request_user_input(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("failed to serialize request_user_input response: {err}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("failed to serialize request_user_input response: {err}")),
+                    success: Some(false)},
             };
         }
     };
@@ -3263,7 +3289,7 @@ async fn handle_request_user_input(
     ResponseInputItem::FunctionCallOutput {
         call_id: ctx.call_id.clone(),
         output: FunctionCallOutputPayload {
-            content,
+            body: code_protocol::models::FunctionCallOutputBody::Text(content),
             success: Some(true),
         },
     }
@@ -3284,9 +3310,8 @@ async fn handle_dynamic_tool_call(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: ctx.call_id.clone(),
                     output: FunctionCallOutputPayload {
-                        content: format!("invalid dynamic tool arguments: {err}"),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("invalid dynamic tool arguments: {err}")),
+                        success: Some(false)},
                 };
             }
         }
@@ -3298,9 +3323,8 @@ async fn handle_dynamic_tool_call(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: err,
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(err),
+                    success: Some(false)},
             };
         }
     };
@@ -3322,10 +3346,9 @@ async fn handle_dynamic_tool_call(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "dynamic tool call was cancelled before receiving a response"
-                        .to_string(),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("dynamic tool call was cancelled before receiving a response"
+                        .to_string()),
+                    success: Some(false)},
             };
         }
     };
@@ -3358,17 +3381,17 @@ async fn handle_browser_cleanup(sess: &Session, ctx: &ToolCallCtx) -> ResponseIn
                 match browser_manager.cleanup().await {
                     Ok(_) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: "Browser cleanup completed".to_string(), success: Some(true) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text("Browser cleanup completed".to_string()), success: Some(true)},
                     },
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: format!("Cleanup failed: {}", e), success: Some(false) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Cleanup failed: {}", e)), success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
-                    output: FunctionCallOutputPayload { content: "Browser is not initialized. Use browser_open to start the browser.".to_string(), success: Some(false) },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser.".to_string()), success: Some(false)},
                 }
             }
         }
@@ -3425,9 +3448,8 @@ async fn handle_code_bridge_with_cwd(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("invalid arguments: {e}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("invalid arguments: {e}")),
+                    success: Some(false)},
             };
         }
     };
@@ -3442,9 +3464,8 @@ async fn handle_code_bridge_with_cwd(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: "invalid or missing level (use errors|warn|info|trace)".to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("invalid or missing level (use errors|warn|info|trace)".to_string()),
+                            success: Some(false)},
                     }
                 }
             };
@@ -3459,23 +3480,22 @@ async fn handle_code_bridge_with_cwd(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: ctx.call_id.clone(),
                     output: FunctionCallOutputPayload {
-                        content: format!("persist failed: {e}"),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("persist failed: {e}")),
+                        success: Some(false)},
                 };
             }
             set_workspace_subscription(Some(sub));
 
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload { content: "ok".to_string(), success: Some(true) },
+                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text("ok".to_string()), success: Some(true)},
             }
         }
         "screenshot" => {
             send_bridge_control("screenshot", serde_json::json!({}));
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload { content: "requested screenshot".to_string(), success: Some(true) },
+                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text("requested screenshot".to_string()), success: Some(true)},
             }
         }
         "javascript" => {
@@ -3485,32 +3505,29 @@ async fn handle_code_bridge_with_cwd(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: "missing code for javascript action".to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("missing code for javascript action".to_string()),
+                            success: Some(false)},
                     }
                 }
             };
             send_bridge_control("javascript", serde_json::json!({ "code": code }));
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload { content: "sent javascript".to_string(), success: Some(true) },
+                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text("sent javascript".to_string()), success: Some(true)},
             }
         }
         // Keep legacy actions for backward compatibility with older prompts/tools
         "show" | "set" | "clear" => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: "deprecated action; use subscribe, screenshot, or javascript".to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("deprecated action; use subscribe, screenshot, or javascript".to_string()),
+                success: Some(false)},
         },
         _ => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: format!("unsupported action: {}", action),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("unsupported action: {}", action)),
+                success: Some(false)},
         },
     }
 }
@@ -3542,7 +3559,7 @@ mod bridge_tool_tests {
         match out {
             ResponseInputItem::FunctionCallOutput { output, .. } => {
                 assert_eq!(output.success, Some(false));
-                assert!(output.content.contains("deprecated action"));
+                assert!(output.to_string().contains("deprecated action"));
             }
             _ => panic!("unexpected output"),
         }
@@ -3552,7 +3569,7 @@ mod bridge_tool_tests {
         match out {
             ResponseInputItem::FunctionCallOutput { output, .. } => {
                 assert_eq!(output.success, Some(false));
-                assert!(output.content.contains("deprecated action"));
+                assert!(output.to_string().contains("deprecated action"));
             }
             _ => panic!("unexpected output"),
         }
@@ -3562,7 +3579,7 @@ mod bridge_tool_tests {
         match out {
             ResponseInputItem::FunctionCallOutput { output, .. } => {
                 assert_eq!(output.success, Some(false));
-                assert!(output.content.contains("deprecated action"));
+                assert!(output.to_string().contains("deprecated action"));
             }
             _ => panic!("unexpected output"),
         }
@@ -3606,9 +3623,8 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Invalid web_fetch arguments: {e}"),
-                            success: None,
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid web_fetch arguments: {e}")),
+                            success: None},
                     };
                 }
             };
@@ -4256,7 +4272,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         Err(e) => {
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
-                                output: FunctionCallOutputPayload { content: format!("Markdown conversion failed: {e}"), success: Some(false) },
+                                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Markdown conversion failed: {e}")), success: Some(false)},
                             };
                         }
                     };
@@ -4274,7 +4290,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     });
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: body.to_string(), success: Some(true) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(true)},
                     };
                 }
             }
@@ -4284,7 +4300,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                 Err(e) => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: format!("Request failed: {e}"), success: Some(false) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Request failed: {e}")), success: Some(false)},
                     };
                 }
             };
@@ -4299,7 +4315,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                 Err(e) => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: format!("Failed to read response body: {e}"), success: Some(false) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to read response body: {e}")), success: Some(false)},
                     };
                 }
             };
@@ -4359,7 +4375,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         Err(e) => {
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
-                                output: FunctionCallOutputPayload { content: format!("Markdown conversion failed: {e}"), success: Some(false) },
+                                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Markdown conversion failed: {e}")), success: Some(false)},
                             };
                         }
                     };
@@ -4382,7 +4398,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     });
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: body.to_string(), success: Some(true) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(true)},
                     };
                 }
 
@@ -4401,7 +4417,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
 
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
-                    output: FunctionCallOutputPayload { content: body.to_string(), success: Some(false) },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(false)},
                 };
             }
 
@@ -4443,7 +4459,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
 
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
-                    output: FunctionCallOutputPayload { content: body.to_string(), success: Some(false) },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(false)},
                 };
             }
 
@@ -4459,7 +4475,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         "truncated": false,
                         "markdown": md,
                     });
-                    return ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload { content: body.to_string(), success: Some(true) } };
+                    return ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(true)} };
                 }
             }
 
@@ -4469,7 +4485,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                 Err(e) => {
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: format!("Markdown conversion failed: {e}"), success: Some(false) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Markdown conversion failed: {e}")), success: Some(false)},
                     };
                 }
             };
@@ -4482,7 +4498,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                         Err(e) => {
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
-                                output: FunctionCallOutputPayload { content: format!("Markdown conversion failed: {e}"), success: Some(false) },
+                                output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Markdown conversion failed: {e}")), success: Some(false)},
                             };
                         }
                     };
@@ -4500,7 +4516,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     });
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
-                        output: FunctionCallOutputPayload { content: body.to_string(), success: Some(true) },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(true)},
                     };
                 }
 
@@ -4512,7 +4528,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                     "diagnostics": { "final_url": final_url, "content_type": content_type, "used_browser_ua": used_browser_ua, "blocked_by_waf": true, "vendor": "cloudflare", "detected_via": "markdown" },
                     "markdown": markdown.chars().take(2000).collect::<String>(),
                 });
-                return ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload { content: body.to_string(), success: Some(false) } };
+                return ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(false)} };
             }
 
             let body = serde_json::json!({
@@ -4525,7 +4541,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                 "markdown": markdown,
             });
 
-            ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload { content: body.to_string(), success: Some(true) } }
+            ResponseInputItem::FunctionCallOutput { call_id: call_id_clone, output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(body.to_string()), success: Some(true)} }
         },
     ).await
 }
@@ -4550,9 +4566,8 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("Invalid image_view arguments: {e}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid image_view arguments: {e}")),
+                    success: Some(false)},
             };
         }
     };
@@ -4569,9 +4584,8 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output: FunctionCallOutputPayload {
-                    content: "image_view requires a non-empty path".to_string(),
-                        success: Some(false),
-                    },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("image_view requires a non-empty path".to_string()),
+                        success: Some(false)},
                 };
             }
 
@@ -4588,12 +4602,11 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!(
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                 "image_view could not read {}: {err}",
                                 resolved.display()
-                            ),
-                            success: Some(false),
-                        },
+                            )),
+                            success: Some(false)},
                     };
                 }
             };
@@ -4601,12 +4614,11 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output: FunctionCallOutputPayload {
-                        content: format!(
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                             "image_view requires a file path, got {}",
                             resolved.display()
-                        ),
-                        success: Some(false),
-                    },
+                        )),
+                        success: Some(false)},
                 };
             }
 
@@ -4616,12 +4628,11 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!(
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                 "image_view could not read {}: {err}",
                                 resolved.display()
-                            ),
-                            success: Some(false),
-                        },
+                            )),
+                            success: Some(false)},
                     };
                 }
             };
@@ -4633,11 +4644,10 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output: FunctionCallOutputPayload {
-                        content: format!(
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                             "image_view only supports image files (got {mime})"
-                        ),
-                        success: Some(false),
-                    },
+                        )),
+                        success: Some(false)},
                 };
             }
             let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -4678,9 +4688,8 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
             ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: format!("attached image: {}", resolved.display()),
-                    success: Some(true),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("attached image: {}", resolved.display())),
+                    success: Some(true)},
             }
         },
     )
@@ -4719,7 +4728,7 @@ async fn handle_wait(
                 let parsed: Params = match serde_json::from_str(&arguments_clone) {
                     Ok(p) => p,
                     Err(e) => {
-                    return ResponseInputItem::FunctionCallOutput { call_id: ctx_inner.call_id.clone(), output: FunctionCallOutputPayload { content: format!("Invalid wait arguments: {}", e), success: Some(false) } };
+                    return ResponseInputItem::FunctionCallOutput { call_id: ctx_inner.call_id.clone(), output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid wait arguments: {}", e)), success: Some(false)} };
                     }
                 };
                 let call_id = match parsed.call_id {
@@ -4728,9 +4737,8 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: "wait requires a call_id".to_string(),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text("wait requires a call_id".to_string()),
+                                success: Some(false)},
                         };
                     }
                 };
@@ -4795,7 +4803,7 @@ async fn handle_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content,
+                            body: code_protocol::models::FunctionCallOutputBody::Text(content),
                             success: Some(done.exit_code == 0),
                         },
                     };
@@ -4804,9 +4812,8 @@ async fn handle_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("No background job found for call_id={call_id}"),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("No background job found for call_id={call_id}")),
+                            success: Some(false)},
                     };
                 };
                 let any_notify = ANY_BG_NOTIFY.get().cloned().unwrap();
@@ -4833,9 +4840,8 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: format!("No background job found for call_id={call_id}"),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("No background job found for call_id={call_id}")),
+                                success: Some(false)},
                         };
                     }
 
@@ -4845,11 +4851,10 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: format!(
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                     "Background job {call_id} ended without a result; it may have been cancelled or crashed."
-                                ),
-                                success: Some(false),
-                            },
+                                )),
+                                success: Some(false)},
                         };
                     }
 
@@ -4871,9 +4876,8 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: msg,
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(msg),
+                                success: Some(false)},
                         };
                     }
 
@@ -4892,9 +4896,8 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: message,
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(message),
+                                success: Some(false)},
                         };
                     }
 
@@ -4914,9 +4917,8 @@ async fn handle_wait(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: msg,
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(msg),
+                                success: Some(false)},
                         };
                     }
 
@@ -4956,15 +4958,17 @@ async fn handle_wait(
                     suppress_guard.disarm();
                     ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
-                        output: FunctionCallOutputPayload { content, success: Some(done.exit_code == 0) },
+                        output: FunctionCallOutputPayload {
+                            body: code_protocol::models::FunctionCallOutputBody::Text(content),
+                            success: Some(done.exit_code == 0),
+                        },
                     }
                 } else {
                     ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: "No completed background job found".to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("No completed background job found".to_string()),
+                            success: Some(false)},
                     }
                 }
         }
@@ -5087,9 +5091,8 @@ async fn handle_gh_run_wait(
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("Invalid gh_run_wait arguments: {e}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid gh_run_wait arguments: {e}")),
+                    success: Some(false)},
             };
         }
     };
@@ -5570,9 +5573,8 @@ async fn handle_gh_run_wait(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output: FunctionCallOutputPayload {
-                        content: error,
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(error),
+                        success: Some(false)},
                 };
             }
 
@@ -5581,9 +5583,8 @@ async fn handle_gh_run_wait(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output: FunctionCallOutputPayload {
-                        content: "gh_run_wait requires a valid run_id".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("gh_run_wait requires a valid run_id".to_string()),
+                        success: Some(false)},
                 };
             }
 
@@ -5613,9 +5614,8 @@ async fn handle_gh_run_wait(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id,
                                 output: FunctionCallOutputPayload {
-                                    content: err,
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(err),
+                                    success: Some(false)},
                             };
                         }
                     };
@@ -5673,9 +5673,8 @@ async fn handle_gh_run_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: summary,
-                            success,
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(summary),
+                            success},
                     };
                 }
 
@@ -5714,11 +5713,10 @@ async fn handle_gh_run_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!(
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                 "{budget_text}\n\nRun {run_id} still in progress. Call gh_run_wait again to continue."
-                            ),
-                            success: Some(false),
-                        },
+                            )),
+                            success: Some(false)},
                     };
                 }
 
@@ -5733,9 +5731,8 @@ async fn handle_gh_run_wait(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: message,
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(message),
+                            success: Some(false)},
                     };
                 }
 
@@ -5777,9 +5774,8 @@ async fn handle_kill(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: ctx_inner.call_id.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Invalid kill arguments: {e}"),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid kill arguments: {e}")),
+                            success: Some(false)},
                     };
                 }
             };
@@ -5816,9 +5812,8 @@ async fn handle_kill(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: ctx_inner.call_id.clone(),
                             output: FunctionCallOutputPayload {
-                                content: format!("No background job found for call_id={}", parsed.call_id),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("No background job found for call_id={}", parsed.call_id)),
+                                success: Some(false)},
                         };
                     }
                 }
@@ -5828,9 +5823,8 @@ async fn handle_kill(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: ctx_inner.call_id.clone(),
                     output: FunctionCallOutputPayload {
-                        content: format!("Background job {} has already completed.", parsed.call_id),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Background job {} has already completed.", parsed.call_id)),
+                        success: Some(false)},
                 };
             }
 
@@ -5884,9 +5878,8 @@ async fn handle_kill(
             ResponseInputItem::FunctionCallOutput {
                 call_id: ctx_inner.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: status,
-                    success: Some(true),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(status),
+                    success: Some(true)},
             }
         },
     ).await
@@ -6020,9 +6013,8 @@ fn parse_container_exec_arguments(
             let output = ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.to_string(),
                 output: FunctionCallOutputPayload {
-                    content: format!("failed to parse function arguments: {e}"),
-                    success: None,
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("failed to parse function arguments: {e}")),
+                    success: None},
             };
             Err(Box::new(output))
         }
@@ -6033,9 +6025,8 @@ fn agent_tool_failure(ctx: &ToolCallCtx, message: impl Into<String>) -> Response
     ResponseInputItem::FunctionCallOutput {
         call_id: ctx.call_id.clone(),
         output: FunctionCallOutputPayload {
-            content: message.into(),
-            success: Some(false),
-        },
+            body: code_protocol::models::FunctionCallOutputBody::Text(message.into()),
+            success: Some(false)},
     }
 }
 
@@ -6480,9 +6471,8 @@ pub(crate) async fn handle_run_agent(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: response.to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                        success: Some(false)},
                 };
             }
 
@@ -6695,9 +6685,8 @@ pub(crate) async fn handle_run_agent(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: response.to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                            success: Some(false)},
                     };
                 }
 
@@ -6813,17 +6802,15 @@ pub(crate) async fn handle_run_agent(
             ResponseInputItem::FunctionCallOutput {
                 call_id: call_id_clone,
                 output: FunctionCallOutputPayload {
-                    content: response.to_string(),
-                    success: Some(true),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                    success: Some(true)},
             }
         }
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: format!("Invalid agent arguments: {}", e),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments: {}", e)),
+                success: None},
         },
     }
         }
@@ -6879,12 +6866,11 @@ async fn handle_check_agent_status(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: format!(
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                     "Agent {} does not belong to batch {}",
                                     params.agent_id, params.batch_id
-                                ),
-                                success: Some(false),
-                            },
+                                )),
+                                success: Some(false)},
                         };
                     }
                 }
@@ -6913,9 +6899,8 @@ async fn handle_check_agent_status(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to prepare agent progress file: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to prepare agent progress file: {}", e)),
+                                    success: Some(false)},
                             };
                         }
                     };
@@ -6929,9 +6914,8 @@ async fn handle_check_agent_status(
                                 return ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone,
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Failed to write progress file: {}", e),
-                                        success: Some(false),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to write progress file: {}", e)),
+                                        success: Some(false)},
                                 };
                             }
                         }
@@ -6960,26 +6944,23 @@ async fn handle_check_agent_status(
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: response.to_string(),
-                        success: Some(true),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                        success: Some(true)},
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: format!("Agent not found: {}", params.agent_id),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Agent not found: {}", params.agent_id)),
+                        success: Some(false)},
                 }
             }
         }
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: format!("Invalid agent arguments for action=status: {}", e),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments for action=status: {}", e)),
+                success: None},
         },
     }
         },
@@ -7011,12 +6992,11 @@ async fn handle_get_agent_result(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: format!(
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                     "Agent {} does not belong to batch {}",
                                     params.agent_id, params.batch_id
-                                ),
-                                success: Some(false),
-                            },
+                                )),
+                                success: Some(false)},
                         };
                     }
                 }
@@ -7027,9 +7007,8 @@ async fn handle_get_agent_result(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: format!("Failed to prepare agent output dir: {}", e),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to prepare agent output dir: {}", e)),
+                                success: Some(false)},
                         };
                     }
                 };
@@ -7053,9 +7032,8 @@ async fn handle_get_agent_result(
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: response.to_string(),
-                                success: Some(true),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                success: Some(true)},
                         }
                     }
                     AgentStatus::Failed => {
@@ -7076,39 +7054,35 @@ async fn handle_get_agent_result(
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: response.to_string(),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                success: Some(false)},
                         }
                     }
                     _ => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!(
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                 "Agent is still {}: cannot get result yet",
                                 serde_json::to_string(&agent.status)
                                     .unwrap_or_else(|_| "running".to_string())
-                            ),
-                            success: Some(false),
-                        },
+                            )),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: format!("Agent not found: {}", params.agent_id),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Agent not found: {}", params.agent_id)),
+                        success: Some(false)},
                 }
             }
         }
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: format!("Invalid agent arguments for action=result: {}", e),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments for action=result: {}", e)),
+                success: None},
         },
     }
         },
@@ -7140,9 +7114,8 @@ async fn handle_cancel_agent(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: "action=cancel requires 'cancel.batch_id'".to_string(),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text("action=cancel requires 'cancel.batch_id'".to_string()),
+                                success: Some(false)},
                         };
                     }
                 };
@@ -7151,12 +7124,11 @@ async fn handle_cancel_agent(
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: format!(
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                     "Agent {} does not belong to batch {}",
                                     agent_id, batch_id
-                                ),
-                                success: Some(false),
-                            },
+                                )),
+                                success: Some(false)},
                         };
                     }
                 }
@@ -7164,17 +7136,15 @@ async fn handle_cancel_agent(
                     ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Agent {} cancelled", agent_id),
-                            success: Some(true),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Agent {} cancelled", agent_id)),
+                            success: Some(true)},
                     }
                 } else {
                     ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to cancel agent {}", agent_id),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to cancel agent {}", agent_id)),
+                            success: Some(false)},
                     }
                 }
             } else if let Some(batch_id) = params.batch_id {
@@ -7182,26 +7152,23 @@ async fn handle_cancel_agent(
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: format!("Cancelled {} agents in batch {}", count, batch_id),
-                        success: Some(true),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Cancelled {} agents in batch {}", count, batch_id)),
+                        success: Some(true)},
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Either agent_id or batch_id must be provided".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Either agent_id or batch_id must be provided".to_string()),
+                        success: Some(false)},
                 }
             }
         }
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: format!("Invalid agent arguments for action=cancel: {}", e),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments for action=cancel: {}", e)),
+                success: None},
         },
     }
         },
@@ -7231,9 +7198,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: "action=wait requires 'wait.batch_id'".to_string(),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text("action=wait requires 'wait.batch_id'".to_string()),
+                                    success: Some(false)},
                             };
                         }
                     };
@@ -7247,9 +7213,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: "Timeout waiting for agent completion".to_string(),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text("Timeout waiting for agent completion".to_string()),
+                                    success: Some(false)},
                             };
                         }
 
@@ -7263,12 +7228,11 @@ async fn handle_wait_for_agent(
                                         return ResponseInputItem::FunctionCallOutput {
                                             call_id: call_id_clone,
                                             output: FunctionCallOutputPayload {
-                                                content: format!(
+                                                body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                                     "Agent {} does not belong to batch {}",
                                                     agent_id, batch_id
-                                                ),
-                                                success: Some(false),
-                                            },
+                                                )),
+                                                success: Some(false)},
                                         };
                                     }
                                 }
@@ -7286,9 +7250,8 @@ async fn handle_wait_for_agent(
                                     return ResponseInputItem::FunctionCallOutput {
                                         call_id: call_id_clone,
                                         output: FunctionCallOutputPayload {
-                                            content: format!("Failed to prepare agent output dir: {}", e),
-                                            success: Some(false),
-                                        },
+                                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to prepare agent output dir: {}", e)),
+                                            success: Some(false)},
                                     };
                                 }
                             };
@@ -7341,9 +7304,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: response.to_string(),
-                                    success: Some(true),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                    success: Some(true)},
                             };
                         }
                     }
@@ -7382,9 +7344,8 @@ async fn handle_wait_for_agent(
                                         return ResponseInputItem::FunctionCallOutput {
                                             call_id: call_id_clone,
                                             output: FunctionCallOutputPayload {
-                                                content: format!("Failed to prepare agent output dir: {}", e),
-                                                success: Some(false),
-                                            },
+                                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to prepare agent output dir: {}", e)),
+                                                success: Some(false)},
                                         };
                                     }
                                 };
@@ -7444,9 +7405,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: response.to_string(),
-                                    success: Some(true),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                    success: Some(true)},
                             };
                         }
                     } else {
@@ -7477,9 +7437,8 @@ async fn handle_wait_for_agent(
                                     return ResponseInputItem::FunctionCallOutput {
                                         call_id: call_id_clone,
                                         output: FunctionCallOutputPayload {
-                                            content: format!("Failed to prepare agent output dir: {}", e),
-                                            success: Some(false),
-                                        },
+                                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to prepare agent output dir: {}", e)),
+                                            success: Some(false)},
                                     };
                                 }
                             };
@@ -7531,9 +7490,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: response.to_string(),
-                                    success: Some(true),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                    success: Some(true)},
                             };
                         }
 
@@ -7553,9 +7511,8 @@ async fn handle_wait_for_agent(
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: response.to_string(),
-                                    success: Some(true),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                                    success: Some(true)},
                             };
                         }
                     }
@@ -7581,9 +7538,8 @@ async fn handle_wait_for_agent(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: response.to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
+                            success: Some(false)},
                     };
                 }
 
@@ -7598,9 +7554,8 @@ async fn handle_wait_for_agent(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: message,
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(message),
+                            success: Some(false)},
                     };
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -7609,9 +7564,8 @@ async fn handle_wait_for_agent(
                 Err(e) => ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: format!("Invalid agent arguments for action=wait: {}", e),
-                        success: None,
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments for action=wait: {}", e)),
+                        success: None},
                 },
             }
         },
@@ -7642,9 +7596,8 @@ async fn handle_list_agents(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: "action=list requires 'list.batch_id'".to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("action=list requires 'list.batch_id'".to_string()),
+                            success: Some(false)},
                     };
                 }
             };
@@ -7734,17 +7687,15 @@ async fn handle_list_agents(
             ResponseInputItem::FunctionCallOutput {
                 call_id: call_id_clone,
                 output: FunctionCallOutputPayload {
-                    content: summary.to_string(),
-                    success: Some(true),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(summary.to_string()),
+                    success: Some(true)},
             }
         }
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: format!("Invalid agent arguments for action=list: {}", e),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid agent arguments for action=list: {}", e)),
+                success: None},
         },
     }
         },
@@ -8049,7 +8000,7 @@ async fn handle_container_exec_with_params(
 
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                 };
             }
 
@@ -8073,7 +8024,7 @@ async fn handle_container_exec_with_params(
 
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                 };
             }
         }
@@ -8119,7 +8070,7 @@ async fn handle_container_exec_with_params(
 
                         return ResponseInputItem::FunctionCallOutput {
                             call_id,
-                            output: FunctionCallOutputPayload { content: guidance, success: None },
+                            output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                         };
                     }
                 }
@@ -8143,9 +8094,8 @@ async fn handle_container_exec_with_params(
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
-                content: guidance,
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(guidance),
+                success: None},
         };
     }
 
@@ -8163,9 +8113,8 @@ async fn handle_container_exec_with_params(
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
-                content: guidance,
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(guidance),
+                success: None},
         };
     }
 
@@ -8183,9 +8132,8 @@ async fn handle_container_exec_with_params(
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
-                content: guidance,
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(guidance),
+                success: None},
         };
     }
 
@@ -8217,7 +8165,7 @@ async fn handle_container_exec_with_params(
 
                 return ResponseInputItem::FunctionCallOutput {
                     call_id,
-                    output: FunctionCallOutputPayload { content: guidance, success: None },
+                    output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                 };
             }
         }
@@ -8252,7 +8200,7 @@ async fn handle_container_exec_with_params(
 
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
-                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                     };
                 }
             }
@@ -8332,7 +8280,7 @@ async fn handle_container_exec_with_params(
                             )
                             .await;
 
-                        return ResponseInputItem::FunctionCallOutput { call_id, output: FunctionCallOutputPayload { content: guidance, success: None } };
+                        return ResponseInputItem::FunctionCallOutput { call_id, output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None} };
                     }
                 }
             }
@@ -8358,7 +8306,7 @@ async fn handle_container_exec_with_params(
 
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
-                        output: FunctionCallOutputPayload { content: guidance, success: None },
+                        output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(guidance), success: None},
                     };
                 }
             }
@@ -8494,7 +8442,7 @@ async fn handle_container_exec_with_params(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content,
+                            body: code_protocol::models::FunctionCallOutputBody::Text(content),
                             success: Some(run.success),
                         },
                     };
@@ -8505,9 +8453,8 @@ async fn handle_container_exec_with_params(
             return ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: format!("error: {parse_error:#}"),
-                    success: None,
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("error: {parse_error:#}")),
+                    success: None},
             };
         }
         MaybeApplyPatchVerified::ShellParseError(error) => {
@@ -8586,9 +8533,8 @@ async fn handle_container_exec_with_params(
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: "exec command rejected by user".to_string(),
-                            success: None,
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("exec command rejected by user".to_string()),
+                            success: None},
                     };
                 }
             }
@@ -8602,9 +8548,8 @@ async fn handle_container_exec_with_params(
             return ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: format!("exec command rejected: {reason}"),
-                    success: None,
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("exec command rejected: {reason}")),
+                    success: None},
             };
         }
     };
@@ -8883,11 +8828,17 @@ async fn handle_container_exec_with_params(
                 )
                 .await;
 
-            return ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload { content, success: Some(is_success) } };
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(content),
+                    success: Some(is_success),
+                },
+            };
         } else {
             // Fallback (should not happen): indicate completion without detail
             let msg = format!("Command completed.");
-            return ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload { content: msg, success: Some(true) } };
+            return ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(msg), success: Some(true)} };
         }
     }
 
@@ -8904,7 +8855,7 @@ async fn handle_container_exec_with_params(
     } else {
         format!("{}\n\nOutput so far (tail):\n{}", header, tail)
     };
-    ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload { content: msg, success: Some(true) } }
+    ResponseInputItem::FunctionCallOutput { call_id: call_id.clone(), output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(msg), success: Some(true)} }
 }
 
 #[allow(dead_code)]
@@ -8945,7 +8896,7 @@ async fn handle_sandbox_error(
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
-                content,
+                body: code_protocol::models::FunctionCallOutputBody::Text(content),
                 success: Some(false),
             },
         };
@@ -8963,7 +8914,10 @@ async fn handle_sandbox_error(
             };
             return ResponseInputItem::FunctionCallOutput {
                 call_id,
-                output: FunctionCallOutputPayload { content, success: Some(false) },
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(content),
+                    success: Some(false),
+                },
             };
         }
         AskForApproval::UnlessTrusted | AskForApproval::OnFailure => (),
@@ -8974,9 +8928,8 @@ async fn handle_sandbox_error(
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
-                content: "command timed out".to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("command timed out".to_string()),
+                success: Some(false)},
         };
     }
 
@@ -9034,9 +8987,8 @@ async fn handle_sandbox_error(
             return ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    content: "exec command rejected by user".to_string(),
-                    success: None,
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("exec command rejected by user".to_string()),
+                    success: None},
             };
         }
     };
@@ -9102,7 +9054,7 @@ async fn handle_sandbox_error(
             ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content,
+                    body: code_protocol::models::FunctionCallOutputBody::Text(content),
                     success: Some(is_success),
                 },
             }
@@ -9110,9 +9062,8 @@ async fn handle_sandbox_error(
         Err(e) => ResponseInputItem::FunctionCallOutput {
             call_id: call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: format!("retry failed: {e}"),
-                success: None,
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("retry failed: {e}")),
+                success: None},
         },
     }
 }
@@ -9692,9 +9643,9 @@ where
     // Extract success/failure from result. Prefer explicit success flag when available.
     let (success, message) = match &result {
         ResponseInputItem::FunctionCallOutput { output, .. } => {
-            let content = &output.content;
+            let content = output.to_string();
             let success_flag = output.success;
-            (success_flag.unwrap_or(true), content.clone())
+            (success_flag.unwrap_or(true), content)
         }
         _ => (true, String::from("Tool completed")),
     };
@@ -9723,9 +9674,8 @@ async fn handle_browser_tool(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: format!("Invalid browser arguments: {e}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Invalid browser arguments: {e}")),
+                    success: Some(false)},
             };
         }
     };
@@ -9736,9 +9686,8 @@ async fn handle_browser_tool(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "Invalid browser arguments: expected an object".to_string(),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("Invalid browser arguments: expected an object".to_string()),
+                    success: Some(false)},
             };
         }
     };
@@ -9750,9 +9699,8 @@ async fn handle_browser_tool(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
             return ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "Invalid browser arguments: missing 'action'".to_string(),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("Invalid browser arguments: missing 'action'".to_string()),
+                    success: Some(false)},
             };
         }
     };
@@ -9785,9 +9733,8 @@ async fn handle_browser_tool(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
         _ => ResponseInputItem::FunctionCallOutput {
             call_id: ctx.call_id.clone(),
             output: FunctionCallOutputPayload {
-                content: format!("Unknown browser action: {}", action),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Unknown browser action: {}", action)),
+                success: Some(false)},
         },
     }
 }
@@ -9819,9 +9766,8 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                         return ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone.clone(),
                             output: FunctionCallOutputPayload {
-                                content: "Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string(),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text("Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string()),
+                                success: Some(false)},
                         };
                     }
 
@@ -9859,9 +9805,8 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Browser opened to: {}", url),
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Browser opened to: {}", url)),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => {
@@ -9898,7 +9843,7 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content,
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(content),
                                         success: Some(false),
                                     },
                                 }
@@ -9908,18 +9853,16 @@ async fn handle_browser_open(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone.clone(),
                             output: FunctionCallOutputPayload {
-                                content: "Failed to initialize browser manager.".to_string(),
-                                success: Some(false),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text("Failed to initialize browser manager.".to_string()),
+                                success: Some(false)},
                         }
                     }
                 }
                 Err(e) => ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: format!("Failed to parse browser_open arguments: {}", e),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_open arguments: {}", e)),
+                        success: Some(false)},
                 },
             }
         },
@@ -9958,26 +9901,23 @@ async fn handle_browser_close(sess: &Session, ctx: &ToolCallCtx) -> ResponseInpu
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone.clone(),
                             output: FunctionCallOutputPayload {
-                                content: "Browser closed. Screenshot capture disabled.".to_string(),
-                                success: Some(true),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text("Browser closed. Screenshot capture disabled.".to_string()),
+                                success: Some(true)},
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to close browser: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to close browser: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Browser is not currently open.".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not currently open.".to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10014,19 +9954,16 @@ async fn handle_browser_status(sess: &Session, ctx: &ToolCallCtx) -> ResponseInp
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone.clone(),
                     output: FunctionCallOutputPayload {
-                        content: status_msg,
-                        success: Some(true),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(status_msg),
+                        success: Some(true)},
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content:
-                            "Browser is not initialized. Use browser_open to start the browser."
-                                .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                                .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10081,9 +10018,8 @@ async fn handle_browser_click(sess: &Session, ctx: &ToolCallCtx, arguments: Stri
                                 return ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Failed to move before click: {}", e),
-                                        success: Some(false),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to move before click: {}", e)),
+                                        success: Some(false)},
                                 };
                             }
                         }
@@ -10091,9 +10027,8 @@ async fn handle_browser_click(sess: &Session, ctx: &ToolCallCtx, arguments: Stri
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to get current cursor position: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to get current cursor position: {}", e)),
+                                    success: Some(false)},
                             };
                         }
                     }
@@ -10120,27 +10055,24 @@ async fn handle_browser_click(sess: &Session, ctx: &ToolCallCtx, arguments: Stri
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone.clone(),
                             output: FunctionCallOutputPayload {
-                                content: format!("{} at ({}, {})", label, x, y),
-                                success: Some(true),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("{} at ({}, {})", label, x, y)),
+                                success: Some(true)},
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to perform mouse action: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to perform mouse action: {}", e)),
+                            success: Some(false)},
                     },
                 }
     } else {
         ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: "Browser is not initialized. Use browser_open to start the browser."
-                    .to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                    .to_string()),
+                success: Some(false)},
         }
     }
         },
@@ -10195,36 +10127,32 @@ async fn handle_browser_move(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Moved mouse position to ({}, {})", x, y),
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Moved mouse position to ({}, {})", x, y)),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to move mouse: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to move mouse: {}", e)),
+                                    success: Some(false)},
                             },
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_move arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_move arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Browser is not initialized. Use browser_open to start the browser."
-                            .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                            .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10259,37 +10187,32 @@ async fn handle_browser_type(sess: &Session, ctx: &ToolCallCtx, arguments: Strin
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Typed: {}", text),
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Typed: {}", text)),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to type text: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to type text: {}", e)),
+                                    success: Some(false)},
                             },
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_type arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_type arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content:
-                            "Browser is not initialized. Use browser_open to start the browser."
-                                .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                                .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10327,9 +10250,8 @@ async fn handle_browser_key(sess: &Session, ctx: &ToolCallCtx, arguments: String
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: "Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string(),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text("Developer tools are disabled for this browser session. Use the browser.console tool to inspect logs instead.".to_string()),
+                                    success: Some(false)},
                             };
                         }
 
@@ -10338,37 +10260,32 @@ async fn handle_browser_key(sess: &Session, ctx: &ToolCallCtx, arguments: String
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("Pressed key: {}", key),
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("Pressed key: {}", key)),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to press key: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to press key: {}", e)),
+                                    success: Some(false)},
                             },
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_key arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_key arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content:
-                            "Browser is not initialized. Use browser_open to start the browser."
-                                .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                                .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10453,9 +10370,8 @@ async fn handle_browser_javascript(sess: &Session, ctx: &ToolCallCtx, arguments:
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: formatted_result,
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(formatted_result),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => {
@@ -10468,7 +10384,7 @@ async fn handle_browser_javascript(sess: &Session, ctx: &ToolCallCtx, arguments:
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content,
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(content),
                                         success: Some(false),
                                     },
                                 }
@@ -10478,20 +10394,17 @@ async fn handle_browser_javascript(sess: &Session, ctx: &ToolCallCtx, arguments:
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_javascript arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_javascript arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content:
-                            "Browser is not initialized. Use browser_open to start the browser."
-                                .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                                .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10527,35 +10440,31 @@ async fn handle_browser_scroll(sess: &Session, ctx: &ToolCallCtx, arguments: Str
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone.clone(),
                             output: FunctionCallOutputPayload {
-                                content: format!("Scrolled by ({}, {})", dx, dy),
-                                success: Some(true),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(format!("Scrolled by ({}, {})", dx, dy)),
+                                success: Some(true)},
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone.clone(),
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to scroll: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to scroll: {}", e)),
+                            success: Some(false)},
                     },
                 }
             }
             Err(e) => ResponseInputItem::FunctionCallOutput {
                 call_id: call_id_clone,
                 output: FunctionCallOutputPayload {
-                    content: format!("Failed to parse browser_scroll arguments: {}", e),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_scroll arguments: {}", e)),
+                    success: Some(false)},
             },
         }
     } else {
         ResponseInputItem::FunctionCallOutput {
             call_id: call_id_clone,
             output: FunctionCallOutputPayload {
-                content: "Browser is not initialized. Use browser_open to start the browser.".to_string(),
-                success: Some(false),
-            },
+                body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser.".to_string()),
+                success: Some(false)},
         }
     }
         },
@@ -10616,26 +10525,23 @@ async fn handle_browser_console(sess: &Session, ctx: &ToolCallCtx, arguments: St
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
                             output: FunctionCallOutputPayload {
-                                content: formatted,
-                                success: Some(true),
-                            },
+                                body: code_protocol::models::FunctionCallOutputBody::Text(formatted),
+                                success: Some(true)},
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to get console logs: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to get console logs: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Browser is not enabled. Use browser_open to enable it first.".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not enabled. Use browser_open to enable it first.".to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10678,9 +10584,8 @@ async fn handle_browser_cdp(sess: &Session, ctx: &ToolCallCtx, arguments: String
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: "Missing required field: method".to_string(),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text("Missing required field: method".to_string()),
+                                    success: Some(false)},
                             };
                         }
 
@@ -10697,35 +10602,31 @@ async fn handle_browser_cdp(sess: &Session, ctx: &ToolCallCtx, arguments: String
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone,
                                     output: FunctionCallOutputPayload {
-                                        content: pretty,
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(pretty),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to execute CDP command: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to execute CDP command: {}", e)),
+                                    success: Some(false)},
                             },
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_cdp arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_cdp arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Browser is not initialized. Use browser_open to start the browser.".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser.".to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10834,9 +10735,8 @@ async fn handle_browser_inspect(sess: &Session, ctx: &ToolCallCtx, arguments: St
                                 return ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone,
                                     output: FunctionCallOutputPayload {
-                                        content: "Failed to resolve target node for inspection".to_string(),
-                                        success: Some(false),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text("Failed to resolve target node for inspection".to_string()),
+                                        success: Some(false)},
                                 };
                             }
                         };
@@ -10922,24 +10822,22 @@ async fn handle_browser_inspect(sess: &Session, ctx: &ToolCallCtx, arguments: St
 
                         ResponseInputItem::FunctionCallOutput {
                             call_id: call_id_clone,
-                            output: FunctionCallOutputPayload { content: out, success: Some(true) },
+                            output: FunctionCallOutputPayload {body: code_protocol::models::FunctionCallOutputBody::Text(out), success: Some(true)},
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_inspect arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_inspect arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content: "Browser is not initialized. Use browser_open to start the browser.".to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser.".to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -10971,12 +10869,11 @@ async fn handle_browser_history(sess: &Session, ctx: &ToolCallCtx, arguments: St
                             return ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone,
                                 output: FunctionCallOutputPayload {
-                                    content: format!(
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
                                         "Unsupported direction: {} (expected 'back' or 'forward')",
                                         direction
-                                    ),
-                                    success: Some(false),
-                                },
+                                    )),
+                                    success: Some(false)},
                             };
                         }
 
@@ -10991,37 +10888,32 @@ async fn handle_browser_history(sess: &Session, ctx: &ToolCallCtx, arguments: St
                                 ResponseInputItem::FunctionCallOutput {
                                     call_id: call_id_clone.clone(),
                                     output: FunctionCallOutputPayload {
-                                        content: format!("History {} triggered", direction),
-                                        success: Some(true),
-                                    },
+                                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("History {} triggered", direction)),
+                                        success: Some(true)},
                                 }
                             }
                             Err(e) => ResponseInputItem::FunctionCallOutput {
                                 call_id: call_id_clone.clone(),
                                 output: FunctionCallOutputPayload {
-                                    content: format!("Failed to navigate history: {}", e),
-                                    success: Some(false),
-                                },
+                                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to navigate history: {}", e)),
+                                    success: Some(false)},
                             },
                         }
                     }
                     Err(e) => ResponseInputItem::FunctionCallOutput {
                         call_id: call_id_clone,
                         output: FunctionCallOutputPayload {
-                            content: format!("Failed to parse browser_history arguments: {}", e),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!("Failed to parse browser_history arguments: {}", e)),
+                            success: Some(false)},
                     },
                 }
             } else {
                 ResponseInputItem::FunctionCallOutput {
                     call_id: call_id_clone,
                     output: FunctionCallOutputPayload {
-                        content:
-                            "Browser is not initialized. Use browser_open to start the browser."
-                                .to_string(),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text("Browser is not initialized. Use browser_open to start the browser."
+                                .to_string()),
+                        success: Some(false)},
                 }
             }
         },
@@ -11615,8 +11507,7 @@ mod cleanup_tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     fn make_screenshot_message(tag: &str) -> ResponseItem {
@@ -11625,8 +11516,7 @@ mod cleanup_tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputImage {
                 image_url: tag.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     #[test]
@@ -11722,8 +11612,7 @@ mod cleanup_tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: "response".to_string(),
-            }],
-        };
+            }], end_turn: None, phase: None};
         let history = vec![user.clone(), assistant.clone()];
 
         let (pruned, stats) = prune_history_items(&history);

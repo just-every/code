@@ -17,7 +17,7 @@ use super::*;
 use crate::colors;
 use crate::history::state::ImageRecord;
 use crate::theme::{palette_mode, PaletteMode};
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use ::image::ImageReader;
 use ::image::image_dimensions;
 use ratatui::widgets::{Paragraph, Wrap};
@@ -168,7 +168,7 @@ impl ImageOutputCell {
             lines.push(format!("Type: {mime}"));
         }
         if let Some(byte_len) = record.byte_len {
-            let size = format_with_separators(u64::from(byte_len));
+            let size = format_with_separators_u64(u64::from(byte_len));
             lines.push(format!("Size: {size} bytes"));
         }
         if let Some(alt) = record

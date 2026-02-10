@@ -12,6 +12,10 @@ path = "src/lib.rs"
 tempfile = "3"
 thiserror = "2"
 walkdir = "2"
+schemars = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ts-rs = { workspace = true, features = ["serde-json-impl", "no-serde-warnings"] }
 
 [lints]
 workspace = true

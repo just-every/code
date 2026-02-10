@@ -1,11 +1,34 @@
 [package]
 name = "code-app-server-protocol"
-version = { workspace = true }
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "code_app_server_protocol"
+path = "src/lib.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 code-protocol = { workspace = true }
-mcp-types = { workspace = true }
+code-experimental-api-macros = { workspace = true }
+code-utils-absolute-path = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum_macros = { workspace = true }
+thiserror = { workspace = true }
+ts-rs = { workspace = true }
+inventory = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v7"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+code-utils-cargo-bin = { workspace = true }
+pretty_assertions = { workspace = true }
+similar = { workspace = true }
+tempfile = { workspace = true }

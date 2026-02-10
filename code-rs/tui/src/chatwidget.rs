@@ -54,10 +54,9 @@ use code_core::account_usage::{
 use code_core::auth_accounts::{self, StoredAccount};
 use code_login::AuthManager;
 use code_login::AuthMode;
-use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use code_protocol::dynamic_tools::DynamicToolResponse;
 use code_protocol::protocol::SessionSource;
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use code_core::split_command_and_args;
 use serde_json::Value as JsonValue;
 
@@ -4228,7 +4227,7 @@ impl ChatWidget<'_> {
     /// Render a single recorded ResponseItem into history without executing tools
     fn render_replay_item(&mut self, item: ResponseItem) {
         match item {
-            ResponseItem::Message { id, role, content } => {
+            ResponseItem::Message { id, role, content, .. } => {
                 let message_id = id;
                 let mut text = String::new();
                 for c in content {
@@ -4346,7 +4345,7 @@ impl ChatWidget<'_> {
                 }
             }
             ResponseItem::FunctionCallOutput { output, call_id, .. } => {
-                let mut content = output.content.clone();
+                let mut content = output.body.to_text().unwrap_or_default();
                 let mut metadata_summary = String::new();
                 if let Ok(v) = serde_json::from_str::<JsonValue>(&content) {
                     if let Some(s) = v.get("output").and_then(|x| x.as_str()) {
@@ -7140,6 +7139,8 @@ impl ChatWidget<'_> {
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText { text }],
+            end_turn: None,
+            phase: None,
         })
     }
 
@@ -7222,6 +7223,8 @@ impl ChatWidget<'_> {
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText { text }],
+            end_turn: None,
+            phase: None,
         })
     }
 
@@ -7417,6 +7420,8 @@ impl ChatWidget<'_> {
                     id: Some("auto-drive-reasoning".to_string()),
                     role: "user".to_string(),
                     content: vec![code_protocol::models::ContentItem::InputText { text }],
+                    end_turn: None,
+                    phase: None,
                 }
             } else {
                 match role {
@@ -7546,6 +7551,8 @@ impl ChatWidget<'_> {
                         id: None,
                         role: "user".to_string(),
                         content: vec![content],
+                        end_turn: None,
+                        phase: None,
                     });
                 }
                 crate::history_cell::HistoryCellType::Assistant => {
@@ -7566,6 +7573,8 @@ impl ChatWidget<'_> {
                         id: None,
                         role: "assistant".to_string(),
                         content: vec![content],
+                        end_turn: None,
+                        phase: None,
                     });
                 }
                 crate::history_cell::HistoryCellType::PlanUpdate => {
@@ -7607,6 +7616,8 @@ impl ChatWidget<'_> {
                             id: None,
                             role: "assistant".to_string(),
                             content: vec![content],
+                            end_turn: None,
+                            phase: None,
                         });
                     }
                 }
@@ -8570,10 +8581,8 @@ impl ChatWidget<'_> {
                 .or_else(|| active_id.clone())
                 .unwrap_or_else(|| "Current session".to_string());
             let header = Self::account_header_lines(account_ref, snapshot_ref, summary_ref);
-            let is_api_key_account = matches!(
-                account_ref.map(|acc| acc.mode),
-                Some(McpAuthMode::ApiKey)
-            );
+            let is_api_key_account =
+                matches!(account_ref.map(|acc| acc.mode), Some(AuthMode::ApiKey));
             let extra = Self::usage_history_lines(summary_ref, is_api_key_account);
             let display = Self::rate_limit_display_config_for_account(account_ref);
             let view = build_limits_view(
@@ -8650,20 +8659,16 @@ impl ChatWidget<'_> {
                             Some(&record),
                             usage_summary.as_ref(),
                         );
-                        let is_api_key_account = matches!(
-                            account.map(|acc| acc.mode),
-                            Some(McpAuthMode::ApiKey)
-                        );
+                        let is_api_key_account =
+                            matches!(account.map(|acc| acc.mode), Some(AuthMode::ApiKey));
                         let extra = Self::usage_history_lines(
                             usage_summary.as_ref(),
                             is_api_key_account,
                         );
                         tabs.push(LimitsTab::view(title, header, view, extra));
                     } else {
-                        let is_api_key_account = matches!(
-                            account.map(|acc| acc.mode),
-                            Some(McpAuthMode::ApiKey)
-                        );
+                        let is_api_key_account =
+                            matches!(account.map(|acc| acc.mode), Some(AuthMode::ApiKey));
                         let mut lines = Self::usage_history_lines(
                             usage_summary.as_ref(),
                             is_api_key_account,
@@ -8680,10 +8685,8 @@ impl ChatWidget<'_> {
                     }
                 }
                 None => {
-                    let is_api_key_account = matches!(
-                        account.map(|acc| acc.mode),
-                        Some(McpAuthMode::ApiKey)
-                    );
+                    let is_api_key_account =
+                        matches!(account.map(|acc| acc.mode), Some(AuthMode::ApiKey));
                     let mut lines = Self::usage_history_lines(
                         usage_summary.as_ref(),
                         is_api_key_account,
@@ -8732,11 +8735,11 @@ impl ChatWidget<'_> {
         let cents_part = (cents_u128 % 100) as u8;
         let dollars = (dollars_u128.min(u128::from(u64::MAX))) as u64;
         if cents_part == 0 {
-            format!("${} USD", format_with_separators(dollars))
+            format!("${} USD", format_with_separators_u64(dollars))
         } else {
             format!(
                 "${}.{:02} USD",
-                format_with_separators(dollars),
+                format_with_separators_u64(dollars),
                 cents_part
             )
         }
@@ -8769,8 +8772,8 @@ impl ChatWidget<'_> {
 
         let account_type = account
             .map(|acc| match acc.mode {
-                McpAuthMode::ChatGPT | McpAuthMode::ChatgptAuthTokens => "ChatGPT account",
-                McpAuthMode::ApiKey => "API key",
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => "ChatGPT account",
+                AuthMode::ApiKey => "API key",
             })
             .unwrap_or("Unknown account");
 
@@ -8780,7 +8783,7 @@ impl ChatWidget<'_> {
             .unwrap_or("Unknown");
 
         let value_style = Style::default().fg(crate::colors::text_dim());
-        let is_api_key = matches!(account.map(|acc| acc.mode), Some(McpAuthMode::ApiKey));
+        let is_api_key = matches!(account.map(|acc| acc.mode), Some(AuthMode::ApiKey));
         let totals = usage
             .map(|u| u.totals.clone())
             .unwrap_or_default();
@@ -8793,7 +8796,7 @@ impl ChatWidget<'_> {
         let total_tokens = totals.total_tokens;
 
         let cost_usd = Self::usage_cost_usd_from_totals(&totals);
-        let formatted_total = format_with_separators(total_tokens);
+        let formatted_total = format_with_separators_u64(total_tokens);
         let formatted_cost = Self::format_usd(cost_usd);
         let cost_suffix = if is_api_key {
             format!("({formatted_cost})")
@@ -8820,10 +8823,10 @@ impl ChatWidget<'_> {
 
         let indent = " ".repeat(tokens_prefix.len());
         let counts = [
-            (format_with_separators(cached_input), "cached"),
-            (format_with_separators(non_cached_input), "input"),
-            (format_with_separators(output_tokens), "output"),
-            (format_with_separators(reasoning_tokens), "reasoning"),
+            (format_with_separators_u64(cached_input), "cached"),
+            (format_with_separators_u64(non_cached_input), "input"),
+            (format_with_separators_u64(output_tokens), "output"),
+            (format_with_separators_u64(reasoning_tokens), "reasoning"),
         ];
         let max_width = counts
             .iter()
@@ -8880,12 +8883,12 @@ impl ChatWidget<'_> {
         let prefix = status_content_prefix();
         let tokens_width = series
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.total_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.total_tokens).len())
             .max()
             .unwrap_or(0);
         let cached_width = series
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.cached_input_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.cached_input_tokens).len())
             .max()
             .unwrap_or(0);
         let cost_width = series
@@ -8900,10 +8903,10 @@ impl ChatWidget<'_> {
         for (dt, totals) in series.iter() {
             let label = Self::format_hour_label(*dt);
             let bar = Self::bar_segment(totals.total_tokens, max_total, WIDTH);
-            let tokens = format_with_separators(totals.total_tokens);
+            let tokens = format_with_separators_u64(totals.total_tokens);
             let padding = tokens_width.saturating_sub(tokens.len());
             let formatted_tokens = format!("{space}{tokens}", space = " ".repeat(padding), tokens = tokens);
-            let cached_tokens = format_with_separators(totals.cached_input_tokens);
+            let cached_tokens = format_with_separators_u64(totals.cached_input_tokens);
             let cached_padding = cached_width.saturating_sub(cached_tokens.len());
             let cached_display = format!(
                 "{space}{cached_tokens}",
@@ -8981,12 +8984,12 @@ impl ChatWidget<'_> {
         let prefix = status_content_prefix();
         let tokens_width = daily
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.total_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.total_tokens).len())
             .max()
             .unwrap_or(0);
         let cached_width = daily
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.cached_input_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.cached_input_tokens).len())
             .max()
             .unwrap_or(0);
         let cost_width = daily
@@ -9001,10 +9004,10 @@ impl ChatWidget<'_> {
         for (day, totals) in daily.iter() {
             let label = Self::format_daily_label(*day);
             let bar = Self::bar_segment(totals.total_tokens, max_total, WIDTH);
-            let tokens = format_with_separators(totals.total_tokens);
+            let tokens = format_with_separators_u64(totals.total_tokens);
             let padding = tokens_width.saturating_sub(tokens.len());
             let formatted_tokens = format!("{space}{tokens}", space = " ".repeat(padding), tokens = tokens);
-            let cached_tokens = format_with_separators(totals.cached_input_tokens);
+            let cached_tokens = format_with_separators_u64(totals.cached_input_tokens);
             let cached_padding = cached_width.saturating_sub(cached_tokens.len());
             let cached_display = format!(
                 "{space}{cached_tokens}",
@@ -9133,12 +9136,12 @@ impl ChatWidget<'_> {
         let prefix = status_content_prefix();
         let tokens_width = months
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.total_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.total_tokens).len())
             .max()
             .unwrap_or(0);
         let cached_width = months
             .iter()
-            .map(|(_, totals)| format_with_separators(totals.cached_input_tokens).len())
+            .map(|(_, totals)| format_with_separators_u64(totals.cached_input_tokens).len())
             .max()
             .unwrap_or(0);
         let cost_width = months
@@ -9153,10 +9156,10 @@ impl ChatWidget<'_> {
         for (start, totals) in months.iter() {
             let label = start.format("%b %Y").to_string();
             let bar = Self::bar_segment(totals.total_tokens, max_total, WIDTH);
-            let tokens = format_with_separators(totals.total_tokens);
+            let tokens = format_with_separators_u64(totals.total_tokens);
             let padding = tokens_width.saturating_sub(tokens.len());
             let formatted_tokens = format!("{space}{tokens}", space = " ".repeat(padding), tokens = tokens);
-            let cached_tokens = format_with_separators(totals.cached_input_tokens);
+            let cached_tokens = format_with_separators_u64(totals.cached_input_tokens);
             let cached_padding = cached_width.saturating_sub(cached_tokens.len());
             let cached_display = format!(
                 "{space}{cached_tokens}",
@@ -14926,7 +14929,32 @@ impl ChatWidget<'_> {
             EventMsg::ListSkillsResponse(ev) => {
                 let len = ev.skills.len();
                 debug!("received {len} skills");
-                self.bottom_pane.set_skills(ev.skills);
+                let mut skills: Vec<code_core::protocol::Skill> = Vec::new();
+                for entry in ev.skills {
+                    for meta in entry.skills {
+                        let scope = match meta.scope {
+                            code_protocol::protocol::SkillScope::User => {
+                                code_protocol::skills::SkillScope::User
+                            }
+                            code_protocol::protocol::SkillScope::Repo => {
+                                code_protocol::skills::SkillScope::Repo
+                            }
+                            code_protocol::protocol::SkillScope::System
+                            | code_protocol::protocol::SkillScope::Admin => {
+                                code_protocol::skills::SkillScope::System
+                            }
+                        };
+                        let content = std::fs::read_to_string(&meta.path).unwrap_or_default();
+                        skills.push(code_core::protocol::Skill {
+                            name: meta.name,
+                            description: meta.description,
+                            path: meta.path,
+                            scope,
+                            content,
+                        });
+                    }
+                }
+                self.bottom_pane.set_skills(skills);
                 self.refresh_settings_overview_rows();
             }
             EventMsg::ShutdownComplete => {
@@ -15211,13 +15239,17 @@ impl ChatWidget<'_> {
                 if self.auto_resolve_enabled() {
                     self.auto_resolve_handle_review_enter();
                 }
-                let hint = review_request.user_facing_hint.trim();
+                let hint = review_request
+                    .user_facing_hint
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim();
                 let banner = if hint.is_empty() {
                     ">> Code review started <<".to_string()
                 } else {
                     format!(">> Code review started: {hint} <<")
                 };
-                self.active_review_hint = Some(review_request.user_facing_hint.clone());
+                self.active_review_hint = review_request.user_facing_hint.clone();
                 self.active_review_prompt = Some(review_request.prompt.clone());
                 self.push_background_before_next_output(banner);
 
@@ -15402,6 +15434,7 @@ impl ChatWidget<'_> {
                             status: StepStatus::Completed,
                         },
                     ],
+                    explanation: None,
                 },
                 ("browser_open", "https://example.com", "navigated to example.com"),
                 ReasoningEffort::High,
@@ -15453,6 +15486,7 @@ impl ChatWidget<'_> {
                             status: StepStatus::Pending,
                         },
                     ],
+                    explanation: None,
                 },
                 ("browser_open", "https://example.com/releases", "reviewed release dashboard"),
                 ReasoningEffort::Medium,
@@ -16076,7 +16110,7 @@ impl ChatWidget<'_> {
     fn rate_limit_display_config_for_account(
         account: Option<&StoredAccount>,
     ) -> RateLimitDisplayConfig {
-        if matches!(account.map(|acc| acc.mode), Some(McpAuthMode::ApiKey)) {
+        if matches!(account.map(|acc| acc.mode), Some(AuthMode::ApiKey)) {
             RateLimitDisplayConfig {
                 show_usage_sections: false,
                 show_chart: false,
@@ -22086,9 +22120,9 @@ Have we met every part of this goal and is there no further work to do?"#
             return presets.clone();
         }
         let auth_mode = if self.config.using_chatgpt_auth {
-            Some(McpAuthMode::ChatGPT)
+            Some(AuthMode::ChatGPT)
         } else {
-            Some(McpAuthMode::ApiKey)
+            Some(AuthMode::ApiKey)
         };
         builtin_model_presets(auth_mode)
     }
@@ -33270,62 +33304,11 @@ impl ChatWidget<'_> {
     fn auto_resolve_commit_sha(&self) -> Option<String> {
         self.auto_resolve_state
             .as_ref()
-            .and_then(|state| state.metadata.as_ref())
-            .and_then(|metadata| metadata.commit.clone())
+            .and_then(|state| state.last_reviewed_commit.clone())
     }
 
     fn auto_resolve_scope(&self) -> Option<String> {
-        self.auto_resolve_state
-            .as_ref()
-            .and_then(|state| state.metadata.as_ref())
-            .and_then(|metadata| metadata.scope.clone())
-    }
-
-    fn worktree_has_uncommitted_changes(&self) -> Option<bool> {
-        let output = Command::new("git")
-            .current_dir(&self.config.cwd)
-            .args(["status", "--short"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(!stdout.trim().is_empty())
-    }
-
-    fn current_head_commit_sha(&self) -> Option<String> {
-        let output = Command::new("git")
-            .current_dir(&self.config.cwd)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            None
-        } else {
-            Some(stdout)
-        }
-    }
-
-    fn commit_subject_for(&self, commit: &str) -> Option<String> {
-        let output = Command::new("git")
-            .current_dir(&self.config.cwd)
-            .args(["show", "-s", "--format=%s", commit])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            None
-        } else {
-            Some(stdout)
-        }
+        None
     }
 
     fn strip_context_sections(text: &str) -> String {
@@ -33665,32 +33648,8 @@ impl ChatWidget<'_> {
             base_prompt = base_prompt[..idx].trim_end().to_string();
         }
 
-        let mut next_hint = state_snapshot.hint.clone();
-        let mut next_metadata = state_snapshot.metadata.clone();
-
-        if next_metadata
-            .as_ref()
-            .and_then(|meta| meta.scope.as_ref())
-            .is_some_and(|scope| scope.eq_ignore_ascii_case("commit"))
-        {
-            if let Some(new_commit) = self.current_head_commit_sha() {
-                let short_sha: String = new_commit.chars().take(7).collect();
-                let subject = self.commit_subject_for(&new_commit);
-                base_prompt = if let Some(subject) = subject {
-                    format!(
-                        "Review the code changes introduced by commit {new_commit} (\"{subject}\"). Provide prioritized, actionable findings."
-                    )
-                } else {
-                    format!(
-                        "Review the code changes introduced by commit {new_commit}. Provide prioritized, actionable findings."
-                    )
-                };
-                next_hint = format!("commit {short_sha}");
-                if let Some(meta) = next_metadata.as_mut() {
-                    meta.commit = Some(new_commit.clone());
-                }
-            }
-        }
+        let next_hint = state_snapshot.hint.clone();
+        let next_metadata = state_snapshot.metadata.clone();
 
         let mut continued_prompt = base_prompt.clone();
         if let Some(last_review) = state_snapshot.last_review.as_ref() {
@@ -33700,34 +33659,9 @@ impl ChatWidget<'_> {
                 continued_prompt.push_str(&recap);
             }
         }
-        if state_snapshot
-            .metadata
-            .as_ref()
-            .and_then(|meta| meta.scope.as_ref())
-            .is_some_and(|scope| scope.eq_ignore_ascii_case("commit"))
-        {
-            if let Some(commit) = state_snapshot
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.commit.clone())
-            {
-                if let Some(true) = self.worktree_has_uncommitted_changes() {
-                    continued_prompt.push_str("\n\nNote: there are uncommitted changes in the working tree since commit ");
-                    continued_prompt.push_str(&commit);
-                    continued_prompt.push_str(
-                        ". Ensure the review covers the updated workspace rather than only the original commit snapshot.",
-                    );
-                }
-            }
-        }
         continued_prompt.push_str("\n\n");
         continued_prompt.push_str(AUTO_RESOLVE_REVIEW_FOLLOWUP);
-        self.begin_review(
-            continued_prompt,
-            next_hint.clone(),
-            Some(prep_label),
-            next_metadata.clone(),
-        );
+        self.begin_review(continued_prompt, next_hint.clone(), Some(prep_label));
         if let Some(state) = self.auto_resolve_state.as_mut() {
             state.phase = AutoResolvePhase::WaitingForReview;
             state.prompt = base_prompt;
@@ -33927,10 +33861,7 @@ impl ChatWidget<'_> {
         let workspace_prompt = "Review the current workspace changes (staged, unstaged, and untracked files) and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string();
         let workspace_hint = "current workspace changes".to_string();
         let workspace_preparation = "Preparing code review for current changes".to_string();
-        let workspace_metadata = Some(ReviewContextMetadata {
-            scope: Some("workspace".to_string()),
-            ..Default::default()
-        });
+        let workspace_metadata = None;
         let workspace_auto_resolve = self.config.tui.review_auto_resolve;
         items.push(SelectionItem {
             name: "Review uncommitted changes".to_string(),
@@ -35163,11 +35094,7 @@ impl ChatWidget<'_> {
             let prompt_closure = prompt.clone();
             let hint_closure = hint.clone();
             let prep_closure = preparation.clone();
-            let metadata_option = Some(ReviewContextMetadata {
-                scope: Some("commit".to_string()),
-                commit: Some(sha.clone()),
-                ..Default::default()
-            });
+            let metadata_option = None;
             let auto_flag = auto_resolve;
             items.push(SelectionItem {
                 name: title,
@@ -35272,12 +35199,7 @@ impl ChatWidget<'_> {
             let prompt_closure = prompt.clone();
             let hint_closure = hint.clone();
             let prep_closure = preparation.clone();
-            let metadata_option = Some(ReviewContextMetadata {
-                scope: Some("branch_diff".to_string()),
-                base_branch: Some(branch_trimmed.to_string()),
-                current_branch: current_trimmed.clone(),
-                ..Default::default()
-            });
+            let metadata_option = None;
             let auto_flag = auto_resolve;
             items.push(SelectionItem {
                 name: title,
@@ -35380,12 +35302,7 @@ impl ChatWidget<'_> {
                                 let hint = format!("against {base_branch}");
                                 let preparation_label =
                                     Some(format!("Preparing code review against {base_branch}"));
-                                let metadata = Some(ReviewContextMetadata {
-                                    scope: Some("branch_diff".to_string()),
-                                    base_branch: Some(base_branch.clone()),
-                                    current_branch: Some(current_branch.clone()),
-                                    ..Default::default()
-                                });
+                                let metadata = None;
                                 tx.send(crate::app_event::AppEvent::RunReviewWithScope {
                                     prompt,
                                     hint,
@@ -35401,10 +35318,7 @@ impl ChatWidget<'_> {
                             prompt: "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string(),
                             hint: "current workspace changes".to_string(),
                             preparation_label: Some("Preparing code review request...".to_string()),
-                            metadata: Some(ReviewContextMetadata {
-                                scope: Some("workspace".to_string()),
-                                ..Default::default()
-                            }),
+                            metadata: None,
                             auto_resolve: auto_flag,
                         });
                     });
@@ -35412,25 +35326,17 @@ impl ChatWidget<'_> {
                 }
             }
 
-            let metadata = ReviewContextMetadata {
-                scope: Some("workspace".to_string()),
-                ..Default::default()
-            };
             self.start_review_with_scope(
                 "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string(),
                 "current workspace changes".to_string(),
                 Some("Preparing code review request...".to_string()),
-                Some(metadata),
+                None,
                 auto_resolve,
             );
         } else {
             let value = trimmed.to_string();
             let preparation = format!("Preparing code review for {value}");
-            let metadata = ReviewContextMetadata {
-                scope: Some("custom".to_string()),
-                ..Default::default()
-            };
-            self.start_review_with_scope(value.clone(), value, Some(preparation), Some(metadata), auto_resolve);
+            self.start_review_with_scope(value.clone(), value, Some(preparation), None, auto_resolve);
         }
     }
 
@@ -35454,7 +35360,7 @@ impl ChatWidget<'_> {
             self.auto_resolve_state = None;
         }
 
-        self.begin_review(prompt, hint, preparation_label, metadata);
+        self.begin_review(prompt, hint, preparation_label);
     }
 
     fn begin_review(
@@ -35462,7 +35368,6 @@ impl ChatWidget<'_> {
         prompt: String,
         hint: String,
         preparation_label: Option<String>,
-        metadata: Option<ReviewContextMetadata>,
     ) {
         self.active_review_hint = None;
         self.active_review_prompt = None;
@@ -35479,10 +35384,18 @@ impl ChatWidget<'_> {
         self.insert_background_event_early(preparation_notice);
         self.request_redraw();
 
+        let user_facing_hint = if hint.trim().is_empty() {
+            None
+        } else {
+            Some(hint)
+        };
+        let target = code_protocol::protocol::ReviewTarget::Custom {
+            instructions: prompt.clone(),
+        };
         let review_request = ReviewRequest {
+            target,
             prompt,
-            user_facing_hint: hint,
-            metadata,
+            user_facing_hint,
         };
         match try_acquire_lock("review", &self.config.cwd) {
             Ok(Some(guard)) => {

@@ -140,8 +140,7 @@ pub fn make_compaction_summary_message(
     ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text }],
-    }
+        content: vec![ContentItem::InputText { text }], end_turn: None, phase: None}
 }
 
 /// Resolve the compaction prompt text based on an optional override.
@@ -365,6 +364,7 @@ pub(super) async fn perform_compaction(
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
+        replacement_history: None,
     });
     sess.persist_rollout_items(&[rollout_item]).await;
 
@@ -530,6 +530,7 @@ async fn run_compact_task_inner_inline(
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: summary_text.clone(),
+        replacement_history: None,
     });
     sess.persist_rollout_items(&[rollout_item]).await;
 
@@ -600,7 +601,12 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
     items
         .into_iter()
         .filter_map(|item| match item {
-            ResponseItem::Message { id, role, content } => {
+            ResponseItem::Message {
+                id,
+                role,
+                content,
+                ..
+            } => {
                 let mut filtered_content = Vec::with_capacity(content.len());
                 for content_item in content {
                     match content_item {
@@ -636,8 +642,7 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                     Some(ResponseItem::Message {
                         id,
                         role,
-                        content: filtered_content,
-                    })
+                        content: filtered_content, end_turn: None, phase: None})
                 }
             }
             ResponseItem::FunctionCall {
@@ -655,11 +660,13 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                 })
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
-                let FunctionCallOutputPayload { content, success } = output;
-                let content = truncate_for_compact(content, COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                let success = output.success;
+                let content = truncate_for_compact(output.to_string(), COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                let mut output = FunctionCallOutputPayload::from_text(content);
+                output.success = success;
                 Some(ResponseItem::FunctionCallOutput {
                     call_id,
-                    output: FunctionCallOutputPayload { content, success },
+                    output,
                 })
             }
             ResponseItem::CustomToolCall {
@@ -788,8 +795,7 @@ pub(crate) fn build_emergency_compacted_history(
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: warning_message.to_string(),
-        }],
-    });
+        }], end_turn: None, phase: None});
     history
 }
 
@@ -955,8 +961,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: "ignored".to_string(),
-                }],
-            },
+                }], end_turn: None, phase: None},
             ResponseItem::Message {
                 id: Some("user".to_string()),
                 role: "user".to_string(),
@@ -967,8 +972,7 @@ mod tests {
                     ContentItem::OutputText {
                         text: "second".to_string(),
                     },
-                ],
-            },
+                ], end_turn: None, phase: None},
             ResponseItem::Other,
         ];
 
@@ -986,22 +990,19 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\ndo things\n</INSTRUCTIONS>"
                         .to_string(),
-                }],
-            },
+                }], end_turn: None, phase: None},
             ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
-                }],
-            },
+                }], end_turn: None, phase: None},
             ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "real user message".to_string(),
-                }],
-            },
+                }], end_turn: None, phase: None},
         ];
 
         let collected = collect_user_messages(&items);
@@ -1018,8 +1019,7 @@ mod tests {
                 role: if idx % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
                 content: vec![ContentItem::InputText {
                     text: format!("Message #{idx} {}", "x".repeat(1024)),
-                }],
-            });
+                }], end_turn: None, phase: None});
         }
 
         let snippets = collect_compaction_snippets(&items);
@@ -1059,8 +1059,7 @@ mod tests {
         let snippet_source = vec![ResponseItem::Message {
             id: None,
             role: "user".to_string(),
-            content: vec![ContentItem::InputText { text: big.clone() }],
-        }];
+            content: vec![ContentItem::InputText { text: big.clone() }], end_turn: None, phase: None}];
         let snippets = collect_compaction_snippets(&snippet_source);
         let history = build_compacted_history(Vec::new(), &snippets, "SUMMARY");
 
@@ -1089,15 +1088,13 @@ mod tests {
                     content: vec![ContentItem::InputText {
                         text: "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\ntest\n</INSTRUCTIONS>"
                             .to_string(),
-                    }],
-                },
+                    }], end_turn: None, phase: None},
             ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
-                }],
-            },
+                }], end_turn: None, phase: None},
         ];
 
         let warning = "Emergency fallback";

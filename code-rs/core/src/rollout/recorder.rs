@@ -7,6 +7,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use code_protocol::ConversationId;
+use code_protocol::ThreadId;
+use code_protocol::models::BaseInstructions;
 use code_protocol::models::{ContentItem, ResponseItem};
 use code_protocol::protocol::EventMsg as ProtoEventMsg;
 use code_protocol::protocol::SessionSource;
@@ -90,7 +92,7 @@ enum RolloutCmd {
 /// Tracks context needed to update the session catalog after writes.
 struct CatalogUpdateState {
     code_home: PathBuf,
-    session_id: ConversationId,
+    session_id: ThreadId,
     rollout_path: PathBuf,
     last_timestamp: String,
 }
@@ -151,13 +153,18 @@ impl RolloutRecorder {
                     tokio::fs::File::from_std(file),
                     path,
                     Some(SessionMeta {
-                        id: session_id,
+                        id: ThreadId::from_string(&session_id.to_string()).map_err(|e| {
+                            IoError::other(format!("failed to convert session ID: {e}"))
+                        })?,
+                        forked_from_id: None,
                         timestamp,
                         cwd: config.cwd.clone(),
                         originator: DEFAULT_ORIGINATOR.to_string(),
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
-                        instructions,
                         source,
+                        model_provider: None,
+                        base_instructions: instructions.map(|text| BaseInstructions { text }),
+                        dynamic_tools: None,
                     }),
                 )
             }
@@ -320,7 +327,7 @@ impl RolloutRecorder {
         }
 
         let mut items: Vec<RolloutItem> = Vec::new();
-        let mut conversation_id: Option<ConversationId> = None;
+        let mut conversation_id: Option<ThreadId> = None;
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -364,12 +371,14 @@ impl RolloutRecorder {
                                 items.push(RolloutItem::ResponseItem(ResponseItem::Message {
                                     id: Some(ev.id.clone()),
                                     role: "user".to_string(),
-                                    content,
-                                }));
+                                    content, end_turn: None, phase: None}));
                             }
                             ProtoEventMsg::AgentMessage(_) => items.push(RolloutItem::Event(ev)),
                             _ => items.push(RolloutItem::Event(ev)),
                         }
+                    }
+                    RolloutItem::EventMsg(ev_msg) => {
+                        items.push(RolloutItem::EventMsg(ev_msg));
                     }
                     RolloutItem::Compacted(compacted) => {
                         items.push(RolloutItem::Compacted(compacted));

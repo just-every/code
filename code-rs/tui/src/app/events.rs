@@ -76,9 +76,9 @@ impl App<'_> {
                 .map(|auth| auth.mode)
                 .or_else(|| {
                     if remote_using_chatgpt_hint {
-                        Some(code_protocol::mcp_protocol::AuthMode::ChatGPT)
+                        Some(AuthMode::ChatGPT)
                     } else {
-                        Some(code_protocol::mcp_protocol::AuthMode::ApiKey)
+                        Some(AuthMode::ApiKey)
                     }
                 });
             let presets = code_common::model_presets::builtin_model_presets(auth_mode);

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
 
+use super::ARCHIVED_SESSIONS_SUBDIR;
 use super::SESSIONS_SUBDIR;
 
 const INDEX_SUBDIR: &str = "sessions/index";
@@ -301,13 +302,20 @@ impl SessionCatalog {
     #[allow(dead_code)]
     pub async fn reconcile(&mut self, code_home: &Path) -> io::Result<ReconcileResult> {
         let sessions_root = code_home.join(SESSIONS_SUBDIR);
+        let archived_root = code_home.join(ARCHIVED_SESSIONS_SUBDIR);
 
         if !sessions_root.exists() {
             return Ok(ReconcileResult::default());
         }
 
         let mut result = ReconcileResult::default();
-        let discovered_entries = scan_rollout_files(&sessions_root).await?;
+        let discovered_entries = scan_rollout_files(&sessions_root, false).await?;
+        let mut discovered_entries = if archived_root.exists() {
+            let archived_entries = scan_rollout_files(&archived_root, true).await?;
+            merge_discovered_entries(discovered_entries, archived_entries)
+        } else {
+            discovered_entries
+        };
         let discovered_ids: HashSet<Uuid> = discovered_entries.keys().copied().collect();
         let mut changed = false;
 
@@ -324,7 +332,7 @@ impl SessionCatalog {
         }
 
         // Upsert discovered entries.
-        for (session_id, mut entry) in discovered_entries {
+        for (session_id, mut entry) in discovered_entries.drain() {
             if let Some(existing) = self.entries.get(&session_id).cloned() {
                 if should_replace(&existing, &entry) {
                     if entry.nickname.is_none() {
@@ -382,6 +390,7 @@ pub struct ReconcileResult {
 #[allow(dead_code)]
 async fn scan_rollout_files(
     sessions_root: &Path,
+    archived: bool,
 ) -> io::Result<HashMap<Uuid, SessionIndexEntry>> {
     use tokio::fs;
 
@@ -400,7 +409,9 @@ async fn scan_rollout_files(
             } else if metadata.is_file() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.ends_with(".jsonl") && name.starts_with("rollout-") {
-                        if let Some(index_entry) = parse_rollout_file(&path, sessions_root).await {
+                        if let Some(index_entry) =
+                            parse_rollout_file(&path, sessions_root, archived).await
+                        {
                             match discovered.get(&index_entry.session_id) {
                                 Some(existing) => {
                                     if should_replace(existing, &index_entry) {
@@ -425,6 +436,7 @@ async fn scan_rollout_files(
 async fn parse_rollout_file(
     path: &Path,
     sessions_root: &Path,
+    archived: bool,
 ) -> Option<SessionIndexEntry> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -504,6 +516,10 @@ async fn parse_rollout_file(
                 // counting them toward `user_message_count` to keep resume filters strict.
                 message_count += 1;
             }
+            RolloutItem::EventMsg(_event) => {
+                // Same accounting as RolloutItem::Event.
+                message_count += 1;
+            }
             RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {
                 message_count += 1;
             }
@@ -555,9 +571,28 @@ async fn parse_rollout_file(
         nickname: None,
         sync_origin_device: None,
         sync_version: 0,
-        archived: false,
+        archived,
         deleted: false,
     })
+}
+
+fn merge_discovered_entries(
+    mut primary: HashMap<Uuid, SessionIndexEntry>,
+    secondary: HashMap<Uuid, SessionIndexEntry>,
+) -> HashMap<Uuid, SessionIndexEntry> {
+    for (session_id, entry) in secondary {
+        match primary.get(&session_id) {
+            Some(existing) => {
+                if should_replace(existing, &entry) {
+                    primary.insert(session_id, entry);
+                }
+            }
+            None => {
+                primary.insert(session_id, entry);
+            }
+        }
+    }
+    primary
 }
 
 fn should_replace(existing: &SessionIndexEntry, candidate: &SessionIndexEntry) -> bool {
@@ -586,21 +621,32 @@ pub async fn update_catalog_entry(
 ) -> io::Result<()> {
     let mut catalog = SessionCatalog::load(code_home)?;
 
+    let sessions_root = code_home.join(SESSIONS_SUBDIR);
+    let archived_root = code_home.join(ARCHIVED_SESSIONS_SUBDIR);
+    let (parse_root, archived) = if rollout_path.starts_with(&archived_root) {
+        (&archived_root, true)
+    } else {
+        (&sessions_root, false)
+    };
+
     // If entry exists, update last_event_at
         if let Some(mut entry) = catalog.entries.remove(&session_id) {
             entry.last_event_at = last_timestamp.to_string();
 
             // Re-parse file to update message count and snippet
-            if let Some(updated) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
+            if let Some(updated) = parse_rollout_file(rollout_path, parse_root, archived).await {
                 entry.message_count = updated.message_count;
                 entry.user_message_count = updated.user_message_count;
                 entry.last_user_snippet = updated.last_user_snippet;
+                entry.archived = updated.archived;
+                entry.rollout_path = updated.rollout_path;
+                entry.snapshot_path = updated.snapshot_path;
             }
 
             catalog.upsert(entry)?;
         } else {
             // Entry doesn't exist, parse and add it
-            if let Some(entry) = parse_rollout_file(rollout_path, &code_home.join(SESSIONS_SUBDIR)).await {
+            if let Some(entry) = parse_rollout_file(rollout_path, parse_root, archived).await {
                 catalog.upsert(entry)?;
             }
     }

@@ -361,9 +361,9 @@ impl ThemeSelectionView {
                 // Use the same auth preference as the active Codex session.
                 // When logged in with ChatGPT, prefer ChatGPT auth; otherwise fall back to API key.
                 let preferred_auth = if cfg.using_chatgpt_auth {
-                    code_protocol::mcp_protocol::AuthMode::ChatGPT
+                    code_login::AuthMode::ChatGPT
                 } else {
-                    code_protocol::mcp_protocol::AuthMode::ApiKey
+                    code_login::AuthMode::ApiKey
                 };
                 let auth_mgr = code_core::AuthManager::shared_with_mode_and_originator(
                     cfg.code_home.clone(),
@@ -386,8 +386,8 @@ impl ThemeSelectionView {
                 // Build developer guidance and input
                 let developer = "You are performing a custom task to create a terminal spinner.\n\nRequirements:\n- Output JSON ONLY, no prose.\n- `interval` is the delay in milliseconds between frames; MUST be between 50 and 300 inclusive.\n- `frames` is an array of strings; each element is a frame displayed sequentially at the given interval.\n- The spinner SHOULD have between 2 and 60 frames.\n- Each frame SHOULD be between 1 and 30 characters wide. ALL frames MUST be the SAME width (same number of characters). If you propose frames with varying widths, PAD THEM ON THE LEFT with spaces so they are uniform.\n- You MAY use both ASCII and Unicode characters (e.g., box drawing, braille, arrows). Use EMOJIS ONLY if the user explicitly requests emojis in their prompt.\n- Be creative! You have the full range of Unicode to play with!\n".to_string();
                 let mut input: Vec<code_protocol::models::ResponseItem> = Vec::new();
-                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "developer".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: developer }] });
-                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "user".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: user_prompt }] });
+                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "developer".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: developer }], end_turn: None, phase: None });
+                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "user".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: user_prompt }], end_turn: None, phase: None });
 
                 // JSON schema for structured output
                 let schema = serde_json::json!({
@@ -693,7 +693,7 @@ impl ThemeSelectionView {
                 };
                 let auth_mgr = code_core::AuthManager::shared_with_mode_and_originator(
                     cfg.code_home.clone(),
-                    code_protocol::mcp_protocol::AuthMode::ApiKey,
+                    code_login::AuthMode::ApiKey,
                     cfg.responses_originator_header.clone(),
                 );
                 let client = code_core::ModelClient::new(
@@ -714,8 +714,8 @@ impl ThemeSelectionView {
                     example.to_string()
                 );
                 let mut input: Vec<code_protocol::models::ResponseItem> = Vec::new();
-                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "developer".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: developer }] });
-                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "user".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: user_prompt }] });
+                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "developer".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: developer }], end_turn: None, phase: None });
+                input.push(code_protocol::models::ResponseItem::Message { id: None, role: "user".to_string(), content: vec![code_protocol::models::ContentItem::InputText { text: user_prompt }], end_turn: None, phase: None });
 
                 let schema = serde_json::json!({
                     "type": "object",

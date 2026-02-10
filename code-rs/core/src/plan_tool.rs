@@ -83,9 +83,8 @@ pub(crate) async fn handle_update_plan(
             let output = ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
-                    content: "Plan updated".to_string(),
-                    success: Some(true),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text("Plan updated".to_string()),
+                    success: Some(true)},
             };
             session
                 .send_ordered_from_ctx(ctx, EventMsg::PlanUpdate(args))
@@ -106,9 +105,8 @@ fn parse_update_plan_arguments(
             let output = ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.to_string(),
                 output: FunctionCallOutputPayload {
-                    content: format!("failed to parse function arguments: {e}"),
-                    success: None,
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("failed to parse function arguments: {e}")),
+                    success: None},
             };
             Err(Box::new(output))
         }

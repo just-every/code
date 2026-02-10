@@ -135,7 +135,7 @@ fn estimate_item_size(item: &ResponseItem) -> usize {
             }).sum()
         }
         ResponseItem::FunctionCall { arguments, .. } => arguments.len(),
-        ResponseItem::FunctionCallOutput { output, .. } => output.content.len(),
+        ResponseItem::FunctionCallOutput { output, .. } => output.to_string().len(),
         ResponseItem::CustomToolCall { input, .. } => input.len(),
         ResponseItem::CustomToolCallOutput { output, .. } => output.len(),
         ResponseItem::Reasoning { content, .. } => {
@@ -522,8 +522,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     fn make_screenshot_message(tag: &str) -> ResponseItem {
@@ -532,8 +531,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputImage {
                 image_url: tag.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     #[test]

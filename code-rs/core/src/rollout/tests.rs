@@ -224,8 +224,7 @@ async fn test_resume_reconstruct_history_drops_user_events() {
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
             text: "Sure, let's talk about async/await.".to_string(),
-        }],
-    };
+        }], end_turn: None, phase: None};
     serde_json::to_writer(&mut writer, &RolloutLine {
         timestamp: "2025-10-06T09:00:02.000Z".to_string(),
         item: RolloutItem::ResponseItem(assistant_response),

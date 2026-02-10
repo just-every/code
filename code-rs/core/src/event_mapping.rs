@@ -147,6 +147,7 @@ pub(crate) fn map_response_item_to_event_messages(
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::Other => Vec::new(),
     }
 }
@@ -221,8 +222,7 @@ mod tests {
                 ContentItem::InputImage {
                     image_url: img2.clone(),
                 },
-            ],
-        };
+            ], end_turn: None, phase: None};
 
         let events = map_response_item_to_event_messages(&item, false);
         // No UI event is emitted for raw user input in this fork
@@ -246,8 +246,7 @@ mod tests {
                     serde_json::to_string_pretty(&payload).unwrap(),
                     ENVIRONMENT_CONTEXT_CLOSE_TAG
                 ),
-            }],
-        };
+            }], end_turn: None, phase: None};
 
         let events = map_response_item_to_event_messages(&item, false);
         assert_eq!(events.len(), 1);
@@ -280,8 +279,7 @@ mod tests {
                     serde_json::to_string_pretty(&payload).unwrap(),
                     ENVIRONMENT_CONTEXT_DELTA_CLOSE_TAG
                 ),
-            }],
-        };
+            }], end_turn: None, phase: None};
 
         let events = map_response_item_to_event_messages(&item, false);
         assert_eq!(events.len(), 1);
@@ -316,8 +314,7 @@ mod tests {
                     serde_json::to_string_pretty(&payload).unwrap(),
                     BROWSER_SNAPSHOT_CLOSE_TAG
                 ),
-            }],
-        };
+            }], end_turn: None, phase: None};
 
         let events = map_response_item_to_event_messages(&item, false);
         assert_eq!(events.len(), 1);

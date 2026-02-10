@@ -33,6 +33,7 @@ use code_otel::otel_event_manager::{
 };
 use code_protocol::config_types::ReasoningEffort as ProtoReasoningEffort;
 use code_protocol::config_types::ReasoningSummary as ProtoReasoningSummary;
+use code_utils_absolute_path::AbsolutePathBuf as ProtoAbsolutePathBuf;
 use code_protocol::protocol::AskForApproval as ProtoAskForApproval;
 use code_protocol::protocol::ReviewDecision as ProtoReviewDecision;
 use code_protocol::protocol::SandboxPolicy as ProtoSandboxPolicy;
@@ -49,7 +50,7 @@ use crate::config_types::ClientTools;
 use code_protocol::protocol::TurnAbortReason;
 use code_protocol::protocol::TurnAbortedEvent;
 use futures::prelude::*;
-use mcp_types::CallToolResult;
+use code_protocol::mcp::CallToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -70,7 +71,6 @@ use crate::git_worktree;
 use crate::protocol::ApprovedCommandMatchKind;
 use crate::protocol::WebSearchBeginEvent;
 use crate::protocol::WebSearchCompleteEvent;
-use code_protocol::mcp_protocol::AuthMode;
 use crate::account_usage;
 use crate::auth_accounts;
 use crate::agent_defaults::{agent_model_spec, default_agent_configs, enabled_agent_model_specs};
@@ -193,13 +193,28 @@ fn to_proto_sandbox_policy(policy: SandboxPolicy) -> ProtoSandboxPolicy {
             exclude_tmpdir_env_var,
             exclude_slash_tmp,
             allow_git_writes,
-        } => ProtoSandboxPolicy::WorkspaceWrite {
-            writable_roots,
-            network_access,
-            exclude_tmpdir_env_var,
-            exclude_slash_tmp,
-            allow_git_writes,
-        },
+        } => {
+            let writable_roots = writable_roots
+                .into_iter()
+                .filter_map(|root| match ProtoAbsolutePathBuf::from_absolute_path(&root) {
+                    Ok(abs) => Some(abs),
+                    Err(err) => {
+                        warn!(
+                            "Ignoring invalid writable root {} for sandbox policy: {err}",
+                            root.display()
+                        );
+                        None
+                    }
+                })
+                .collect();
+            ProtoSandboxPolicy::WorkspaceWrite {
+                writable_roots,
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+                allow_git_writes,
+            }
+        }
     }
 }
 
@@ -339,12 +354,14 @@ fn convert_call_tool_result_to_function_call_output_payload(
 ) -> FunctionCallOutputPayload {
     match result {
         Ok(ok) => FunctionCallOutputPayload {
-            content: serde_json::to_string(ok)
-                .unwrap_or_else(|e| format!("JSON serialization error: {e}")),
+            body: code_protocol::models::FunctionCallOutputBody::Text(
+                serde_json::to_string(ok)
+                    .unwrap_or_else(|e| format!("JSON serialization error: {e}")),
+            ),
             success: Some(true),
         },
         Err(e) => FunctionCallOutputPayload {
-            content: format!("err: {e:?}"),
+            body: code_protocol::models::FunctionCallOutputBody::Text(format!("err: {e:?}")),
             success: Some(false),
         },
     }
@@ -460,8 +477,7 @@ fn maybe_time_budget_status_item(sess: &Session) -> Option<ResponseItem> {
     Some(ResponseItem::Message {
         id: Some(format!("run-budget-{}", sess.id)),
         role: "user".to_string(),
-        content: vec![ContentItem::InputText { text }],
-    })
+        content: vec![ContentItem::InputText { text }], end_turn: None, phase: None})
 }
 
 async fn build_turn_status_items(sess: &Session) -> Vec<ResponseItem> {
@@ -646,8 +662,7 @@ async fn build_turn_status_items_legacy(sess: &Session) -> Vec<ResponseItem> {
         jar.items.push(ResponseItem::Message {
             id: None,
             role: "user".to_string(),
-            content,
-        });
+            content, end_turn: None, phase: None});
     }
 
     if let Some(item) = maybe_time_budget_status_item(sess) {
@@ -696,8 +711,7 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                 items.push(ResponseItem::Message {
                     id: Some(browser_stream_id),
                     role: "user".to_string(),
-                    content: vec![ContentItem::InputText { text: idle_text }],
-                });
+                    content: vec![ContentItem::InputText { text: idle_text }], end_turn: None, phase: None});
                 return items;
             } else {
                 let url = browser_manager
@@ -784,8 +798,7 @@ async fn build_turn_status_items_v2(sess: &Session) -> Vec<ResponseItem> {
                             role: "user".to_string(),
                             content: vec![ContentItem::InputImage {
                                 image_url: format!("data:{mime};base64,{encoded}"),
-                            }],
-                        });
+                            }], end_turn: None, phase: None});
                     }
                     Err(err) => warn!(
                         "env_ctx_v2: failed to read screenshot file {}: {err}",
@@ -889,8 +902,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: "== System Status ==\n cwd: /legacy\n branch: main".to_string(),
-            }],
-        };
+            }], end_turn: None, phase: None};
 
         let mut ctx = TimelineReplayContext::default();
         process_rollout_env_item(&mut ctx, &legacy_item);

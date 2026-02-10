@@ -10,9 +10,9 @@ use code_core::codex::compact::{
 };
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
 use code_core::{content_items_to_text, ModelClient, Prompt, ResponseEvent, TextFormat};
-use code_protocol::models::{ContentItem, ResponseItem};
-
-
+use code_protocol::models::{
+    ContentItem, FunctionCallOutputBody, FunctionCallOutputContentItem, ResponseItem,
+};
 const BYTES_PER_TOKEN: usize = 4;
 const MAX_TRANSCRIPT_BYTES: usize = 32_000;
 const MAX_COMMANDS_IN_SUMMARY: usize = 5;
@@ -343,7 +343,9 @@ fn deterministic_summary(items: &[ResponseItem], prev_summary: Option<&str>) -> 
                 actions.push(format!("Tool call: {name}"));
             }
             ResponseItem::FunctionCallOutput { output, .. } => {
-                actions.push(format!("Tool output: {}", output.content));
+                if let Some(text) = output.body.to_text().filter(|text| !text.trim().is_empty()) {
+                    actions.push(format!("Tool output: {text}"));
+                }
             }
             _ => {}
         }
@@ -400,7 +402,10 @@ fn flatten_items(items: &[ResponseItem]) -> String {
                 buf.push_str(&format!("tool_call {name}: {arguments}\n"));
             }
             ResponseItem::FunctionCallOutput { output, .. } => {
-                buf.push_str(&format!("tool_output: {}\n", output.content));
+                let text = output.body.to_text().unwrap_or_default();
+                if !text.trim().is_empty() {
+                    buf.push_str(&format!("tool_output: {text}\n"));
+                }
             }
             ResponseItem::CustomToolCall { name, input, .. } => {
                 buf.push_str(&format!("custom_tool {name}: {input}\n"));
@@ -481,7 +486,16 @@ pub(crate) fn estimate_item_tokens(item: &ResponseItem) -> usize {
             })
             .sum(),
         ResponseItem::FunctionCall { name, arguments, .. } => name.len() + arguments.len(),
-        ResponseItem::FunctionCallOutput { output, .. } => output.content.len(),
+        ResponseItem::FunctionCallOutput { output, .. } => match &output.body {
+            FunctionCallOutputBody::Text(text) => text.len(),
+            FunctionCallOutputBody::ContentItems(items) => items
+                .iter()
+                .map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text } => text.len(),
+                    FunctionCallOutputContentItem::InputImage { image_url } => image_url.len() / 10,
+                })
+                .sum(),
+        },
         ResponseItem::CustomToolCall { name, input, .. } => name.len() + input.len(),
         ResponseItem::CustomToolCallOutput { output, .. } => output.len(),
         ResponseItem::Reasoning { summary, content, .. } => {
@@ -514,6 +528,8 @@ fn plain_message(role: &str, text: String) -> ResponseItem {
         id: None,
         role: role.to_string(),
         content: vec![ContentItem::InputText { text }],
+        end_turn: None,
+        phase: None,
     }
 }
 

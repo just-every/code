@@ -187,7 +187,7 @@ fn plan_progress_icon(total: usize, completed: usize) -> PlanIcon {
 }
 
 pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
-    let UpdatePlanArgs { name, plan } = update;
+    let UpdatePlanArgs { name, plan, .. } = update;
 
     let total = plan.len();
     let completed = plan

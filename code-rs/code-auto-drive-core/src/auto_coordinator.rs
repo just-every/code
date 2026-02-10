@@ -1123,9 +1123,9 @@ fn run_auto_loop(
         resolve_compact_prompt_text(config.compact_prompt_override.as_deref());
 
     let preferred_auth = if config.using_chatgpt_auth {
-        code_protocol::mcp_protocol::AuthMode::ChatGPT
+        code_app_server_protocol::AuthMode::Chatgpt
     } else {
-        code_protocol::mcp_protocol::AuthMode::ApiKey
+        code_app_server_protocol::AuthMode::ApiKey
     };
     let code_home = config.code_home.clone();
     let responses_originator_header = config.responses_originator_header.clone();
@@ -3223,6 +3223,8 @@ pub(crate) fn make_message(role: &str, text: String) -> ResponseItem {
         id: None,
         role: role.to_string(),
         content: vec![content],
+        end_turn: None,
+        phase: None,
     }
 }
 

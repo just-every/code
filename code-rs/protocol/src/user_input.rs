@@ -17,10 +17,10 @@ pub enum UserInput {
         #[serde(default)]
         text_elements: Vec<TextElement>,
     },
-    /// Pre-encoded data: URI image.
+    /// Pre‑encoded data: URI image.
     Image { image_url: String },
 
-    /// Local image path provided by the user. This will be converted to an
+    /// Local image path provided by the user.  This will be converted to an
     /// `Image` variant (base64 data URL) during request serialization.
     LocalImage { path: std::path::PathBuf },
 
@@ -29,6 +29,8 @@ pub enum UserInput {
         name: String,
         path: std::path::PathBuf,
     },
+    /// Explicit mention selected by the user (name + app://connector id).
+    Mention { name: String, path: String },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS, JsonSchema)]
@@ -99,3 +101,4 @@ impl From<std::ops::Range<usize>> for ByteRange {
         }
     }
 }
+

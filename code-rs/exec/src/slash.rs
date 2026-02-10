@@ -1,5 +1,5 @@
 use code_core::config_types::{AgentConfig, SubagentCommandConfig};
-use code_core::protocol::{ReviewContextMetadata, ReviewRequest};
+use code_core::protocol::ReviewRequest;
 
 use code_core::slash_commands::format_subagent_command;
 
@@ -86,24 +86,16 @@ fn handle_subagent(
 }
 
 fn handle_review(args_raw: &str) -> Result<SlashDispatch, String> {
-    let (prompt, hint, metadata) = if args_raw.is_empty() {
+    let (prompt, hint) = if args_raw.is_empty() {
         (
             "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string(),
             "current workspace changes".to_string(),
-            ReviewContextMetadata {
-                scope: Some("workspace".to_string()),
-                ..Default::default()
-            },
         )
     } else {
         let text = args_raw.trim().to_string();
         (
             text.clone(),
             text.clone(),
-            ReviewContextMetadata {
-                scope: Some("custom".to_string()),
-                ..Default::default()
-            },
         )
     };
 
@@ -120,9 +112,11 @@ fn handle_review(args_raw: &str) -> Result<SlashDispatch, String> {
 
     Ok(SlashDispatch::Review {
         request: ReviewRequest {
+            target: code_protocol::protocol::ReviewTarget::Custom {
+                instructions: prompt.clone(),
+            },
             prompt,
-            user_facing_hint: hint,
-            metadata: Some(metadata),
+            user_facing_hint: Some(hint),
         },
         summary,
     })
@@ -168,8 +162,7 @@ mod tests {
         match result {
             SlashDispatch::Review { request, summary } => {
                 assert_eq!(summary, "/review");
-                assert_eq!(request.user_facing_hint, "current workspace changes");
-                assert_eq!(request.metadata.unwrap().scope.unwrap(), "workspace");
+                assert_eq!(request.user_facing_hint.as_deref(), Some("current workspace changes"));
             }
             _ => panic!("expected review"),
         }

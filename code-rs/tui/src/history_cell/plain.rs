@@ -25,7 +25,7 @@ use code_common::create_config_summary_entries;
 use code_core::config::Config;
 use code_core::config_types::ReasoningEffort;
 use code_core::protocol::{SessionConfiguredEvent, TokenUsage};
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -869,13 +869,13 @@ pub(crate) fn new_status_output(
     // Input: <input> [+ <cached> cached]
     let mut input_line_spans: Vec<Span<'static>> = vec![
         "  • Input: ".into(),
-        format_with_separators(last_usage.non_cached_input()).into(),
+        format_with_separators_u64(last_usage.non_cached_input()).into(),
     ];
     if last_usage.cached_input_tokens > 0 {
         input_line_spans.push(
             format!(
                 " (+ {} cached)",
-                format_with_separators(last_usage.cached_input_tokens)
+                format_with_separators_u64(last_usage.cached_input_tokens)
             )
             .into(),
         );
@@ -884,16 +884,16 @@ pub(crate) fn new_status_output(
     // Output: <output>
     lines.push(Line::from(vec![
         "  • Output: ".into(),
-        format_with_separators(last_usage.output_tokens).into(),
+        format_with_separators_u64(last_usage.output_tokens).into(),
     ]));
     // Total: <total>
     lines.push(Line::from(vec![
         "  • Total: ".into(),
-        format_with_separators(last_usage.blended_total()).into(),
+        format_with_separators_u64(last_usage.blended_total()).into(),
     ]));
     lines.push(Line::from(vec![
         "  • Session total: ".into(),
-        format_with_separators(total_usage.blended_total()).into(),
+        format_with_separators_u64(total_usage.blended_total()).into(),
     ]));
 
     // 📐 Model Limits
@@ -914,8 +914,8 @@ pub(crate) fn new_status_output(
             };
             lines.push(Line::from(format!(
                 "  • Context window: {} used of {} ({:.0}% full)",
-                format_with_separators(used),
-                format_with_separators(context_window),
+                format_with_separators_u64(used),
+                format_with_separators_u64(context_window),
                 percent_full
             )));
         }
@@ -923,7 +923,7 @@ pub(crate) fn new_status_output(
         if let Some(max_output_tokens) = max_output_tokens {
             lines.push(Line::from(format!(
                 "  • Max output tokens: {}",
-                format_with_separators(max_output_tokens)
+                format_with_separators_u64(max_output_tokens)
             )));
         }
 
@@ -933,8 +933,8 @@ pub(crate) fn new_status_output(
                 let remaining = limit_u64.saturating_sub(total_usage.total_tokens);
                 lines.push(Line::from(format!(
                     "  • Auto-compact threshold: {} ({} remaining)",
-                    format_with_separators(limit_u64),
-                    format_with_separators(remaining)
+                    format_with_separators_u64(limit_u64),
+                    format_with_separators_u64(remaining)
                 )));
                 if total_usage.total_tokens > limit_u64 {
                     lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
@@ -952,13 +952,13 @@ pub(crate) fn new_status_output(
                         };
                         lines.push(Line::from(format!(
                             "  • Context window: {} used of {} ({:.0}% left)",
-                            format_with_separators(used),
-                            format_with_separators(window),
+                            format_with_separators_u64(used),
+                            format_with_separators_u64(window),
                             percent_left
                         )));
                         lines.push(Line::from(format!(
                             "  • {} tokens before overflow",
-                            format_with_separators(remaining)
+                            format_with_separators_u64(remaining)
                         )));
                         lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
                     } else {

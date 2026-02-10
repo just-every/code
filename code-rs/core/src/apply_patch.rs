@@ -155,9 +155,8 @@ pub(crate) async fn apply_patch(
                     return ApplyPatchResult::Reply(ResponseInputItem::FunctionCallOutput {
                         call_id: call_id.to_owned(),
                         output: FunctionCallOutputPayload {
-                            content: "patch rejected by user".to_string(),
-                            success: Some(false),
-                        },
+                            body: code_protocol::models::FunctionCallOutputBody::Text("patch rejected by user".to_string()),
+                            success: Some(false)},
                     });
                 }
             }
@@ -166,9 +165,8 @@ pub(crate) async fn apply_patch(
             return ApplyPatchResult::Reply(ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.to_owned(),
                 output: FunctionCallOutputPayload {
-                    content: format!("patch rejected: {reason}"),
-                    success: Some(false),
-                },
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("patch rejected: {reason}")),
+                    success: Some(false)},
             });
         }
     };

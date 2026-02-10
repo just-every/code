@@ -9,6 +9,7 @@ use code_core::config_types::ReasoningEffort;
 use code_core::debug_logger::DebugLogger;
 use code_core::protocol::SandboxPolicy;
 use code_core::{AuthManager, ModelClient, Prompt, ResponseEvent, TextFormat};
+use code_login::AuthMode;
 use code_protocol::models::{ContentItem, ResponseItem};
 use futures::StreamExt;
 use serde::Deserialize;
@@ -249,9 +250,9 @@ fn run_guided_loop(
             .context("loading config")?,
     };
     let preferred_auth = if cfg.using_chatgpt_auth {
-        code_protocol::mcp_protocol::AuthMode::ChatGPT
+        AuthMode::ChatGPT
     } else {
-        code_protocol::mcp_protocol::AuthMode::ApiKey
+        AuthMode::ApiKey
     };
     let auth_mgr = AuthManager::shared_with_mode_and_originator(
         cfg.code_home.clone(),
@@ -846,6 +847,8 @@ fn make_message(role: &str, text: String) -> ResponseItem {
         id: None,
         role: role.to_string(),
         content: vec![content],
+        end_turn: None,
+        phase: None,
     }
 }
 

@@ -896,6 +896,7 @@ name = "code-app-server"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "code-app-server-protocol",
  "code-arg0",
  "code-common",
  "code-core",
@@ -916,8 +917,23 @@ dependencies = [
 name = "code-app-server-protocol"
 version = "0.0.0"
 dependencies = [
- "code-mcp-types",
+ "anyhow",
+ "clap",
  "code-protocol",
+ "codex-experimental-api-macros",
+ "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
+ "inventory",
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "similar",
+ "strum_macros 0.27.2",
+ "tempfile",
+ "thiserror 2.0.17",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -953,6 +969,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "code-app-server-protocol",
  "code-common",
  "code-core",
  "code-git-tooling",
@@ -1176,6 +1193,7 @@ dependencies = [
  "code-protocol",
  "code-rmcp-client",
  "code-version",
+ "codex-utils-absolute-path",
  "core-foundation 0.9.4",
  "crc32fast",
  "dirs",
@@ -1316,8 +1334,12 @@ name = "code-git-tooling"
 version = "0.0.0"
 dependencies = [
  "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.17",
+ "ts-rs",
  "walkdir",
 ]
 
@@ -1450,10 +1472,14 @@ name = "code-protocol"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "code-execpolicy",
+ "code-git-tooling",
  "code-mcp-types",
+ "codex-utils-absolute-path",
+ "codex-utils-image",
  "icu_decimal",
  "icu_locale_core",
+ "icu_provider",
  "mime_guess",
  "pretty_assertions",
  "schemars 0.8.22",
@@ -1613,6 +1639,59 @@ dependencies = [
 [[package]]
 name = "code-version"
 version = "0.0.0"
+
+[[package]]
+name = "codex-experimental-api-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.108",
+]
+
+[[package]]
+name = "codex-utils-absolute-path"
+version = "0.0.0"
+dependencies = [
+ "dirs",
+ "path-absolutize",
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ts-rs",
+]
+
+[[package]]
+name = "codex-utils-cache"
+version = "0.0.0"
+dependencies = [
+ "lru",
+ "sha1",
+ "tokio",
+]
+
+[[package]]
+name = "codex-utils-cargo-bin"
+version = "0.0.0"
+dependencies = [
+ "assert_cmd",
+ "runfiles",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "codex-utils-image"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "codex-utils-cache",
+ "image 0.25.8",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+]
 
 [[package]]
 name = "color-eyre"
@@ -5253,6 +5332,11 @@ dependencies = [
  "syn 2.0.108",
  "unicode-ident",
 ]
+
+[[package]]
+name = "runfiles"
+version = "0.1.0"
+source = "git+https://github.com/dzbarsky/rules_rust?rev=b56cbaa8465e74127f1ea216f813cd377295ad81#b56cbaa8465e74127f1ea216f813cd377295ad81"
 
 [[package]]
 name = "rustc-demangle"

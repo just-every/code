@@ -390,6 +390,14 @@ async fn read_head_and_tail(
                     }
                 }
             }
+            RolloutItem::EventMsg(event_msg) => {
+                if let Some(msg) = event_msg_from_protocol(event_msg) {
+                    if matches!(msg, EventMsg::UserMessage(_) | EventMsg::AgentMessage(_)) {
+                        summary.saw_user_event = true;
+                        summary.updated_at = Some(rollout_line.timestamp.clone());
+                    }
+                }
+            }
             RolloutItem::ResponseItem(_) | RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => {}
         }
 
