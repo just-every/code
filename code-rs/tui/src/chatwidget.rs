@@ -58,6 +58,7 @@ use code_protocol::mcp_protocol::AuthMode as McpAuthMode;
 use code_protocol::dynamic_tools::DynamicToolResponse;
 use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators;
+use code_core::external_agent_command_exists;
 use code_core::split_command_and_args;
 use serde_json::Value as JsonValue;
 
@@ -23910,35 +23911,6 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn collect_agents_overview_rows(&self) -> (Vec<AgentOverviewRow>, Vec<String>) {
-        fn command_exists(cmd: &str) -> bool {
-            if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
-                return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
-            }
-            #[cfg(target_os = "windows")]
-            {
-                which::which(cmd).map(|p| p.is_file()).unwrap_or(false)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let Some(path_os) = std::env::var_os("PATH") else {
-                    return false;
-                };
-                for dir in std::env::split_paths(&path_os) {
-                    if dir.as_os_str().is_empty() {
-                        continue;
-                    }
-                    let candidate = dir.join(cmd);
-                    if let Ok(meta) = std::fs::metadata(&candidate) {
-                        if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-        }
-
         fn command_for_check(command: &str) -> String {
             let (base, _) = split_command_and_args(command);
             if base.trim().is_empty() {
@@ -23989,10 +23961,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 let command_to_check = command_for_check(&cfg.command);
                 let installed = if builtin {
                     true
-                } else if command_exists(&command_to_check) {
+                } else if external_agent_command_exists(&command_to_check) {
                     true
                 } else if let Some(cli) = spec_cli {
-                    command_exists(cli)
+                    external_agent_command_exists(cli)
                 } else {
                     false
                 };
@@ -24014,10 +23986,10 @@ Have we met every part of this goal and is there no further work to do?"#
                 let command_to_check = command_for_check(&cfg.command);
                 let installed = if builtin {
                     true
-                } else if command_exists(&command_to_check) {
+                } else if external_agent_command_exists(&command_to_check) {
                     true
                 } else if let Some(cli) = spec_cli {
-                    command_exists(cli)
+                    external_agent_command_exists(cli)
                 } else {
                     false
                 };
@@ -24038,9 +24010,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 let installed = if builtin {
                     true
                 } else if let Some(cli) = spec_cli {
-                    command_exists(cli)
+                    external_agent_command_exists(cli)
                 } else {
-                    command_exists(&cmd)
+                    external_agent_command_exists(&cmd)
                 };
                 agent_rows.push(AgentOverviewRow {
                     name: name.clone(),

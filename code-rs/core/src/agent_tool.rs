@@ -88,6 +88,92 @@ fn resolve_in_path(command: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+
+    meta.is_file() && (meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_command_on_path(command: &str) -> Option<std::path::PathBuf> {
+    resolve_in_path(command)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_command_on_path(command: &str) -> Option<std::path::PathBuf> {
+    let path_os = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_os) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(command);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn home_fallback_command_candidates(command: &str) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    if let Some(home) = home.as_ref() {
+        candidates.push(home.join(".local/bin").join(command));
+        candidates.push(home.join(".n/bin").join(command));
+        candidates.push(home.join(".npm-global/bin").join(command));
+    }
+
+    if command.eq_ignore_ascii_case("claude") {
+        if let Some(claude_config_dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+            candidates.push(std::path::PathBuf::from(claude_config_dir).join("local").join(command));
+        }
+        if let Some(home) = home {
+            candidates.push(home.join(".claude/local").join(command));
+        }
+    }
+
+    candidates
+}
+
+pub(crate) fn resolve_external_agent_command_path(command: &str) -> Option<std::path::PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains(std::path::MAIN_SEPARATOR) || trimmed.contains('/') || trimmed.contains('\\') {
+        let path = std::path::PathBuf::from(trimmed);
+        return is_executable_file(&path).then_some(path);
+    }
+
+    if let Some(path) = resolve_command_on_path(trimmed) {
+        return Some(path);
+    }
+
+    for candidate in home_fallback_command_candidates(trimmed) {
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+pub fn external_agent_command_exists(command: &str) -> bool {
+    resolve_external_agent_command_path(command).is_some()
+}
+
 use crate::agent_defaults::{agent_model_spec, default_params_for};
 use shlex::split as shlex_split;
 use crate::config_types::AgentConfig;
@@ -1099,83 +1185,6 @@ async fn execute_model_with_permissions(
     source_kind: Option<AgentSourceKind>,
     log_tag: Option<&str>,
 ) -> Result<String, String> {
-    // Helper: cross‑platform check whether an executable is available in PATH
-    // and is directly spawnable by std::process::Command (no shell wrappers).
-fn command_exists(cmd: &str) -> bool {
-        // Absolute/relative path with separators: check directly (files only).
-        if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
-            let path = std::path::Path::new(cmd);
-            if path.extension().is_some() {
-                return std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false);
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                const DEFAULT_EXTS: &[&str] = &[".exe", ".com", ".cmd", ".bat"];
-                for ext in default_pathext_or_default() {
-                    let candidate = path.with_extension("");
-                    let candidate = candidate.with_extension(ext.trim_start_matches('.'));
-                    if std::fs::metadata(&candidate)
-                        .map(|m| m.is_file())
-                        .unwrap_or(false)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false);
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let exts = default_pathext_or_default();
-            let path_var = std::env::var_os("PATH");
-            let path_iter = path_var
-                .as_ref()
-                .map(std::env::split_paths)
-                .into_iter()
-                .flatten();
-
-            let candidates: Vec<String> = if std::path::Path::new(cmd).extension().is_some() {
-                vec![cmd.to_string()]
-            } else {
-                exts
-                    .iter()
-                    .map(|ext| format!("{cmd}{ext}"))
-                    .collect()
-            };
-
-            for dir in path_iter {
-                for candidate in &candidates {
-                    let p = dir.join(candidate);
-                    if p.is_file() {
-                        return true;
-                    }
-                }
-            }
-
-            false
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let Some(path_os) = std::env::var_os("PATH") else { return false; };
-            for dir in std::env::split_paths(&path_os) {
-                if dir.as_os_str().is_empty() { continue; }
-                let candidate = dir.join(cmd);
-                if let Ok(meta) = std::fs::metadata(&candidate) {
-                    if meta.is_file() {
-                        let mode = meta.permissions().mode();
-                        if mode & 0o111 != 0 { return true; }
-                    }
-                }
-            }
-            false
-        }
-    }
-
     let spec_opt = agent_model_spec(model)
         .or_else(|| config.as_ref().and_then(|cfg| agent_model_spec(&cfg.name)))
         .or_else(|| config.as_ref().and_then(|cfg| agent_model_spec(&cfg.command)));
@@ -1238,7 +1247,7 @@ fn command_exists(cmd: &str) -> bool {
         model_lower.as_str()
     };
 
-    let command_missing = !command_exists(&command_for_spawn);
+    let command_missing = !external_agent_command_exists(&command_for_spawn);
     let use_current_exe = should_use_current_exe_for_agent(family, command_missing, config.as_ref());
 
     let mut final_args: Vec<String> = command_extra_args;
@@ -1378,7 +1387,7 @@ fn command_exists(cmd: &str) -> bool {
     // using the current executable fallback. This avoids confusing OS errors
     // like "program not found" and lets us surface a cleaner message.
     if !(family == "codex" || family == "code" || (family == "cloud" && config.is_none()))
-        && !command_exists(&command_for_spawn)
+        && !external_agent_command_exists(&command_for_spawn)
     {
         return Err(format_agent_not_found_error(&command, &command_for_spawn));
     }
@@ -1693,11 +1702,8 @@ fn resolve_program_path(use_current_exe: bool, command_for_spawn: &str) -> Resul
         return current_code_binary_path();
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(p) = resolve_in_path(command_for_spawn) {
-            return Ok(p);
-        }
+    if let Some(path) = resolve_external_agent_command_path(command_for_spawn) {
+        return Ok(path);
     }
 
     Ok(std::path::PathBuf::from(command_for_spawn))
@@ -2548,6 +2554,55 @@ mod tests {
         .expect("execute read-only agent");
 
         assert_eq!(output.trim(), "current");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn claude_agent_uses_local_install_when_not_on_path() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _reset_path = EnvReset::capture("PATH");
+        let _reset_home = EnvReset::capture("HOME");
+
+        let dir = tempdir().expect("tempdir");
+        let claude_dir = dir.path().join(".claude").join("local");
+        std::fs::create_dir_all(&claude_dir).expect("create claude dir");
+        let claude_script = claude_dir.join("claude");
+        write_script(&claude_script, "local-claude");
+
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("PATH", "/usr/bin:/bin");
+        }
+
+        let cfg = AgentConfig {
+            name: "claude-sonnet-4.5".to_string(),
+            command: "claude".to_string(),
+            args: Vec::new(),
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-test",
+            "claude-sonnet-4.5",
+            "ok",
+            true,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute claude with local fallback");
+
+        assert_eq!(output.trim(), "local-claude");
     }
 
     fn env_lock() -> &'static Mutex<()> {
