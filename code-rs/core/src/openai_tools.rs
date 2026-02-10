@@ -1913,7 +1913,7 @@ fn create_browser_tool(browser_enabled: bool) -> OpenAiTool {
         "url".to_string(),
         JsonSchema::String {
             description: Some(
-                "For action=open or fetch: URL to navigate to or retrieve (e.g., https://example.com)."
+                "For action=open or fetch: URL to navigate to or retrieve (e.g., https://example.com). Local/private targets (localhost, 127.0.0.1, RFC1918, link-local) may be blocked by policy in some environments."
                     .to_string(),
             ),
             allowed_values: None,
@@ -2059,7 +2059,7 @@ fn create_browser_tool(browser_enabled: bool) -> OpenAiTool {
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "browser".to_string(),
-        description: "Unified browser controller for navigation, interaction, console access, DevTools commands, and one-shot fetches. Choose an action and supply the matching fields.".to_string(),
+        description: "Unified browser controller for navigation, interaction, console access, DevTools commands, and one-shot fetches. Choose an action and supply the matching fields. If local/private URLs are blocked by harness policy, explain that limitation and use a reachable public host instead.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

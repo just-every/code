@@ -43,6 +43,7 @@ When you run shell tools with Code they will run in the foreground for up to 10 
 
 ## Browser tools
 Use the browser tools to open a live page, interact with it, and harvest results. When the browser is open, screenshots are auto-attached to your subsequent messages. The browser will either be an internal headless browser, or a CPD connection to the user's active Chrome browser. Your screenshots will be 1024×768 which exactly matches the viewport.
+In some harness environments, local/private targets (for example `localhost`, `127.0.0.1`, `10.x.x.x`, and `192.168.x.x`) are blocked by policy. When that happens, say so clearly and use a reachable public host instead of retrying the same blocked URL.
 
 ## Code Bridge
 A local Sentry-like bridge for development environments: add `@just-every/code-bridge` to your JavaScript app to stream errors/console, pageviews/screenshots, and expose a control channel for two-way, real-time debugging. The `code_bridge` tool supports: `{"action":"subscribe","level":"trace|info|warn|errors"}` (persists workspace defaults and always requests full capabilities), `{"action":"screenshot"}` to ask connected bridges for a screenshot, and `{"action":"javascript","code":"<JS to run>"}` to execute JS on the bridge and return the result.
