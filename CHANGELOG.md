@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.61] - 2026-02-10
+
+- Core: align auth token schema and websocket errors. (12612630)
+- Sandbox: enforce proxy-aware network routing in sandbox. (3391e5ea)
+- Skills: add SkillPolicy metadata with allow_implicit_invocation support. (91704c56)
+- App Server: use chatgpt_account_id/chatgpt_plan_type for external auth. (53741013)
+
 ## [0.6.60] - 2026-02-07
 
 - Core/Version: enforce minimum wire-compatible version and derive it from the announcement tip. (a058583f, e52d8212)

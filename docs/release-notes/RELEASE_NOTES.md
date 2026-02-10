@@ -1,15 +1,15 @@
-## @just-every/code v0.6.60
-This release tightens version compatibility handling for more predictable upgrades.
+## @just-every/code v0.6.61
+
+This release improves authentication handling, sandbox networking, and skills policy support.
 
 ### Changes
-- Core/Version: enforce minimum wire-compatible version and derive it from the announcement tip.
-- Core/Version: strip punctuation when scanning minimum semver for wire compatibility.
-- Core/Provider: clamp the OpenAI version header for stability.
+- Core: align auth token schema and websocket errors.
+- Sandbox: enforce proxy-aware network routing in sandbox.
+- Skills: add SkillPolicy metadata with allow_implicit_invocation support.
+- App Server: use chatgpt_account_id/chatgpt_plan_type for external auth.
 
 ### Install
-```bash
+```
 npm install -g @just-every/code@latest
 code
 ```
-
-Compare: https://github.com/just-every/code/compare/v0.6.59...v0.6.60
