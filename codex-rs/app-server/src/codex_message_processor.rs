@@ -15,6 +15,8 @@ use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::AccountUpdatedNotification;
 use codex_app_server_protocol::AddConversationListenerParams;
 use codex_app_server_protocol::AddConversationSubscriptionResponse;
+use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::AppListUpdatedNotification;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::ArchiveConversationParams;
@@ -109,6 +111,8 @@ use codex_app_server_protocol::SkillsRemoteWriteResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -139,6 +143,8 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInfoResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::UserSavedConfig;
@@ -154,6 +160,7 @@ use codex_core::InitialHistory;
 use codex_core::NewThread;
 use codex_core::RolloutRecorder;
 use codex_core::SessionMeta;
+use codex_core::SteerInputError;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
@@ -196,13 +203,13 @@ use codex_core::skills::remote::download_remote_skill;
 use codex_core::skills::remote::list_remote_skills;
 use codex_core::state_db::StateDbHandle;
 use codex_core::state_db::open_if_present;
-use codex_core::token_data::parse_id_token;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_feedback::CodexFeedback;
 use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::run_login_server;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -265,6 +272,7 @@ const THREAD_LIST_MAX_LIMIT: usize = 100;
 
 // Duration before a ChatGPT login attempt is abandoned.
 const LOGIN_CHATGPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const APP_LIST_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
 struct ActiveLogin {
     shutdown_handle: ShutdownHandle,
     login_id: Uuid,
@@ -273,6 +281,11 @@ struct ActiveLogin {
 #[derive(Clone, Copy, Debug)]
 enum CancelLoginError {
     NotFound(Uuid),
+}
+
+enum AppListLoadResult {
+    Accessible(Result<Vec<AppInfo>, String>),
+    Directory(Result<Vec<AppInfo>, String>),
 }
 
 impl Drop for ActiveLogin {
@@ -394,6 +407,27 @@ impl CodexMessageProcessor {
             .unwrap_or_default()
     }
 
+    /// If a client sends `developer_instructions: null` during a mode switch,
+    /// use the built-in instructions for that mode.
+    fn normalize_turn_start_collaboration_mode(
+        &self,
+        mut collaboration_mode: CollaborationMode,
+    ) -> CollaborationMode {
+        if collaboration_mode.settings.developer_instructions.is_none()
+            && let Some(instructions) = self
+                .thread_manager
+                .list_collaboration_modes()
+                .into_iter()
+                .find(|preset| preset.mode == Some(collaboration_mode.mode))
+                .and_then(|preset| preset.developer_instructions.flatten())
+                .filter(|instructions| !instructions.is_empty())
+        {
+            collaboration_mode.settings.developer_instructions = Some(instructions);
+        }
+
+        collaboration_mode
+    }
+
     fn review_request_from_target(
         target: ApiReviewTarget,
     ) -> Result<(ReviewRequest, String), JSONRPCErrorError> {
@@ -492,6 +526,13 @@ impl CodexMessageProcessor {
                 self.thread_compact_start(to_connection_request_id(request_id), params)
                     .await;
             }
+            ClientRequest::ThreadBackgroundTerminalsClean { request_id, params } => {
+                self.thread_background_terminals_clean(
+                    to_connection_request_id(request_id),
+                    params,
+                )
+                .await;
+            }
             ClientRequest::ThreadRollback { request_id, params } => {
                 self.thread_rollback(to_connection_request_id(request_id), params)
                     .await;
@@ -530,6 +571,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::TurnStart { request_id, params } => {
                 self.turn_start(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::TurnSteer { request_id, params } => {
+                self.turn_steer(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::TurnInterrupt { request_id, params } => {
@@ -743,11 +788,17 @@ impl CodexMessageProcessor {
                 self.login_chatgpt_v2(request_id).await;
             }
             LoginAccountParams::ChatgptAuthTokens {
-                id_token,
                 access_token,
+                chatgpt_account_id,
+                chatgpt_plan_type,
             } => {
-                self.login_chatgpt_auth_tokens(request_id, id_token, access_token)
-                    .await;
+                self.login_chatgpt_auth_tokens(
+                    request_id,
+                    access_token,
+                    chatgpt_account_id,
+                    chatgpt_plan_type,
+                )
+                .await;
             }
         }
     }
@@ -1178,8 +1229,9 @@ impl CodexMessageProcessor {
     async fn login_chatgpt_auth_tokens(
         &mut self,
         request_id: ConnectionRequestId,
-        id_token: String,
         access_token: String,
+        chatgpt_account_id: String,
+        chatgpt_plan_type: Option<String>,
     ) {
         if matches!(
             self.config.forced_login_method,
@@ -1203,27 +1255,13 @@ impl CodexMessageProcessor {
             }
         }
 
-        let id_token_info = match parse_id_token(&id_token) {
-            Ok(info) => info,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("invalid id token: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
-
         if let Some(expected_workspace) = self.config.forced_chatgpt_workspace_id.as_deref()
-            && id_token_info.chatgpt_account_id.as_deref() != Some(expected_workspace)
+            && chatgpt_account_id != expected_workspace
         {
-            let account_id = id_token_info.chatgpt_account_id;
             let error = JSONRPCErrorError {
                 code: INVALID_REQUEST_ERROR_CODE,
                 message: format!(
-                    "External auth must use workspace {expected_workspace}, but received {account_id:?}."
+                    "External auth must use workspace {expected_workspace}, but received {chatgpt_account_id:?}."
                 ),
                 data: None,
             };
@@ -1231,9 +1269,12 @@ impl CodexMessageProcessor {
             return;
         }
 
-        if let Err(err) =
-            login_with_chatgpt_auth_tokens(&self.config.codex_home, &id_token, &access_token)
-        {
+        if let Err(err) = login_with_chatgpt_auth_tokens(
+            &self.config.codex_home,
+            &access_token,
+            &chatgpt_account_id,
+            chatgpt_plan_type.as_deref(),
+        ) {
             let error = JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
                 message: format!("failed to set external auth: {err}"),
@@ -1599,6 +1640,7 @@ impl CodexMessageProcessor {
             cwd,
             expiration: timeout_ms.into(),
             env,
+            network: self.config.network.clone(),
             sandbox_permissions: SandboxPermissions::UseDefault,
             windows_sandbox_level,
             justification: None,
@@ -1849,31 +1891,11 @@ impl CodexMessageProcessor {
                     ..
                 } = new_conv;
                 let config_snapshot = thread.config_snapshot().await;
-                let fallback_provider = self.config.model_provider_id.as_str();
-
-                // A bit hacky, but the summary contains a lot of useful information for the thread
-                // that unfortunately does not get returned from thread_manager.start_thread().
-                let thread = match session_configured.rollout_path.as_ref() {
-                    Some(rollout_path) => {
-                        match read_summary_from_rollout(rollout_path.as_path(), fallback_provider)
-                            .await
-                        {
-                            Ok(summary) => summary_to_thread(summary),
-                            Err(err) => {
-                                self.send_internal_error(
-                                    request_id,
-                                    format!(
-                                        "failed to load rollout `{}` for thread {thread_id}: {err}",
-                                        rollout_path.display()
-                                    ),
-                                )
-                                .await;
-                                return;
-                            }
-                        }
-                    }
-                    None => build_ephemeral_thread(thread_id, &config_snapshot),
-                };
+                let thread = build_thread_from_snapshot(
+                    thread_id,
+                    &config_snapshot,
+                    session_configured.rollout_path.clone(),
+                );
 
                 let response = ThreadStartResponse {
                     thread: thread.clone(),
@@ -2291,6 +2313,37 @@ impl CodexMessageProcessor {
         }
     }
 
+    async fn thread_background_terminals_clean(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadBackgroundTerminalsCleanParams,
+    ) {
+        let ThreadBackgroundTerminalsCleanParams { thread_id } = params;
+
+        let (_, thread) = match self.load_thread(&thread_id).await {
+            Ok(v) => v,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread.submit(Op::CleanBackgroundTerminals).await {
+            Ok(_) => {
+                self.outgoing
+                    .send_response(request_id, ThreadBackgroundTerminalsCleanResponse {})
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(
+                    request_id,
+                    format!("failed to clean background terminals: {err}"),
+                )
+                .await;
+            }
+        }
+    }
+
     async fn thread_list(&self, request_id: ConnectionRequestId, params: ThreadListParams) {
         let ThreadListParams {
             cursor,
@@ -2469,7 +2522,8 @@ impl CodexMessageProcessor {
                 return;
             };
             let config_snapshot = thread.config_snapshot().await;
-            if include_turns {
+            let loaded_rollout_path = thread.rollout_path();
+            if include_turns && loaded_rollout_path.is_none() {
                 self.send_invalid_request_error(
                     request_id,
                     "ephemeral threads do not support includeTurns".to_string(),
@@ -2477,13 +2531,26 @@ impl CodexMessageProcessor {
                 .await;
                 return;
             }
-            build_ephemeral_thread(thread_uuid, &config_snapshot)
+            if include_turns {
+                rollout_path = loaded_rollout_path.clone();
+            }
+            build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
 
         if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
             match read_event_msgs_from_rollout(rollout_path).await {
                 Ok(events) => {
                     thread.turns = build_turns_from_event_msgs(&events);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!(
+                            "thread {thread_uuid} is not materialized yet; includeTurns is unavailable before first user message"
+                        ),
+                    )
+                    .await;
+                    return;
                 }
                 Err(err) => {
                     self.send_internal_error(
@@ -4301,14 +4368,29 @@ impl CodexMessageProcessor {
     }
 
     async fn apps_list(&self, request_id: ConnectionRequestId, params: AppsListParams) {
-        let AppsListParams { cursor, limit } = params;
-        let config = match self.load_latest_config().await {
+        let mut config = match self.load_latest_config().await {
             Ok(config) => config,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
                 return;
             }
         };
+
+        if let Some(thread_id) = params.thread_id.as_deref() {
+            let (_, thread) = match self.load_thread(thread_id).await {
+                Ok(result) => result,
+                Err(error) => {
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
+
+            if thread.enabled(Feature::Apps) {
+                config.features.enable(Feature::Apps);
+            } else {
+                config.features.disable(Feature::Apps);
+            }
+        }
 
         if !config.features.enabled(Feature::Apps) {
             self.outgoing
@@ -4323,80 +4405,239 @@ impl CodexMessageProcessor {
             return;
         }
 
-        let connectors = match connectors::list_connectors(&config).await {
-            Ok(connectors) => connectors,
-            Err(err) => {
-                self.send_internal_error(request_id, format!("failed to list apps: {err}"))
-                    .await;
-                return;
-            }
-        };
+        let request = request_id.clone();
+        let outgoing = Arc::clone(&self.outgoing);
+        tokio::spawn(async move {
+            Self::apps_list_task(outgoing, request, params, config).await;
+        });
+    }
 
-        let total = connectors.len();
-        if total == 0 {
-            self.outgoing
-                .send_response(
-                    request_id,
-                    AppsListResponse {
-                        data: Vec::new(),
-                        next_cursor: None,
-                    },
-                )
-                .await;
-            return;
-        }
-
-        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
-        let effective_limit = effective_limit.min(total);
+    async fn apps_list_task(
+        outgoing: Arc<OutgoingMessageSender>,
+        request_id: ConnectionRequestId,
+        params: AppsListParams,
+        config: Config,
+    ) {
+        let AppsListParams {
+            cursor,
+            limit,
+            thread_id: _,
+            force_refetch,
+        } = params;
         let start = match cursor {
             Some(cursor) => match cursor.parse::<usize>() {
                 Ok(idx) => idx,
                 Err(_) => {
-                    self.send_invalid_request_error(
-                        request_id,
-                        format!("invalid cursor: {cursor}"),
-                    )
-                    .await;
+                    let error = JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: format!("invalid cursor: {cursor}"),
+                        data: None,
+                    };
+                    outgoing.send_error(request_id, error).await;
                     return;
                 }
             },
             None => 0,
         };
 
-        if start > total {
-            self.send_invalid_request_error(
-                request_id,
-                format!("cursor {start} exceeds total apps {total}"),
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let accessible_config = config.clone();
+        let accessible_tx = tx.clone();
+        tokio::spawn(async move {
+            let result = connectors::list_accessible_connectors_from_mcp_tools_with_options(
+                &accessible_config,
+                force_refetch,
             )
-            .await;
-            return;
+            .await
+            .map_err(|err| format!("failed to load accessible apps: {err}"));
+            let _ = accessible_tx.send(AppListLoadResult::Accessible(result));
+        });
+
+        tokio::spawn(async move {
+            let result = connectors::list_all_connectors_with_options(&config, force_refetch)
+                .await
+                .map_err(|err| format!("failed to list apps: {err}"));
+            let _ = tx.send(AppListLoadResult::Directory(result));
+        });
+
+        let mut accessible_connectors: Option<Vec<AppInfo>> = None;
+        let mut all_connectors: Option<Vec<AppInfo>> = None;
+        let app_list_deadline = tokio::time::Instant::now() + APP_LIST_LOAD_TIMEOUT;
+
+        loop {
+            let result = match tokio::time::timeout_at(app_list_deadline, rx.recv()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => {
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: "failed to load app lists".to_string(),
+                        data: None,
+                    };
+                    outgoing.send_error(request_id, error).await;
+                    return;
+                }
+                Err(_) => {
+                    let timeout_seconds = APP_LIST_LOAD_TIMEOUT.as_secs();
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!(
+                            "timed out waiting for app lists after {timeout_seconds} seconds"
+                        ),
+                        data: None,
+                    };
+                    outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
+
+            match result {
+                AppListLoadResult::Accessible(Ok(connectors)) => {
+                    accessible_connectors = Some(connectors);
+                }
+                AppListLoadResult::Accessible(Err(err)) => {
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: err,
+                        data: None,
+                    };
+                    outgoing.send_error(request_id, error).await;
+                    return;
+                }
+                AppListLoadResult::Directory(Ok(connectors)) => {
+                    all_connectors = Some(connectors);
+                }
+                AppListLoadResult::Directory(Err(err)) => {
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: err,
+                        data: None,
+                    };
+                    outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            }
+
+            let merged = Self::merge_loaded_apps(
+                all_connectors.as_deref(),
+                accessible_connectors.as_deref(),
+            );
+            Self::send_app_list_updated_notification(&outgoing, merged.clone()).await;
+
+            if accessible_connectors.is_some() && all_connectors.is_some() {
+                match Self::paginate_apps(merged.as_slice(), start, limit) {
+                    Ok(response) => {
+                        outgoing.send_response(request_id, response).await;
+                        return;
+                    }
+                    Err(error) => {
+                        outgoing.send_error(request_id, error).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn merge_loaded_apps(
+        all_connectors: Option<&[AppInfo]>,
+        accessible_connectors: Option<&[AppInfo]>,
+    ) -> Vec<AppInfo> {
+        let all = all_connectors.map_or_else(Vec::new, <[AppInfo]>::to_vec);
+        let accessible = accessible_connectors.map_or_else(Vec::new, <[AppInfo]>::to_vec);
+        connectors::merge_connectors_with_accessible(all, accessible)
+    }
+
+    fn paginate_apps(
+        connectors: &[AppInfo],
+        start: usize,
+        limit: Option<u32>,
+    ) -> Result<AppsListResponse, JSONRPCErrorError> {
+        let total = connectors.len();
+        if start > total {
+            return Err(JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: format!("cursor {start} exceeds total apps {total}"),
+                data: None,
+            });
         }
 
+        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
         let end = start.saturating_add(effective_limit).min(total);
         let data = connectors[start..end].to_vec();
-
         let next_cursor = if end < total {
             Some(end.to_string())
         } else {
             None
         };
-        self.outgoing
-            .send_response(request_id, AppsListResponse { data, next_cursor })
+
+        Ok(AppsListResponse { data, next_cursor })
+    }
+
+    async fn send_app_list_updated_notification(
+        outgoing: &Arc<OutgoingMessageSender>,
+        data: Vec<AppInfo>,
+    ) {
+        outgoing
+            .send_server_notification(ServerNotification::AppListUpdated(
+                AppListUpdatedNotification { data },
+            ))
             .await;
     }
 
     async fn skills_list(&self, request_id: ConnectionRequestId, params: SkillsListParams) {
-        let SkillsListParams { cwds, force_reload } = params;
+        let SkillsListParams {
+            cwds,
+            force_reload,
+            per_cwd_extra_user_roots,
+        } = params;
         let cwds = if cwds.is_empty() {
             vec![self.config.cwd.clone()]
         } else {
             cwds
         };
+        let cwd_set: HashSet<PathBuf> = cwds.iter().cloned().collect();
+
+        let mut extra_roots_by_cwd: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for entry in per_cwd_extra_user_roots.unwrap_or_default() {
+            if !cwd_set.contains(&entry.cwd) {
+                warn!(
+                    cwd = %entry.cwd.display(),
+                    "ignoring per-cwd extra roots for cwd not present in skills/list cwds"
+                );
+                continue;
+            }
+
+            let mut valid_extra_roots = Vec::new();
+            for root in entry.extra_user_roots {
+                if !root.is_absolute() {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!(
+                            "skills/list perCwdExtraUserRoots extraUserRoots paths must be absolute: {}",
+                            root.display()
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                valid_extra_roots.push(root);
+            }
+            extra_roots_by_cwd
+                .entry(entry.cwd)
+                .or_default()
+                .extend(valid_extra_roots);
+        }
 
         let skills_manager = self.thread_manager.skills_manager();
         let mut data = Vec::new();
         for cwd in cwds {
-            let outcome = skills_manager.skills_for_cwd(&cwd, force_reload).await;
+            let extra_roots = extra_roots_by_cwd
+                .get(&cwd)
+                .map_or(&[][..], std::vec::Vec::as_slice);
+            let outcome = skills_manager
+                .skills_for_cwd_with_extra_user_roots(&cwd, force_reload, extra_roots)
+                .await;
             let errors = errors_to_info(&outcome.errors);
             let skills = skills_to_info(&outcome.skills, &outcome.disabled_paths);
             data.push(codex_app_server_protocol::SkillsListEntry {
@@ -4547,6 +4788,10 @@ impl CodexMessageProcessor {
             }
         };
 
+        let collaboration_mode = params
+            .collaboration_mode
+            .map(|mode| self.normalize_turn_start_collaboration_mode(mode));
+
         // Map v2 input items to core input items.
         let mapped_items: Vec<CoreInputItem> = params
             .input
@@ -4560,7 +4805,7 @@ impl CodexMessageProcessor {
             || params.model.is_some()
             || params.effort.is_some()
             || params.summary.is_some()
-            || params.collaboration_mode.is_some()
+            || collaboration_mode.is_some()
             || params.personality.is_some();
 
         // If any overrides are provided, update the session turn context first.
@@ -4574,7 +4819,7 @@ impl CodexMessageProcessor {
                     model: params.model,
                     effort: params.effort.map(Some),
                     summary: params.summary,
-                    collaboration_mode: params.collaboration_mode,
+                    collaboration_mode,
                     personality: params.personality,
                 })
                 .await;
@@ -4613,6 +4858,63 @@ impl CodexMessageProcessor {
                 let error = JSONRPCErrorError {
                     code: INTERNAL_ERROR_CODE,
                     message: format!("failed to start turn: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn turn_steer(&self, request_id: ConnectionRequestId, params: TurnSteerParams) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(v) => v,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        if params.expected_turn_id.is_empty() {
+            self.send_invalid_request_error(
+                request_id,
+                "expectedTurnId must not be empty".to_string(),
+            )
+            .await;
+            return;
+        }
+
+        let mapped_items: Vec<CoreInputItem> = params
+            .input
+            .into_iter()
+            .map(V2UserInput::into_core)
+            .collect();
+
+        match thread
+            .steer_input(mapped_items, Some(&params.expected_turn_id))
+            .await
+        {
+            Ok(turn_id) => {
+                let response = TurnSteerResponse { turn_id };
+                self.outgoing.send_response(request_id, response).await;
+            }
+            Err(err) => {
+                let (code, message) = match err {
+                    SteerInputError::NoActiveTurn(_) => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        "no active turn to steer".to_string(),
+                    ),
+                    SteerInputError::ExpectedTurnMismatch { expected, actual } => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        format!("expected active turn id `{expected}` but found `{actual}`"),
+                    ),
+                    SteerInputError::EmptyInput => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        "input must not be empty".to_string(),
+                    ),
+                };
+                let error = JSONRPCErrorError {
+                    code,
+                    message,
                     data: None,
                 };
                 self.outgoing.send_error(request_id, error).await;
@@ -5703,7 +6005,11 @@ async fn read_updated_at(path: &Path, created_at: Option<&str>) -> Option<String
     updated_at.or_else(|| created_at.map(str::to_string))
 }
 
-fn build_ephemeral_thread(thread_id: ThreadId, config_snapshot: &ThreadConfigSnapshot) -> Thread {
+fn build_thread_from_snapshot(
+    thread_id: ThreadId,
+    config_snapshot: &ThreadConfigSnapshot,
+    path: Option<PathBuf>,
+) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     Thread {
         id: thread_id.to_string(),
@@ -5711,7 +6017,7 @@ fn build_ephemeral_thread(thread_id: ThreadId, config_snapshot: &ThreadConfigSna
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
         updated_at: now,
-        path: None,
+        path,
         cwd: config_snapshot.cwd.clone(),
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
         source: config_snapshot.session_source.clone().into(),
