@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.62] - 2026-02-11
+
+- App Server: add app-server support for client connections. (b86fcd5d)
+- App Server: wire the Linux sandbox executable into config. (6032603f)
+- Model Routing: surface reroute warnings and status models. (6dc748e8)
+- Core/Agents: resolve Claude from home fallback paths. (c560d6ac)
+
 ## [0.6.61] - 2026-02-10
 
 - Core: align auth token schema and websocket errors. (12612630)
