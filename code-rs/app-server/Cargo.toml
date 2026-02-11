@@ -41,3 +41,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]
+assert_cmd = { workspace = true }

@@ -896,6 +896,7 @@ name = "code-app-server"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "code-app-server-protocol",
  "code-arg0",
  "code-common",
