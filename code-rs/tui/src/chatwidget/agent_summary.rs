@@ -8,7 +8,9 @@ pub(super) fn agent_summary_counts(config_agents: &[AgentConfig]) -> (usize, usi
 
     let mut config_by_name: HashMap<String, &AgentConfig> = HashMap::new();
     for cfg in config_agents {
-        config_by_name.insert(cfg.name.to_ascii_lowercase(), cfg);
+        let key = code_core::agent_defaults::agent_model_spec(&cfg.name)
+            .map_or_else(|| cfg.name.to_ascii_lowercase(), |spec| spec.slug.to_ascii_lowercase());
+        config_by_name.insert(key, cfg);
     }
 
     for spec in code_core::agent_defaults::agent_model_specs() {
