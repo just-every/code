@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.63] - 2026-02-11
+
+- Core: support multiple rate limits. (fdd0cd1d)
+- Core/Protocol: add websocket preference and rate-limit metadata; serialize rate-limit ids as nullable. (c6cf7ff9, 807615dc)
+- Core/Websocket: avoid resending output items and tighten incrementality checks. (44731479, 0639c338)
+- TUI: queue rollback trims in app-event order and keep history recall cursor at line end. (8b46c0ce, e704f488)
+- Exec Policy: reject empty command lists and honor never-prompt approval policy. (cc8c2933, 693bac18)
+
 ## [0.6.62] - 2026-02-11
 
 - App Server: add app-server support for client connections. (b86fcd5d)
