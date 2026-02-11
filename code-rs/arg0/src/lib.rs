@@ -122,7 +122,8 @@ fn load_dotenv() {
     }
 
     // 2) Load from the current project's .env, but with extra safety:
-    //    - Do NOT import provider API keys by default (e.g., OPENAI_API_KEY, AZURE_OPENAI_API_KEY).
+    //    - Do NOT import provider API keys by default (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY,
+    //      GOOGLE_API_KEY, QWEN_API_KEY).
     //    - Users can opt back in via CODEX_ALLOW_PROJECT_OPENAI_KEYS=1 (either exported
     //      in the shell or placed in ~/.code/.env).
     // NOTE: use an explicit cwd/.env path instead of dotenv_iter() because
@@ -137,8 +138,20 @@ fn load_dotenv() {
                 let upper = key.to_ascii_uppercase();
                 // Never allow CODEX_* to be set from .env files for safety.
                 if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" { continue; }
-                // Always ignore provider keys from project .env (must be set globally or in shell).
-                if upper == "OPENAI_API_KEY" || upper == "AZURE_OPENAI_API_KEY" { continue; }
+                // Always ignore provider API keys from project .env (must be set globally or in shell).
+                if matches!(
+                    upper.as_str(),
+                    "OPENAI_API_KEY"
+                        | "AZURE_OPENAI_API_KEY"
+                        | "ANTHROPIC_API_KEY"
+                        | "CLAUDE_API_KEY"
+                        | "GOOGLE_API_KEY"
+                        | "GEMINI_API_KEY"
+                        | "QWEN_API_KEY"
+                        | "DASHSCOPE_API_KEY"
+                ) {
+                    continue;
+                }
                 // Safe: still single-threaded during startup.
                 unsafe { std::env::set_var(&key, &value) };
             }
