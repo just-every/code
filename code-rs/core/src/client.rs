@@ -379,6 +379,7 @@ impl ModelClient {
             self.config.include_view_image_tool,
         );
         tools_config.web_search_allowed_domains = self.config.tools_web_search_allowed_domains.clone();
+        tools_config.search_tool = self.config.tools_search_tool;
 
         let mut agent_models: Vec<String> = if self.config.agents.is_empty() {
             default_agent_configs()

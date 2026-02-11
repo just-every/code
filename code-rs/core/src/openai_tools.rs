@@ -87,6 +87,7 @@ pub struct ToolsConfig {
     #[allow(dead_code)]
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
+    pub search_tool: bool,
     #[allow(dead_code)]
     pub include_view_image_tool: bool,
     pub web_search_allowed_domains: Option<Vec<String>>,
@@ -155,6 +156,7 @@ impl ToolsConfig {
             plan_tool: include_plan_tool,
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
+            search_tool: false,
             include_view_image_tool,
             web_search_allowed_domains: None,
             agent_model_allowed_values: Vec::new(),
@@ -485,6 +487,36 @@ fn create_request_user_input_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["questions".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_search_tool_bm25_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "query".to_string(),
+        JsonSchema::String {
+            description: Some("Search query for MCP tools.".to_string()),
+            allowed_values: None,
+        },
+    );
+    properties.insert(
+        "limit".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum number of tools to return (defaults to 8).".to_string(),
+            ),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "search_tool_bm25".to_string(),
+        description: "Searches MCP tool metadata with BM25 and exposes matching tools for the next model call.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["query".to_string()]),
             additional_properties: Some(false.into()),
         },
     })
@@ -869,6 +901,9 @@ pub fn get_openai_tools(
     }
 
     tools.push(create_request_user_input_tool());
+    if config.search_tool {
+        tools.push(create_search_tool_bm25_tool());
+    }
 
     tools.push(create_browser_tool(browser_enabled));
 

@@ -365,6 +365,8 @@ pub struct Config {
     pub include_apply_patch_tool: bool,
     /// Enable the native Responses web_search tool.
     pub tools_web_search_request: bool,
+    /// Enable MCP tool discovery helper (`search_tool_bm25`).
+    pub tools_search_tool: bool,
     /// Optional allow-list of domains for web_search filters.allowed_domains
     pub tools_web_search_allowed_domains: Option<Vec<String>>,
     /// Experimental: enable streamable shell tool selection (off by default).
@@ -733,6 +735,10 @@ pub struct ToolsToml {
     #[serde(default, alias = "web_search_request")]
     pub web_search: Option<bool>,
 
+    /// Enable MCP tool discovery helper (`search_tool_bm25`).
+    #[serde(default)]
+    pub search_tool: Option<bool>,
+
     /// Optional allow-list of domains used by the Responses API web_search tool.
     /// Example:
     ///
@@ -1051,6 +1057,11 @@ impl Config {
 
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
+            .unwrap_or(false);
+        let tools_search_tool = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.search_tool)
             .unwrap_or(false);
         let tools_web_search_allowed_domains = cfg
             .tools
@@ -1442,6 +1453,7 @@ impl Config {
             include_plan_tool: include_plan_tool.unwrap_or(false),
             include_apply_patch_tool: include_apply_patch_tool.unwrap_or(false),
             tools_web_search_request,
+            tools_search_tool,
             tools_web_search_allowed_domains,
             // Honor upstream opt-in switch name for our experimental streamable shell tool.
             use_experimental_streamable_shell_tool: cfg
