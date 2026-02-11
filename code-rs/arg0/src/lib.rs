@@ -125,16 +125,23 @@ fn load_dotenv() {
     //    - Do NOT import provider API keys by default (e.g., OPENAI_API_KEY, AZURE_OPENAI_API_KEY).
     //    - Users can opt back in via CODEX_ALLOW_PROJECT_OPENAI_KEYS=1 (either exported
     //      in the shell or placed in ~/.code/.env).
-    if let Ok(iter) = dotenvy::dotenv_iter() {
+    // NOTE: use an explicit cwd/.env path instead of dotenv_iter() because
+    // dotenv_iter() walks parent directories. Parent-walking can accidentally
+    // load unrelated files such as ~/.env when the working directory is nested
+    // under $HOME.
+    if let Ok(cwd) = std::env::current_dir() {
+        let project_env_path = cwd.join(".env");
+        if let Ok(iter) = dotenvy::from_path_iter(project_env_path) {
         // Filtered setter that always blocks provider keys from the project's .env.
-        for (key, value) in iter.into_iter().flatten() {
-            let upper = key.to_ascii_uppercase();
-            // Never allow CODEX_* to be set from .env files for safety.
-            if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" { continue; }
-            // Always ignore provider keys from project .env (must be set globally or in shell).
-            if upper == "OPENAI_API_KEY" || upper == "AZURE_OPENAI_API_KEY" { continue; }
-            // Safe: still single-threaded during startup.
-            unsafe { std::env::set_var(&key, &value) };
+            for (key, value) in iter.into_iter().flatten() {
+                let upper = key.to_ascii_uppercase();
+                // Never allow CODEX_* to be set from .env files for safety.
+                if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" { continue; }
+                // Always ignore provider keys from project .env (must be set globally or in shell).
+                if upper == "OPENAI_API_KEY" || upper == "AZURE_OPENAI_API_KEY" { continue; }
+                // Safe: still single-threaded during startup.
+                unsafe { std::env::set_var(&key, &value) };
+            }
         }
     }
 
