@@ -163,6 +163,7 @@ pub(super) struct State {
     pub(super) next_internal_sub_id: u64,
     pub(super) token_usage_info: Option<TokenUsageInfo>,
     pub(super) latest_rate_limits: Option<RateLimitSnapshotEvent>,
+    pub(super) last_model_reroute_notice: Option<(String, String)>,
     pub(super) pending_manual_compacts: VecDeque<String>,
     pub(super) wait_interrupt_epoch: u64,
     pub(super) wait_interrupt_reason: Option<WaitInterruptReason>,

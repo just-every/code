@@ -56,6 +56,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
 
     magenta: Style,
     red: Style,
+    yellow: Style,
     green: Style,
     cyan: Style,
 
@@ -94,6 +95,7 @@ impl EventProcessorWithHumanOutput {
                 dimmed: Style::new().dimmed(),
                 magenta: Style::new().magenta(),
                 red: Style::new().red(),
+                yellow: Style::new().yellow(),
                 green: Style::new().green(),
                 cyan: Style::new().cyan(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
@@ -115,6 +117,7 @@ impl EventProcessorWithHumanOutput {
                 dimmed: Style::new(),
                 magenta: Style::new(),
                 red: Style::new(),
+                yellow: Style::new(),
                 green: Style::new(),
                 cyan: Style::new(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
@@ -197,6 +200,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         match msg {
             EventMsg::Error(ErrorEvent { message }) => {
                 let prefix = "ERROR:".style(self.red);
+                ts_println!(self, "{prefix} {message}");
+            }
+            EventMsg::Warning(code_core::protocol::WarningEvent { message }) => {
+                let prefix = "WARNING:".style(self.yellow);
                 ts_println!(self, "{prefix} {message}");
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {

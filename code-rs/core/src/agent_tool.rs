@@ -93,6 +93,33 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
+#[cfg(target_os = "windows")]
+fn resolve_existing_path_with_pathext(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if is_executable_file(path) {
+        return Some(path.to_path_buf());
+    }
+
+    if path.extension().is_some() {
+        return None;
+    }
+
+    let Some(file_name) = path.file_name() else {
+        return None;
+    };
+
+    let base = file_name.to_os_string();
+    for ext in default_pathext_or_default() {
+        let mut name = base.clone();
+        name.push(ext);
+        let candidate = path.with_file_name(name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 #[cfg(not(target_os = "windows"))]
 fn is_executable_file(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -102,6 +129,16 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     };
 
     meta.is_file() && (meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_explicit_command_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    resolve_existing_path_with_pathext(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_explicit_command_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    is_executable_file(path).then_some(path.to_path_buf())
 }
 
 #[cfg(target_os = "windows")]
@@ -154,7 +191,7 @@ pub(crate) fn resolve_external_agent_command_path(command: &str) -> Option<std::
 
     if trimmed.contains(std::path::MAIN_SEPARATOR) || trimmed.contains('/') || trimmed.contains('\\') {
         let path = std::path::PathBuf::from(trimmed);
-        return is_executable_file(&path).then_some(path);
+        return resolve_explicit_command_path(&path);
     }
 
     if let Some(path) = resolve_command_on_path(trimmed) {
@@ -162,8 +199,8 @@ pub(crate) fn resolve_external_agent_command_path(command: &str) -> Option<std::
     }
 
     for candidate in home_fallback_command_candidates(trimmed) {
-        if is_executable_file(&candidate) {
-            return Some(candidate);
+        if let Some(path) = resolve_explicit_command_path(&candidate) {
+            return Some(path);
         }
     }
 

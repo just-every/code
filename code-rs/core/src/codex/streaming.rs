@@ -2576,6 +2576,19 @@ impl Drop for TurnLatencyGuard<'_> {
     }
 }
 
+fn response_model_matches_request(requested_model: &str, response_model: &str) -> bool {
+    let requested = requested_model.trim().to_ascii_lowercase();
+    let response = response_model.trim().to_ascii_lowercase();
+
+    if response == requested {
+        return true;
+    }
+
+    response
+        .strip_prefix(&requested)
+        .is_some_and(|suffix| suffix.starts_with('-') && suffix.len() > 1)
+}
+
 async fn try_run_turn(
     sess: &Session,
     turn_diff_tracker: &mut TurnDiffTracker,
@@ -2639,6 +2652,11 @@ async fn try_run_turn(
     };
 
     let mut turn_latency_guard = TurnLatencyGuard::new(sess, attempt_req, prompt.as_ref());
+    let requested_model = prompt
+        .model_override
+        .clone()
+        .unwrap_or_else(|| sess.client.get_model());
+    let mut latest_response_model: Option<String> = None;
     let mut stream = match sess.client.clone().stream(&prompt).await {
         Ok(stream) => stream,
         Err(e) => {
@@ -2682,7 +2700,52 @@ async fn try_run_turn(
         };
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created {
+                response_id,
+                response_model,
+            } => {
+                if let Some(model) = response_model.clone() {
+                    latest_response_model = Some(model.clone());
+
+                    if !response_model_matches_request(&requested_model, &model) {
+                        let should_emit_warning = {
+                            let mut state = sess.state.lock().unwrap();
+                            let already_warned = state
+                                .last_model_reroute_notice
+                                .as_ref()
+                                .is_some_and(|(requested, response)| {
+                                    requested == &requested_model && response == &model
+                                });
+                            if already_warned {
+                                false
+                            } else {
+                                state.last_model_reroute_notice =
+                                    Some((requested_model.clone(), model.clone()));
+                                true
+                            }
+                        };
+
+                        if should_emit_warning {
+                            let warning = crate::protocol::WarningEvent {
+                                message: format!(
+                                    "Requested model `{requested_model}` was rerouted to `{model}`. OpenAI may have rerouted you to protect against cyber abuse.\nTo verify and restore access, visit https://chatgpt.com/cyber"
+                                ),
+                            };
+                            let _ = sess
+                                .tx_event
+                                .send(sess.make_event(&sub_id, EventMsg::Warning(warning)))
+                                .await;
+                        }
+                    }
+                }
+
+                tracing::debug!(
+                    response_id = response_id.as_deref().unwrap_or("<none>"),
+                    response_model = response_model.as_deref().unwrap_or("<none>"),
+                    requested_model,
+                    "received response.created"
+                );
+            }
             ResponseEvent::ServerReasoningIncluded(_included) => {}
             ResponseEvent::OutputItemDone { item, sequence_number, output_index } => {
                 let response =
@@ -2729,11 +2792,17 @@ async fn try_run_turn(
                 let (new_info, rate_limits, should_emit);
                 {
                     let mut state = sess.state.lock().unwrap();
-                    let info = TokenUsageInfo::new_or_append(
+                    let mut info = TokenUsageInfo::new_or_append(
                         &state.token_usage_info,
                         &token_usage,
                         sess.client.get_model_context_window(),
                     );
+                    if let Some(info) = info.as_mut() {
+                        info.requested_model = Some(requested_model.clone());
+                        if let Some(response_model) = latest_response_model.clone() {
+                            info.latest_response_model = Some(response_model);
+                        }
+                    }
                     let limits = state.latest_rate_limits.clone();
                     let emit = info.is_some() || limits.is_some();
                     state.token_usage_info = info.clone();

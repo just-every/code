@@ -434,7 +434,7 @@ impl ThemeSelectionView {
                 let mut last_err: Option<String> = None;
                 while let Some(ev) = stream.next().await {
                     match ev {
-                        Ok(code_core::ResponseEvent::Created) => { tracing::info!("LLM: created"); let _ = progress_tx.send(ProgressMsg::SetStatus("(starting generation)".to_string())); }
+                        Ok(code_core::ResponseEvent::Created { .. }) => { tracing::info!("LLM: created"); let _ = progress_tx.send(ProgressMsg::SetStatus("(starting generation)".to_string())); }
                         Ok(code_core::ResponseEvent::ReasoningSummaryDelta { delta, .. }) => { tracing::info!(target: "spinner", "LLM[thinking]: {}", delta); let _ = progress_tx.send(ProgressMsg::ThinkingDelta(delta.clone())); think_sum.push_str(&delta); }
                         Ok(code_core::ResponseEvent::ReasoningContentDelta { delta, .. }) => { tracing::info!(target: "spinner", "LLM[reasoning]: {}", delta); }
                         Ok(code_core::ResponseEvent::OutputTextDelta { delta, .. }) => { tracing::info!(target: "spinner", "LLM[delta]: {}", delta); let _ = progress_tx.send(ProgressMsg::OutputDelta(delta.clone())); out.push_str(&delta); }
@@ -784,7 +784,7 @@ impl ThemeSelectionView {
                 let mut last_err: Option<String> = None;
                 while let Some(ev) = stream.next().await {
                     match ev {
-                        Ok(code_core::ResponseEvent::Created) => {
+                        Ok(code_core::ResponseEvent::Created { .. }) => {
                             let _ = progress_tx.send(ProgressMsg::SetStatus("(starting generation)".to_string()));
                         }
                         Ok(code_core::ResponseEvent::ReasoningSummaryDelta { delta, .. }) => {

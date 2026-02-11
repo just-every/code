@@ -756,6 +756,9 @@ pub enum EventMsg {
     /// Error while executing a submission
     Error(ErrorEvent),
 
+    /// Non-fatal warning surfaced to the user.
+    Warning(WarningEvent),
+
     /// Agent has started a task
     TaskStarted,
 
@@ -897,6 +900,11 @@ pub struct ErrorEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WarningEvent {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
 }
@@ -968,6 +976,10 @@ const BASELINE_TOKENS: u64 = 12_000;
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_response_model: Option<String>,
     pub model_context_window: Option<u64>,
 }
 
@@ -986,6 +998,8 @@ impl TokenUsageInfo {
             None => Self {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
+                requested_model: None,
+                latest_response_model: None,
                 model_context_window,
             },
         };

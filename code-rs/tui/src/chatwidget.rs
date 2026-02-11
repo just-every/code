@@ -164,6 +164,7 @@ use code_core::protocol::CustomToolCallUpdateEvent;
 use code_core::protocol::ErrorEvent;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
+use code_core::protocol::WarningEvent;
 use code_core::protocol::ExecApprovalRequestEvent;
 use code_core::protocol::ExecCommandBeginEvent;
 use code_core::protocol::ExecCommandEndEvent;
@@ -1531,6 +1532,8 @@ pub(crate) struct ChatWidget<'a> {
     initial_user_message: Option<UserMessage>,
     total_token_usage: TokenUsage,
     last_token_usage: TokenUsage,
+    session_requested_model: Option<String>,
+    session_latest_response_model: Option<String>,
     rate_limit_snapshot: Option<RateLimitSnapshotEvent>,
     rate_limit_warnings: RateLimitWarningState,
     rate_limit_fetch_inflight: bool,
@@ -6462,6 +6465,8 @@ impl ChatWidget<'_> {
             ),
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            session_requested_model: None,
+            session_latest_response_model: None,
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_fetch_inflight: false,
@@ -6820,6 +6825,8 @@ impl ChatWidget<'_> {
             initial_user_message: None,
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            session_requested_model: None,
+            session_latest_response_model: None,
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_fetch_inflight: false,
@@ -13785,6 +13792,12 @@ impl ChatWidget<'_> {
                 if let Some(info) = &event.info {
                     self.total_token_usage = info.total_token_usage.clone();
                     self.last_token_usage = info.last_token_usage.clone();
+                    if let Some(requested_model) = &info.requested_model {
+                        self.session_requested_model = Some(requested_model.clone());
+                    }
+                    if let Some(response_model) = &info.latest_response_model {
+                        self.session_latest_response_model = Some(response_model.clone());
+                    }
                 }
                 if let Some(snapshot) = event.rate_limits {
                     self.update_rate_limit_resets(&snapshot);
@@ -13849,6 +13862,10 @@ impl ChatWidget<'_> {
                     self.config.model_context_window,
                 );
                 self.update_stream_token_usage_metadata();
+            }
+            EventMsg::Warning(WarningEvent { message }) => {
+                self.history_push_plain_state(history_cell::new_warning_event(message));
+                self.request_redraw();
             }
             EventMsg::Error(ErrorEvent { message }) => {
                 self.on_error(message);
@@ -15651,6 +15668,8 @@ impl ChatWidget<'_> {
                 &self.config,
                 &self.total_token_usage,
                 &self.last_token_usage,
+                self.session_requested_model.as_deref(),
+                self.session_latest_response_model.as_deref(),
             ));
 
             self.history_push_plain_state(history_cell::new_prompts_output());
@@ -15930,6 +15949,8 @@ impl ChatWidget<'_> {
             &self.config,
             &self.total_token_usage,
             &self.last_token_usage,
+            self.session_requested_model.as_deref(),
+            self.session_latest_response_model.as_deref(),
         ));
     }
 
@@ -39267,6 +39288,7 @@ impl WidgetRef for &ChatWidget<'_> {
                             "⚙" => crate::colors::info(),        // tool working
                             "✔" => crate::colors::success(),     // tool complete
                             "✖" => crate::colors::error(),       // error
+                            "⚠" => crate::colors::warning(),     // warning notice
                             "★" => crate::colors::text_bright(), // notice/popular
                             _ => crate::colors::text_dim(),
                         }

@@ -543,12 +543,16 @@ async fn process_chat_sse<S>(
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
     let mut current_item_id: Option<String> = None;
+    let mut current_response_id: Option<String> = None;
+    let mut current_response_model: Option<String> = None;
+    let mut created_emitted = false;
 
     async fn flush_and_complete(
         tx_event: &mpsc::Sender<Result<ResponseEvent>>,
         assistant_text: &mut String,
         reasoning_text: &mut String,
         current_item_id: &Option<String>,
+        response_id: Option<&str>,
         debug_logger: &Arc<Mutex<DebugLogger>>,
         request_id: &str,
     ) {
@@ -590,7 +594,7 @@ async fn process_chat_sse<S>(
 
         let _ = tx_event
             .send(Ok(ResponseEvent::Completed {
-                response_id: String::new(),
+                response_id: response_id.unwrap_or_default().to_string(),
                 token_usage: None,
             }))
             .await;
@@ -638,6 +642,7 @@ async fn process_chat_sse<S>(
                     &mut assistant_text,
                     &mut reasoning_text,
                     &current_item_id,
+                    current_response_id.as_deref(),
                     &debug_logger,
                     &request_id,
                 )
@@ -669,6 +674,7 @@ async fn process_chat_sse<S>(
                 &mut assistant_text,
                 &mut reasoning_text,
                 &current_item_id,
+                current_response_id.as_deref(),
                 &debug_logger,
                 &request_id,
             )
@@ -703,6 +709,30 @@ async fn process_chat_sse<S>(
         // Log the SSE chunk to debug log
         if let Ok(logger) = debug_logger.lock() {
             let _ = logger.append_response_event(&request_id, "sse_event", &chunk);
+        }
+
+        if current_response_id.is_none() {
+            current_response_id = chunk
+                .get("id")
+                .and_then(|id| id.as_str())
+                .map(ToString::to_string);
+        }
+        if current_response_model.is_none() {
+            current_response_model = chunk
+                .get("model")
+                .and_then(|model| model.as_str())
+                .map(ToString::to_string);
+        }
+        if !created_emitted
+            && (current_response_id.is_some() || current_response_model.is_some())
+        {
+            let _ = tx_event
+                .send(Ok(ResponseEvent::Created {
+                    response_id: current_response_id.clone(),
+                    response_model: current_response_model.clone(),
+                }))
+                .await;
+            created_emitted = true;
         }
 
         // Extract item_id if present at the top level or in choice
@@ -1080,10 +1110,16 @@ where
                         token_usage,
                     })));
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::Created))) => {
-                    // These events are exclusive to the Responses API and
-                    // will never appear in a Chat Completions stream.
-                    continue;
+                Poll::Ready(Some(Ok(ResponseEvent::Created {
+                    response_id,
+                    response_model,
+                }))) => {
+                    // Preserve response metadata so downstream consumers can
+                    // surface effective model routing details uniformly.
+                    return Poll::Ready(Some(Ok(ResponseEvent::Created {
+                        response_id,
+                        response_model,
+                    })));
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta { delta, item_id, sequence_number, .. }))) => {
                     // Always accumulate deltas so we can emit a final OutputItemDone at Completed.

@@ -251,7 +251,10 @@ impl Prompt {
 
 #[derive(Debug)]
 pub enum ResponseEvent {
-    Created,
+    Created {
+        response_id: Option<String>,
+        response_model: Option<String>,
+    },
     OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
     /// Indicates that the server will include reasoning content on this stream.
     ///

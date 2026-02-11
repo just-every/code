@@ -82,6 +82,19 @@ impl PlainHistoryCell {
         // Symmetric top/bottom padding for auto-review notices.
         (1, 1)
     }
+
+    fn is_warning_notice(&self) -> bool {
+        if self.state.kind != HistoryCellType::Notice {
+            return false;
+        }
+
+        self.state
+            .body()
+            .first()
+            .and_then(|line| line.spans.first())
+            .map(|span| span.text.starts_with("⚠ "))
+            .unwrap_or(false)
+    }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
         if kind == HistoryCellType::User {
@@ -270,6 +283,9 @@ impl HistoryCell for PlainHistoryCell {
     }
 
     fn gutter_symbol(&self) -> Option<&'static str> {
+        if self.is_warning_notice() {
+            return Some("⚠");
+        }
         if let Some(header) = self.state.header() {
             let label = header.label.trim().to_lowercase();
             if label == "auto review" {
@@ -289,7 +305,15 @@ impl HistoryCell for PlainHistoryCell {
             }
         }
 
-        lines.extend(message_lines_to_ratatui(self.state.body(), &theme));
+        let mut body_lines = message_lines_to_ratatui(self.state.body(), &theme);
+        if self.is_warning_notice()
+            && let Some(first_line) = body_lines.first_mut()
+            && let Some(first_span) = first_line.spans.first_mut()
+            && let Some(stripped) = first_span.content.as_ref().strip_prefix("⚠ ")
+        {
+            first_span.content = stripped.to_string().into();
+        }
+        lines.extend(body_lines);
         lines
     }
 
@@ -751,10 +775,25 @@ pub(crate) fn new_model_output(model: &str, effort: ReasoningEffort) -> PlainMes
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 
+fn response_model_matches_request(requested_model: &str, response_model: &str) -> bool {
+    let requested = requested_model.trim().to_ascii_lowercase();
+    let response = response_model.trim().to_ascii_lowercase();
+
+    if response == requested {
+        return true;
+    }
+
+    response
+        .strip_prefix(&requested)
+        .is_some_and(|suffix| suffix.starts_with('-') && suffix.len() > 1)
+}
+
 pub(crate) fn new_status_output(
     config: &Config,
     total_usage: &TokenUsage,
     last_usage: &TokenUsage,
+    requested_model: Option<&str>,
+    latest_response_model: Option<&str>,
 ) -> PlainMessageState {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -815,6 +854,43 @@ pub(crate) fn new_status_output(
             "  • Reasoning Summaries: ".into(),
             title_case(&rsum).into(),
         ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // 🔁 Model routing
+    lines.push(Line::from(vec!["🔁 ".into(), "Model Routing".bold()]));
+    let requested_display = requested_model.unwrap_or(config.model.as_str());
+    lines.push(Line::from(vec![
+        "  • Requested model: ".into(),
+        requested_display.to_string().into(),
+    ]));
+    if let Some(response_model) = latest_response_model {
+        let same_model = response_model_matches_request(requested_display, response_model);
+        let (match_marker, match_label, match_style) = if same_model {
+            (
+                "✓",
+                "requested model matches response",
+                Style::default().fg(colors::success()),
+            )
+        } else {
+            (
+                "✗",
+                "requested model does not match response",
+                Style::default().fg(colors::error()),
+            )
+        };
+        lines.push(Line::from(vec![
+            "  • Latest response model: ".into(),
+            response_model.to_string().into(),
+        ]));
+        lines.push(Line::from(vec![
+            "  • Match: ".into(),
+            Span::styled(format!("{match_marker} {match_label}"), match_style),
+        ]));
+    } else {
+        lines.push(Line::from("  • Latest response model: unavailable"));
+        lines.push(Line::from("  • Match: ? waiting for a completed response"));
     }
 
     lines.push(Line::from(""));
@@ -976,9 +1052,15 @@ pub(crate) fn new_status_output(
 
 pub(crate) fn new_warning_event(message: String) -> PlainMessageState {
     let warn_style = Style::default().fg(crate::colors::warning());
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from("notice"));
-    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
+
+    let mut message_lines = message.lines();
+    if let Some(first) = message_lines.next() {
+        lines.push(Line::from(vec![Span::styled(format!("⚠ {first}"), warn_style)]));
+        lines.extend(message_lines.map(|line| Line::from(vec![Span::styled(line.to_string(), warn_style)])));
+    }
+
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 

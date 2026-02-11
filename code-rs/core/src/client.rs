@@ -2502,8 +2502,21 @@ async fn process_sse<S>(
                 }
             }
             "response.created" => {
-                if event.response.is_some() {
-                    let _ = tx_event.send(Ok(ResponseEvent::Created {})).await;
+                if let Some(response) = event.response {
+                    let response_id = response
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    let response_model = response
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::Created {
+                            response_id,
+                            response_model,
+                        }))
+                        .await;
                 }
             }
             "response.failed" => {
@@ -3079,7 +3092,7 @@ mod tests {
         }
 
         fn is_created(ev: &ResponseEvent) -> bool {
-            matches!(ev, ResponseEvent::Created)
+            matches!(ev, ResponseEvent::Created { .. })
         }
         fn is_output(ev: &ResponseEvent) -> bool {
             matches!(ev, ResponseEvent::OutputItemDone { .. })

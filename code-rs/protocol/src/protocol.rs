@@ -1191,6 +1191,10 @@ pub struct TokenUsage {
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_response_model: Option<String>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
@@ -1211,6 +1215,8 @@ impl TokenUsageInfo {
             None => Self {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
+                requested_model: None,
+                latest_response_model: None,
                 model_context_window,
             },
         };
@@ -1244,6 +1250,8 @@ impl TokenUsageInfo {
         let mut info = Self {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            requested_model: None,
+            latest_response_model: None,
             model_context_window: Some(context_window),
         };
         info.fill_to_context_window(context_window);
