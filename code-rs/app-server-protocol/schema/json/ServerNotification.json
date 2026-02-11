@@ -4475,6 +4475,18 @@
             }
           ]
         },
+        "limitId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limitName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "planType": {
           "anyOf": [
             {
@@ -4518,6 +4530,20 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "limit_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
           ]
         },
         "plan_type": {

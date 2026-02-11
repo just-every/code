@@ -3116,7 +3116,9 @@ pub struct AccountRateLimitsUpdatedNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct RateLimitSnapshot {
+    #[ts(type = "string | null")]
     pub limit_id: Option<String>,
+    #[ts(type = "string | null")]
     pub limit_name: Option<String>,
     pub primary: Option<RateLimitWindow>,
     pub secondary: Option<RateLimitWindow>,
