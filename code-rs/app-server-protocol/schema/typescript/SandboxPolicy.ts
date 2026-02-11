@@ -32,4 +32,8 @@ exclude_tmpdir_env_var: boolean,
  * When set to `true`, will NOT include the `/tmp` among the default
  * writable roots on UNIX. Defaults to `false`.
  */
-exclude_slash_tmp: boolean, };
+exclude_slash_tmp: boolean, 
+/**
+ * Whether sandboxed commands may perform write operations via Git.
+ */
+allow_git_writes: boolean, };

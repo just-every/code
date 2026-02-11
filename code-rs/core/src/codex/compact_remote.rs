@@ -171,6 +171,7 @@ async fn run_remote_compact_task_inner(
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
         message: "Conversation history compacted.".to_string(),
+        replacement_history: None,
     });
     sess.persist_rollout_items(&[rollout_item]).await;
 

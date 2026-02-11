@@ -168,8 +168,7 @@ impl Prompt {
             input_with_instructions.push(ResponseItem::Message {
                 id: None,
                 role: "developer".to_string(),
-                content: vec![ContentItem::InputText { text: developer_text }],
-            });
+                content: vec![ContentItem::InputText { text: developer_text }], end_turn: None, phase: None});
             for message in &self.prepend_developer_messages {
                 let trimmed = message.trim();
                 if trimmed.is_empty() {
@@ -180,8 +179,7 @@ impl Prompt {
                     role: "developer".to_string(),
                     content: vec![ContentItem::InputText {
                         text: trimmed.to_string(),
-                    }],
-                });
+                    }], end_turn: None, phase: None});
             }
             if let Some(ec) = self.get_formatted_environment_context() {
                 let has_environment_context = self.input.iter().any(|item| {
@@ -195,8 +193,7 @@ impl Prompt {
                     input_with_instructions.push(ResponseItem::Message {
                         id: None,
                         role: "user".to_string(),
-                        content: vec![ContentItem::InputText { text: ec }],
-                    });
+                        content: vec![ContentItem::InputText { text: ec }], end_turn: None, phase: None});
                 }
             }
             if let Some(ui) = self.get_formatted_user_instructions() {
@@ -254,7 +251,10 @@ impl Prompt {
 
 #[derive(Debug)]
 pub enum ResponseEvent {
-    Created,
+    Created {
+        response_id: Option<String>,
+        response_model: Option<String>,
+    },
     OutputItemDone { item: ResponseItem, sequence_number: Option<u64>, output_index: Option<u32> },
     /// Indicates that the server will include reasoning content on this stream.
     ///

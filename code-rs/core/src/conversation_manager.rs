@@ -258,8 +258,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
     fn assistant_msg(text: &str) -> ResponseItem {
         ResponseItem::Message {
@@ -267,8 +266,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     #[test]

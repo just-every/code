@@ -20,6 +20,11 @@
 //! is in progress and while MCP server startup is in progress. Those lifecycles are tracked
 //! independently (`agent_turn_running` and `mcp_startup_status`) and synchronized via
 //! `update_task_running_state`.
+//!
+//! For preamble-capable models, assistant output may include commentary before
+//! the final answer. During streaming we hide the status row to avoid duplicate
+//! progress indicators; once commentary completes and stream queues drain, we
+//! re-show it so users still see turn-in-progress state between output bursts.
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -105,6 +110,7 @@ use codex_core::skills::model::SkillMetadata;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_otel::OtelManager;
+use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
@@ -115,6 +121,8 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::Settings;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::items::AgentMessageItem;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::request_user_input::RequestUserInputEvent;
@@ -137,12 +145,14 @@ use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
+use tracing::warn;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
 const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
+const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
@@ -163,6 +173,7 @@ use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::LocalImageAttachment;
+use crate::bottom_pane::MentionBinding;
 use crate::bottom_pane::QUIT_SHORTCUT_TIMEOUT;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
@@ -209,6 +220,8 @@ mod skills;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
+use crate::mention_codec::LinkedMention;
+use crate::mention_codec::encode_history_mentions;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
 use crate::streaming::commit_tick::run_commit_tick;
@@ -528,6 +541,7 @@ pub(crate) struct ChatWidget {
     /// currently executing.
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
     connectors_cache: ConnectorsCacheState,
+    connectors_prefetch_in_flight: bool,
     // Queue of interruptive UI events deferred during an active write cycle
     interrupts: InterruptManager,
     // Accumulates the current reasoning block text to extract a header
@@ -538,6 +552,8 @@ pub(crate) struct ChatWidget {
     current_status_header: String,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
+    // Set when commentary output completes; once stream queues go idle we restore the status row.
+    pending_status_indicator_restore: bool,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
@@ -587,7 +603,8 @@ pub(crate) struct ChatWidget {
     // This lets the separator show per-chunk work time (since the previous separator) rather than
     // the total task-running time reported by the status indicator.
     last_separator_elapsed_secs: Option<u64>,
-
+    // Runtime metrics accumulated across delta snapshots for the active turn.
+    turn_runtime_metrics: RuntimeMetricsSummary,
     last_rendered_width: std::cell::Cell<Option<usize>>,
     // Feedback sink for /feedback
     feedback: codex_feedback::CodexFeedback,
@@ -637,7 +654,7 @@ pub(crate) struct UserMessage {
     text: String,
     local_images: Vec<LocalImageAttachment>,
     text_elements: Vec<TextElement>,
-    mention_paths: HashMap<String, String>,
+    mention_bindings: Vec<MentionBinding>,
 }
 
 impl From<String> for UserMessage {
@@ -647,7 +664,7 @@ impl From<String> for UserMessage {
             local_images: Vec::new(),
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
-            mention_paths: HashMap::new(),
+            mention_bindings: Vec::new(),
         }
     }
 }
@@ -659,7 +676,7 @@ impl From<&str> for UserMessage {
             local_images: Vec::new(),
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
-            mention_paths: HashMap::new(),
+            mention_bindings: Vec::new(),
         }
     }
 }
@@ -685,7 +702,7 @@ pub(crate) fn create_initial_user_message(
             text,
             local_images,
             text_elements,
-            mention_paths: HashMap::new(),
+            mention_bindings: Vec::new(),
         })
     }
 }
@@ -699,14 +716,14 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         text,
         text_elements,
         local_images,
-        mention_paths,
+        mention_bindings,
     } = message;
     if local_images.is_empty() {
         return UserMessage {
             text,
             text_elements,
             local_images,
-            mention_paths,
+            mention_bindings,
         };
     }
 
@@ -761,7 +778,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         text: rebuilt,
         local_images: remapped_images,
         text_elements: rebuilt_elements,
-        mention_paths,
+        mention_bindings,
     }
 }
 
@@ -803,6 +820,37 @@ impl ChatWidget {
         self.adaptive_chunking.reset();
     }
 
+    fn stream_controllers_idle(&self) -> bool {
+        self.stream_controller
+            .as_ref()
+            .map(|controller| controller.queued_lines() == 0)
+            .unwrap_or(true)
+            && self
+                .plan_stream_controller
+                .as_ref()
+                .map(|controller| controller.queued_lines() == 0)
+                .unwrap_or(true)
+    }
+
+    /// Restore the status indicator only after commentary completion is pending,
+    /// the turn is still running, and all stream queues have drained.
+    ///
+    /// This gate prevents flicker while normal output is still actively
+    /// streaming, but still restores a visible "working" affordance when a
+    /// commentary block ends before the turn itself has completed.
+    fn maybe_restore_status_indicator_after_stream_idle(&mut self) {
+        if !self.pending_status_indicator_restore
+            || !self.bottom_pane.is_task_running()
+            || !self.stream_controllers_idle()
+        {
+            return;
+        }
+
+        self.bottom_pane.ensure_status_indicator();
+        self.set_status_header(self.current_status_header.clone());
+        self.pending_status_indicator_restore = false;
+    }
+
     /// Update the status indicator header and details.
     ///
     /// Passing `None` clears any existing details.
@@ -817,10 +865,9 @@ impl ChatWidget {
         self.set_status(header, None);
     }
 
-    /// Sets the currently rendered footer status-line value and schedules a redraw.
+    /// Sets the currently rendered footer status-line value.
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         self.bottom_pane.set_status_line(status_line);
-        self.request_redraw();
     }
 
     /// Recomputes footer status-line content from config and current runtime state.
@@ -931,6 +978,32 @@ impl ChatWidget {
         self.request_status_line_branch(cwd);
     }
 
+    fn collect_runtime_metrics_delta(&mut self) {
+        if let Some(delta) = self.otel_manager.runtime_metrics_summary() {
+            self.apply_runtime_metrics_delta(delta);
+        }
+    }
+
+    fn apply_runtime_metrics_delta(&mut self, delta: RuntimeMetricsSummary) {
+        let should_log_timing = has_websocket_timing_metrics(delta);
+        self.turn_runtime_metrics.merge(delta);
+        if should_log_timing {
+            self.log_websocket_timing_totals(delta);
+        }
+    }
+
+    fn log_websocket_timing_totals(&mut self, delta: RuntimeMetricsSummary) {
+        if let Some(label) = history_cell::runtime_metrics_label(delta.responses_api_summary()) {
+            self.add_plain_history_lines(vec![
+                vec!["• ".dim(), format!("WebSocket timing: {label}").dark_gray()].into(),
+            ]);
+        }
+    }
+
+    fn refresh_runtime_metrics(&mut self) {
+        self.collect_runtime_metrics_delta();
+    }
+
     fn restore_retry_status_header_if_present(&mut self) {
         if let Some(header) = self.retry_status_header.take() {
             self.set_status_header(header);
@@ -942,7 +1015,6 @@ impl ChatWidget {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.set_skills(None);
-        self.bottom_pane.set_connectors_snapshot(None);
         self.thread_id = Some(event.session_id);
         self.thread_name = event.thread_name.clone();
         self.forked_from = event.forked_from_id;
@@ -1150,21 +1222,29 @@ impl ChatWidget {
         } else {
             text
         };
+        // Plan commit ticks can hide the status row; remember whether we streamed plan output so
+        // completion can restore it once stream queues are idle.
+        let should_restore_after_stream = self.plan_stream_controller.is_some();
         self.plan_delta_buffer.clear();
         self.plan_item_active = false;
         self.saw_plan_item_this_turn = true;
-        if let Some(mut controller) = self.plan_stream_controller.take()
-            && let Some(cell) = controller.finalize()
-        {
+        let finalized_streamed_cell =
+            if let Some(mut controller) = self.plan_stream_controller.take() {
+                controller.finalize()
+            } else {
+                None
+            };
+        if let Some(cell) = finalized_streamed_cell {
             self.add_boxed_history(cell);
             // TODO: Replace streamed output with the final plan item text if plan streaming is
             // removed or if we need to reconcile mismatches between streamed and final content.
-            return;
+        } else if !plan_text.is_empty() {
+            self.add_to_history(history_cell::new_proposed_plan(plan_text));
         }
-        if plan_text.is_empty() {
-            return;
+        if should_restore_after_stream {
+            self.pending_status_indicator_restore = true;
+            self.maybe_restore_status_indicator_after_stream_idle();
         }
-        self.add_to_history(history_cell::new_proposed_plan(plan_text));
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
@@ -1218,12 +1298,14 @@ impl ChatWidget {
         self.plan_item_active = false;
         self.adaptive_chunking.reset();
         self.plan_stream_controller = None;
+        self.turn_runtime_metrics = RuntimeMetricsSummary::default();
         self.otel_manager.reset_runtime_metrics();
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
         self.retry_status_header = None;
+        self.pending_status_indicator_restore = false;
         self.bottom_pane.set_interrupt_hint_visible(true);
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
@@ -1241,29 +1323,37 @@ impl ChatWidget {
         }
         self.flush_unified_exec_wait_streak();
         if !from_replay {
-            let runtime_metrics = self.otel_manager.runtime_metrics_summary();
-            if runtime_metrics.is_some() {
-                let elapsed_seconds = self
-                    .bottom_pane
-                    .status_widget()
-                    .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds);
+            self.collect_runtime_metrics_delta();
+            let runtime_metrics =
+                (!self.turn_runtime_metrics.is_empty()).then_some(self.turn_runtime_metrics);
+            let show_work_separator = self.needs_final_message_separator && self.had_work_activity;
+            if show_work_separator || runtime_metrics.is_some() {
+                let elapsed_seconds = if show_work_separator {
+                    self.bottom_pane
+                        .status_widget()
+                        .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
+                        .map(|current| self.worked_elapsed_from(current))
+                } else {
+                    None
+                };
                 self.add_to_history(history_cell::FinalMessageSeparator::new(
                     elapsed_seconds,
                     runtime_metrics,
                 ));
             }
+            self.turn_runtime_metrics = RuntimeMetricsSummary::default();
             self.needs_final_message_separator = false;
             self.had_work_activity = false;
             self.request_status_line_branch_refresh();
         }
         // Mark task stopped and request redraw now that all content is in history.
+        self.pending_status_indicator_restore = false;
         self.agent_turn_running = false;
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
-        self.clear_unified_exec_processes();
         self.request_redraw();
 
         if !from_replay && self.queued_user_messages.is_empty() {
@@ -1484,10 +1574,10 @@ impl ChatWidget {
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
-        self.clear_unified_exec_processes();
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;
+        self.pending_status_indicator_restore = false;
         self.request_status_line_branch_refresh();
         self.maybe_show_pending_rate_limit_prompt();
     }
@@ -1598,6 +1688,9 @@ impl ChatWidget {
     fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
         // Finalize, log a gentle prompt, and clear running state.
         self.finalize_turn();
+        if reason == TurnAbortReason::Interrupted {
+            self.clear_unified_exec_processes();
+        }
 
         if reason != TurnAbortReason::ReviewEnded {
             self.add_to_history(history_cell::new_error_event(
@@ -1606,16 +1699,7 @@ impl ChatWidget {
         }
 
         if let Some(combined) = self.drain_queued_messages_for_restore() {
-            let combined_local_image_paths = combined
-                .local_images
-                .iter()
-                .map(|img| img.path.clone())
-                .collect();
-            self.bottom_pane.set_composer_text(
-                combined.text,
-                combined.text_elements,
-                combined_local_image_paths,
-            );
+            self.restore_user_message_to_composer(combined);
             self.refresh_queued_user_messages();
         }
 
@@ -1638,7 +1722,7 @@ impl ChatWidget {
             text: self.bottom_pane.composer_text(),
             text_elements: self.bottom_pane.composer_text_elements(),
             local_images: self.bottom_pane.composer_local_images(),
-            mention_paths: HashMap::new(),
+            mention_bindings: self.bottom_pane.composer_mention_bindings(),
         };
 
         let mut to_merge: Vec<UserMessage> = self.queued_user_messages.drain(..).collect();
@@ -1650,7 +1734,7 @@ impl ChatWidget {
             text: String::new(),
             text_elements: Vec::new(),
             local_images: Vec::new(),
-            mention_paths: HashMap::new(),
+            mention_bindings: Vec::new(),
         };
         let mut combined_offset = 0usize;
         let mut next_image_label = 1usize;
@@ -1672,10 +1756,26 @@ impl ChatWidget {
                     elem
                 }));
             combined.local_images.extend(message.local_images);
-            combined.mention_paths.extend(message.mention_paths);
+            combined.mention_bindings.extend(message.mention_bindings);
         }
 
         Some(combined)
+    }
+
+    fn restore_user_message_to_composer(&mut self, user_message: UserMessage) {
+        let UserMessage {
+            text,
+            local_images,
+            text_elements,
+            mention_bindings,
+        } = user_message;
+        let local_image_paths = local_images.into_iter().map(|img| img.path).collect();
+        self.bottom_pane.set_composer_text_with_mention_bindings(
+            text,
+            text_elements,
+            local_image_paths,
+            mention_bindings,
+        );
     }
 
     fn on_plan_update(&mut self, update: UpdatePlanArgs) {
@@ -1720,9 +1820,12 @@ impl ChatWidget {
     fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
         self.flush_answer_stream_with_separator();
         if is_unified_exec_source(ev.source) {
+            self.track_unified_exec_process_begin(&ev);
+            if !self.bottom_pane.is_task_running() {
+                return;
+            }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
-            self.track_unified_exec_process_begin(&ev);
             if !is_standard_tool_call(&ev.parsed_cmd) {
                 return;
             }
@@ -1733,6 +1836,9 @@ impl ChatWidget {
 
     fn on_exec_command_output_delta(&mut self, ev: ExecCommandOutputDeltaEvent) {
         self.track_unified_exec_output_chunk(&ev.call_id, &ev.chunk);
+        if !self.bottom_pane.is_task_running() {
+            return;
+        }
 
         let Some(cell) = self
             .active_cell
@@ -2040,7 +2146,22 @@ impl ChatWidget {
         if self.retry_status_header.is_none() {
             self.retry_status_header = Some(self.current_status_header.clone());
         }
+        self.bottom_pane.ensure_status_indicator();
         self.set_status(message, additional_details);
+    }
+
+    /// Handle completion of an `AgentMessage` turn item.
+    ///
+    /// Commentary completion sets a deferred restore flag so the status row
+    /// returns once stream queues are idle. Final-answer completion (or absent
+    /// phase for legacy models) clears the flag to preserve historical behavior.
+    fn on_agent_message_item_completed(&mut self, item: AgentMessageItem) {
+        self.pending_status_indicator_restore = match item.phase {
+            // Models that don't support preambles only output AgentMessageItems on turn completion.
+            Some(MessagePhase::FinalAnswer) | None => false,
+            Some(MessagePhase::Commentary) => true,
+        };
+        self.maybe_restore_status_indicator_after_stream_idle();
     }
 
     /// Periodic tick for stream commits. In smooth mode this preserves one-line pacing, while
@@ -2063,9 +2184,8 @@ impl ChatWidget {
     ///
     /// `scope` controls whether this call may commit in smooth mode or only when catch-up
     /// is currently active. While lines are actively streaming we hide the status row to avoid
-    /// duplicate "in progress" affordances, but once all stream controllers go idle for this
-    /// turn we restore the status row if the task is still running so users keep a live
-    /// spinner/shimmer signal between preamble output and subsequent tool activity.
+    /// duplicate "in progress" affordances. Restoration is gated separately so we only re-show
+    /// the row after commentary completion once stream queues are idle.
     fn run_commit_tick_with_scope(&mut self, scope: CommitTickScope) {
         let now = Instant::now();
         let outcome = run_commit_tick(
@@ -2081,11 +2201,12 @@ impl ChatWidget {
         }
 
         if outcome.has_controller && outcome.all_idle {
-            if self.bottom_pane.is_task_running() {
-                self.bottom_pane.ensure_status_indicator();
-                self.set_status_header(self.current_status_header.clone());
-            }
+            self.maybe_restore_status_indicator_after_stream_idle();
             self.app_event_tx.send(AppEvent::StopCommitAnimation);
+        }
+
+        if self.agent_turn_running {
+            self.refresh_runtime_metrics();
         }
     }
 
@@ -2506,11 +2627,13 @@ impl ChatWidget {
             agent_turn_running: false,
             mcp_startup_status: None,
             connectors_cache: ConnectorsCacheState::default(),
+            connectors_prefetch_in_flight: false,
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
             retry_status_header: None,
+            pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -2529,6 +2652,7 @@ impl ChatWidget {
             plan_delta_buffer: String::new(),
             plan_item_active: false,
             last_separator_elapsed_secs: None,
+            turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             feedback_audience,
@@ -2667,11 +2791,13 @@ impl ChatWidget {
             agent_turn_running: false,
             mcp_startup_status: None,
             connectors_cache: ConnectorsCacheState::default(),
+            connectors_prefetch_in_flight: false,
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
             retry_status_header: None,
+            pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -2690,6 +2816,7 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             last_separator_elapsed_secs: None,
+            turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             feedback_audience,
@@ -2817,11 +2944,13 @@ impl ChatWidget {
             agent_turn_running: false,
             mcp_startup_status: None,
             connectors_cache: ConnectorsCacheState::default(),
+            connectors_prefetch_in_flight: false,
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
             retry_status_header: None,
+            pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -2840,6 +2969,7 @@ impl ChatWidget {
             plan_delta_buffer: String::new(),
             plan_item_active: false,
             last_separator_elapsed_secs: None,
+            turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             feedback_audience,
@@ -2959,16 +3089,7 @@ impl ChatWidget {
             } if !self.queued_user_messages.is_empty() => {
                 // Prefer the most recently queued item.
                 if let Some(user_message) = self.queued_user_messages.pop_back() {
-                    let local_image_paths = user_message
-                        .local_images
-                        .iter()
-                        .map(|img| img.path.clone())
-                        .collect();
-                    self.bottom_pane.set_composer_text(
-                        user_message.text,
-                        user_message.text_elements,
-                        local_image_paths,
-                    );
+                    self.restore_user_message_to_composer(user_message);
                     self.refresh_queued_user_messages();
                     self.request_redraw();
                 }
@@ -2984,10 +3105,12 @@ impl ChatWidget {
                             .bottom_pane
                             .take_recent_submission_images_with_placeholders(),
                         text_elements,
-                        mention_paths: self.bottom_pane.take_mention_paths(),
+                        mention_bindings: self
+                            .bottom_pane
+                            .take_recent_submission_mention_bindings(),
                     };
-                    if self.is_session_configured() {
-                        // Submitted is only emitted when steer is enabled (Enter sends immediately).
+                    if self.is_session_configured() && !self.is_plan_streaming_in_tui() {
+                        // Submitted is only emitted when steer is enabled.
                         // Reset any reasoning header only when we are actually submitting a turn.
                         self.reasoning_buffer.clear();
                         self.full_reasoning_buffer.clear();
@@ -3007,7 +3130,9 @@ impl ChatWidget {
                             .bottom_pane
                             .take_recent_submission_images_with_placeholders(),
                         text_elements,
-                        mention_paths: self.bottom_pane.take_mention_paths(),
+                        mention_bindings: self
+                            .bottom_pane
+                            .take_recent_submission_mention_bindings(),
                     };
                     self.queue_user_message(user_message);
                 }
@@ -3160,7 +3285,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Approvals => {
-                self.open_approvals_popup();
+                self.open_permissions_popup();
             }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
@@ -3262,6 +3387,9 @@ impl ChatWidget {
             }
             SlashCommand::Ps => {
                 self.add_ps_output();
+            }
+            SlashCommand::Clean => {
+                self.clean_background_terminals();
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -3376,7 +3504,7 @@ impl ChatWidget {
                         .bottom_pane
                         .take_recent_submission_images_with_placeholders(),
                     text_elements: prepared_elements,
-                    mention_paths: self.bottom_pane.take_mention_paths(),
+                    mention_bindings: self.bottom_pane.take_recent_submission_mention_bindings(),
                 };
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();
@@ -3513,13 +3641,18 @@ impl ChatWidget {
             text,
             local_images,
             text_elements,
-            mention_paths,
+            mention_bindings,
         } = user_message;
         if text.is_empty() && local_images.is_empty() {
             return;
         }
         if !local_images.is_empty() && !self.current_model_supports_images() {
-            self.restore_blocked_image_submission(text, text_elements, local_images, mention_paths);
+            self.restore_blocked_image_submission(
+                text,
+                text_elements,
+                local_images,
+                mention_bindings,
+            );
             return;
         }
 
@@ -3556,16 +3689,43 @@ impl ChatWidget {
             });
         }
 
-        let mentions = collect_tool_mentions(&text, &mention_paths);
+        let mentions = collect_tool_mentions(&text, &HashMap::new());
+        let bound_names: HashSet<String> = mention_bindings
+            .iter()
+            .map(|binding| binding.mention.clone())
+            .collect();
         let mut skill_names_lower: HashSet<String> = HashSet::new();
+        let mut selected_skill_paths: HashSet<PathBuf> = HashSet::new();
 
         if let Some(skills) = self.bottom_pane.skills() {
             skill_names_lower = skills
                 .iter()
                 .map(|skill| skill.name.to_ascii_lowercase())
                 .collect();
+
+            for binding in &mention_bindings {
+                let path = binding
+                    .path
+                    .strip_prefix("skill://")
+                    .unwrap_or(binding.path.as_str());
+                let path = Path::new(path);
+                if let Some(skill) = skills.iter().find(|skill| skill.path.as_path() == path)
+                    && selected_skill_paths.insert(skill.path.clone())
+                {
+                    items.push(UserInput::Skill {
+                        name: skill.name.clone(),
+                        path: skill.path.clone(),
+                    });
+                }
+            }
+
             let skill_mentions = find_skill_mentions_with_tool_mentions(&mentions, skills);
             for skill in skill_mentions {
+                if bound_names.contains(skill.name.as_str())
+                    || !selected_skill_paths.insert(skill.path.clone())
+                {
+                    continue;
+                }
                 items.push(UserInput::Skill {
                     name: skill.name.clone(),
                     path: skill.path.clone(),
@@ -3573,9 +3733,33 @@ impl ChatWidget {
             }
         }
 
+        let mut selected_app_ids: HashSet<String> = HashSet::new();
         if let Some(apps) = self.connectors_for_mentions() {
+            for binding in &mention_bindings {
+                let Some(app_id) = binding
+                    .path
+                    .strip_prefix("app://")
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                if !selected_app_ids.insert(app_id.to_string()) {
+                    continue;
+                }
+                if let Some(app) = apps.iter().find(|app| app.id == app_id) {
+                    items.push(UserInput::Mention {
+                        name: app.name.clone(),
+                        path: binding.path.clone(),
+                    });
+                }
+            }
+
             let app_mentions = find_app_mentions(&mentions, apps, &skill_names_lower);
             for app in app_mentions {
+                let slug = codex_core::connectors::connector_mention_slug(&app);
+                if bound_names.contains(&slug) || !selected_app_ids.insert(app.id.clone()) {
+                    continue;
+                }
                 let app_id = app.id.as_str();
                 items.push(UserInput::Mention {
                     name: app.name.clone(),
@@ -3616,8 +3800,16 @@ impl ChatWidget {
 
         // Persist the text to cross-session message history.
         if !text.is_empty() {
+            let encoded_mentions = mention_bindings
+                .iter()
+                .map(|binding| LinkedMention {
+                    mention: binding.mention.clone(),
+                    path: binding.path.clone(),
+                })
+                .collect::<Vec<_>>();
+            let history_text = encode_history_mentions(&text, &encoded_mentions);
             self.codex_op_tx
-                .send(Op::AddToHistory { text: text.clone() })
+                .send(Op::AddToHistory { text: history_text })
                 .unwrap_or_else(|e| {
                     tracing::error!("failed to send AddHistory op: {e}");
                 });
@@ -3640,7 +3832,7 @@ impl ChatWidget {
     ///
     /// The blocked-image path intentionally keeps the draft in the composer so
     /// users can remove attachments and retry. We must restore
-    /// `mention_paths` alongside visible text; restoring only `$name` tokens
+    /// mention bindings alongside visible text; restoring only `$name` tokens
     /// makes the draft look correct while degrading mention resolution to
     /// name-only heuristics on retry.
     fn restore_blocked_image_submission(
@@ -3648,15 +3840,15 @@ impl ChatWidget {
         text: String,
         text_elements: Vec<TextElement>,
         local_images: Vec<LocalImageAttachment>,
-        mention_paths: HashMap<String, String>,
+        mention_bindings: Vec<MentionBinding>,
     ) {
         // Preserve the user's composed payload so they can retry after changing models.
         let local_image_paths = local_images.iter().map(|img| img.path.clone()).collect();
-        self.bottom_pane.set_composer_text_with_mention_paths(
+        self.bottom_pane.set_composer_text_with_mention_bindings(
             text,
             text_elements,
             local_image_paths,
-            mention_paths,
+            mention_bindings,
         );
         self.add_to_history(history_cell::new_warning_event(
             self.image_inputs_not_supported_message(),
@@ -3846,6 +4038,8 @@ impl ChatWidget {
             EventMsg::CollabWaitingEnd(ev) => self.on_collab_event(collab::waiting_end(ev)),
             EventMsg::CollabCloseBegin(_) => {}
             EventMsg::CollabCloseEnd(ev) => self.on_collab_event(collab::close_end(ev)),
+            EventMsg::CollabResumeBegin(ev) => self.on_collab_event(collab::resume_begin(ev)),
+            EventMsg::CollabResumeEnd(ev) => self.on_collab_event(collab::resume_end(ev)),
             EventMsg::ThreadRolledBack(_) => {}
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
@@ -3854,10 +4048,18 @@ impl ChatWidget {
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::DynamicToolCallRequest(_) => {}
             EventMsg::ItemCompleted(event) => {
-                if let codex_protocol::items::TurnItem::Plan(plan_item) = event.item {
-                    self.on_plan_item_completed(plan_item.text);
+                let item = event.item;
+                if let codex_protocol::items::TurnItem::Plan(plan_item) = &item {
+                    self.on_plan_item_completed(plan_item.text.clone());
+                }
+                if let codex_protocol::items::TurnItem::AgentMessage(item) = item {
+                    self.on_agent_message_item_completed(item);
                 }
             }
+        }
+
+        if !from_replay && self.agent_turn_running {
+            self.refresh_runtime_metrics();
         }
     }
 
@@ -4275,6 +4477,11 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
 
+    fn clean_background_terminals(&mut self) {
+        self.submit_op(Op::CleanBackgroundTerminals);
+        self.add_info_message("Stopping all background terminals.".to_string(), None);
+    }
+
     fn stop_rate_limit_poller(&mut self) {
         if let Some(handle) = self.rate_limit_poller.take() {
             handle.abort();
@@ -4282,36 +4489,59 @@ impl ChatWidget {
     }
 
     fn prefetch_connectors(&mut self) {
-        if !self.connectors_enabled() {
-            return;
-        }
-        if matches!(self.connectors_cache, ConnectorsCacheState::Loading) {
+        if !self.connectors_enabled() || self.connectors_prefetch_in_flight {
             return;
         }
 
-        self.connectors_cache = ConnectorsCacheState::Loading;
+        self.connectors_prefetch_in_flight = true;
+        if !matches!(self.connectors_cache, ConnectorsCacheState::Ready(_)) {
+            self.connectors_cache = ConnectorsCacheState::Loading;
+        }
+
         let config = self.config.clone();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let result: Result<ConnectorsSnapshot, anyhow::Error> = async {
-                let connectors = connectors::list_connectors(&config).await?;
+            let accessible_connectors =
+                match connectors::list_accessible_connectors_from_mcp_tools(&config).await {
+                    Ok(connectors) => connectors,
+                    Err(err) => {
+                        app_event_tx.send(AppEvent::ConnectorsLoaded {
+                            result: Err(format!("Failed to load apps: {err}")),
+                            is_final: true,
+                        });
+                        return;
+                    }
+                };
+
+            app_event_tx.send(AppEvent::ConnectorsLoaded {
+                result: Ok(ConnectorsSnapshot {
+                    connectors: accessible_connectors.clone(),
+                }),
+                is_final: false,
+            });
+
+            let result: Result<ConnectorsSnapshot, String> = async {
+                let all_connectors = connectors::list_all_connectors(&config).await?;
+                let connectors = connectors::merge_connectors_with_accessible(
+                    all_connectors,
+                    accessible_connectors,
+                );
                 Ok(ConnectorsSnapshot { connectors })
             }
-            .await;
-            let result = result.map_err(|err| format!("Failed to load apps: {err}"));
-            app_event_tx.send(AppEvent::ConnectorsLoaded(result));
+            .await
+            .map_err(|err: anyhow::Error| format!("Failed to load apps: {err}"));
+
+            app_event_tx.send(AppEvent::ConnectorsLoaded {
+                result,
+                is_final: true,
+            });
         });
     }
 
     fn prefetch_rate_limits(&mut self) {
         self.stop_rate_limit_poller();
 
-        if !self
-            .auth_manager
-            .auth_cached()
-            .as_ref()
-            .is_some_and(CodexAuth::is_chatgpt_auth)
-        {
+        if !self.should_prefetch_rate_limits() {
             return;
         }
 
@@ -4334,6 +4564,17 @@ impl ChatWidget {
         });
 
         self.rate_limit_poller = Some(handle);
+    }
+
+    fn should_prefetch_rate_limits(&self) -> bool {
+        if !self.config.model_provider.requires_openai_auth {
+            return false;
+        }
+
+        self.auth_manager
+            .auth_cached()
+            .as_ref()
+            .is_some_and(CodexAuth::is_chatgpt_auth)
     }
 
     fn lower_cost_preset(&self) -> Option<ModelPreset> {
@@ -4524,9 +4765,7 @@ impl ChatWidget {
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Select Personality".bold()));
-        header.push(Line::from(
-            "Choose a communication style for Codex. Disable in /experimental.".dim(),
-        ));
+        header.push(Line::from("Choose a communication style for Codex.".dim()));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
@@ -4968,18 +5207,14 @@ impl ChatWidget {
         );
     }
 
-    /// Open a popup to choose the approvals mode (ask for approval policy + sandbox policy).
+    /// Open the permissions popup (alias for /permissions).
     pub(crate) fn open_approvals_popup(&mut self) {
-        self.open_approval_mode_popup(true);
+        self.open_permissions_popup();
     }
 
     /// Open a popup to choose the permissions mode (approval policy + sandbox policy).
     pub(crate) fn open_permissions_popup(&mut self) {
         let include_read_only = cfg!(target_os = "windows");
-        self.open_approval_mode_popup(include_read_only);
-    }
-
-    fn open_approval_mode_popup(&mut self, include_read_only: bool) {
         let current_approval = self.config.approval_policy.value();
         let current_sandbox = self.config.sandbox_policy.get();
         let mut items: Vec<SelectionItem> = Vec::new();
@@ -5008,7 +5243,7 @@ impl ChatWidget {
             } else {
                 preset.label.to_string()
             };
-            let description = Some(preset.description.to_string());
+            let description = Some(preset.description.replace(" (Identical to Agent mode)", ""));
             let disabled_reason = match self.config.approval_policy.can_set(&preset.approval) {
                 Ok(()) => None,
                 Err(err) => Some(err.to_string()),
@@ -5326,8 +5561,8 @@ impl ChatWidget {
         // Build actions ensuring acknowledgement happens before applying the new sandbox policy,
         // so downstream policy-change hooks don't re-trigger the warning.
         let mut accept_actions: Vec<SelectionAction> = Vec::new();
-        // Suppress the immediate re-scan only when a preset will be applied (i.e., via /approvals),
-        // to avoid duplicate warnings from the ensuing policy change.
+        // Suppress the immediate re-scan only when a preset will be applied (i.e., via /approvals or
+        // /permissions), to avoid duplicate warnings from the ensuing policy change.
         if preset.is_some() {
             accept_actions.push(Box::new(|tx| {
                 tx.send(AppEvent::SkipNextWorldWritableScan);
@@ -6153,6 +6388,11 @@ impl ChatWidget {
     }
 
     fn open_connectors_popup(&mut self, connectors: &[connectors::AppInfo]) {
+        self.bottom_pane
+            .show_selection_view(self.connectors_popup_params(connectors));
+    }
+
+    fn connectors_popup_params(&self, connectors: &[connectors::AppInfo]) -> SelectionViewParams {
         let total = connectors.len();
         let installed = connectors
             .iter()
@@ -6220,7 +6460,8 @@ impl ChatWidget {
             items.push(item);
         }
 
-        self.bottom_pane.show_selection_view(SelectionViewParams {
+        SelectionViewParams {
+            view_id: Some(CONNECTORS_SELECTION_VIEW_ID),
             header: Box::new(header),
             footer_hint: Some(Self::connectors_popup_hint_line()),
             items,
@@ -6228,7 +6469,14 @@ impl ChatWidget {
             search_placeholder: Some("Type to search apps".to_string()),
             col_width_mode: ColumnWidthMode::AutoAllRows,
             ..Default::default()
-        });
+        }
+    }
+
+    fn refresh_connectors_popup_if_open(&mut self, connectors: &[connectors::AppInfo]) {
+        let _ = self.bottom_pane.replace_selection_view_if_active(
+            CONNECTORS_SELECTION_VIEW_ID,
+            self.connectors_popup_params(connectors),
+        );
     }
 
     fn connectors_popup_hint_line() -> Line<'static> {
@@ -6369,6 +6617,10 @@ impl ChatWidget {
         self.bottom_pane.is_task_running() || self.is_review_mode
     }
 
+    fn is_plan_streaming_in_tui(&self) -> bool {
+        self.plan_stream_controller.is_some()
+    }
+
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
     }
@@ -6378,8 +6630,27 @@ impl ChatWidget {
         text: String,
         collaboration_mode: CollaborationModeMask,
     ) {
+        if self.agent_turn_running
+            && self.active_collaboration_mask.as_ref() != Some(&collaboration_mode)
+        {
+            self.add_error_message(
+                "Cannot switch collaboration mode while a turn is running.".to_string(),
+            );
+            return;
+        }
         self.set_collaboration_mask(collaboration_mode);
-        self.submit_user_message(text.into());
+        let should_queue = self.is_plan_streaming_in_tui();
+        let user_message = UserMessage {
+            text,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
+            mention_bindings: Vec::new(),
+        };
+        if should_queue {
+            self.queue_user_message(user_message);
+        } else {
+            self.submit_user_message(user_message);
+        }
     }
 
     /// True when the UI is in the regular composer state with no running task,
@@ -6444,16 +6715,30 @@ impl ChatWidget {
         self.set_skills_from_response(&ev);
     }
 
-    pub(crate) fn on_connectors_loaded(&mut self, result: Result<ConnectorsSnapshot, String>) {
-        self.connectors_cache = match result {
-            Ok(connectors) => ConnectorsCacheState::Ready(connectors),
-            Err(err) => ConnectorsCacheState::Failed(err),
-        };
-        if let ConnectorsCacheState::Ready(snapshot) = &self.connectors_cache {
-            self.bottom_pane
-                .set_connectors_snapshot(Some(snapshot.clone()));
-        } else {
-            self.bottom_pane.set_connectors_snapshot(None);
+    pub(crate) fn on_connectors_loaded(
+        &mut self,
+        result: Result<ConnectorsSnapshot, String>,
+        is_final: bool,
+    ) {
+        if is_final {
+            self.connectors_prefetch_in_flight = false;
+        }
+
+        match result {
+            Ok(snapshot) => {
+                self.refresh_connectors_popup_if_open(&snapshot.connectors);
+                self.connectors_cache = ConnectorsCacheState::Ready(snapshot.clone());
+                self.bottom_pane.set_connectors_snapshot(Some(snapshot));
+            }
+            Err(err) => {
+                if matches!(self.connectors_cache, ConnectorsCacheState::Ready(_)) {
+                    warn!("failed to refresh apps list; retaining current apps snapshot: {err}");
+                    return;
+                }
+
+                self.connectors_cache = ConnectorsCacheState::Failed(err);
+                self.bottom_pane.set_connectors_snapshot(None);
+            }
         }
     }
 
@@ -6630,6 +6915,12 @@ impl ChatWidget {
     pub(crate) fn thread_name(&self) -> Option<String> {
         self.thread_name.clone()
     }
+
+    /// Returns the current thread's precomputed rollout path.
+    ///
+    /// For fresh non-ephemeral threads this path may exist before the file is
+    /// materialized; rollout persistence is deferred until the first user
+    /// message is recorded.
     pub(crate) fn rollout_path(&self) -> Option<PathBuf> {
         self.current_rollout_path.clone()
     }
@@ -6688,6 +6979,15 @@ impl ChatWidget {
         );
         RenderableItem::Owned(Box::new(flex))
     }
+}
+
+fn has_websocket_timing_metrics(summary: RuntimeMetricsSummary) -> bool {
+    summary.responses_api_overhead_ms > 0
+        || summary.responses_api_inference_time_ms > 0
+        || summary.responses_api_engine_iapi_ttft_ms > 0
+        || summary.responses_api_engine_service_ttft_ms > 0
+        || summary.responses_api_engine_iapi_tbt_ms > 0
+        || summary.responses_api_engine_service_tbt_ms > 0
 }
 
 impl Drop for ChatWidget {

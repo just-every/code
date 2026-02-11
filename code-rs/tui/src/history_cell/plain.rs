@@ -25,7 +25,7 @@ use code_common::create_config_summary_entries;
 use code_core::config::Config;
 use code_core::config_types::ReasoningEffort;
 use code_core::protocol::{SessionConfiguredEvent, TokenUsage};
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -81,6 +81,19 @@ impl PlainHistoryCell {
     pub(crate) fn auto_review_padding() -> (u16, u16) {
         // Symmetric top/bottom padding for auto-review notices.
         (1, 1)
+    }
+
+    fn is_warning_notice(&self) -> bool {
+        if self.state.kind != HistoryCellType::Notice {
+            return false;
+        }
+
+        self.state
+            .body()
+            .first()
+            .and_then(|line| line.spans.first())
+            .map(|span| span.text.starts_with("⚠ "))
+            .unwrap_or(false)
     }
     pub(crate) fn from_state(state: PlainMessageState) -> Self {
         let mut kind = history_cell_kind_from_plain(state.kind);
@@ -270,6 +283,9 @@ impl HistoryCell for PlainHistoryCell {
     }
 
     fn gutter_symbol(&self) -> Option<&'static str> {
+        if self.is_warning_notice() {
+            return Some("⚠");
+        }
         if let Some(header) = self.state.header() {
             let label = header.label.trim().to_lowercase();
             if label == "auto review" {
@@ -289,7 +305,15 @@ impl HistoryCell for PlainHistoryCell {
             }
         }
 
-        lines.extend(message_lines_to_ratatui(self.state.body(), &theme));
+        let mut body_lines = message_lines_to_ratatui(self.state.body(), &theme);
+        if self.is_warning_notice()
+            && let Some(first_line) = body_lines.first_mut()
+            && let Some(first_span) = first_line.spans.first_mut()
+            && let Some(stripped) = first_span.content.as_ref().strip_prefix("⚠ ")
+        {
+            first_span.content = stripped.to_string().into();
+        }
+        lines.extend(body_lines);
         lines
     }
 
@@ -751,10 +775,25 @@ pub(crate) fn new_model_output(model: &str, effort: ReasoningEffort) -> PlainMes
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 
+fn response_model_matches_request(requested_model: &str, response_model: &str) -> bool {
+    let requested = requested_model.trim().to_ascii_lowercase();
+    let response = response_model.trim().to_ascii_lowercase();
+
+    if response == requested {
+        return true;
+    }
+
+    response
+        .strip_prefix(&requested)
+        .is_some_and(|suffix| suffix.starts_with('-') && suffix.len() > 1)
+}
+
 pub(crate) fn new_status_output(
     config: &Config,
     total_usage: &TokenUsage,
     last_usage: &TokenUsage,
+    requested_model: Option<&str>,
+    latest_response_model: Option<&str>,
 ) -> PlainMessageState {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -819,6 +858,43 @@ pub(crate) fn new_status_output(
 
     lines.push(Line::from(""));
 
+    // 🔁 Model routing
+    lines.push(Line::from(vec!["🔁 ".into(), "Model Routing".bold()]));
+    let requested_display = requested_model.unwrap_or(config.model.as_str());
+    lines.push(Line::from(vec![
+        "  • Requested model: ".into(),
+        requested_display.to_string().into(),
+    ]));
+    if let Some(response_model) = latest_response_model {
+        let same_model = response_model_matches_request(requested_display, response_model);
+        let (match_marker, match_label, match_style) = if same_model {
+            (
+                "✓",
+                "requested model matches response",
+                Style::default().fg(colors::success()),
+            )
+        } else {
+            (
+                "✗",
+                "requested model does not match response",
+                Style::default().fg(colors::error()),
+            )
+        };
+        lines.push(Line::from(vec![
+            "  • Latest response model: ".into(),
+            response_model.to_string().into(),
+        ]));
+        lines.push(Line::from(vec![
+            "  • Match: ".into(),
+            Span::styled(format!("{match_marker} {match_label}"), match_style),
+        ]));
+    } else {
+        lines.push(Line::from("  • Latest response model: unavailable"));
+        lines.push(Line::from("  • Match: ? waiting for a completed response"));
+    }
+
+    lines.push(Line::from(""));
+
     // 🔐 Authentication
     lines.push(Line::from(vec!["🔐 ".into(), "Authentication".bold()]));
     {
@@ -869,13 +945,13 @@ pub(crate) fn new_status_output(
     // Input: <input> [+ <cached> cached]
     let mut input_line_spans: Vec<Span<'static>> = vec![
         "  • Input: ".into(),
-        format_with_separators(last_usage.non_cached_input()).into(),
+        format_with_separators_u64(last_usage.non_cached_input()).into(),
     ];
     if last_usage.cached_input_tokens > 0 {
         input_line_spans.push(
             format!(
                 " (+ {} cached)",
-                format_with_separators(last_usage.cached_input_tokens)
+                format_with_separators_u64(last_usage.cached_input_tokens)
             )
             .into(),
         );
@@ -884,16 +960,16 @@ pub(crate) fn new_status_output(
     // Output: <output>
     lines.push(Line::from(vec![
         "  • Output: ".into(),
-        format_with_separators(last_usage.output_tokens).into(),
+        format_with_separators_u64(last_usage.output_tokens).into(),
     ]));
     // Total: <total>
     lines.push(Line::from(vec![
         "  • Total: ".into(),
-        format_with_separators(last_usage.blended_total()).into(),
+        format_with_separators_u64(last_usage.blended_total()).into(),
     ]));
     lines.push(Line::from(vec![
         "  • Session total: ".into(),
-        format_with_separators(total_usage.blended_total()).into(),
+        format_with_separators_u64(total_usage.blended_total()).into(),
     ]));
 
     // 📐 Model Limits
@@ -914,8 +990,8 @@ pub(crate) fn new_status_output(
             };
             lines.push(Line::from(format!(
                 "  • Context window: {} used of {} ({:.0}% full)",
-                format_with_separators(used),
-                format_with_separators(context_window),
+                format_with_separators_u64(used),
+                format_with_separators_u64(context_window),
                 percent_full
             )));
         }
@@ -923,7 +999,7 @@ pub(crate) fn new_status_output(
         if let Some(max_output_tokens) = max_output_tokens {
             lines.push(Line::from(format!(
                 "  • Max output tokens: {}",
-                format_with_separators(max_output_tokens)
+                format_with_separators_u64(max_output_tokens)
             )));
         }
 
@@ -933,8 +1009,8 @@ pub(crate) fn new_status_output(
                 let remaining = limit_u64.saturating_sub(total_usage.total_tokens);
                 lines.push(Line::from(format!(
                     "  • Auto-compact threshold: {} ({} remaining)",
-                    format_with_separators(limit_u64),
-                    format_with_separators(remaining)
+                    format_with_separators_u64(limit_u64),
+                    format_with_separators_u64(remaining)
                 )));
                 if total_usage.total_tokens > limit_u64 {
                     lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
@@ -952,13 +1028,13 @@ pub(crate) fn new_status_output(
                         };
                         lines.push(Line::from(format!(
                             "  • Context window: {} used of {} ({:.0}% left)",
-                            format_with_separators(used),
-                            format_with_separators(window),
+                            format_with_separators_u64(used),
+                            format_with_separators_u64(window),
                             percent_left
                         )));
                         lines.push(Line::from(format!(
                             "  • {} tokens before overflow",
-                            format_with_separators(remaining)
+                            format_with_separators_u64(remaining)
                         )));
                         lines.push(Line::from("  • Auto-compaction runs after overflow errors".to_string()));
                     } else {
@@ -976,9 +1052,15 @@ pub(crate) fn new_status_output(
 
 pub(crate) fn new_warning_event(message: String) -> PlainMessageState {
     let warn_style = Style::default().fg(crate::colors::warning());
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from("notice"));
-    lines.push(Line::from(vec![Span::styled(format!("⚠ {message}"), warn_style)]));
+
+    let mut message_lines = message.lines();
+    if let Some(first) = message_lines.next() {
+        lines.push(Line::from(vec![Span::styled(format!("⚠ {first}"), warn_style)]));
+        lines.extend(message_lines.map(|line| Line::from(vec![Span::styled(line.to_string(), warn_style)])));
+    }
+
     plain_message_state_from_lines(lines, HistoryCellType::Notice)
 }
 

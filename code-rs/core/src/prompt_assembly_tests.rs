@@ -34,8 +34,7 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     /// Helper to create an assistant message
@@ -45,8 +44,7 @@ mod tests {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 
     #[test]

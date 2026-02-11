@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
+use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub enum ParsedCommand {
     Read {
@@ -34,7 +35,11 @@ impl From<ParsedCommand> for code_protocol::parse_command::ParsedCommand {
     fn from(v: ParsedCommand) -> Self {
         use code_protocol::parse_command::ParsedCommand as P;
         match v {
-            ParsedCommand::Read { cmd, name } => P::Read { cmd, name },
+            ParsedCommand::Read { cmd, name } => P::Read {
+                cmd,
+                name: name.clone(),
+                path: PathBuf::from(name),
+            },
             ParsedCommand::ListFiles { cmd, path } => P::ListFiles { cmd, path },
             ParsedCommand::Search { cmd, query, path } => P::Search { cmd, query, path },
             ParsedCommand::ReadCommand { cmd } => P::ReadCommand { cmd },

@@ -7,6 +7,19 @@
 
 - (none)
 
+## [0.6.61] - 2026-02-10
+
+- Core: align auth token schema and websocket errors. (12612630)
+- Sandbox: enforce proxy-aware network routing in sandbox. (3391e5ea)
+- Skills: add SkillPolicy metadata with allow_implicit_invocation support. (91704c56)
+- App Server: use chatgpt_account_id/chatgpt_plan_type for external auth. (53741013)
+
+## [0.6.60] - 2026-02-07
+
+- Core/Version: enforce minimum wire-compatible version and derive it from the announcement tip. (a058583f, e52d8212)
+- Core/Version: strip punctuation when scanning minimum semver for wire compatibility. (56445598)
+- Core/Provider: clamp the OpenAI version header for stability. (95bf1d51)
+
 ## [0.6.59] - 2026-02-06
 
 - Models: add gpt-5.3-codex and bump Claude Opus to 4.6. (3b45488a)

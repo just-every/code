@@ -41,7 +41,7 @@
     "ChatgptAuthTokensRefreshParams": {
       "properties": {
         "previousAccountId": {
-          "description": "Workspace/account identifier that Codex was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint to refresh the token for the correct workspace.\n\nThis may be `null` when the prior ID token did not include a workspace identifier (`chatgpt_account_id`) or when the token could not be parsed.",
+          "description": "Workspace/account identifier that Codex was previously using.\n\nClients that manage multiple accounts/workspaces can use this as a hint to refresh the token for the correct workspace.\n\nThis may be `null` when the prior auth state did not include a workspace identifier (`chatgpt_account_id`).",
           "type": [
             "string",
             "null"
@@ -69,6 +69,26 @@
     },
     "CommandAction": {
       "oneOf": [
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "readCommand"
+              ],
+              "title": "ReadCommandCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "type"
+          ],
+          "title": "ReadCommandCommandAction",
+          "type": "object"
+        },
         {
           "properties": {
             "command": {
@@ -407,6 +427,26 @@
     },
     "ParsedCommand": {
       "oneOf": [
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "read_command"
+              ],
+              "title": "ReadCommandParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cmd",
+            "type"
+          ],
+          "title": "ReadCommandParsedCommand",
+          "type": "object"
+        },
         {
           "properties": {
             "cmd": {

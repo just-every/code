@@ -1,74 +1,25 @@
-//! Compatibility shim for the legacy `code_app_server_protocol` crate.
-//! This crate re-exports the MCP protocol surface that downstream crates
-//! still depend on while the fork finishes migrating to the new structure.
+mod experimental_api;
+mod export;
+mod jsonrpc_lite;
+mod protocol;
+mod schema_fixtures;
 
-pub use code_protocol::mcp_protocol::{
-    self,
-    AddConversationListenerParams,
-    AddConversationSubscriptionResponse,
-    ApplyPatchApprovalParams,
-    ApplyPatchApprovalResponse,
-    ArchiveConversationParams,
-    ArchiveConversationResponse,
-    AuthMode,
-    CancelLoginChatGptParams,
-    CancelLoginChatGptResponse,
-    ClientInfo,
-    ClientNotification,
-    ClientRequest,
-    ConversationId,
-    ExecCommandApprovalParams,
-    ExecCommandApprovalResponse,
-    DynamicToolCallParams,
-    DynamicToolCallResponse,
-    GetAuthStatusParams,
-    GetAuthStatusResponse,
-    GetUserAgentResponse,
-    GetUserSavedConfigResponse,
-    GitDiffToRemoteParams,
-    GitDiffToRemoteResponse,
-    GitSha,
-    InitializeParams,
-    InputItem,
-    InterruptConversationParams,
-    InterruptConversationResponse,
-    ListConversationsParams,
-    ListConversationsResponse,
-    LoginApiKeyParams,
-    LoginChatGptCompleteNotification,
-    LoginChatGptResponse,
-    LogoutChatGptParams,
-    LogoutChatGptResponse,
-    NewConversationParams,
-    NewConversationResponse,
-    Profile,
-    RemoveConversationListenerParams,
-    RemoveConversationSubscriptionResponse,
-    ResumeConversationParams,
-    ResumeConversationResponse,
-    SandboxSettings,
-    SendUserMessageParams,
-    SendUserMessageResponse,
-    SendUserTurnParams,
-    SendUserTurnResponse,
-    ServerNotification,
-    ServerRequest,
-    SessionConfiguredNotification,
-    SetDefaultModelParams,
-    SetDefaultModelResponse,
-    Tools,
-    UserInfoResponse,
-    UserSavedConfig,
-    APPLY_PATCH_APPROVAL_METHOD,
-    EXEC_COMMAND_APPROVAL_METHOD,
-    DYNAMIC_TOOL_CALL_METHOD,
-};
-pub use mcp_types::{
-    JSONRPCError,
-    JSONRPCErrorError,
-    JSONRPCMessage,
-    JSONRPCNotification,
-    JSONRPCRequest,
-    JSONRPCResponse,
-    RequestId,
-};
+pub use experimental_api::*;
+pub use export::GenerateTsOptions;
+pub use export::generate_json;
+pub use export::generate_json_with_experimental;
+pub use export::generate_ts;
+pub use export::generate_ts_with_options;
+pub use export::generate_types;
+pub use jsonrpc_lite::*;
+pub use protocol::common::*;
+pub use protocol::thread_history::*;
+pub use protocol::v1::*;
+pub use protocol::v2::*;
+pub use schema_fixtures::SchemaFixtureOptions;
+pub use schema_fixtures::read_schema_fixture_tree;
+pub use schema_fixtures::write_schema_fixtures;
+pub use schema_fixtures::write_schema_fixtures_with_options;
+// Backward-compatibility alias used by code-rs crates that still import from
+// code-app-server-protocol.
+pub use code_protocol::ConversationId;

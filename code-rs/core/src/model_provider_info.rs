@@ -512,7 +512,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                     [
                         (
                             "version".to_string(),
-                            code_version::version().to_string(),
+                            code_version::wire_compatible_version().to_string(),
                         ),
                     ]
                     .into_iter()
@@ -760,5 +760,17 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn openai_provider_version_header_uses_wire_compatible_version() {
+        let providers = built_in_model_providers();
+        let openai = providers.get("openai").expect("openai provider should exist");
+        let headers = openai.http_headers.as_ref().expect("openai provider should set headers");
+        let version = headers
+            .get("version")
+            .expect("openai provider should include version header");
+
+        assert_eq!(version, code_version::wire_compatible_version());
     }
 }

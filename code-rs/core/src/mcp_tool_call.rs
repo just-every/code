@@ -31,9 +31,8 @@ pub(crate) async fn handle_mcp_tool_call(
                 return ResponseInputItem::FunctionCallOutput {
                     call_id: ctx.call_id.clone(),
                     output: FunctionCallOutputPayload {
-                        content: format!("err: {e}"),
-                        success: Some(false),
-                    },
+                        body: code_protocol::models::FunctionCallOutputBody::Text(format!("err: {e}")),
+                        success: Some(false)},
                 };
             }
         }
@@ -54,11 +53,22 @@ pub(crate) async fn handle_mcp_tool_call(
         .call_tool(&server, &tool_name, arguments_value.clone(), None)
         .await
         .map_err(|e| format!("tool call error: {e}"));
+    let protocol_result = result.clone().and_then(|value| {
+        serde_json::to_value(value)
+            .map_err(|e| format!("failed to encode MCP tool result: {e}"))
+            .and_then(|json| {
+                serde_json::from_value::<code_protocol::mcp::CallToolResult>(json)
+                    .map_err(|e| format!("failed to decode MCP tool result: {e}"))
+            })
+    });
     let tool_call_end_event = EventMsg::McpToolCallEnd(McpToolCallEndEvent { call_id: ctx.call_id.clone(), invocation, duration: start.elapsed(), result: result.clone() });
 
     notify_mcp_tool_call_event(sess, ctx, tool_call_end_event.clone()).await;
 
-    ResponseInputItem::McpToolCallOutput { call_id: ctx.call_id.clone(), result }
+    ResponseInputItem::McpToolCallOutput {
+        call_id: ctx.call_id.clone(),
+        result: protocol_result,
+    }
 }
 
 async fn notify_mcp_tool_call_event(sess: &Session, ctx: &ToolCallCtx, event: EventMsg) {

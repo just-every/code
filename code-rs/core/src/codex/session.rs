@@ -163,6 +163,7 @@ pub(super) struct State {
     pub(super) next_internal_sub_id: u64,
     pub(super) token_usage_info: Option<TokenUsageInfo>,
     pub(super) latest_rate_limits: Option<RateLimitSnapshotEvent>,
+    pub(super) last_model_reroute_notice: Option<(String, String)>,
     pub(super) pending_manual_compacts: VecDeque<String>,
     pub(super) wait_interrupt_epoch: u64,
     pub(super) wait_interrupt_reason: Option<WaitInterruptReason>,
@@ -527,8 +528,7 @@ impl Session {
         let message = ResponseItem::Message {
             id: None,
             role: "developer".to_string(),
-            content: vec![ContentItem::InputText { text }],
-        };
+            content: vec![ContentItem::InputText { text }], end_turn: None, phase: None};
         self.record_conversation_items(&[message]).await;
     }
 
@@ -1357,7 +1357,13 @@ impl Session {
                 true
             })
             .map(|item| {
-                if let ResponseItem::Message { id, role, content } = item {
+                if let ResponseItem::Message {
+                    id,
+                    role,
+                    content,
+                    ..
+                } = item
+                {
                     if role == "user" {
                         // Filter out ephemeral content from user messages
                         let mut filtered_content: Vec<ContentItem> = Vec::new();
@@ -1389,11 +1395,16 @@ impl Session {
                         ResponseItem::Message {
                             id,
                             role,
-                            content: filtered_content,
-                        }
+                            content: filtered_content, end_turn: None, phase: None}
                     } else {
                         // Keep assistant messages unchanged
-                        ResponseItem::Message { id, role, content }
+                        ResponseItem::Message {
+                            id,
+                            role,
+                            content,
+                            end_turn: None,
+                            phase: None,
+                        }
                     }
                 } else {
                     item
@@ -1426,8 +1437,7 @@ impl Session {
             .get_auth_manager()
             .and_then(|manager| manager.auth())
             .map(|auth| auth.mode);
-        let sanitize_encrypted_reasoning =
-            !current_auth_mode.is_some_and(AuthMode::is_chatgpt);
+        let sanitize_encrypted_reasoning = !current_auth_mode.is_some_and(|mode| mode.is_chatgpt());
 
         if sanitize_encrypted_reasoning {
             let mut stripped = 0usize;
@@ -1766,8 +1776,7 @@ impl Session {
                             role: "user".to_string(),
                             content: vec![ContentItem::InputText {
                                 text: user_msg_event.message.clone(),
-                            }],
-                        };
+                            }], end_turn: None, phase: None};
                         process_rollout_env_item(&mut replay_ctx, &response_item);
                         history.push(response_item);
                     }
@@ -1896,7 +1905,7 @@ impl Session {
         tool: &str,
         arguments: Option<serde_json::Value>,
         timeout: Option<Duration>,
-    ) -> anyhow::Result<CallToolResult> {
+    ) -> anyhow::Result<mcp_types::CallToolResult> {
         self.mcp_connection_manager
             .call_tool(server, tool, arguments, timeout)
             .await

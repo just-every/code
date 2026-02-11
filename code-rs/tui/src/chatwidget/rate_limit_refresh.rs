@@ -9,6 +9,7 @@ use code_core::config::Config;
 use code_core::config_types::ReasoningEffort;
 use code_core::debug_logger::DebugLogger;
 use code_core::protocol::{Event, EventMsg, RateLimitSnapshotEvent, TokenCountEvent};
+use code_login::AuthMode;
 use code_protocol::models::{ContentItem, ResponseItem};
 use chrono::Utc;
 use futures::StreamExt;
@@ -124,9 +125,9 @@ fn run_refresh(
             }
             None => {
                 let auth_mode = if config.using_chatgpt_auth {
-                    code_protocol::mcp_protocol::AuthMode::ChatGPT
+                    AuthMode::ChatGPT
                 } else {
-                    code_protocol::mcp_protocol::AuthMode::ApiKey
+                    AuthMode::ApiKey
                 };
                 (
                     AuthManager::shared_with_mode_and_originator(
@@ -151,6 +152,8 @@ fn run_refresh(
             content: vec![ContentItem::InputText {
                 text: "Yield immediately with only the message \"ok\"".to_string(),
             }],
+            end_turn: None,
+            phase: None,
         });
         prompt.set_log_tag("tui/rate_limit_refresh");
 

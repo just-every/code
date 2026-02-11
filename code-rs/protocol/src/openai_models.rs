@@ -1,3 +1,8 @@
+//! Shared model metadata types exchanged between Codex services and clients.
+//!
+//! These types are serialized across core, TUI, app-server, and SDK boundaries, so field defaults
+//! are used to preserve compatibility when older payloads omit newly introduced attributes.
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -68,6 +73,9 @@ pub enum InputModality {
 }
 
 /// Backward-compatible default when `input_modalities` is omitted on the wire.
+///
+/// Legacy payloads predate modality metadata, so we conservatively assume both text and images are
+/// accepted unless a preset explicitly narrows support.
 pub fn default_input_modalities() -> Vec<InputModality> {
     vec![InputModality::Text, InputModality::Image]
 }
@@ -111,11 +119,11 @@ pub struct ModelPreset {
     pub supports_personality: bool,
     /// Whether this is the default model for new users.
     pub is_default: bool,
-    /// Recommended upgrade model.
+    /// recommended upgrade model
     pub upgrade: Option<ModelUpgrade>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
-    /// Whether this model is supported in the API.
+    /// whether this model is supported in the api
     pub supported_in_api: bool,
     /// Input modalities accepted when composing user turns for this preset.
     #[serde(default = "default_input_modalities")]
@@ -379,6 +387,7 @@ impl From<ModelInfo> for ModelPreset {
                     &info.supported_reasoning_levels,
                 ),
                 migration_config_key: info.slug.clone(),
+                // todo(aibrahim): add the model link here.
                 model_link: None,
                 upgrade_copy: None,
                 migration_markdown: Some(upgrade.migration_markdown.clone()),
@@ -459,14 +468,199 @@ fn effort_rank(effort: ReasoningEffort) -> i32 {
 }
 
 fn nearest_effort(target: ReasoningEffort, supported: &[ReasoningEffort]) -> ReasoningEffort {
-    let mut best = supported[0];
-    let mut best_distance = i32::MAX;
-    for &effort in supported {
-        let distance = (effort_rank(effort) - effort_rank(target)).abs();
-        if distance < best_distance {
-            best = effort;
-            best_distance = distance;
+    let target_rank = effort_rank(target);
+    supported
+        .iter()
+        .copied()
+        .min_by_key(|candidate| (effort_rank(*candidate) - target_rank).abs())
+        .unwrap_or(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    fn test_model(spec: Option<ModelMessages>) -> ModelInfo {
+        ModelInfo {
+            slug: "test-model".to_string(),
+            display_name: "Test Model".to_string(),
+            description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: vec![],
+            shell_type: ConfigShellToolType::ShellCommand,
+            visibility: ModelVisibility::List,
+            supported_in_api: true,
+            priority: 1,
+            upgrade: None,
+            base_instructions: "base".to_string(),
+            model_messages: spec,
+            supports_reasoning_summaries: false,
+            support_verbosity: false,
+            default_verbosity: None,
+            apply_patch_tool_type: None,
+            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            supports_parallel_tool_calls: false,
+            context_window: None,
+            auto_compact_token_limit: None,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: vec![],
+            input_modalities: default_input_modalities(),
         }
     }
-    best
+
+    fn personality_variables() -> ModelInstructionsVariables {
+        ModelInstructionsVariables {
+            personality_default: Some("default".to_string()),
+            personality_friendly: Some("friendly".to_string()),
+            personality_pragmatic: Some("pragmatic".to_string()),
+        }
+    }
+
+    #[test]
+    fn get_model_instructions_uses_template_when_placeholder_present() {
+        let model = test_model(Some(ModelMessages {
+            instructions_template: Some("Hello {{ personality }}".to_string()),
+            instructions_variables: Some(personality_variables()),
+        }));
+
+        let instructions = model.get_model_instructions(Some(Personality::Friendly));
+
+        assert_eq!(instructions, "Hello friendly");
+    }
+
+    #[test]
+    fn get_model_instructions_always_strips_placeholder() {
+        let model = test_model(Some(ModelMessages {
+            instructions_template: Some("Hello\n{{ personality }}".to_string()),
+            instructions_variables: Some(ModelInstructionsVariables {
+                personality_default: None,
+                personality_friendly: Some("friendly".to_string()),
+                personality_pragmatic: None,
+            }),
+        }));
+        assert_eq!(
+            model.get_model_instructions(Some(Personality::Friendly)),
+            "Hello\nfriendly"
+        );
+        assert_eq!(
+            model.get_model_instructions(Some(Personality::Pragmatic)),
+            "Hello\n"
+        );
+        assert_eq!(
+            model.get_model_instructions(Some(Personality::None)),
+            "Hello\n"
+        );
+        assert_eq!(model.get_model_instructions(None), "Hello\n");
+
+        let model_no_personality = test_model(Some(ModelMessages {
+            instructions_template: Some("Hello\n{{ personality }}".to_string()),
+            instructions_variables: Some(ModelInstructionsVariables {
+                personality_default: None,
+                personality_friendly: None,
+                personality_pragmatic: None,
+            }),
+        }));
+        assert_eq!(
+            model_no_personality.get_model_instructions(Some(Personality::Friendly)),
+            "Hello\n"
+        );
+        assert_eq!(
+            model_no_personality.get_model_instructions(Some(Personality::Pragmatic)),
+            "Hello\n"
+        );
+        assert_eq!(
+            model_no_personality.get_model_instructions(Some(Personality::None)),
+            "Hello\n"
+        );
+        assert_eq!(model_no_personality.get_model_instructions(None), "Hello\n");
+    }
+
+    #[test]
+    fn get_model_instructions_falls_back_when_template_is_missing() {
+        let model = test_model(Some(ModelMessages {
+            instructions_template: None,
+            instructions_variables: Some(ModelInstructionsVariables {
+                personality_default: None,
+                personality_friendly: None,
+                personality_pragmatic: None,
+            }),
+        }));
+
+        let instructions = model.get_model_instructions(Some(Personality::Friendly));
+
+        assert_eq!(instructions, "base");
+    }
+
+    #[test]
+    fn get_personality_message_returns_default_when_personality_is_none() {
+        let personality_template = personality_variables();
+        assert_eq!(
+            personality_template.get_personality_message(None),
+            Some("default".to_string())
+        );
+    }
+
+    #[test]
+    fn get_personality_message() {
+        let personality_variables = personality_variables();
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Friendly)),
+            Some("friendly".to_string())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Pragmatic)),
+            Some("pragmatic".to_string())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::None)),
+            Some(String::new())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(None),
+            Some("default".to_string())
+        );
+
+        let personality_variables = ModelInstructionsVariables {
+            personality_default: Some("default".to_string()),
+            personality_friendly: None,
+            personality_pragmatic: None,
+        };
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Friendly)),
+            None
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Pragmatic)),
+            None
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::None)),
+            Some(String::new())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(None),
+            Some("default".to_string())
+        );
+
+        let personality_variables = ModelInstructionsVariables {
+            personality_default: None,
+            personality_friendly: Some("friendly".to_string()),
+            personality_pragmatic: Some("pragmatic".to_string()),
+        };
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Friendly)),
+            Some("friendly".to_string())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::Pragmatic)),
+            Some("pragmatic".to_string())
+        );
+        assert_eq!(
+            personality_variables.get_personality_message(Some(Personality::None)),
+            Some(String::new())
+        );
+        assert_eq!(personality_variables.get_personality_message(None), None);
+    }
 }
+

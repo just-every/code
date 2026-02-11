@@ -87,7 +87,7 @@ pub fn originator() -> Originator {
 }
 
 pub fn get_code_user_agent(originator_override: Option<&str>) -> String {
-    let build_version = code_version::version();
+    let build_version = code_version::wire_compatible_version();
     let os_info = os_info::get();
     let originator_value = originator_override
         .map(str::to_string)
@@ -225,6 +225,18 @@ mod tests {
         with_originator_env_cleared(|| {
             let user_agent = get_code_user_agent(None);
             assert!(user_agent.starts_with(&format!("{DEFAULT_ORIGINATOR}/")));
+        });
+    }
+
+    #[test]
+    fn test_get_code_user_agent_uses_wire_compatible_version() {
+        with_originator_env_cleared(|| {
+            let user_agent = get_code_user_agent(None);
+            let expected = format!("{DEFAULT_ORIGINATOR}/{}", code_version::wire_compatible_version());
+            assert!(
+                user_agent.starts_with(&expected),
+                "expected user-agent to start with {expected}, got {user_agent}"
+            );
         });
     }
 

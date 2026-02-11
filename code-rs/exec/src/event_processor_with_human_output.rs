@@ -25,7 +25,7 @@ use code_protocol::protocol::TurnAbortReason;
 use code_core::protocol::TurnDiffEvent;
 use code_core::protocol::WebSearchBeginEvent;
 use code_core::protocol::WebSearchCompleteEvent;
-use code_protocol::num_format::format_with_separators;
+use code_protocol::num_format::format_with_separators_u64;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
@@ -56,6 +56,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
 
     magenta: Style,
     red: Style,
+    yellow: Style,
     green: Style,
     cyan: Style,
 
@@ -94,6 +95,7 @@ impl EventProcessorWithHumanOutput {
                 dimmed: Style::new().dimmed(),
                 magenta: Style::new().magenta(),
                 red: Style::new().red(),
+                yellow: Style::new().yellow(),
                 green: Style::new().green(),
                 cyan: Style::new().cyan(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
@@ -115,6 +117,7 @@ impl EventProcessorWithHumanOutput {
                 dimmed: Style::new(),
                 magenta: Style::new(),
                 red: Style::new(),
+                yellow: Style::new(),
                 green: Style::new(),
                 cyan: Style::new(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
@@ -199,6 +202,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 let prefix = "ERROR:".style(self.red);
                 ts_println!(self, "{prefix} {message}");
             }
+            EventMsg::Warning(code_core::protocol::WarningEvent { message }) => {
+                let prefix = "WARNING:".style(self.yellow);
+                ts_println!(self, "{prefix} {message}");
+            }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!(self, "{}", message.style(self.dimmed));
             }
@@ -247,7 +254,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     ts_println!(
                         self,
                         "tokens used: {}",
-                        format_with_separators(usage_info.total_token_usage.blended_total())
+                        format_with_separators_u64(usage_info.total_token_usage.blended_total())
                     );
                 }
             }
@@ -607,7 +614,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 println!();
             }
             EventMsg::PlanUpdate(plan_update_event) => {
-                let UpdatePlanArgs { name, plan } = plan_update_event;
+                let UpdatePlanArgs { name, plan, .. } = plan_update_event;
                 ts_println!(self, "name: {name:?}");
                 ts_println!(self, "plan: {plan:?}");
             }
@@ -692,15 +699,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "review".style(self.magenta),
                     "started".style(self.bold),
                 );
-                if let Some(scope) = request
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.scope.as_ref())
-                {
-                    println!("{} {}", "scope:".style(self.dimmed), scope.style(self.dimmed));
-                }
-                if !request.user_facing_hint.trim().is_empty() {
-                    println!("{}", request.user_facing_hint.trim().style(self.dimmed));
+                if let Some(hint) = request.user_facing_hint.as_deref() {
+                    let trimmed = hint.trim();
+                    if !trimmed.is_empty() {
+                        println!("{}", trimmed.style(self.dimmed));
+                    }
                 }
             }
             EventMsg::ExitedReviewMode(event) => {
@@ -812,6 +815,7 @@ mod tests {
             magenta: Style::new(),
             red: Style::new(),
             green: Style::new(),
+            yellow: Style::new(),
             cyan: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,

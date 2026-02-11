@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 code-common = { path = "../common", features = ["elapsed"] }
 code-core = { path = "../core" }
+code-app-server-protocol = { workspace = true }
 code-git-tooling = { path = "../git-tooling" }
 code-protocol = { path = "../protocol" }
 futures = { workspace = true }

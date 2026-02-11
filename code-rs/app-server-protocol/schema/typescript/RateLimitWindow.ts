@@ -12,6 +12,10 @@ used_percent: number,
  */
 window_minutes: number | null, 
 /**
+ * Legacy relative reset in seconds.
+ */
+resets_in_seconds?: number, 
+/**
  * Unix timestamp (seconds since epoch) when the window resets.
  */
-resets_at: number | null, };
+resets_at?: number, };

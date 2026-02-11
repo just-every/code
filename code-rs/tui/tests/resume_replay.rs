@@ -34,6 +34,8 @@ fn message(role: &str, text: &str) -> ResponseItem {
         id: None,
         role: role.to_string(),
         content: vec![content],
+        end_turn: None,
+        phase: None,
     }
 }
 

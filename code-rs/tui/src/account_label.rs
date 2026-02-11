@@ -1,5 +1,5 @@
 use code_core::auth_accounts::StoredAccount;
-use code_protocol::mcp_protocol::AuthMode;
+use code_login::AuthMode;
 
 const KEY_SUFFIX_LEN: usize = 8;
 

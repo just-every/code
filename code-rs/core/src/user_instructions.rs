@@ -36,8 +36,7 @@ impl From<UserInstructions> for ResponseItem {
                 text: format!(
                     "{USER_INSTRUCTIONS_PREFIX}{directory}\n\n<INSTRUCTIONS>\n{contents}\n</INSTRUCTIONS>",
                 ),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 }
 
@@ -61,8 +60,7 @@ impl From<SkillInstructions> for ResponseItem {
                 text: format!(
                     "<skill>\n<name>{name}</name>\n<path>{path}</path>\n{contents}\n</skill>",
                 ),
-            }],
-        }
+            }], end_turn: None, phase: None}
     }
 }
 

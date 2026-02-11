@@ -10,6 +10,8 @@ pub(crate) fn should_persist_rollout_item(item: &RolloutItem) -> bool {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
         RolloutItem::Event(ev) => event_msg_from_protocol(&ev.msg)
             .is_some_and(|msg| should_persist_event_msg(&msg)),
+        RolloutItem::EventMsg(msg) => event_msg_from_protocol(msg)
+            .is_some_and(|event| should_persist_event_msg(&event)),
         // Always persist session meta
         RolloutItem::SessionMeta(_) => true,
         // Persist compacted summaries and turn context for accurate history reconstruction.
@@ -29,6 +31,7 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::CompactionSummary { .. }
+        | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::WebSearchCall { .. } => true,
         ResponseItem::Other => false,
     }

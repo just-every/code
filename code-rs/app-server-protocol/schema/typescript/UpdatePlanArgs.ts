@@ -5,6 +5,10 @@ import type { PlanItemArg } from "./PlanItemArg";
 
 export type UpdatePlanArgs = { 
 /**
- * Arguments for the `update_plan` todo/checklist tool (not plan mode).
+ * Legacy field name used by existing clients.
+ */
+name: string | null, 
+/**
+ * Optional note used by newer clients; when provided it supersedes `name`.
  */
 explanation: string | null, plan: Array<PlanItemArg>, };

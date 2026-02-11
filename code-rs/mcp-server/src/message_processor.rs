@@ -19,7 +19,7 @@ use crate::session_store::SessionMap;
 use agent_client_protocol as acp;
 use anyhow::anyhow;
 use anyhow::Context as _;
-use code_app_server_protocol::ClientRequest;
+use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::ConversationId;
 use code_protocol::protocol::SessionSource;
 

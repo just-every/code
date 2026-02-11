@@ -1,7 +1,8 @@
 [package]
-edition = "2024"
 name = "code-protocol"
-version = { workspace = true }
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [lib]
 name = "code_protocol"
@@ -11,11 +12,15 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-base64 = { workspace = true }
+code-git-tooling = { workspace = true }
+code-execpolicy = { workspace = true }
+code-utils-absolute-path = { workspace = true }
+code-utils-image = { workspace = true }
 icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
-mcp-types = { workspace = true }
+icu_provider = { workspace = true, features = ["sync"] }
 mime_guess = { workspace = true }
+mcp-types = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -29,13 +34,15 @@ ts-rs = { workspace = true, features = [
     "serde-json-impl",
     "no-serde-warnings",
 ] }
-uuid = { workspace = true, features = ["serde", "v4", "v7"] }
+uuid = { workspace = true, features = ["serde", "v7", "v4"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
 
 [package.metadata.cargo-shear]
-# Required because the not imported as strum_macros in non-nightly builds.
-ignored = ["strum"]
+# Required because:
+# `icu_provider`: contains a required `sync` feature for `icu_decimal`
+# `strum`: as strum_macros in non-nightly builds
+ignored = ["icu_provider", "strum"]
