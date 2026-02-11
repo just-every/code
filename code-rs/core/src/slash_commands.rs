@@ -2,6 +2,7 @@ use crate::agent_defaults::agent_model_spec;
 use crate::agent_defaults::enabled_agent_model_specs;
 use crate::config_types::AgentConfig;
 use crate::config_types::SubagentCommandConfig;
+use crate::external_agent_command_exists;
 
 // NOTE: These are the prompt formatters for the prompt‑expanding slash commands
 // (/plan, /solve, /code). If you add or change a slash command, please update
@@ -9,34 +10,7 @@ use crate::config_types::SubagentCommandConfig;
 // with the UI and behavior.
 
 fn command_exists(cmd: &str) -> bool {
-    if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
-        return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        which::which(cmd).map(|p| p.is_file()).unwrap_or(false)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let Some(path_os) = std::env::var_os("PATH") else {
-            return false;
-        };
-        for dir in std::env::split_paths(&path_os) {
-            if dir.as_os_str().is_empty() {
-                continue;
-            }
-            let candidate = dir.join(cmd);
-            if let Ok(meta) = std::fs::metadata(&candidate) {
-                if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
+    external_agent_command_exists(cmd)
 }
 
 /// Get the list of enabled agent names from the configuration
@@ -293,29 +267,78 @@ pub fn handle_slash_command(input: &str, agents: Option<&[AgentConfig]>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{LazyLock, Mutex};
+    use tempfile::tempdir;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn restore_var(name: &str, value: Option<OsString>) {
+        match value {
+            Some(v) => unsafe { std::env::set_var(name, v) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
 
     #[test]
     fn default_models_skip_missing_agent_clis() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let orig_path = std::env::var_os("PATH");
+        let orig_home = std::env::var_os("HOME");
+        let orig_claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let fake_home = tempdir().expect("temp home");
+
         unsafe {
             std::env::set_var("PATH", "");
+            std::env::set_var("HOME", fake_home.path());
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
 
         let defaults = get_default_models();
         assert!(defaults.iter().any(|v| v == "code-gpt-5.2"));
+        assert!(defaults.iter().any(|v| v == "code-gpt-5.3-codex"));
         assert!(!defaults.iter().any(|v| v == "qwen-3-coder"));
         assert!(!defaults.iter().any(|v| v == "gemini-3-flash"));
         assert!(!defaults.iter().any(|v| v == "claude-sonnet-4.5"));
 
-        if let Some(path) = orig_path {
-            unsafe {
-                std::env::set_var("PATH", path);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("PATH");
-            }
+        restore_var("PATH", orig_path);
+        restore_var("HOME", orig_home);
+        restore_var("CLAUDE_CONFIG_DIR", orig_claude_config_dir);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn default_models_include_claude_when_home_fallback_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let orig_path = std::env::var_os("PATH");
+        let orig_home = std::env::var_os("HOME");
+        let orig_claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+
+        let fake_home = tempdir().expect("temp home");
+        let claude_dir = fake_home.path().join(".claude").join("local");
+        std::fs::create_dir_all(&claude_dir).expect("create fallback dir");
+        let claude_path = claude_dir.join("claude");
+        std::fs::write(&claude_path, "#!/bin/sh\nexit 0\n").expect("write fallback binary");
+        let mut perms = std::fs::metadata(&claude_path)
+            .expect("stat fallback binary")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&claude_path, perms).expect("chmod fallback binary");
+
+        unsafe {
+            std::env::set_var("PATH", "");
+            std::env::set_var("HOME", fake_home.path());
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
+
+        let defaults = get_default_models();
+        assert!(defaults.iter().any(|v| v == "claude-sonnet-4.5"));
+
+        restore_var("PATH", orig_path);
+        restore_var("HOME", orig_home);
+        restore_var("CLAUDE_CONFIG_DIR", orig_claude_config_dir);
     }
 
     #[test]
@@ -327,6 +350,7 @@ mod tests {
         assert!(plan_prompt.contains("final, comprehensive plan"));
         // Default agents list should include non-Codex providers when no [[agents]] configured
         assert!(plan_prompt.contains("code-gpt-5.2"));
+        assert!(plan_prompt.contains("code-gpt-5.3-codex"));
         assert!(!plan_prompt.contains("cloud-gpt-5.1-codex-max"));
 
         // Test /solve command

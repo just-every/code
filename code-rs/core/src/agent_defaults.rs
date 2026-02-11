@@ -35,7 +35,7 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.2",
-    "code-gpt-5.2-codex",
+    "code-gpt-5.3-codex",
     "claude-opus-4.6",
     "gemini-3-pro",
     // Straightforward / cost-aware
@@ -107,18 +107,20 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         is_frontline: true,
     },
     AgentModelSpec {
-        slug: "code-gpt-5.2-codex",
+        slug: "code-gpt-5.3-codex",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
-        model_args: &["--model", "gpt-5.2-codex"],
+        model_args: &["--model", "gpt-5.3-codex"],
         description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
         enabled_by_default: true,
         aliases: &[
+            "code-gpt-5.2-codex",
             "code-gpt-5.1-codex-max",
             "code-gpt-5.1-codex",
             "code-gpt-5-codex",
+            "gpt-5.3-codex",
             "gpt-5.2-codex",
             "gpt-5.1-codex-max",
             "gpt-5.1-codex",
@@ -444,10 +446,17 @@ mod tests {
     #[test]
     fn gpt_codex_aliases_resolve() {
         let codex = agent_model_spec("gpt-5.1-codex").expect("alias for codex present");
-        assert_eq!(codex.slug, "code-gpt-5.2-codex");
+        assert_eq!(codex.slug, "code-gpt-5.3-codex");
 
         let codex_direct = agent_model_spec("gpt-5.1-codex-max").expect("codex present");
-        assert_eq!(codex_direct.slug, "code-gpt-5.2-codex");
+        assert_eq!(codex_direct.slug, "code-gpt-5.3-codex");
+
+        let codex_upgrade = agent_model_spec("gpt-5.2-codex").expect("upgrade alias present");
+        assert_eq!(codex_upgrade.slug, "code-gpt-5.3-codex");
+
+        let codex_slug_upgrade =
+            agent_model_spec("code-gpt-5.2-codex").expect("slug upgrade alias present");
+        assert_eq!(codex_slug_upgrade.slug, "code-gpt-5.3-codex");
 
         let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
         assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");
