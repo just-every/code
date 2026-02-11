@@ -249,6 +249,9 @@ pub struct ModelInfo {
     /// Input modalities accepted by the backend for this model.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    /// When true, this model should prefer websocket transport when available.
+    #[serde(default)]
+    pub prefer_websockets: bool,
 }
 
 impl ModelInfo {
@@ -506,6 +509,7 @@ mod tests {
             effective_context_window_percent: 95,
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
+            prefer_websockets: false,
         }
     }
 
@@ -663,4 +667,3 @@ mod tests {
         assert_eq!(personality_variables.get_personality_message(None), None);
     }
 }
-

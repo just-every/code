@@ -455,7 +455,34 @@ impl ModelClient {
             .as_deref()
             .or(prompt.log_tag.as_deref());
         match self.provider.wire_api {
-            WireApi::Responses => self.stream_responses(prompt, log_tag).await,
+            WireApi::Responses => {
+                let prefer_websockets = prompt
+                    .model_family_override
+                    .as_ref()
+                    .map(|family| family.prefer_websockets)
+                    .or_else(|| {
+                        prompt
+                            .model_override
+                            .as_deref()
+                            .and_then(find_family_for_model)
+                            .map(|family| family.prefer_websockets)
+                    })
+                    .unwrap_or(self.config.model_family.prefer_websockets);
+
+                if prefer_websockets {
+                    match self.stream_responses_websocket(prompt, log_tag).await {
+                        Ok(stream) => Ok(stream),
+                        Err(err) => {
+                            warn!(
+                                "preferred websocket transport failed; falling back to responses HTTP stream: {err}"
+                            );
+                            self.stream_responses(prompt, log_tag).await
+                        }
+                    }
+                } else {
+                    self.stream_responses(prompt, log_tag).await
+                }
+            }
             WireApi::ResponsesWebsocket => self.stream_responses_websocket(prompt, log_tag).await,
             WireApi::Chat => {
                 let effective_family = prompt

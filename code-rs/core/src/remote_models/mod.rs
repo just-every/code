@@ -383,6 +383,7 @@ fn apply_model_info_overrides_with_personality(
 
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
+    family.prefer_websockets = info.prefer_websockets;
     if let Some(effort) = info.default_reasoning_level {
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
     }

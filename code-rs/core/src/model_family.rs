@@ -68,6 +68,9 @@ pub struct ModelFamily {
     /// Responses API.
     pub supports_parallel_tool_calls: bool,
 
+    /// Prefer websocket transport for this model when supported by the provider.
+    pub prefer_websockets: bool,
+
     // This should be set to true when the model expects a tool named
     // "local_shell" to be provided. Its contract must be understood natively by
     // the model such that its description can be omitted.
@@ -122,6 +125,7 @@ macro_rules! model_family {
             supports_reasoning_summaries: false,
             default_reasoning_effort: None,
             supports_parallel_tool_calls: false,
+            prefer_websockets: false,
             uses_local_shell_tool: false,
             apply_patch_tool_type: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
@@ -349,6 +353,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         supports_reasoning_summaries: false,
         default_reasoning_effort: None,
         supports_parallel_tool_calls: false,
+        prefer_websockets: false,
         uses_local_shell_tool: false,
         apply_patch_tool_type: None,
         base_instructions: BASE_INSTRUCTIONS.to_string(),

@@ -676,6 +676,8 @@ fn rate_limit_snapshot_to_protocol(
         resets_at: None,
     };
     code_protocol::protocol::RateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
         primary: Some(primary),
         secondary: Some(secondary),
         credits: None,
