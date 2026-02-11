@@ -1,16 +1,17 @@
-## @just-every/code v0.6.62
-This release expands app-server capabilities and improves model routing diagnostics.
+## @just-every/code v0.6.63
+This release improves websocket stability, rate-limit handling, and TUI behavior.
 
 ### Changes
-- App Server: add app-server support for client connections.
-- App Server: wire the Linux sandbox executable into config.
-- Model Routing: surface reroute warnings and status models.
-- Core/Agents: resolve Claude from home fallback paths.
+- Core: support multiple rate limits.
+- Core/Protocol: add websocket preference and rate-limit metadata; serialize rate-limit ids as nullable.
+- Core/Websocket: avoid resending output items and tighten incrementality checks.
+- TUI: queue rollback trims in app-event order and keep history recall cursor at line end.
+- Exec Policy: reject empty command lists and honor never-prompt approval policy.
 
 ### Install
-```sh
+```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.61...v0.6.62
+Compare: https://github.com/just-every/code/compare/v0.6.62...v0.6.63
