@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.64] - 2026-02-11
+
+- TUI: normalize agent alias slugs in summary counts. (b8449aeb)
+- Core: default Codex to gpt-5.3 and align CLI checks. (9807d30d)
+
 ## [0.6.63] - 2026-02-11
 
 - Core: support multiple rate limits. (fdd0cd1d)
