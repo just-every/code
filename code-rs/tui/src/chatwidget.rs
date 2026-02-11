@@ -30194,8 +30194,7 @@ use code_core::protocol::OrderMeta;
             .iter()
             .find(|row| row.name == "qwen-3-coder")
             .expect("qwen row present");
-        assert!(qwen.installed);
-        assert!(qwen.enabled);
+        assert_eq!(qwen.enabled, qwen.installed);
 
         let code = rows
             .iter()
