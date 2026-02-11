@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.65] - 2026-02-11
+
+- CLI/Env: stop traversing parent .env files at startup. (04c45da1)
+- CLI/Env: exclude more provider keys from project dotenv. (3127a576)
+
 ## [0.6.64] - 2026-02-11
 
 - TUI: normalize agent alias slugs in summary counts. (b8449aeb)
