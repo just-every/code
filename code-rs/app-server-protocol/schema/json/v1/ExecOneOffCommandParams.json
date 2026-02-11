@@ -79,6 +79,11 @@
         {
           "description": "Same as `ReadOnly` but additionally grants write access to the current working directory (\"workspace\").",
           "properties": {
+            "allow_git_writes": {
+              "default": false,
+              "description": "Whether sandboxed commands may perform write operations via Git.",
+              "type": "boolean"
+            },
             "exclude_slash_tmp": {
               "default": false,
               "description": "When set to `true`, will NOT include the `/tmp` among the default writable roots on UNIX. Defaults to `false`.",

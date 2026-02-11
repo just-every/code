@@ -1074,10 +1074,28 @@ mod tests {
     use crate::config_types::SandboxMode;
     use crate::protocol::AskForApproval;
     use anyhow::Result;
+    use codex_execpolicy::PolicyParser;
     use codex_execpolicy::Policy;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    fn empty_exec_policy() -> Policy {
+        codex_execpolicy::get_default_policy().expect("default policy")
+    }
+
+    fn exec_policy_with_programs(programs: impl IntoIterator<Item = String>) -> Policy {
+        let mut source = String::new();
+        for program in programs {
+            source.push_str(&format!(
+                "define_program(\n    program=\"{program}\",\n    args=[],\n)\n"
+            ));
+        }
+
+        PolicyParser::new("#test", &source)
+            .parse()
+            .expect("policy with programs")
+    }
 
     #[test]
     fn convert_mcp_content_to_items_preserves_data_urls() {
@@ -1203,7 +1221,7 @@ mod tests {
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Enabled,
             AskForApproval::OnRequest,
-            &Policy::empty(),
+            &empty_exec_policy(),
             false,
             None,
         );
@@ -1226,12 +1244,13 @@ mod tests {
             network_access: true,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
+            allow_git_writes: false,
         };
 
         let instructions = DeveloperInstructions::from_policy(
             &policy,
             AskForApproval::UnlessTrusted,
-            &Policy::empty(),
+            &empty_exec_policy(),
             false,
             &PathBuf::from("/tmp"),
         );
@@ -1242,13 +1261,7 @@ mod tests {
 
     #[test]
     fn includes_request_rule_instructions_when_enabled() {
-        let mut exec_policy = Policy::empty();
-        exec_policy
-            .add_prefix_rule(
-                &["git".to_string(), "pull".to_string()],
-                codex_execpolicy::Decision::Allow,
-            )
-            .expect("add rule");
+        let exec_policy = exec_policy_with_programs(["git".to_string()]);
         let instructions = DeveloperInstructions::from_permissions_with_network(
             SandboxMode::WorkspaceWrite,
             NetworkAccess::Enabled,
@@ -1261,7 +1274,7 @@ mod tests {
         let text = instructions.into_text();
         assert!(text.contains("prefix_rule"));
         assert!(text.contains("Approved command prefixes"));
-        assert!(text.contains(r#"["git", "pull"]"#));
+        assert!(text.contains(r#"["git"]"#));
     }
 
     #[test]
@@ -1302,15 +1315,8 @@ mod tests {
 
     #[test]
     fn format_allow_prefixes_limits_output() {
-        let mut exec_policy = Policy::empty();
-        for i in 0..200 {
-            exec_policy
-                .add_prefix_rule(
-                    &[format!("tool-{i:03}"), "x".repeat(500)],
-                    codex_execpolicy::Decision::Allow,
-                )
-                .expect("add rule");
-        }
+        let exec_policy =
+            exec_policy_with_programs((0..200).map(|i| format!("tool-{i:03}")));
 
         let output =
             format_allow_prefixes(exec_policy.get_allowed_prefixes()).expect("formatted prefixes");

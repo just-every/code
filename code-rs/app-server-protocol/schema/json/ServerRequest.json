@@ -74,6 +74,26 @@
             "command": {
               "type": "string"
             },
+            "type": {
+              "enum": [
+                "readCommand"
+              ],
+              "title": "ReadCommandCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "type"
+          ],
+          "title": "ReadCommandCommandAction",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
             "name": {
               "type": "string"
             },
@@ -407,6 +427,26 @@
     },
     "ParsedCommand": {
       "oneOf": [
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "read_command"
+              ],
+              "title": "ReadCommandParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cmd",
+            "type"
+          ],
+          "title": "ReadCommandParsedCommand",
+          "type": "object"
+        },
         {
           "properties": {
             "cmd": {

@@ -9,7 +9,7 @@ use code_protocol::protocol::{
     EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
     SessionMetaLine, SessionSource, UserMessageEvent,
 };
-use code_protocol::ConversationId;
+use code_protocol::ThreadId;
 use filetime::{set_file_mtime, FileTime};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -34,13 +34,16 @@ fn write_rollout_transcript(
     let path = sessions_dir.join(filename);
 
     let session_meta = SessionMeta {
-        id: ConversationId::from(session_id),
+        id: ThreadId::from_string(&session_id.to_string()).unwrap(),
         timestamp: created_at.to_string(),
         cwd: cwd.to_path_buf(),
         originator: "test".to_string(),
         cli_version: "0.0.0-test".to_string(),
-        instructions: None,
         source,
+        model_provider: None,
+        base_instructions: None,
+        dynamic_tools: None,
+        forked_from_id: None,
     };
 
     let session_line = RolloutLine {
@@ -59,8 +62,9 @@ fn write_rollout_transcript(
             order: None,
             msg: ProtoEventMsg::UserMessage(UserMessageEvent {
                 message: user_message.to_string(),
-                kind: None,
                 images: None,
+                local_images: vec![],
+                text_elements: vec![],
             }),
         }),
     };
@@ -73,6 +77,8 @@ fn write_rollout_transcript(
             content: vec![ContentItem::InputText {
                 text: user_message.to_string(),
             }],
+            end_turn: None,
+            phase: None,
         }),
     };
 
@@ -84,6 +90,8 @@ fn write_rollout_transcript(
             content: vec![ContentItem::OutputText {
                 text: "Ack".to_string(),
             }],
+            end_turn: None,
+            phase: None,
         }),
     };
 

@@ -2537,7 +2537,7 @@ mod tests {
 
     use code_core::config::{ConfigOverrides, ConfigToml};
     use code_protocol::models::{ContentItem, ResponseItem};
-    use code_protocol::mcp_protocol::ConversationId;
+	    use code_protocol::ThreadId;
 	    use code_protocol::protocol::{
 	        EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
 	        SessionMetaLine, SessionSource, UserMessageEvent,
@@ -2820,13 +2820,16 @@ mod tests {
         let path = sessions_dir.join(filename);
 
         let session_meta = SessionMeta {
-            id: ConversationId::from(session_id),
+            id: ThreadId::from_string(&session_id.to_string()).unwrap(),
             timestamp: created_at.to_string(),
             cwd: Path::new("/workspace/project").to_path_buf(),
             originator: "test".to_string(),
             cli_version: "0.0.0-test".to_string(),
-            instructions: None,
             source,
+            model_provider: None,
+            base_instructions: None,
+            dynamic_tools: None,
+            forked_from_id: None,
         };
 
         let session_line = RolloutLine {
@@ -2844,8 +2847,9 @@ mod tests {
                 order: None,
                 msg: ProtoEventMsg::UserMessage(UserMessageEvent {
                     message: message.to_string(),
-                    kind: None,
                     images: None,
+                    local_images: vec![],
+                    text_elements: vec![],
                 }),
             }),
         };
@@ -2857,6 +2861,8 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: message.to_string(),
                 }],
+                end_turn: None,
+                phase: None,
             }),
         };
 
@@ -2868,6 +2874,8 @@ mod tests {
                 content: vec![ContentItem::OutputText {
                     text: format!("Ack: {}", message),
                 }],
+                end_turn: None,
+                phase: None,
             }),
         };
 

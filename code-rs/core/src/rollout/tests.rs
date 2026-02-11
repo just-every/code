@@ -23,7 +23,7 @@ use crate::rollout::list::get_conversation;
 use crate::rollout::list::get_conversations;
 use std::time::{Duration, SystemTime};
 use code_protocol::models::{ContentItem, ResponseItem};
-use code_protocol::ConversationId;
+use code_protocol::ThreadId;
 use code_protocol::protocol::{
     EventMsg as ProtoEventMsg,
     RecordedEvent,
@@ -120,15 +120,18 @@ fn write_session_file(
     let file = File::create(file_path)?;
     let mut writer = BufWriter::new(file);
 
-    let conversation_id = ConversationId::from(uuid);
+    let conversation_id = ThreadId::from_string(&uuid.to_string()).unwrap();
     let session_meta = SessionMeta {
         id: conversation_id,
         timestamp: ts_str.to_string(),
         cwd: Path::new(".").to_path_buf(),
         originator: "test_originator".to_string(),
         cli_version: "test_version".to_string(),
-        instructions: None,
         source: source.unwrap_or_default(),
+        model_provider: None,
+        base_instructions: None,
+        dynamic_tools: None,
+        forked_from_id: None,
     };
     let session_meta_line = RolloutLine {
         timestamp: ts_str.to_string(),
@@ -147,8 +150,9 @@ fn write_session_file(
             order: None,
             msg: ProtoEventMsg::UserMessage(UserMessageEvent {
                 message: format!("Message {i}"),
-                kind: None,
                 images: None,
+                local_images: vec![],
+                text_elements: vec![],
             }),
         };
         let line = RolloutLine {
@@ -184,13 +188,16 @@ async fn test_resume_reconstruct_history_drops_user_events() {
     let mut writer = BufWriter::new(File::create(&rollout_path).unwrap());
 
     let session_meta = SessionMeta {
-        id: ConversationId::from(session_uuid),
+        id: ThreadId::from_string(&session_uuid.to_string()).unwrap(),
         timestamp: "2025-10-06T09:00:00.000Z".to_string(),
         cwd: workspace.clone(),
         originator: "regression-test".to_string(),
         cli_version: "0.0.0-test".to_string(),
-        instructions: Some("explain async/await".to_string()),
         source: SessionSource::Cli,
+        model_provider: None,
+        base_instructions: None,
+        dynamic_tools: None,
+        forked_from_id: None,
     };
     serde_json::to_writer(&mut writer, &RolloutLine {
         timestamp: session_meta.timestamp.clone(),
@@ -208,8 +215,9 @@ async fn test_resume_reconstruct_history_drops_user_events() {
         order: None,
         msg: ProtoEventMsg::UserMessage(UserMessageEvent {
             message: "hi there".to_string(),
-            kind: None,
             images: None,
+            local_images: vec![],
+            text_elements: vec![],
         }),
     };
     serde_json::to_writer(&mut writer, &RolloutLine {

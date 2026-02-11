@@ -7,7 +7,7 @@ use code_protocol::protocol::{
     EventMsg as ProtoEventMsg, RecordedEvent, RolloutItem, RolloutLine, SessionMeta,
     SessionMetaLine, SessionSource, UserMessageEvent,
 };
-use code_protocol::ConversationId;
+use code_protocol::ThreadId;
 use filetime::{set_file_mtime, FileTime};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -34,13 +34,16 @@ fn write_rollout(
     let path = sessions_dir.join(filename);
 
     let session_meta = SessionMeta {
-        id: ConversationId::from(session_id),
+        id: ThreadId::from_string(&session_id.to_string()).unwrap(),
         timestamp: created_at.to_string(),
         cwd: cwd.to_path_buf(),
         originator: "test".to_string(),
         cli_version: "0.0.0-test".to_string(),
-        instructions: None,
         source,
+        model_provider: None,
+        base_instructions: None,
+        dynamic_tools: None,
+        forked_from_id: None,
     };
 
     let session_line = RolloutLine {
@@ -59,8 +62,9 @@ fn write_rollout(
             order: None,
             msg: ProtoEventMsg::UserMessage(UserMessageEvent {
                 message: user_text.to_string(),
-                kind: None,
                 images: None,
+                local_images: vec![],
+                text_elements: vec![],
             }),
         }),
     };
@@ -73,6 +77,8 @@ fn write_rollout(
             content: vec![ContentItem::InputText {
                 text: user_text.to_string(),
             }],
+            end_turn: None,
+            phase: None,
         }),
     };
 
@@ -84,6 +90,8 @@ fn write_rollout(
             content: vec![ContentItem::OutputText {
                 text: format!("Ack: {}", user_text),
             }],
+            end_turn: None,
+            phase: None,
         }),
     };
 
@@ -188,13 +196,16 @@ fn resume_picker_excludes_current_path_and_empty_sessions() {
     std::fs::create_dir_all(&sessions_dir).unwrap();
     let empty_path = sessions_dir.join("rollout-empty.jsonl");
     let session_meta = SessionMeta {
-        id: ConversationId::new(),
+        id: ThreadId::new(),
         timestamp: "2025-11-18T09:00:00Z".to_string(),
         cwd: cwd.clone(),
         originator: "test".to_string(),
         cli_version: "0.0.0-test".to_string(),
-        instructions: None,
         source: SessionSource::Cli,
+        model_provider: None,
+        base_instructions: None,
+        dynamic_tools: None,
+        forked_from_id: None,
     };
     let session_line = RolloutLine {
         timestamp: session_meta.timestamp.clone(),

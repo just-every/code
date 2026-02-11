@@ -815,6 +815,7 @@ mod tests {
             magenta: Style::new(),
             red: Style::new(),
             green: Style::new(),
+            yellow: Style::new(),
             cyan: Style::new(),
             show_agent_reasoning: true,
             show_raw_agent_reasoning: false,

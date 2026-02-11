@@ -748,9 +748,9 @@
             },
             "type": {
               "enum": [
-                "compaction"
+                "compaction_summary"
               ],
-              "title": "CompactionResponseItemType",
+              "title": "CompactionSummaryResponseItemType",
               "type": "string"
             }
           },
@@ -758,7 +758,7 @@
             "encrypted_content",
             "type"
           ],
-          "title": "CompactionResponseItem",
+          "title": "CompactionSummaryResponseItem",
           "type": "object"
         },
         {

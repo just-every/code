@@ -19466,6 +19466,24 @@ Have we met every part of this goal and is there no further work to do?"#
         false
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
+    #[allow(dead_code)]
+    fn worktree_has_uncommitted_changes(&self) -> Result<bool, String> {
+        self.run_git_command(["status", "--porcelain"], |stdout| {
+            Ok(stdout.lines().any(|line| !line.trim().is_empty()))
+        })
+    }
+
+    #[cfg(any(test, feature = "test-helpers"))]
+    #[allow(dead_code)]
+    fn current_head_commit_sha(&self) -> Option<String> {
+        self.run_git_command(["rev-parse", "HEAD"], |stdout| {
+            Ok(stdout.trim().to_string())
+        })
+        .ok()
+        .filter(|sha| !sha.is_empty())
+    }
+
     fn prepare_auto_turn_review_state(&mut self) {
         if !self.auto_state.is_active() || !self.auto_state.review_enabled {
             self.auto_turn_review_state = None;
@@ -19994,10 +20012,9 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
         let strategy = descriptor.and_then(|d| d.review_strategy.as_ref());
-        let (mut prompt, mut hint, mut auto_metadata, mut review_metadata, preparation) = match scope {
+        let (mut prompt, mut hint, preparation) = match scope {
             Some(scope) => {
-                let commit_id = scope.commit;
-                let commit_for_prompt = commit_id.clone();
+                let commit_for_prompt = scope.commit;
                 let short_sha: String = commit_for_prompt.chars().take(8).collect();
                 let file_label = if scope.file_count == 1 {
                     "1 file".to_string()
@@ -20010,32 +20027,13 @@ Have we met every part of this goal and is there no further work to do?"#
                 );
                 let hint = format!("auto turn changes — {} ({})", short_sha, file_label);
                 let preparation = format!("Preparing code review for commit {}", short_sha);
-                let review_metadata = Some(ReviewContextMetadata {
-                    scope: Some("commit".to_string()),
-                    commit: Some(commit_id),
-                    ..Default::default()
-                });
-                let auto_metadata = Some(ReviewContextMetadata {
-                    scope: Some("workspace".to_string()),
-                    ..Default::default()
-                });
-                (prompt, hint, auto_metadata, review_metadata, preparation)
+                (prompt, hint, preparation)
             }
             None => {
                 let prompt = "Review the current workspace changes and highlight bugs, regressions, risky patterns, and missing tests before merge.".to_string();
                 let hint = "current workspace changes".to_string();
-                let review_metadata = Some(ReviewContextMetadata {
-                    scope: Some("workspace".to_string()),
-                    ..Default::default()
-                });
                 let preparation = "Preparing code review request...".to_string();
-                (
-                    prompt,
-                    hint,
-                    review_metadata.clone(),
-                    review_metadata,
-                    preparation,
-                )
+                (prompt, hint, preparation)
             }
         };
 
@@ -20060,30 +20058,6 @@ Have we met every part of this goal and is there no further work to do?"#
                 })
             {
                 hint = scope_hint.to_string();
-
-                let apply_scope = |meta: &mut ReviewContextMetadata| {
-                    meta.scope = Some(scope_hint.to_string());
-                };
-
-                match review_metadata.as_mut() {
-                    Some(meta) => apply_scope(meta),
-                    None => {
-                        review_metadata = Some(ReviewContextMetadata {
-                            scope: Some(scope_hint.to_string()),
-                            ..Default::default()
-                        });
-                    }
-                }
-
-                match auto_metadata.as_mut() {
-                    Some(meta) => apply_scope(meta),
-                    None => {
-                        auto_metadata = Some(ReviewContextMetadata {
-                            scope: Some(scope_hint.to_string()),
-                            ..Default::default()
-                        });
-                    }
-                }
             }
         }
 
@@ -20092,13 +20066,13 @@ Have we met every part of this goal and is there no further work to do?"#
             self.auto_resolve_state = Some(AutoResolveState::new_with_limit(
                 prompt.clone(),
                 hint.clone(),
-                auto_metadata.clone(),
+                None,
                 max_re_reviews,
             ));
         } else {
             self.auto_resolve_state = None;
         }
-        self.begin_review(prompt, hint, Some(preparation), review_metadata);
+        self.begin_review(prompt, hint, Some(preparation));
     }
 
     fn auto_rebuild_live_ring(&mut self) {
@@ -30220,8 +30194,8 @@ use code_core::protocol::OrderMeta;
             .iter()
             .find(|row| row.name == "qwen-3-coder")
             .expect("qwen row present");
-        assert!(!qwen.installed);
-        assert!(!qwen.enabled);
+        assert!(qwen.installed);
+        assert!(qwen.enabled);
 
         let code = rows
             .iter()
@@ -30726,10 +30700,7 @@ use code_core::protocol::OrderMeta;
         );
         assert!(auto_resolve, "auto resolve now defaults to on for workspace reviews");
 
-        let metadata = metadata.expect("workspace scope metadata");
-        assert_eq!(metadata.scope.as_deref(), Some("workspace"));
-        assert!(metadata.base_branch.is_none());
-        assert!(metadata.current_branch.is_none());
+        assert!(metadata.is_none(), "workspace review should not attach metadata");
     }
 
     #[test]

@@ -3929,6 +3929,7 @@
               "additionalProperties": {
                 "$ref": "#/definitions/v2/McpAuthStatus"
               },
+              "default": {},
               "description": "Authentication status for each configured MCP server.",
               "type": "object"
             },
@@ -3939,6 +3940,7 @@
                 },
                 "type": "array"
               },
+              "default": {},
               "description": "Known resource templates grouped by server name.",
               "type": "object"
             },
@@ -3949,8 +3951,32 @@
                 },
                 "type": "array"
               },
+              "default": {},
               "description": "Known resources grouped by server name.",
               "type": "object"
+            },
+            "server_failures": {
+              "additionalProperties": {
+                "$ref": "#/definitions/McpServerFailure"
+              },
+              "description": "Legacy server failure map keyed by server name.",
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "server_tools": {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "description": "Legacy server -> tool names map used by existing UI surfaces.",
+              "type": [
+                "object",
+                "null"
+              ]
             },
             "tools": {
               "additionalProperties": {
@@ -3968,9 +3994,6 @@
             }
           },
           "required": [
-            "auth_statuses",
-            "resource_templates",
-            "resources",
             "tools",
             "type"
           ],
@@ -4099,7 +4122,15 @@
           "properties": {
             "explanation": {
               "default": null,
-              "description": "Arguments for the `update_plan` todo/checklist tool (not plan mode).",
+              "description": "Optional note used by newer clients; when provided it supersedes `name`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "default": null,
+              "description": "Legacy field name used by existing clients.",
               "type": [
                 "string",
                 "null"
@@ -4166,6 +4197,11 @@
         {
           "description": "Entered review mode.",
           "properties": {
+            "prompt": {
+              "default": "",
+              "description": "Legacy plain-text prompt retained for compatibility with older review flows.",
+              "type": "string"
+            },
             "target": {
               "$ref": "#/definitions/v2/ReviewTarget"
             },
@@ -4197,6 +4233,16 @@
               "anyOf": [
                 {
                   "$ref": "#/definitions/ReviewOutputEvent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReviewSnapshotInfo"
                 },
                 {
                   "type": "null"
@@ -6062,6 +6108,28 @@
       ],
       "type": "object"
     },
+    "McpServerFailure": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/McpServerFailurePhase"
+        }
+      },
+      "required": [
+        "message",
+        "phase"
+      ],
+      "type": "object"
+    },
+    "McpServerFailurePhase": {
+      "enum": [
+        "start",
+        "list_tools"
+      ],
+      "type": "string"
+    },
     "McpStartupFailure": {
       "properties": {
         "error": {
@@ -6292,6 +6360,26 @@
     },
     "ParsedCommand": {
       "oneOf": [
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "read_command"
+              ],
+              "title": "ReadCommandParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cmd",
+            "type"
+          ],
+          "title": "ReadCommandParsedCommand",
+          "type": "object"
+        },
         {
           "properties": {
             "cmd": {
@@ -6549,6 +6637,15 @@
             "null"
           ]
         },
+        "resets_in_seconds": {
+          "description": "Legacy relative reset in seconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "used_percent": {
           "description": "Percentage (0-100) of the window that has been consumed.",
           "format": "double",
@@ -6556,7 +6653,8 @@
         },
         "window_minutes": {
           "description": "Rolling window duration, in minutes.",
-          "format": "int64",
+          "format": "uint64",
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
@@ -7178,9 +7276,9 @@
             },
             "type": {
               "enum": [
-                "compaction"
+                "compaction_summary"
               ],
-              "title": "CompactionResponseItemType",
+              "title": "CompactionSummaryResponseItemType",
               "type": "string"
             }
           },
@@ -7188,7 +7286,7 @@
             "encrypted_content",
             "type"
           ],
-          "title": "CompactionResponseItem",
+          "title": "CompactionSummaryResponseItem",
           "type": "object"
         },
         {
@@ -7461,6 +7559,35 @@
       ],
       "type": "object"
     },
+    "ReviewSnapshotInfo": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ReviewTarget": {
       "oneOf": [
         {
@@ -7626,6 +7753,11 @@
         {
           "description": "Same as `ReadOnly` but additionally grants write access to the current working directory (\"workspace\").",
           "properties": {
+            "allow_git_writes": {
+              "default": false,
+              "description": "Whether sandboxed commands may perform write operations via Git.",
+              "type": "boolean"
+            },
             "exclude_slash_tmp": {
               "default": false,
               "description": "When set to `true`, will NOT include the `/tmp` among the default writable roots on UNIX. Defaults to `false`.",
@@ -9037,10 +9169,22 @@
         "last_token_usage": {
           "$ref": "#/definitions/TokenUsage"
         },
+        "latest_response_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model_context_window": {
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "requested_model": {
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -10449,6 +10593,26 @@
       },
       "CommandAction": {
         "oneOf": [
+          {
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "readCommand"
+                ],
+                "title": "ReadCommandCommandActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "type"
+            ],
+            "title": "ReadCommandCommandAction",
+            "type": "object"
+          },
           {
             "properties": {
               "command": {
@@ -13486,9 +13650,9 @@
               },
               "type": {
                 "enum": [
-                  "compaction"
+                  "compaction_summary"
                 ],
-                "title": "CompactionResponseItemType",
+                "title": "CompactionSummaryResponseItemType",
                 "type": "string"
               }
             },
@@ -13496,7 +13660,7 @@
               "encrypted_content",
               "type"
             ],
-            "title": "CompactionResponseItem",
+            "title": "CompactionSummaryResponseItem",
             "type": "object"
           },
           {

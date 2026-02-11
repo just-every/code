@@ -1139,6 +1139,7 @@ impl HasLegacyEvent for EventMsg {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
+    #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<ReviewSnapshotInfo>,
 }
@@ -1191,8 +1192,10 @@ pub struct TokenUsage {
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
+    #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_model: Option<String>,
+    #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_response_model: Option<String>,
     // TODO(aibrahim): make this not optional
@@ -1281,11 +1284,13 @@ pub struct RateLimitWindow {
     #[ts(type = "number | null")]
     pub window_minutes: Option<u64>,
     /// Legacy relative reset in seconds.
-    #[ts(type = "number | null")]
+    #[ts(optional)]
+    #[ts(type = "number")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_in_seconds: Option<u64>,
     /// Unix timestamp (seconds since epoch) when the window resets.
-    #[ts(type = "number | null")]
+    #[ts(optional)]
+    #[ts(type = "number")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
 }

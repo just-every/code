@@ -228,6 +228,26 @@
             "command": {
               "type": "string"
             },
+            "type": {
+              "enum": [
+                "readCommand"
+              ],
+              "title": "ReadCommandCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "type"
+          ],
+          "title": "ReadCommandCommandAction",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
             "name": {
               "type": "string"
             },

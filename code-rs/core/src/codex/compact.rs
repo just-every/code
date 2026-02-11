@@ -1007,7 +1007,15 @@ mod tests {
 
         let collected = collect_user_messages(&items);
 
-        assert_eq!(vec!["real user message".to_string()], collected);
+        assert_eq!(
+            vec![
+                "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\ndo things\n</INSTRUCTIONS>"
+                    .to_string(),
+                "<ENVIRONMENT_CONTEXT>cwd=/tmp</ENVIRONMENT_CONTEXT>".to_string(),
+                "real user message".to_string(),
+            ],
+            collected
+        );
     }
 
     #[test]
