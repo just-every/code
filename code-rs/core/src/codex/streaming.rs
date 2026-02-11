@@ -18,6 +18,7 @@ use super::session::{
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
+use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 use code_protocol::models::FunctionCallOutputContentItem;
@@ -6522,36 +6523,6 @@ pub(crate) async fn handle_run_agent(
             models.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
             models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
-            // Helper: PATH lookup to determine if a command exists.
-            fn command_exists(cmd: &str) -> bool {
-                // Absolute/relative path with separators: verify it points to a file.
-                if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
-                    return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
-                }
-
-                #[cfg(target_os = "windows")]
-                {
-                    return which::which(cmd).map(|p| p.is_file()).unwrap_or(false);
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let Some(path_os) = std::env::var_os("PATH") else { return false; };
-                    for dir in std::env::split_paths(&path_os) {
-                        if dir.as_os_str().is_empty() { continue; }
-                        let candidate = dir.join(cmd);
-                        if let Ok(meta) = std::fs::metadata(&candidate) {
-                            if meta.is_file() {
-                                let mode = meta.permissions().mode();
-                                if mode & 0o111 != 0 { return true; }
-                            }
-                        }
-                    }
-                    false
-                }
-            }
-
             let multi_model = models.len() > 1;
             let display_label_for = |model: &str| -> String {
                 agent_name
@@ -6586,7 +6557,7 @@ pub(crate) async fn handle_run_agent(
 
                     let (cmd_to_check, is_builtin) =
                         resolve_agent_command_for_check(&model, Some(config));
-                    if !is_builtin && !command_exists(&cmd_to_check) {
+                    if !is_builtin && !external_agent_command_exists(&cmd_to_check) {
                         skipped.push(format!("{} (missing: {})", model, cmd_to_check));
                         continue;
                     }
@@ -6618,7 +6589,7 @@ pub(crate) async fn handle_run_agent(
                 } else {
                     // Use default configuration for unknown agents
                     let (cmd_to_check, is_builtin) = resolve_agent_command_for_check(&model, None);
-                    if !is_builtin && !command_exists(&cmd_to_check) {
+                    if !is_builtin && !external_agent_command_exists(&cmd_to_check) {
                         skipped.push(format!("{} (missing: {})", model, cmd_to_check));
                         continue;
                     }
