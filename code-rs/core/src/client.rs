@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::debug;
 use tracing::trace;
 use tracing::warn;
@@ -181,6 +181,13 @@ fn is_quota_exceeded_error(error: &Error) -> bool {
 
 fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
     status.is_client_error() && is_quota_exceeded_error(error)
+}
+
+fn is_server_overloaded_error(error: &Error) -> bool {
+    matches!(
+        error.code.as_deref(),
+        Some("server_is_overloaded") | Some("slow_down")
+    )
 }
 
 fn is_reasoning_summary_rejected(error: &Error) -> bool {
@@ -831,7 +838,7 @@ impl ModelClient {
                             )
                         })?;
 
-                    let (tx_bytes, rx_bytes) = mpsc::channel::<Result<Bytes>>(1600);
+                    let (tx_bytes, rx_bytes) = mpsc::unbounded_channel::<Result<Bytes>>();
                     let request_id_for_ws = request_id.clone();
                     tokio::spawn(async move {
                         loop {
@@ -843,12 +850,12 @@ impl ModelClient {
                                     if let Some(error) = parse_wrapped_websocket_error_event(&text)
                                         .and_then(map_wrapped_websocket_error_event)
                                     {
-                                        let _ = tx_bytes.send(Err(error)).await;
+                                        let _ = tx_bytes.send(Err(error));
                                         break;
                                     }
 
                                     let chunk = format!("data: {text}\n\n");
-                                    if tx_bytes.send(Ok(Bytes::from(chunk))).await.is_err() {
+                                    if tx_bytes.send(Ok(Bytes::from(chunk))).is_err() {
                                         break;
                                     }
                                 }
@@ -865,8 +872,7 @@ impl ModelClient {
                                             "[ws] unexpected binary websocket event".to_string(),
                                             None,
                                             Some(request_id_for_ws.clone()),
-                                        )))
-                                        .await;
+                                        )));
                                     break;
                                 }
                                 Ok(_) => {}
@@ -876,15 +882,14 @@ impl ModelClient {
                                             format!("[ws] websocket error: {err}"),
                                             None,
                                             Some(request_id_for_ws.clone()),
-                                        )))
-                                        .await;
+                                        )));
                                     break;
                                 }
                             }
                         }
                     });
 
-                    let stream = ReceiverStream::new(rx_bytes);
+                    let stream = UnboundedReceiverStream::new(rx_bytes);
                     let debug_logger = Arc::clone(&self.debug_logger);
                     let request_id_clone = request_id.clone();
                     let otel_event_manager = self.otel_event_manager.clone();
@@ -1901,6 +1906,10 @@ fn map_wrapped_websocket_error_event(event: WrappedWebsocketErrorEvent) -> Optio
             return Some(CodexErr::QuotaExceeded);
         }
 
+        if is_server_overloaded_error(&error) {
+            return Some(CodexErr::ServerOverloaded);
+        }
+
         serde_json::json!({
             "error": {
                 "type": error.r#type,
@@ -2563,6 +2572,8 @@ async fn process_sse<S>(
                             Ok(error) => {
                                 if is_quota_exceeded_error(&error) {
                                     response_error = Some(CodexErr::QuotaExceeded);
+                                } else if is_server_overloaded_error(&error) {
+                                    response_error = Some(CodexErr::ServerOverloaded);
                                 } else {
                                     let retry_after = try_parse_retry_after(&error, Utc::now());
                                     let message = error.message.unwrap_or_default();
@@ -2579,6 +2590,19 @@ async fn process_sse<S>(
                         }
                     }
                 }
+            }
+            "response.incomplete" => {
+                let reason = event.response.as_ref().and_then(|response| {
+                    response
+                        .get("incomplete_details")
+                        .and_then(|details| details.get("reason"))
+                        .and_then(Value::as_str)
+                });
+                let reason = reason.unwrap_or("unknown");
+                let message = format!("Incomplete response returned, reason: {reason}");
+                let event = CodexErr::Stream(message, None, Some(request_id.clone()));
+                let _ = tx_event.send(Err(event)).await;
+                return;
             }
             // Final response completed – includes array of output items & id
             "response.completed" => {
@@ -3442,6 +3466,73 @@ mod tests {
         match &events[0] {
             Err(CodexErr::QuotaExceeded) => {}
             other => panic!("unexpected quota event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn server_overloaded_error_is_typed() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_slow_down","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"slow_down","message":"Server is overloaded. Please retry shortly."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::ServerOverloaded) => {}
+            other => panic!("unexpected overloaded event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_incomplete_surfaces_stream_error_reason() {
+        let raw_incomplete = r#"{"type":"response.incomplete","sequence_number":4,"response":{"id":"resp_incomplete","object":"response","created_at":1759771626,"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#;
+
+        let sse1 = format!("event: response.incomplete\ndata: {raw_incomplete}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::Stream(message, None, _)) => {
+                assert_eq!(
+                    message,
+                    "Incomplete response returned, reason: max_output_tokens"
+                );
+            }
+            other => panic!("unexpected incomplete event: {other:?}"),
         }
     }
 }

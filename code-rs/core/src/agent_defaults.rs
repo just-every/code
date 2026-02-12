@@ -36,6 +36,7 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.2",
     "code-gpt-5.3-codex",
+    "code-gpt-5.3-codex-spark",
     "claude-opus-4.6",
     "gemini-3-pro",
     // Straightforward / cost-aware
@@ -131,6 +132,19 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         ],
         gating_env: None,
         is_frontline: true,
+    },
+    AgentModelSpec {
+        slug: "code-gpt-5.3-codex-spark",
+        family: "code",
+        cli: "coder",
+        read_only_args: CODE_GPT5_CODEX_READ_ONLY,
+        write_args: CODE_GPT5_CODEX_WRITE,
+        model_args: &["--model", "gpt-5.3-codex-spark"],
+        description: "Fast codex variant tuned for responsive coding loops and smaller edits.",
+        enabled_by_default: true,
+        aliases: &["gpt-5.3-codex-spark", "code-gpt-5.3-spark", "codex-spark"],
+        gating_env: None,
+        is_frontline: false,
     },
     AgentModelSpec {
         slug: "code-gpt-5.1-codex-mini",
@@ -457,6 +471,10 @@ mod tests {
         let codex_slug_upgrade =
             agent_model_spec("code-gpt-5.2-codex").expect("slug upgrade alias present");
         assert_eq!(codex_slug_upgrade.slug, "code-gpt-5.3-codex");
+
+        let spark =
+            agent_model_spec("gpt-5.3-codex-spark").expect("spark alias for codex present");
+        assert_eq!(spark.slug, "code-gpt-5.3-codex-spark");
 
         let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
         assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");

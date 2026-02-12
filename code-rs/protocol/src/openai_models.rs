@@ -238,7 +238,8 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
     /// Token threshold for automatic compaction. When omitted, core derives it
-    /// from `context_window` (90%).
+    /// from `context_window` (90%). When provided, core clamps it to 90% of the
+    /// context window when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<i64>,
     /// Percentage of the context window considered usable for inputs, after
@@ -256,10 +257,16 @@ pub struct ModelInfo {
 
 impl ModelInfo {
     pub fn auto_compact_token_limit(&self) -> Option<i64> {
-        self.auto_compact_token_limit.or_else(|| {
-            self.context_window
-                .map(|context_window| (context_window * 9) / 10)
-        })
+        let context_limit = self
+            .context_window
+            .map(|context_window| (context_window * 9) / 10);
+        let config_limit = self.auto_compact_token_limit;
+        if let Some(context_limit) = context_limit {
+            return Some(
+                config_limit.map_or(context_limit, |limit| std::cmp::min(limit, context_limit)),
+            );
+        }
+        config_limit
     }
 
     pub fn supports_personality(&self) -> bool {
@@ -519,6 +526,24 @@ mod tests {
             personality_friendly: Some("friendly".to_string()),
             personality_pragmatic: Some("pragmatic".to_string()),
         }
+    }
+
+    #[test]
+    fn auto_compact_token_limit_uses_context_default() {
+        let mut model = test_model(None);
+        model.context_window = Some(100_000);
+        model.auto_compact_token_limit = None;
+
+        assert_eq!(model.auto_compact_token_limit(), Some(90_000));
+    }
+
+    #[test]
+    fn auto_compact_token_limit_clamps_to_context_limit() {
+        let mut model = test_model(None);
+        model.context_window = Some(200_000);
+        model.auto_compact_token_limit = Some(250_000);
+
+        assert_eq!(model.auto_compact_token_limit(), Some(180_000));
     }
 
     #[test]
