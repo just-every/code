@@ -36,6 +36,7 @@ use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
+use codex_core::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_core::protocol::ExecPolicyAmendment;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::FileChange;
@@ -46,6 +47,7 @@ use codex_core::protocol::McpStartupUpdateEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
+use codex_core::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_core::protocol::RateLimitWindow;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
@@ -151,7 +153,7 @@ async fn resumed_initial_messages_render_history() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -219,7 +221,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -337,7 +339,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -417,7 +419,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -2180,6 +2182,11 @@ fn end_exec(
             exit_code,
             duration: std::time::Duration::from_millis(5),
             formatted_output: aggregated,
+            status: if exit_code == 0 {
+                CoreExecCommandStatus::Completed
+            } else {
+                CoreExecCommandStatus::Failed
+            },
         }),
     });
 }
@@ -2641,6 +2648,7 @@ async fn exec_end_without_begin_uses_event_command() {
             exit_code: 0,
             duration: std::time::Duration::from_millis(5),
             formatted_output: "done".to_string(),
+            status: CoreExecCommandStatus::Completed,
         }),
     });
 
@@ -3105,7 +3113,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
-        sandbox_policy: SandboxPolicy::ReadOnly,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         cwd: PathBuf::from("/home/user/project"),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
         history_log_id: 0,
@@ -3378,6 +3386,24 @@ async fn slash_clean_submits_background_terminal_cleanup() {
         rendered.contains("Stopping all background terminals."),
         "expected cleanup confirmation, got {rendered:?}"
     );
+}
+
+#[tokio::test]
+async fn slash_memory_drop_submits_drop_memories_op() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::MemoryDrop);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::DropMemories));
+}
+
+#[tokio::test]
+async fn slash_memory_update_submits_update_memories_op() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::MemoryUpdate);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::UpdateMemories));
 }
 
 #[tokio::test]
@@ -4096,7 +4122,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
 }
 
 #[tokio::test]
-async fn model_cap_error_does_not_switch_models() {
+async fn server_overloaded_error_does_not_switch_models() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("boomslang")).await;
     chat.set_model("boomslang");
     while rx.try_recv().is_ok() {}
@@ -4105,11 +4131,8 @@ async fn model_cap_error_does_not_switch_models() {
     chat.handle_codex_event(Event {
         id: "err-1".to_string(),
         msg: EventMsg::Error(ErrorEvent {
-            message: "model cap".to_string(),
-            codex_error_info: Some(CodexErrorInfo::ModelCap {
-                model: "boomslang".to_string(),
-                reset_after_seconds: Some(120),
-            }),
+            message: "server overloaded".to_string(),
+            codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
         }),
     });
 
@@ -4117,7 +4140,7 @@ async fn model_cap_error_does_not_switch_models() {
         if let AppEvent::UpdateModel(model) = event {
             assert_eq!(
                 model, "boomslang",
-                "did not expect model switch on model-cap error"
+                "did not expect model switch on server-overloaded error"
             );
         }
     }
@@ -4126,7 +4149,7 @@ async fn model_cap_error_does_not_switch_models() {
         if let Op::OverrideTurnContext { model, .. } = event {
             assert!(
                 model.is_none(),
-                "did not expect OverrideTurnContext model update on model-cap error"
+                "did not expect OverrideTurnContext model update on server-overloaded error"
             );
         }
     }
@@ -4161,27 +4184,37 @@ async fn approvals_selection_popup_snapshot_windows_degraded_sandbox() {
     chat.open_approvals_popup();
 
     let popup = render_bottom_popup(&chat, 80);
-    insta::with_settings!({ snapshot_suffix => "windows_degraded" }, {
-        assert_snapshot!("approvals_selection_popup", popup);
-    });
+    assert!(
+        popup.contains("Default (non-admin sandbox)"),
+        "expected degraded sandbox label in approvals popup: {popup}"
+    );
+    assert!(
+        popup.contains("/setup-default-sandbox"),
+        "expected setup hint in approvals popup: {popup}"
+    );
+    assert!(
+        popup.contains("non-admin sandbox"),
+        "expected degraded sandbox note in approvals popup: {popup}"
+    );
 }
 
 #[tokio::test]
-async fn preset_matching_ignores_extra_writable_roots() {
+async fn preset_matching_requires_exact_workspace_write_settings() {
     let preset = builtin_approval_presets()
         .into_iter()
         .find(|p| p.id == "auto")
         .expect("auto preset exists");
     let current_sandbox = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![AbsolutePathBuf::try_from("C:\\extra").unwrap()],
+        read_only_access: Default::default(),
         network_access: false,
         exclude_tmpdir_env_var: false,
         exclude_slash_tmp: false,
     };
 
     assert!(
-        ChatWidget::preset_matches_current(AskForApproval::OnRequest, &current_sandbox, &preset),
-        "WorkspaceWrite with extra roots should still match the Agent preset"
+        !ChatWidget::preset_matches_current(AskForApproval::OnRequest, &current_sandbox, &preset),
+        "WorkspaceWrite with extra roots should not match the Default preset"
     );
     assert!(
         !ChatWidget::preset_matches_current(AskForApproval::Never, &current_sandbox, &preset),
@@ -4216,8 +4249,12 @@ async fn windows_auto_mode_prompt_requests_enabling_sandbox_feature() {
 
     let popup = render_bottom_popup(&chat, 120);
     assert!(
-        popup.contains("requires elevation"),
-        "expected auto mode prompt to mention elevation, popup: {popup}"
+        popup.contains("requires Administrator permissions"),
+        "expected auto mode prompt to mention Administrator permissions, popup: {popup}"
+    );
+    assert!(
+        popup.contains("Use non-admin sandbox"),
+        "expected auto mode prompt to include non-admin fallback option, popup: {popup}"
     );
 }
 
@@ -4228,22 +4265,40 @@ async fn startup_prompts_for_windows_sandbox_when_agent_requested() {
 
     chat.set_feature_enabled(Feature::WindowsSandbox, false);
     chat.set_feature_enabled(Feature::WindowsSandboxElevated, false);
-    chat.config.forced_auto_mode_downgraded_on_windows = true;
 
-    chat.maybe_prompt_windows_sandbox_enable();
+    chat.maybe_prompt_windows_sandbox_enable(true);
 
     let popup = render_bottom_popup(&chat, 120);
     assert!(
-        popup.contains("requires elevation"),
-        "expected startup prompt to explain elevation: {popup}"
+        popup.contains("requires Administrator permissions"),
+        "expected startup prompt to mention Administrator permissions: {popup}"
     );
     assert!(
-        popup.contains("Set up agent sandbox"),
-        "expected startup prompt to offer agent sandbox setup: {popup}"
+        popup.contains("Set up default sandbox"),
+        "expected startup prompt to offer default sandbox setup: {popup}"
     );
     assert!(
-        popup.contains("Stay in"),
-        "expected startup prompt to offer staying in current mode: {popup}"
+        popup.contains("Use non-admin sandbox"),
+        "expected startup prompt to offer non-admin fallback: {popup}"
+    );
+    assert!(
+        popup.contains("Quit"),
+        "expected startup prompt to offer quit action: {popup}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn startup_does_not_prompt_for_windows_sandbox_when_not_requested() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.set_feature_enabled(Feature::WindowsSandbox, false);
+    chat.set_feature_enabled(Feature::WindowsSandboxElevated, false);
+    chat.maybe_prompt_windows_sandbox_enable(false);
+
+    assert!(
+        chat.bottom_pane.no_modal_or_popup_active(),
+        "expected no startup sandbox NUX popup when startup trigger is false"
     );
 }
 
@@ -5237,6 +5292,7 @@ async fn apply_patch_events_emit_history_cells() {
         stderr: String::new(),
         success: true,
         changes: end_changes,
+        status: CorePatchApplyStatus::Completed,
     };
     chat.handle_codex_event(Event {
         id: "s1".into(),
@@ -5464,6 +5520,7 @@ async fn apply_patch_full_flow_integration_like() {
             stderr: String::new(),
             success: true,
             changes: end_changes,
+            status: CorePatchApplyStatus::Completed,
         }),
     });
 }
@@ -6054,6 +6111,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             exit_code: 0,
             duration: std::time::Duration::from_millis(16000),
             formatted_output: String::new(),
+            status: CoreExecCommandStatus::Completed,
         }),
     });
     chat.handle_codex_event(Event {
