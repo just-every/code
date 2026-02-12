@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::io::ReaderStream;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 use tracing::trace;
 use tracing::warn;
@@ -79,6 +79,7 @@ use std::sync::RwLock;
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
 const RESPONSES_WEBSOCKETS_BETA_HEADER: &str = "responses_websockets=2026-02-04";
+const RESPONSES_WEBSOCKET_INGRESS_BUFFER: usize = 256;
 
 // Sticky-routing token captured at the start of a turn. When present, it must
 // be replayed on every subsequent request within the same turn (retries,
@@ -838,7 +839,10 @@ impl ModelClient {
                             )
                         })?;
 
-                    let (tx_bytes, rx_bytes) = mpsc::unbounded_channel::<Result<Bytes>>();
+                    // Keep websocket ingress bounded so a slow downstream consumer
+                    // cannot cause unbounded buffering and memory growth.
+                    let (tx_bytes, rx_bytes) =
+                        mpsc::channel::<Result<Bytes>>(RESPONSES_WEBSOCKET_INGRESS_BUFFER);
                     let request_id_for_ws = request_id.clone();
                     tokio::spawn(async move {
                         loop {
@@ -850,12 +854,12 @@ impl ModelClient {
                                     if let Some(error) = parse_wrapped_websocket_error_event(&text)
                                         .and_then(map_wrapped_websocket_error_event)
                                     {
-                                        let _ = tx_bytes.send(Err(error));
+                                        let _ = tx_bytes.send(Err(error)).await;
                                         break;
                                     }
 
                                     let chunk = format!("data: {text}\n\n");
-                                    if tx_bytes.send(Ok(Bytes::from(chunk))).is_err() {
+                                    if tx_bytes.send(Ok(Bytes::from(chunk))).await.is_err() {
                                         break;
                                     }
                                 }
@@ -872,7 +876,8 @@ impl ModelClient {
                                             "[ws] unexpected binary websocket event".to_string(),
                                             None,
                                             Some(request_id_for_ws.clone()),
-                                        )));
+                                        )))
+                                        .await;
                                     break;
                                 }
                                 Ok(_) => {}
@@ -882,14 +887,15 @@ impl ModelClient {
                                             format!("[ws] websocket error: {err}"),
                                             None,
                                             Some(request_id_for_ws.clone()),
-                                        )));
+                                        )))
+                                        .await;
                                     break;
                                 }
                             }
                         }
                     });
 
-                    let stream = UnboundedReceiverStream::new(rx_bytes);
+                    let stream = ReceiverStream::new(rx_bytes);
                     let debug_logger = Arc::clone(&self.debug_logger);
                     let request_id_clone = request_id.clone();
                     let otel_event_manager = self.otel_event_manager.clone();
