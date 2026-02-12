@@ -78,7 +78,7 @@ use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
-const RESPONSES_WEBSOCKETS_BETA_HEADER: &str = "responses_websockets=2026-02-04";
+const RESPONSES_WEBSOCKETS_BETA_HEADER: &str = "responses_websockets=2026-02-06";
 const RESPONSES_WEBSOCKET_INGRESS_BUFFER: usize = 256;
 
 // Sticky-routing token captured at the start of a turn. When present, it must
@@ -844,7 +844,7 @@ impl ModelClient {
                     let (tx_bytes, rx_bytes) =
                         mpsc::channel::<Result<Bytes>>(RESPONSES_WEBSOCKET_INGRESS_BUFFER);
                     let request_id_for_ws = request_id.clone();
-                    tokio::spawn(async move {
+                    let ws_reader_handle = tokio::spawn(async move {
                         loop {
                             let Some(next) = ws_stream.next().await else {
                                 break;
@@ -899,15 +899,22 @@ impl ModelClient {
                     let debug_logger = Arc::clone(&self.debug_logger);
                     let request_id_clone = request_id.clone();
                     let otel_event_manager = self.otel_event_manager.clone();
-                    tokio::spawn(process_sse(
-                        stream,
-                        tx_event,
-                        self.provider.stream_idle_timeout(),
-                        debug_logger,
-                        request_id_clone,
-                        otel_event_manager,
-                        Arc::new(RwLock::new(StreamCheckpoint::default())),
-                    ));
+                    let stream_idle_timeout = self.provider.stream_idle_timeout();
+                    tokio::spawn(async move {
+                        process_sse(
+                            stream,
+                            tx_event,
+                            stream_idle_timeout,
+                            debug_logger,
+                            request_id_clone,
+                            otel_event_manager,
+                            Arc::new(RwLock::new(StreamCheckpoint::default())),
+                        )
+                        .await;
+                        // process_sse may finish before the server closes the websocket.
+                        // Abort the websocket reader task to avoid lingering open sockets.
+                        ws_reader_handle.abort();
+                    });
 
                     return Ok(ResponseStream { rx_event });
                 }
@@ -1889,7 +1896,22 @@ fn parse_wrapped_websocket_error_event(payload: &str) -> Option<WrappedWebsocket
 }
 
 fn map_wrapped_websocket_error_event(event: WrappedWebsocketErrorEvent) -> Option<CodexErr> {
-    let status = StatusCode::from_u16(event.status?).ok()?;
+    let status = match event.status.and_then(|value| StatusCode::from_u16(value).ok()) {
+        Some(status) => status,
+        None => {
+            if let Some(error) = event.error {
+                let message = error
+                    .message
+                    .unwrap_or_else(|| "websocket returned an error event".to_string());
+                return Some(CodexErr::Stream(message, None, None));
+            }
+            return Some(CodexErr::Stream(
+                "websocket returned an error event".to_string(),
+                None,
+                None,
+            ));
+        }
+    };
     if status.is_success() {
         return None;
     }
@@ -2057,6 +2079,12 @@ struct ResponseCompleted {
 }
 
 #[derive(Debug, Deserialize)]
+struct ResponseDone {
+    id: Option<String>,
+    usage: Option<ResponseCompletedUsage>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ResponseCompletedUsage {
     input_tokens: u64,
     input_tokens_details: Option<ResponseCompletedInputTokensDetails>,
@@ -2217,6 +2245,35 @@ fn header_map_to_json(headers: &HeaderMap) -> Value {
     serde_json::to_value(ordered).unwrap_or(Value::Null)
 }
 
+async fn emit_completed_event(
+    completed: ResponseCompleted,
+    tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+    otel_event_manager: Option<&OtelEventManager>,
+    debug_logger: &Arc<Mutex<DebugLogger>>,
+    request_id: &str,
+) {
+    let ResponseCompleted { id, usage } = completed;
+    if let (Some(usage), Some(manager)) = (&usage, otel_event_manager) {
+        manager.sse_event_completed(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.input_tokens_details.as_ref().map(|d| d.cached_tokens),
+            usage.output_tokens_details.as_ref().map(|d| d.reasoning_tokens),
+            usage.total_tokens,
+        );
+    }
+
+    let event = ResponseEvent::Completed {
+        response_id: id,
+        token_usage: usage.map(Into::into),
+    };
+    let _ = tx_event.send(Ok(event)).await;
+
+    if let Ok(logger) = debug_logger.lock() {
+        let _ = logger.end_request_log(request_id);
+    }
+}
+
 async fn process_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
@@ -2272,30 +2329,15 @@ async fn process_sse<S>(
             }
             Ok(None) => {
                 match response_completed {
-                    Some(ResponseCompleted {
-                        id: response_id,
-                        usage,
-                    }) => {
-                        if let (Some(usage), Some(manager)) = (&usage, otel_event_manager.as_ref()) {
-                            manager.sse_event_completed(
-                                usage.input_tokens,
-                                usage.output_tokens,
-                                usage
-                                    .input_tokens_details
-                                    .as_ref()
-                                    .map(|d| d.cached_tokens),
-                                usage
-                                    .output_tokens_details
-                                    .as_ref()
-                                    .map(|d| d.reasoning_tokens),
-                                usage.total_tokens,
-                            );
-                        }
-                        let event = ResponseEvent::Completed {
-                            response_id,
-                            token_usage: usage.map(Into::into),
-                        };
-                        let _ = tx_event.send(Ok(event)).await;
+                    Some(completed) => {
+                        emit_completed_event(
+                            completed,
+                            &tx_event,
+                            otel_event_manager.as_ref(),
+                            &debug_logger,
+                            &request_id,
+                        )
+                        .await;
                     }
                     None => {
                         let error = response_error.unwrap_or(CodexErr::Stream(
@@ -2595,6 +2637,17 @@ async fn process_sse<S>(
                             }
                         }
                     }
+
+                    if let Some(error) = response_error.take() {
+                        if let Some(manager) = otel_event_manager.as_ref() {
+                            manager.see_event_completed_failed(&error);
+                        }
+                        let _ = tx_event.send(Err(error)).await;
+                        if let Ok(logger) = debug_logger.lock() {
+                            let _ = logger.end_request_log(&request_id);
+                        }
+                        return;
+                    }
                 }
             }
             "response.incomplete" => {
@@ -2622,7 +2675,52 @@ async fn process_sse<S>(
                             continue;
                         }
                     };
+
+                    if let Some(completed) = response_completed.take() {
+                        emit_completed_event(
+                            completed,
+                            &tx_event,
+                            otel_event_manager.as_ref(),
+                            &debug_logger,
+                            &request_id,
+                        )
+                        .await;
+                        return;
+                    }
                 };
+            }
+            "response.done" => {
+                if let Some(resp_val) = event.response {
+                    match serde_json::from_value::<ResponseDone>(resp_val) {
+                        Ok(r) => {
+                            response_completed = Some(ResponseCompleted {
+                                id: r.id.unwrap_or_default(),
+                                usage: r.usage,
+                            });
+                        }
+                        Err(e) => {
+                            debug!("failed to parse ResponseDone: {e}");
+                            continue;
+                        }
+                    };
+                } else {
+                    response_completed = Some(ResponseCompleted {
+                        id: String::new(),
+                        usage: None,
+                    });
+                }
+
+                if let Some(completed) = response_completed.take() {
+                    emit_completed_event(
+                        completed,
+                        &tx_event,
+                        otel_event_manager.as_ref(),
+                        &debug_logger,
+                        &request_id,
+                    )
+                    .await;
+                    return;
+                }
             }
             "response.content_part.done"
             | "response.function_call_arguments.delta"
@@ -3098,6 +3196,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_done_emits_completed() {
+        let done = json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp_done_1",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": null,
+                    "output_tokens": 2,
+                    "output_tokens_details": null,
+                    "total_tokens": 3
+                }
+            }
+        })
+        .to_string();
+
+        let sse1 = format!("event: response.done\ndata: {done}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Ok(ResponseEvent::Completed {
+                response_id,
+                token_usage,
+            }) => {
+                assert_eq!(response_id, "resp_done_1");
+                assert!(token_usage.is_some());
+            }
+            other => panic!("unexpected done event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_completed_does_not_wait_for_stream_close() {
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_ws_1",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": null,
+                    "output_tokens": 2,
+                    "output_tokens_details": null,
+                    "total_tokens": 3
+                }
+            }
+        })
+        .to_string();
+
+        let sse = format!("event: response.completed\ndata: {completed}\n\n");
+        let (tx_bytes, rx_bytes) = mpsc::channel::<Result<Bytes>>(4);
+        tx_bytes
+            .send(Ok(Bytes::from(sse)))
+            .await
+            .expect("seed response.completed chunk");
+        let stream = ReceiverStream::new(rx_bytes);
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(8);
+        let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+        let checkpoint = Arc::new(RwLock::new(StreamCheckpoint::default()));
+
+        tokio::spawn(process_sse(
+            stream,
+            tx,
+            Duration::from_secs(60),
+            debug_logger,
+            String::new(),
+            None,
+            checkpoint,
+        ));
+
+        // Keep sender alive so the stream does not terminate on EOF.
+        let _keep_stream_open = tx_bytes;
+
+        let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("parser should emit completion without waiting for EOF")
+            .expect("completion event");
+        match first {
+            Ok(ResponseEvent::Completed { response_id, .. }) => {
+                assert_eq!(response_id, "resp_ws_1");
+            }
+            other => panic!("unexpected first event: {other:?}"),
+        }
+
+        let second = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("channel should close after completion");
+        assert!(second.is_none());
+    }
+
+    #[tokio::test]
     async fn error_when_error_event() {
         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."}, "usage":null,"user":null,"metadata":{}}}"#;
 
@@ -3539,6 +3745,24 @@ mod tests {
                 );
             }
             other => panic!("unexpected incomplete event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn websocket_error_without_status_surfaces_stream_message() {
+        let payload = r#"{"type":"error","error":{"type":"invalid_request_error","message":"The requested model 'gpt-5.3-codex-spark' does not exist."}}"#;
+        let wrapped = parse_wrapped_websocket_error_event(payload)
+            .expect("wrapped websocket error should parse");
+        let mapped =
+            map_wrapped_websocket_error_event(wrapped).expect("error should map without status");
+        match mapped {
+            CodexErr::Stream(message, None, None) => {
+                assert_eq!(
+                    message,
+                    "The requested model 'gpt-5.3-codex-spark' does not exist."
+                );
+            }
+            other => panic!("unexpected mapped websocket error: {other:?}"),
         }
     }
 }

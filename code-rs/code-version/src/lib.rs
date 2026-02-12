@@ -11,10 +11,22 @@ pub const CODE_VERSION: &str = {
 };
 
 const ANNOUNCEMENT_TIP: &str = include_str!("../../../announcement_tip.toml");
-pub const MIN_WIRE_COMPAT_VERSION_FALLBACK: &str = "0.98.0";
+pub const MIN_WIRE_COMPAT_VERSION_FALLBACK: &str = "0.101.0";
 
 static MIN_WIRE_COMPAT_VERSION: LazyLock<&'static str> = LazyLock::new(|| {
-    extract_max_semver(ANNOUNCEMENT_TIP).unwrap_or(MIN_WIRE_COMPAT_VERSION_FALLBACK)
+    let extracted = extract_max_semver(ANNOUNCEMENT_TIP).unwrap_or(MIN_WIRE_COMPAT_VERSION_FALLBACK);
+    let Some(extracted_triplet) = parse_semver_triplet(extracted) else {
+        return MIN_WIRE_COMPAT_VERSION_FALLBACK;
+    };
+    let Some(fallback_triplet) = parse_semver_triplet(MIN_WIRE_COMPAT_VERSION_FALLBACK) else {
+        return extracted;
+    };
+
+    if extracted_triplet < fallback_triplet {
+        MIN_WIRE_COMPAT_VERSION_FALLBACK
+    } else {
+        extracted
+    }
 });
 
 fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
@@ -96,30 +108,36 @@ mod tests {
     #[test]
     fn wire_compat_clamps_old_versions() {
         assert_eq!(
-            wire_compatible_version_for("0.0.0", "0.98.0"),
-            "0.98.0"
+            wire_compatible_version_for("0.0.0", "0.101.0"),
+            "0.101.0"
         );
         assert_eq!(
-            wire_compatible_version_for("0.6.59", "0.98.0"),
-            "0.98.0"
+            wire_compatible_version_for("0.6.59", "0.101.0"),
+            "0.101.0"
         );
         assert_eq!(
-            wire_compatible_version_for("0.6.59-dev+abc123", "0.98.0"),
-            "0.98.0"
+            wire_compatible_version_for("0.6.59-dev+abc123", "0.101.0"),
+            "0.101.0"
         );
     }
 
     #[test]
     fn wire_compat_keeps_new_versions() {
-        assert_eq!(wire_compatible_version_for("0.98.0", "0.98.0"), "0.98.0");
-        assert_eq!(wire_compatible_version_for("0.99.1", "0.98.0"), "0.99.1");
-        assert_eq!(wire_compatible_version_for("1.0.0", "0.98.0"), "1.0.0");
+        assert_eq!(
+            wire_compatible_version_for("0.101.0", "0.101.0"),
+            "0.101.0"
+        );
+        assert_eq!(
+            wire_compatible_version_for("0.101.1", "0.101.0"),
+            "0.101.1"
+        );
+        assert_eq!(wire_compatible_version_for("1.0.0", "0.101.0"), "1.0.0");
     }
 
     #[test]
     fn wire_compat_keeps_invalid_versions() {
-        assert_eq!(wire_compatible_version_for("dev", "0.98.0"), "dev");
-        assert_eq!(wire_compatible_version_for("0.1", "0.98.0"), "0.1");
+        assert_eq!(wire_compatible_version_for("dev", "0.101.0"), "dev");
+        assert_eq!(wire_compatible_version_for("0.1", "0.101.0"), "0.1");
     }
 
     #[test]
@@ -137,6 +155,14 @@ mod tests {
     #[test]
     fn configured_minimum_defaults_to_semver() {
         assert!(parse_semver_triplet(min_wire_compat_version()).is_some());
+    }
+
+    #[test]
+    fn configured_minimum_is_at_least_fallback() {
+        let configured = parse_semver_triplet(min_wire_compat_version()).expect("configured semver");
+        let fallback =
+            parse_semver_triplet(MIN_WIRE_COMPAT_VERSION_FALLBACK).expect("fallback semver");
+        assert!(configured >= fallback);
     }
 
     #[test]
