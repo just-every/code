@@ -141,6 +141,7 @@ async fn on_exec_approval_response(
     if let Err(err) = codex
         .submit(Op::ExecApproval {
             id: approval_id,
+            turn_id: None,
             decision: response.decision,
         })
         .await

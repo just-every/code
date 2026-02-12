@@ -365,6 +365,8 @@ pub struct Config {
     pub include_apply_patch_tool: bool,
     /// Enable the native Responses web_search tool.
     pub tools_web_search_request: bool,
+    /// Controls `external_web_access` for the web_search tool payload.
+    pub tools_web_search_external: bool,
     /// Enable MCP tool discovery helper (`search_tool_bm25`).
     pub tools_search_tool: bool,
     /// Optional allow-list of domains for web_search filters.allowed_domains
@@ -447,6 +449,26 @@ impl Config {
             .with_overrides(overrides)
             .load()
     }
+
+    /// Load configuration from defaults only, then apply generic `-c key=value`
+    /// overrides and typed [`ConfigOverrides`].
+    ///
+    /// This intentionally ignores on-disk config files, which is useful as a
+    /// fallback when those files fail to parse.
+    pub fn load_default_with_cli_overrides(
+        cli_overrides: Vec<(String, TomlValue)>,
+        overrides: ConfigOverrides,
+    ) -> std::io::Result<Self> {
+        let code_home = find_code_home()?;
+        let mut root_value = TomlValue::Table(Default::default());
+        let cli_paths: Vec<String> = cli_overrides.iter().map(|(path, _)| path.clone()).collect();
+        for (path, value) in cli_overrides {
+            validation::apply_toml_override(&mut root_value, &path, value);
+        }
+
+        let cfg = validation::deserialize_config_toml_with_cli_warnings(&root_value, &cli_paths)?;
+        Config::load_from_base_config_with_overrides(cfg, overrides, code_home)
+    }
 }
 
 pub fn load_config_as_toml_with_cli_overrides(
@@ -457,6 +479,33 @@ pub fn load_config_as_toml_with_cli_overrides(
         .with_code_home(code_home.to_path_buf())
         .with_cli_overrides(cli_overrides)
         .load_toml()
+}
+
+pub fn load_allowed_approval_policies(
+    code_home: &Path,
+) -> std::io::Result<Option<Vec<AskForApproval>>> {
+    let requirements = crate::config_loader::load_config_requirements_blocking(
+        code_home,
+        crate::config_loader::LoaderOverrides::default(),
+    )?;
+
+    let mut allowed = Vec::new();
+    for candidate in [
+        AskForApproval::UnlessTrusted,
+        AskForApproval::OnFailure,
+        AskForApproval::OnRequest,
+        AskForApproval::Never,
+    ] {
+        if requirements.approval_policy.can_set(&candidate).is_ok() {
+            allowed.push(candidate);
+        }
+    }
+
+    if allowed.len() == 4 {
+        Ok(None)
+    } else {
+        Ok(Some(allowed))
+    }
 }
 
 /// Base config deserialized from ~/.code/config.toml (legacy ~/.codex/config.toml is still read).
@@ -734,6 +783,11 @@ pub struct ProjectConfig {
 pub struct ToolsToml {
     #[serde(default, alias = "web_search_request")]
     pub web_search: Option<bool>,
+
+    /// Controls `external_web_access` for the web_search tool payload.
+    /// Defaults to true when omitted.
+    #[serde(default)]
+    pub web_search_external: Option<bool>,
 
     /// Enable MCP tool discovery helper (`search_tool_bm25`).
     #[serde(default)]
@@ -1058,6 +1112,11 @@ impl Config {
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
             .unwrap_or(false);
+        let tools_web_search_external = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.web_search_external)
+            .unwrap_or(true);
         let tools_search_tool = cfg
             .tools
             .as_ref()
@@ -1453,6 +1512,7 @@ impl Config {
             include_plan_tool: include_plan_tool.unwrap_or(false),
             include_apply_patch_tool: include_apply_patch_tool.unwrap_or(false),
             tools_web_search_request,
+            tools_web_search_external,
             tools_search_tool,
             tools_web_search_allowed_domains,
             // Honor upstream opt-in switch name for our experimental streamable shell tool.
@@ -1712,6 +1772,26 @@ persistence = "none"
             code_home.path().to_path_buf(),
         )?;
         assert_eq!(overridden.tool_output_max_bytes, 65_536);
+        Ok(())
+    }
+
+    #[test]
+    fn load_default_with_cli_overrides_applies_cli_model_override() -> std::io::Result<()> {
+        let _code_home_guard = EnvVarGuard::new("CODE_HOME");
+        let temp_code_home = TempDir::new()?;
+        unsafe {
+            std::env::set_var("CODE_HOME", temp_code_home.path());
+        }
+
+        let config = Config::load_default_with_cli_overrides(
+            vec![(
+                "model".to_string(),
+                TomlValue::String("gpt-5.1-codex-max".to_string()),
+            )],
+            ConfigOverrides::default(),
+        )?;
+
+        assert_eq!(config.model, "gpt-5.1-codex-max");
         Ok(())
     }
 

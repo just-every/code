@@ -388,6 +388,53 @@ pub fn login_with_api_key(code_home: &Path, api_key: &str) -> std::io::Result<()
     Ok(())
 }
 
+pub fn login_with_chatgpt_auth_tokens(
+    code_home: &Path,
+    access_token: &str,
+    chatgpt_account_id: &str,
+    chatgpt_plan_type: Option<&str>,
+) -> std::io::Result<()> {
+    let mut id_token = parse_id_token(access_token).map_err(std::io::Error::other)?;
+    if let Some(plan_type) = chatgpt_plan_type {
+        id_token.chatgpt_plan_type = Some(match plan_type.trim().to_ascii_lowercase().as_str() {
+            "free" => PlanType::Known(KnownPlan::Free),
+            "plus" => PlanType::Known(KnownPlan::Plus),
+            "pro" => PlanType::Known(KnownPlan::Pro),
+            "team" => PlanType::Known(KnownPlan::Team),
+            "business" => PlanType::Known(KnownPlan::Business),
+            "enterprise" => PlanType::Known(KnownPlan::Enterprise),
+            "edu" => PlanType::Known(KnownPlan::Edu),
+            _ => PlanType::Unknown(plan_type.to_string()),
+        });
+    }
+
+    let tokens = TokenData {
+        id_token,
+        access_token: access_token.to_string(),
+        refresh_token: String::new(),
+        account_id: Some(chatgpt_account_id.to_string()),
+    };
+    let last_refresh = Utc::now();
+    let auth_dot_json = AuthDotJson {
+        auth_mode: Some(AuthMode::ChatgptAuthTokens),
+        openai_api_key: None,
+        tokens: Some(tokens.clone()),
+        last_refresh: Some(last_refresh),
+    };
+    write_auth_json(&get_auth_file(code_home), &auth_dot_json)?;
+
+    let email_for_store = tokens.id_token.email.clone();
+    let _ = crate::auth_accounts::upsert_chatgpt_account(
+        code_home,
+        tokens,
+        last_refresh,
+        email_for_store,
+        true,
+    )?;
+
+    Ok(())
+}
+
 pub async fn auth_for_stored_account(
     code_home: &Path,
     account: &crate::auth_accounts::StoredAccount,

@@ -191,6 +191,7 @@ async fn run_code_tool_session_inner(
                         cwd,
                         call_id,
                         reason: _,
+                        ..
                     }) => {
                         handle_exec_approval_request(
                             command,

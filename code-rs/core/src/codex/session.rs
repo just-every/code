@@ -1108,6 +1108,7 @@ impl Session {
             &sub_id,
             EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
                 call_id: call_id.clone(),
+                turn_id: sub_id.clone(),
                 command,
                 cwd,
                 reason,

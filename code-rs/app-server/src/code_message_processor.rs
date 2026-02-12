@@ -3,6 +3,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use code_app_server_protocol::Account as V2Account;
+use code_app_server_protocol::CancelLoginAccountParams;
+use code_app_server_protocol::CancelLoginAccountResponse;
+use code_app_server_protocol::CancelLoginAccountStatus;
+use code_app_server_protocol::GetAccountRateLimitsResponse;
+use code_app_server_protocol::GetAccountResponse;
+use code_app_server_protocol::LoginAccountParams;
+use code_app_server_protocol::LoginAccountResponse;
+use code_app_server_protocol::LogoutAccountResponse;
+use code_app_server_protocol::ToolRequestUserInputOption;
+use code_app_server_protocol::ToolRequestUserInputParams;
+use code_app_server_protocol::ToolRequestUserInputQuestion;
+use code_app_server_protocol::ToolRequestUserInputResponse;
 use code_core::AuthManager;
 use code_core::CodexConversation;
 use code_core::ConversationManager;
@@ -26,14 +39,21 @@ use code_protocol::mcp_protocol::FuzzyFileSearchResponse;
 use code_protocol::protocol::ReviewDecision;
 use mcp_types::JSONRPCErrorError;
 use mcp_types::RequestId;
+use code_login::CLIENT_ID;
+use code_login::ServerOptions;
+use code_login::ShutdownHandle;
+use code_login::run_login_server;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
+use tokio::time::Duration;
+use tokio::time::timeout;
 use tracing::error;
 use uuid::Uuid;
 
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use code_utils_json_to_toml::json_to_toml;
+use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::OutgoingNotification;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
@@ -53,6 +73,8 @@ use code_protocol::mcp_protocol::DynamicToolCallParams;
 use code_protocol::mcp_protocol::DynamicToolCallResponse;
 use code_protocol::mcp_protocol::EXEC_COMMAND_APPROVAL_METHOD;
 use code_protocol::mcp_protocol::DYNAMIC_TOOL_CALL_METHOD;
+use code_protocol::request_user_input::RequestUserInputAnswer;
+use code_protocol::request_user_input::RequestUserInputResponse;
 use code_protocol::mcp_protocol::ExecCommandApprovalParams;
 use code_protocol::mcp_protocol::ExecCommandApprovalResponse;
 use code_protocol::mcp_protocol::InputItem as WireInputItem;
@@ -90,8 +112,27 @@ use code_protocol::mcp_protocol::UserSavedConfig;
 use code_protocol::mcp_protocol::Profile;
 use code_protocol::mcp_protocol::SandboxSettings;
 use code_protocol::mcp_protocol::Tools;
+use code_protocol::mcp_protocol::LoginChatGptResponse;
+use code_protocol::mcp_protocol::CancelLoginChatGptParams;
+use code_protocol::mcp_protocol::CancelLoginChatGptResponse;
+use code_protocol::mcp_protocol::LogoutChatGptResponse;
+use code_protocol::account::PlanType;
+use code_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
+use code_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 
 // Removed deprecated ChatGPT login support scaffolding
+
+const TOOL_REQUEST_USER_INPUT_METHOD: &str = "item/tool/requestUserInput";
+
+struct ConversationListenerRegistration {
+    owner_connection_id: ConnectionId,
+    cancel_tx: oneshot::Sender<()>,
+}
+
+struct ActiveLogin {
+    login_id: Uuid,
+    shutdown_handle: ShutdownHandle,
+}
 
 /// Handles JSON-RPC messages for Codex conversations.
 pub struct CodexMessageProcessor {
@@ -100,7 +141,8 @@ pub struct CodexMessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     code_linux_sandbox_exe: Option<PathBuf>,
     config: Arc<Config>,
-    conversation_listeners: HashMap<Uuid, oneshot::Sender<()>>,
+    conversation_listeners: HashMap<Uuid, ConversationListenerRegistration>,
+    active_login: Arc<Mutex<Option<ActiveLogin>>>,
     // Queue of pending interrupt requests per conversation. We reply when TurnAborted arrives.
     pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
     #[allow(dead_code)]
@@ -122,12 +164,22 @@ impl CodexMessageProcessor {
             code_linux_sandbox_exe,
             config,
             conversation_listeners: HashMap::new(),
+            active_login: Arc::new(Mutex::new(None)),
             pending_interrupts: Arc::new(Mutex::new(HashMap::new())),
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn process_request(&mut self, request: ClientRequest) {
+        self.process_request_for_connection(ConnectionId(0), request)
+            .await;
+    }
+
+    pub(crate) async fn process_request_for_connection(
+        &mut self,
+        connection_id: ConnectionId,
+        request: ClientRequest,
+    ) {
         match request {
             ClientRequest::Initialize { request_id, .. } => {
                 let error = JSONRPCErrorError {
@@ -159,10 +211,12 @@ impl CodexMessageProcessor {
                 self.interrupt_conversation(request_id, params).await;
             }
             ClientRequest::AddConversationListener { request_id, params } => {
-                self.add_conversation_listener(request_id, params).await;
+                self.add_conversation_listener(connection_id, request_id, params)
+                    .await;
             }
             ClientRequest::RemoveConversationListener { request_id, params } => {
-                self.remove_conversation_listener(request_id, params).await;
+                self.remove_conversation_listener(connection_id, request_id, params)
+                    .await;
             }
             ClientRequest::SendUserTurn { request_id, params } => {
                 self.send_user_turn_compat(request_id, params).await;
@@ -171,32 +225,16 @@ impl CodexMessageProcessor {
                 self.fuzzy_file_search(request_id, params).await;
             }
             ClientRequest::LoginChatGpt { request_id, .. } => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: "login is not supported by this server".to_string(),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
+                self.login_chatgpt_v1(request_id).await;
             }
             ClientRequest::LoginApiKey { request_id, params } => {
                 self.login_api_key(request_id, params).await;
             }
-            ClientRequest::CancelLoginChatGpt { request_id, .. } => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: "cancel login is not supported by this server".to_string(),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
+            ClientRequest::CancelLoginChatGpt { request_id, params } => {
+                self.cancel_login_chatgpt_v1(request_id, params).await;
             }
             ClientRequest::LogoutChatGpt { request_id, .. } => {
-                // Not supported by this server implementation
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: "logout is not supported by this server".to_string(),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
+                self.logout_chatgpt_v1(request_id).await;
             }
             ClientRequest::GetAuthStatus { request_id, params } => {
                 self.get_auth_status(request_id, params).await;
@@ -220,6 +258,274 @@ impl CodexMessageProcessor {
                 self.exec_one_off_command(request_id, params).await;
             }
         }
+    }
+
+    pub(crate) async fn on_connection_closed(&mut self, connection_id: ConnectionId) {
+        let subscription_ids: Vec<Uuid> = self
+            .conversation_listeners
+            .iter()
+            .filter_map(|(subscription_id, registration)| {
+                if registration.owner_connection_id == connection_id {
+                    Some(*subscription_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for subscription_id in subscription_ids {
+            if let Some(registration) = self.conversation_listeners.remove(&subscription_id) {
+                let _ = registration.cancel_tx.send(());
+            }
+        }
+    }
+
+    pub(crate) async fn get_account_response_v2(
+        &self,
+        refresh_token: bool,
+    ) -> Result<GetAccountResponse, JSONRPCErrorError> {
+        let requires_openai_auth = self.config.model_provider.requires_openai_auth;
+
+        if refresh_token {
+            let _ = self.auth_manager.refresh_token().await;
+        }
+
+        if !requires_openai_auth {
+            return Ok(GetAccountResponse {
+                account: None,
+                requires_openai_auth,
+            });
+        }
+
+        let account = match self.auth_manager.auth() {
+            Some(auth) if auth.mode == code_app_server_protocol::AuthMode::ApiKey => {
+                Some(V2Account::ApiKey {})
+            }
+            Some(auth) if auth.mode.is_chatgpt() => {
+                let email = auth
+                    .get_token_data()
+                    .await
+                    .ok()
+                    .and_then(|token_data| token_data.id_token.email);
+                let plan_type = parse_plan_type(auth.get_plan_type());
+
+                match email {
+                    Some(email) => Some(V2Account::Chatgpt { email, plan_type }),
+                    None => {
+                        return Err(JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: "email is required for chatgpt authentication".to_string(),
+                            data: None,
+                        });
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        Ok(GetAccountResponse {
+            account,
+            requires_openai_auth,
+        })
+    }
+
+    pub(crate) async fn login_account_v2(
+        &self,
+        params: LoginAccountParams,
+    ) -> Result<LoginAccountResponse, JSONRPCErrorError> {
+        match params {
+            LoginAccountParams::ApiKey { api_key } => {
+                let api_key = api_key.trim();
+                if api_key.is_empty() {
+                    return Err(JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: "apiKey is required".to_string(),
+                        data: None,
+                    });
+                }
+
+                if let Err(err) = code_core::auth::login_with_api_key(&self.config.code_home, api_key) {
+                    return Err(JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to persist api key: {err}"),
+                        data: None,
+                    });
+                }
+
+                self.auth_manager.reload();
+                Ok(LoginAccountResponse::ApiKey {})
+            }
+            LoginAccountParams::Chatgpt => self.start_chatgpt_login_v2().await,
+            LoginAccountParams::ChatgptAuthTokens {
+                access_token,
+                chatgpt_account_id,
+                chatgpt_plan_type,
+            } => {
+                code_core::auth::login_with_chatgpt_auth_tokens(
+                    &self.config.code_home,
+                    &access_token,
+                    &chatgpt_account_id,
+                    chatgpt_plan_type.as_deref(),
+                )
+                .map_err(|err| JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to persist chatgpt auth tokens: {err}"),
+                    data: None,
+                })?;
+
+                self.auth_manager.reload();
+                Ok(LoginAccountResponse::ChatgptAuthTokens {})
+            }
+        }
+    }
+
+    async fn start_chatgpt_login_v2(&self) -> Result<LoginAccountResponse, JSONRPCErrorError> {
+        let mut options = ServerOptions::new(
+            self.config.code_home.clone(),
+            CLIENT_ID.to_string(),
+            self.config.responses_originator_header.clone(),
+        );
+        options.open_browser = false;
+
+        let server = run_login_server(options).map_err(|err| JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: format!("failed to start login server: {err}"),
+            data: None,
+        })?;
+
+        let login_id = Uuid::new_v4();
+        let auth_url = server.auth_url.clone();
+        let shutdown_handle = server.cancel_handle();
+
+        {
+            let mut active_login = self.active_login.lock().await;
+            if let Some(existing) = active_login.take() {
+                existing.shutdown_handle.shutdown();
+            }
+            *active_login = Some(ActiveLogin {
+                login_id,
+                shutdown_handle: shutdown_handle.clone(),
+            });
+        }
+
+        let active_login = Arc::clone(&self.active_login);
+        let auth_manager = Arc::clone(&self.auth_manager);
+        tokio::spawn(async move {
+            let login_result = timeout(Duration::from_secs(300), server.block_until_done()).await;
+            match login_result {
+                Ok(Ok(())) => {
+                    auth_manager.reload();
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!("chatgpt login failed: {err}");
+                }
+                Err(_elapsed) => {
+                    shutdown_handle.shutdown();
+                }
+            }
+
+            let mut active_login = active_login.lock().await;
+            if active_login.as_ref().map(|entry| entry.login_id) == Some(login_id) {
+                *active_login = None;
+            }
+        });
+
+        Ok(LoginAccountResponse::Chatgpt {
+            login_id: login_id.to_string(),
+            auth_url,
+        })
+    }
+
+    pub(crate) async fn cancel_login_account_v2(
+        &self,
+        params: CancelLoginAccountParams,
+    ) -> Result<CancelLoginAccountResponse, JSONRPCErrorError> {
+        let login_id = Uuid::parse_str(&params.login_id).map_err(|_| JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: format!("invalid login id: {}", params.login_id),
+            data: None,
+        })?;
+
+        let status = self.cancel_active_login(login_id).await;
+        Ok(CancelLoginAccountResponse { status })
+    }
+
+    async fn cancel_active_login(&self, login_id: Uuid) -> CancelLoginAccountStatus {
+        let mut active_login = self.active_login.lock().await;
+        if active_login.as_ref().map(|entry| entry.login_id) == Some(login_id) {
+            if let Some(existing) = active_login.take() {
+                existing.shutdown_handle.shutdown();
+            }
+            CancelLoginAccountStatus::Canceled
+        } else {
+            CancelLoginAccountStatus::NotFound
+        }
+    }
+
+    pub(crate) async fn logout_account_v2(&self) -> Result<LogoutAccountResponse, JSONRPCErrorError> {
+        {
+            let mut active_login = self.active_login.lock().await;
+            if let Some(existing) = active_login.take() {
+                existing.shutdown_handle.shutdown();
+            }
+        }
+
+        self.auth_manager.logout().map_err(|err| JSONRPCErrorError {
+            code: INTERNAL_ERROR_CODE,
+            message: format!("logout failed: {err}"),
+            data: None,
+        })?;
+        Ok(LogoutAccountResponse {})
+    }
+
+    pub(crate) fn get_account_rate_limits_v2(
+        &self,
+    ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
+        let Some(auth) = self.auth_manager.auth() else {
+            return Err(JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "account authentication required to read rate limits".to_string(),
+                data: None,
+            });
+        };
+
+        if !auth.mode.is_chatgpt() {
+            return Err(JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "chatgpt authentication required to read rate limits".to_string(),
+                data: None,
+            });
+        }
+
+        let snapshots = code_core::account_usage::list_rate_limit_snapshots(&self.config.code_home)
+            .map_err(|err| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to read rate limit snapshots: {err}"),
+                data: None,
+            })?;
+        let selected = select_rate_limit_snapshot(auth.get_account_id(), snapshots).ok_or_else(|| {
+            JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "no rate limit snapshot available".to_string(),
+                data: None,
+            }
+        })?;
+
+        let snapshot = selected.snapshot.clone().ok_or_else(|| JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: "no rate limit snapshot available".to_string(),
+            data: None,
+        })?;
+
+        let plan_type = selected.plan.clone().map(|value| parse_plan_type(Some(value)));
+        let rate_limits = rate_limit_snapshot_from_event(&snapshot, plan_type);
+        let mut rate_limits_by_limit_id = HashMap::new();
+        rate_limits_by_limit_id.insert(selected.account_id, rate_limits.clone().into());
+
+        Ok(GetAccountRateLimitsResponse {
+            rate_limits: rate_limits.into(),
+            rate_limits_by_limit_id: Some(rate_limits_by_limit_id),
+        })
     }
 
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
@@ -383,6 +689,7 @@ impl CodexMessageProcessor {
 
     async fn add_conversation_listener(
         &mut self,
+        owner_connection_id: ConnectionId,
         request_id: RequestId,
         params: AddConversationListenerParams,
     ) {
@@ -403,8 +710,13 @@ impl CodexMessageProcessor {
 
         let subscription_id = Uuid::new_v4();
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        self.conversation_listeners
-            .insert(subscription_id, cancel_tx);
+        self.conversation_listeners.insert(
+            subscription_id,
+            ConversationListenerRegistration {
+                owner_connection_id,
+                cancel_tx,
+            },
+        );
         let outgoing_for_task = self.outgoing.clone();
         let pending_interrupts = self.pending_interrupts.clone();
         tokio::spawn(async move {
@@ -441,13 +753,25 @@ impl CodexMessageProcessor {
                         };
                         params.insert("conversationId".to_string(), conversation_id.to_string().into());
 
-                        outgoing_for_task.send_notification(OutgoingNotification {
-                            method,
-                            params: Some(params.into()),
-                        })
-                        .await;
+                        outgoing_for_task
+                            .send_notification_to_connection(
+                                owner_connection_id,
+                                OutgoingNotification {
+                                    method,
+                                    params: Some(params.into()),
+                                },
+                            )
+                            .await;
 
-                        apply_bespoke_event_handling(event.clone(), conversation_id, conversation.clone(), outgoing_for_task.clone(), pending_interrupts.clone()).await;
+                        apply_bespoke_event_handling(
+                            event.clone(),
+                            conversation_id,
+                            owner_connection_id,
+                            conversation.clone(),
+                            outgoing_for_task.clone(),
+                            pending_interrupts.clone(),
+                        )
+                        .await;
                     }
                 }
             }
@@ -458,14 +782,28 @@ impl CodexMessageProcessor {
 
     async fn remove_conversation_listener(
         &mut self,
+        requester_connection_id: ConnectionId,
         request_id: RequestId,
         params: RemoveConversationListenerParams,
     ) {
         let RemoveConversationListenerParams { subscription_id } = params;
         match self.conversation_listeners.remove(&subscription_id) {
-            Some(sender) => {
+            Some(registration) => {
+                if registration.owner_connection_id != requester_connection_id {
+                    // Keep ownership scoped to the client that created the listener.
+                    self.conversation_listeners
+                        .insert(subscription_id, registration);
+                    let error = JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: format!("subscription not found: {subscription_id}"),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+
                 // Signal the spawned task to exit and acknowledge.
-                let _ = sender.send(());
+                let _ = registration.cancel_tx.send(());
                 let response = RemoveConversationSubscriptionResponse {};
                 self.outgoing.send_response(request_id, response).await;
             }
@@ -650,6 +988,76 @@ impl CodexMessageProcessor {
                     message: format!("failed to archive conversation: {err}"),
                     data: None,
                 };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn login_chatgpt_v1(&self, request_id: RequestId) {
+        match self.start_chatgpt_login_v2().await {
+            Ok(LoginAccountResponse::Chatgpt { login_id, auth_url }) => {
+                let login_id = match Uuid::parse_str(&login_id) {
+                    Ok(login_id) => login_id,
+                    Err(err) => {
+                        let error = JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: format!("invalid login id generated by server: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return;
+                    }
+                };
+
+                self.outgoing
+                    .send_response(request_id, LoginChatGptResponse { login_id, auth_url })
+                    .await;
+            }
+            Ok(_) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: "unexpected login response type".to_string(),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn cancel_login_chatgpt_v1(
+        &self,
+        request_id: RequestId,
+        params: CancelLoginChatGptParams,
+    ) {
+        let status = self.cancel_active_login(params.login_id).await;
+        match status {
+            CancelLoginAccountStatus::Canceled => {
+                self.outgoing
+                    .send_response(request_id, CancelLoginChatGptResponse {})
+                    .await;
+            }
+            CancelLoginAccountStatus::NotFound => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!("login id not found: {}", params.login_id),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn logout_chatgpt_v1(&self, request_id: RequestId) {
+        match self.logout_account_v2().await {
+            Ok(_) => {
+                self.outgoing
+                    .send_response(request_id, LogoutChatGptResponse {})
+                    .await;
+            }
+            Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
             }
         }
@@ -1045,6 +1453,7 @@ impl CodexMessageProcessor {
 async fn apply_bespoke_event_handling(
     event: Event,
     conversation_id: ConversationId,
+    owner_connection_id: ConnectionId,
     conversation: Arc<CodexConversation>,
     outgoing: Arc<OutgoingMessageSender>,
     _pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
@@ -1093,7 +1502,7 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request(APPLY_PATCH_APPROVAL_METHOD, Some(value))
+                .send_request_to_connection(owner_connection_id, APPLY_PATCH_APPROVAL_METHOD, Some(value))
                 .await;
             // TODO(mbolin): Enforce a timeout so this task does not live indefinitely?
             let approval_id = call_id.clone(); // correlate by call_id, not event_id
@@ -1103,6 +1512,7 @@ async fn apply_bespoke_event_handling(
         }
         EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
             call_id,
+            turn_id,
             command,
             cwd,
             reason,
@@ -1116,13 +1526,13 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request(EXEC_COMMAND_APPROVAL_METHOD, Some(value))
+                .send_request_to_connection(owner_connection_id, EXEC_COMMAND_APPROVAL_METHOD, Some(value))
                 .await;
 
             // TODO(mbolin): Enforce a timeout so this task does not live indefinitely?
             let approval_id = call_id.clone(); // correlate by call_id, not event_id
             tokio::spawn(async move {
-                on_exec_approval_response(approval_id, rx, conversation).await;
+                on_exec_approval_response(approval_id, Some(turn_id), rx, conversation).await;
             });
         }
         EventMsg::DynamicToolCallRequest(request) => {
@@ -1136,11 +1546,51 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request(DYNAMIC_TOOL_CALL_METHOD, Some(value))
+                .send_request_to_connection(owner_connection_id, DYNAMIC_TOOL_CALL_METHOD, Some(value))
                 .await;
 
             tokio::spawn(async move {
                 on_dynamic_tool_call_response(call_id, rx, conversation).await;
+            });
+        }
+        EventMsg::RequestUserInput(request) => {
+            let request_turn_id = request.turn_id;
+            let params = ToolRequestUserInputParams {
+                thread_id: conversation_id.to_string(),
+                turn_id: request_turn_id.clone(),
+                item_id: request.call_id,
+                questions: request
+                    .questions
+                    .into_iter()
+                    .map(|question| ToolRequestUserInputQuestion {
+                        id: question.id,
+                        header: question.header,
+                        question: question.question,
+                        is_other: question.is_other,
+                        is_secret: question.is_secret,
+                        options: question.options.map(|options| {
+                            options
+                                .into_iter()
+                                .map(|option| ToolRequestUserInputOption {
+                                    label: option.label,
+                                    description: option.description,
+                                })
+                                .collect()
+                        }),
+                    })
+                    .collect(),
+            };
+            let value = serde_json::to_value(&params).unwrap_or_default();
+            let rx = outgoing
+                .send_request_to_connection(
+                    owner_connection_id,
+                    TOOL_REQUEST_USER_INPUT_METHOD,
+                    Some(value),
+                )
+                .await;
+
+            tokio::spawn(async move {
+                on_request_user_input_response(request_turn_id, rx, conversation).await;
             });
         }
         // No special handling needed for interrupts; responses are sent immediately.
@@ -1296,8 +1746,74 @@ async fn on_dynamic_tool_call_response(
     }
 }
 
+async fn on_request_user_input_response(
+    turn_id: String,
+    receiver: tokio::sync::oneshot::Receiver<mcp_types::Result>,
+    conversation: Arc<CodexConversation>,
+) {
+    let response = receiver.await;
+    let value = match response {
+        Ok(value) => value,
+        Err(err) => {
+            error!("request failed: {err:?}");
+            let empty = RequestUserInputResponse {
+                answers: HashMap::new(),
+            };
+            if let Err(err) = conversation
+                .submit(Op::UserInputAnswer {
+                    id: turn_id,
+                    response: empty,
+                })
+                .await
+            {
+                error!("failed to submit UserInputAnswer: {err}");
+            }
+            return;
+        }
+    };
+
+    let response =
+        serde_json::from_value::<ToolRequestUserInputResponse>(value).unwrap_or_else(|err| {
+            error!("failed to deserialize ToolRequestUserInputResponse: {err}");
+            ToolRequestUserInputResponse {
+                answers: HashMap::new(),
+            }
+        });
+
+    let response = map_tool_request_user_input_response(response);
+    if let Err(err) = conversation
+        .submit(Op::UserInputAnswer {
+            id: turn_id,
+            response,
+        })
+        .await
+    {
+        error!("failed to submit UserInputAnswer: {err}");
+    }
+}
+
+fn map_tool_request_user_input_response(
+    response: ToolRequestUserInputResponse,
+) -> RequestUserInputResponse {
+    RequestUserInputResponse {
+        answers: response
+            .answers
+            .into_iter()
+            .map(|(id, answer)| {
+                (
+                    id,
+                    RequestUserInputAnswer {
+                        answers: answer.answers,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 async fn on_exec_approval_response(
     approval_id: String,
+    approval_turn_id: Option<String>,
     receiver: tokio::sync::oneshot::Receiver<mcp_types::Result>,
     conversation: Arc<CodexConversation>,
 ) {
@@ -1306,6 +1822,18 @@ async fn on_exec_approval_response(
         Ok(value) => value,
         Err(err) => {
             tracing::error!("request failed: {err:?}");
+            // When the owning connection disconnects, callbacks are dropped.
+            // Submit a conservative deny so the run can progress.
+            if let Err(submit_err) = conversation
+                .submit(Op::ExecApproval {
+                    id: approval_id.clone(),
+                    turn_id: approval_turn_id.clone(),
+                    decision: core_protocol::ReviewDecision::Denied,
+                })
+                .await
+            {
+                error!("failed to submit denied ExecApproval after request failure: {submit_err}");
+            }
             return;
         }
     };
@@ -1324,6 +1852,7 @@ async fn on_exec_approval_response(
     if let Err(err) = conversation
         .submit(Op::ExecApproval {
             id: approval_id,
+            turn_id: approval_turn_id,
             decision: map_review_decision_from_wire(response.decision),
         })
         .await
@@ -1361,6 +1890,199 @@ impl IntoWireAuthMode for code_app_server_protocol::AuthMode {
                 code_protocol::mcp_protocol::AuthMode::ChatgptAuthTokens
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_app_server_protocol::AuthMode;
+    use code_core::config::ConfigOverrides;
+    use code_protocol::mcp_protocol::RemoveConversationListenerParams;
+    use code_protocol::protocol::SessionSource;
+    use mcp_types::RequestId;
+    use tokio::sync::mpsc;
+
+    fn make_processor_for_tests() -> (CodexMessageProcessor, mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>) {
+        let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
+        let outgoing = Arc::new(OutgoingMessageSender::new(outgoing_tx));
+        let config = Arc::new(
+            Config::load_with_cli_overrides(Vec::new(), ConfigOverrides::default())
+                .expect("load default config"),
+        );
+        let auth_manager = AuthManager::shared_with_mode_and_originator(
+            config.code_home.clone(),
+            AuthMode::ApiKey,
+            config.responses_originator_header.clone(),
+        );
+        let conversation_manager = Arc::new(ConversationManager::new(
+            auth_manager.clone(),
+            SessionSource::Mcp,
+        ));
+
+        (
+            CodexMessageProcessor::new(
+                auth_manager,
+                conversation_manager,
+                outgoing,
+                None,
+                config,
+            ),
+            outgoing_rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn remove_conversation_listener_enforces_owner_connection() {
+        let (mut processor, mut outgoing_rx) = make_processor_for_tests();
+
+        let subscription_id = Uuid::new_v4();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+        processor.conversation_listeners.insert(
+            subscription_id,
+            ConversationListenerRegistration {
+                owner_connection_id: ConnectionId(1),
+                cancel_tx,
+            },
+        );
+
+        processor
+            .remove_conversation_listener(
+                ConnectionId(2),
+                RequestId::Integer(10),
+                RemoveConversationListenerParams { subscription_id },
+            )
+            .await;
+
+        let message = outgoing_rx
+            .recv()
+            .await
+            .expect("error response should be sent");
+        match message {
+            crate::outgoing_message::OutgoingMessage::Error(err) => {
+                assert_eq!(err.id, RequestId::Integer(10));
+                assert!(err.error.message.contains("subscription not found"));
+            }
+            _ => panic!("expected error response"),
+        }
+
+        assert!(
+            processor.conversation_listeners.contains_key(&subscription_id),
+            "listener should remain registered for original owner"
+        );
+
+        processor
+            .remove_conversation_listener(
+                ConnectionId(1),
+                RequestId::Integer(11),
+                RemoveConversationListenerParams { subscription_id },
+            )
+            .await;
+
+        let message = outgoing_rx
+            .recv()
+            .await
+            .expect("success response should be sent");
+        match message {
+            crate::outgoing_message::OutgoingMessage::Response(response) => {
+                assert_eq!(response.id, RequestId::Integer(11));
+            }
+            _ => panic!("expected success response"),
+        }
+
+        assert!(
+            processor.conversation_listeners.get(&subscription_id).is_none(),
+            "listener should be removed by owner"
+        );
+        assert_eq!(cancel_rx.try_recv(), Ok(()));
+    }
+
+    #[test]
+    fn parse_plan_type_is_case_insensitive() {
+        assert_eq!(parse_plan_type(Some("Pro".to_string())), PlanType::Pro);
+        assert_eq!(
+            parse_plan_type(Some("BUSINESS".to_string())),
+            PlanType::Business
+        );
+        assert_eq!(parse_plan_type(Some("mystery".to_string())), PlanType::Unknown);
+        assert_eq!(parse_plan_type(None), PlanType::Unknown);
+    }
+
+    #[test]
+    fn select_rate_limit_snapshot_prefers_matching_account() {
+        let snapshots = vec![
+            code_core::account_usage::StoredRateLimitSnapshot {
+                account_id: "acct-a".to_string(),
+                plan: Some("pro".to_string()),
+                snapshot: None,
+                observed_at: None,
+                primary_next_reset_at: None,
+                secondary_next_reset_at: None,
+                last_usage_limit_hit_at: None,
+            },
+            code_core::account_usage::StoredRateLimitSnapshot {
+                account_id: "acct-b".to_string(),
+                plan: Some("plus".to_string()),
+                snapshot: None,
+                observed_at: None,
+                primary_next_reset_at: None,
+                secondary_next_reset_at: None,
+                last_usage_limit_hit_at: None,
+            },
+        ];
+
+        let selected = select_rate_limit_snapshot(Some("acct-b".to_string()), snapshots)
+            .expect("snapshot should be selected");
+        assert_eq!(selected.account_id, "acct-b");
+    }
+
+    #[test]
+    fn rate_limit_snapshot_from_event_maps_windows() {
+        let event = code_core::protocol::RateLimitSnapshotEvent {
+            primary_used_percent: 11.0,
+            secondary_used_percent: 22.0,
+            primary_to_secondary_ratio_percent: 50.0,
+            primary_window_minutes: 60,
+            secondary_window_minutes: 1440,
+            primary_reset_after_seconds: Some(12),
+            secondary_reset_after_seconds: Some(34),
+        };
+
+        let snapshot = rate_limit_snapshot_from_event(&event, Some(PlanType::Pro));
+        assert_eq!(snapshot.plan_type, Some(PlanType::Pro));
+        assert_eq!(
+            snapshot.primary.as_ref().and_then(|window| window.window_minutes),
+            Some(60)
+        );
+        assert_eq!(
+            snapshot
+                .secondary
+                .as_ref()
+                .and_then(|window| window.window_minutes),
+            Some(1440)
+        );
+    }
+
+    #[test]
+    fn map_tool_request_user_input_response_preserves_answers() {
+        let response = ToolRequestUserInputResponse {
+            answers: std::collections::HashMap::from([(
+                "question_id".to_string(),
+                code_app_server_protocol::ToolRequestUserInputAnswer {
+                    answers: vec!["selected".to_string()],
+                },
+            )]),
+        };
+
+        let mapped = map_tool_request_user_input_response(response);
+        assert_eq!(
+            mapped
+                .answers
+                .get("question_id")
+                .expect("question_id should exist")
+                .answers,
+            vec!["selected".to_string()]
+        );
     }
 }
 
@@ -1437,6 +2159,70 @@ fn map_verbosity_to_wire(
             code_protocol::config_types::Verbosity::Medium
         }
         code_core::config_types::TextVerbosity::High => code_protocol::config_types::Verbosity::High,
+    }
+}
+
+fn parse_plan_type(plan: Option<String>) -> PlanType {
+    let Some(plan) = plan else {
+        return PlanType::Unknown;
+    };
+
+    match plan.trim().to_ascii_lowercase().as_str() {
+        "free" => PlanType::Free,
+        "go" => PlanType::Go,
+        "plus" => PlanType::Plus,
+        "pro" => PlanType::Pro,
+        "team" => PlanType::Team,
+        "business" => PlanType::Business,
+        "enterprise" => PlanType::Enterprise,
+        "edu" => PlanType::Edu,
+        _ => PlanType::Unknown,
+    }
+}
+
+fn select_rate_limit_snapshot(
+    account_id: Option<String>,
+    snapshots: Vec<code_core::account_usage::StoredRateLimitSnapshot>,
+) -> Option<code_core::account_usage::StoredRateLimitSnapshot> {
+    if snapshots.is_empty() {
+        return None;
+    }
+
+    if let Some(account_id) = account_id
+        && let Some(snapshot) = snapshots
+            .iter()
+            .find(|snapshot| snapshot.account_id == account_id)
+    {
+        return Some(snapshot.clone());
+    }
+
+    snapshots.into_iter().next()
+}
+
+fn rate_limit_snapshot_from_event(
+    snapshot: &code_core::protocol::RateLimitSnapshotEvent,
+    plan_type: Option<PlanType>,
+) -> CoreRateLimitSnapshot {
+    let primary = CoreRateLimitWindow {
+        used_percent: snapshot.primary_used_percent,
+        window_minutes: Some(snapshot.primary_window_minutes),
+        resets_in_seconds: snapshot.primary_reset_after_seconds,
+        resets_at: None,
+    };
+    let secondary = CoreRateLimitWindow {
+        used_percent: snapshot.secondary_used_percent,
+        window_minutes: Some(snapshot.secondary_window_minutes),
+        resets_in_seconds: snapshot.secondary_reset_after_seconds,
+        resets_at: None,
+    };
+
+    CoreRateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: Some(primary),
+        secondary: Some(secondary),
+        credits: None,
+        plan_type,
     }
 }
 

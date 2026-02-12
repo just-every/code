@@ -22,6 +22,7 @@ use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 use code_protocol::models::FunctionCallOutputContentItem;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AgentTaskKind {
@@ -29,6 +30,9 @@ enum AgentTaskKind {
     Review,
     Compact,
 }
+
+const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
+    include_str!("../../templates/search_tool/developer_instructions.md");
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -598,6 +602,7 @@ pub(super) async fn submission_loop(
                 );
                 tools_config.web_search_allowed_domains =
                     config.tools_web_search_allowed_domains.clone();
+                tools_config.web_search_external = config.tools_web_search_external;
                 tools_config.search_tool = config.tools_search_tool;
 
                 let mut agent_models: Vec<String> = if config.agents.is_empty() {
@@ -865,7 +870,11 @@ pub(super) async fn submission_loop(
                     sess.set_task(agent);
                 }
             }
-            Op::ExecApproval { id, decision } => {
+            Op::ExecApproval {
+                id,
+                turn_id: _,
+                decision,
+            } => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
                     None => {
@@ -2058,16 +2067,22 @@ async fn run_turn(
             tc.sandbox_policy.clone(),
             effective_family,
         );
-        let mcp_tools = sess.mcp_connection_manager.list_all_tools();
-        let mcp_tools = if let Some(selected_tools) = sess.get_mcp_tool_selection() {
-            let selected: std::collections::HashSet<String> = selected_tools.into_iter().collect();
-            mcp_tools
-                .into_iter()
-                .filter(|(name, _tool)| selected.contains(name))
-                .collect()
-        } else {
-            mcp_tools
-        };
+        let mcp_tools = select_mcp_tools_for_turn(
+            sess.mcp_connection_manager.list_all_tools(),
+            sess.get_mcp_tool_selection(),
+            tools_config.search_tool,
+        );
+
+        if tools_config.search_tool
+            && !prompt
+                .prepend_developer_messages
+                .iter()
+                .any(|message| message == SEARCH_TOOL_DEVELOPER_INSTRUCTIONS)
+        {
+            prompt
+                .prepend_developer_messages
+                .push(SEARCH_TOOL_DEVELOPER_INSTRUCTIONS.to_string());
+        }
         prompt.tools = get_openai_tools(
             &tools_config,
             Some(mcp_tools),
@@ -2421,6 +2436,89 @@ async fn run_turn(
                 }
             }
         }
+    }
+}
+
+fn select_mcp_tools_for_turn(
+    mcp_tools: HashMap<String, mcp_types::Tool>,
+    selected_tools: Option<Vec<String>>,
+    search_tool_enabled: bool,
+) -> HashMap<String, mcp_types::Tool> {
+    if !search_tool_enabled {
+        return mcp_tools;
+    }
+
+    let Some(selected_tools) = selected_tools else {
+        return HashMap::new();
+    };
+
+    let selected: std::collections::HashSet<String> = selected_tools.into_iter().collect();
+    mcp_tools
+        .into_iter()
+        .filter(|(name, _tool)| selected.contains(name))
+        .collect()
+}
+
+#[cfg(test)]
+mod mcp_tool_selection_tests {
+    use super::select_mcp_tools_for_turn;
+    use mcp_types::Tool;
+    use mcp_types::ToolInputSchema;
+    use std::collections::HashMap;
+
+    fn test_tool(name: &str) -> Tool {
+        Tool {
+            name: name.to_string(),
+            title: None,
+            description: Some(format!("{name} description")),
+            input_schema: ToolInputSchema {
+                properties: Some(serde_json::json!({})),
+                required: None,
+                r#type: "object".to_string(),
+            },
+            output_schema: None,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn search_tool_enabled_hides_mcp_tools_until_selection_exists() {
+        let mcp_tools = HashMap::from([
+            ("mcp__one__a".to_string(), test_tool("a")),
+            ("mcp__two__b".to_string(), test_tool("b")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(mcp_tools, None, true);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn search_tool_enabled_returns_only_selected_mcp_tools() {
+        let mcp_tools = HashMap::from([
+            ("mcp__one__a".to_string(), test_tool("a")),
+            ("mcp__two__b".to_string(), test_tool("b")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(
+            mcp_tools,
+            Some(vec!["mcp__two__b".to_string()]),
+            true,
+        );
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains_key("mcp__two__b"));
+    }
+
+    #[test]
+    fn search_tool_disabled_returns_all_mcp_tools() {
+        let mcp_tools = HashMap::from([
+            ("mcp__one__a".to_string(), test_tool("a")),
+            ("mcp__two__b".to_string(), test_tool("b")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(mcp_tools, None, false);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains_key("mcp__one__a"));
+        assert!(selected.contains_key("mcp__two__b"));
     }
 }
 
@@ -3478,10 +3576,7 @@ struct SearchToolCandidate {
 }
 
 impl SearchToolCandidate {
-    fn from_mcp_tool(name: String, tool: mcp_types::Tool) -> Self {
-        let server_name = name
-            .split_once("__")
-            .map_or_else(|| "unknown".to_string(), |(server, _)| server.to_string());
+    fn from_mcp_tool(name: String, server_name: String, tool: mcp_types::Tool) -> Self {
         let description = tool.description.map(|value| value.to_string());
         let input_keys = tool
             .input_schema
@@ -3508,6 +3603,35 @@ impl SearchToolCandidate {
             input_keys,
             search_text,
         }
+    }
+}
+
+#[cfg(test)]
+mod search_tool_candidate_tests {
+    use super::SearchToolCandidate;
+
+    #[test]
+    fn preserves_server_name_with_delimiter() {
+        let tool = mcp_types::Tool {
+            name: "run".to_string(),
+            title: None,
+            description: Some("desc".to_string()),
+            input_schema: mcp_types::ToolInputSchema {
+                properties: Some(serde_json::json!({"query": {"type": "string"}})),
+                required: None,
+                r#type: "object".to_string(),
+            },
+            output_schema: None,
+            annotations: None,
+        };
+
+        let candidate = SearchToolCandidate::from_mcp_tool(
+            "alpha__beta__run".to_string(),
+            "alpha__beta".to_string(),
+            tool,
+        );
+
+        assert_eq!(candidate.server_name, "alpha__beta");
     }
 }
 
@@ -3586,12 +3710,12 @@ async fn handle_search_tool_bm25(
         };
     }
 
-    let all_mcp_tools = sess.mcp_connection_manager.list_all_tools();
+    let all_mcp_tools = sess.mcp_connection_manager.list_all_tools_with_server_names();
     let total_tools = all_mcp_tools.len();
 
     let mut candidates: Vec<SearchToolCandidate> = all_mcp_tools
         .into_iter()
-        .map(|(name, tool)| SearchToolCandidate::from_mcp_tool(name, tool))
+        .map(|(name, server_name, tool)| SearchToolCandidate::from_mcp_tool(name, server_name, tool))
         .collect();
     candidates.sort_by(|a, b| a.name.cmp(&b.name));
 

@@ -381,6 +381,19 @@ impl McpConnectionManager {
             .collect()
     }
 
+    pub fn list_all_tools_with_server_names(&self) -> Vec<(String, String, Tool)> {
+        self.tools
+            .iter()
+            .map(|(qualified_name, tool_info)| {
+                (
+                    qualified_name.clone(),
+                    tool_info.server_name.clone(),
+                    tool_info.tool.clone(),
+                )
+            })
+            .collect()
+    }
+
     pub fn list_tools_by_server(&self) -> HashMap<String, Vec<String>> {
         let mut tools_by_server: HashMap<String, Vec<String>> = HashMap::new();
         for tool in self.tools.values() {

@@ -41,6 +41,7 @@ pub async fn run_conversation_loop(
                         cwd,
                         call_id,
                         reason: _,
+                        ..
                     }) => {
                         handle_exec_approval_request(
                             command,

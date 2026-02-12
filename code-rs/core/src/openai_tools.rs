@@ -63,6 +63,8 @@ pub enum OpenAiTool {
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct WebSearchTool {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_web_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<WebSearchFilters>,
 }
 
@@ -87,6 +89,7 @@ pub struct ToolsConfig {
     #[allow(dead_code)]
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
+    pub web_search_external: bool,
     pub search_tool: bool,
     #[allow(dead_code)]
     pub include_view_image_tool: bool,
@@ -156,6 +159,7 @@ impl ToolsConfig {
             plan_tool: include_plan_tool,
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
+            web_search_external: true,
             search_tool: false,
             include_view_image_tool,
             web_search_allowed_domains: None,
@@ -919,11 +923,15 @@ pub fn get_openai_tools(
     if config.web_search_request {
         let tool = match &config.web_search_allowed_domains {
             Some(domains) if !domains.is_empty() => OpenAiTool::WebSearch(WebSearchTool {
+                external_web_access: Some(config.web_search_external),
                 filters: Some(WebSearchFilters {
                     allowed_domains: Some(domains.clone()),
                 }),
             }),
-            _ => OpenAiTool::WebSearch(WebSearchTool::default()),
+            _ => OpenAiTool::WebSearch(WebSearchTool {
+                external_web_access: Some(config.web_search_external),
+                ..WebSearchTool::default()
+            }),
         };
         tools.push(tool);
     }
@@ -1205,6 +1213,70 @@ mod tests {
                 "code_bridge",
                 "web_search",
             ],
+        );
+    }
+
+    #[test]
+    fn test_web_search_defaults_to_external_access_enabled() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let mut config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false,
+            false,
+            true,
+            /*use_experimental_streamable_shell_tool*/ false,
+            false,
+        );
+        apply_default_agent_models(&mut config);
+
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
+        let web_search_tool = tools
+            .iter()
+            .find_map(|tool| match tool {
+                OpenAiTool::WebSearch(web_search_tool) => Some(web_search_tool),
+                _ => None,
+            })
+            .expect("web_search tool should be present");
+
+        assert_eq!(web_search_tool.external_web_access, Some(true));
+    }
+
+    #[test]
+    fn test_web_search_external_access_can_be_disabled() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let mut config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false,
+            false,
+            true,
+            /*use_experimental_streamable_shell_tool*/ false,
+            false,
+        );
+        config.web_search_external = false;
+        config.web_search_allowed_domains = Some(vec!["openai.com".to_string()]);
+        apply_default_agent_models(&mut config);
+
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
+        let web_search_tool = tools
+            .iter()
+            .find_map(|tool| match tool {
+                OpenAiTool::WebSearch(web_search_tool) => Some(web_search_tool),
+                _ => None,
+            })
+            .expect("web_search tool should be present");
+
+        assert_eq!(web_search_tool.external_web_access, Some(false));
+        assert_eq!(
+            web_search_tool
+                .filters
+                .as_ref()
+                .and_then(|filters| filters.allowed_domains.as_ref())
+                .cloned(),
+            Some(vec!["openai.com".to_string()])
         );
     }
 
