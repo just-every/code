@@ -1212,8 +1212,10 @@ impl WidgetRef for &BottomPane<'_> {
                         avail = avail.saturating_sub(1);
                     }
                     if avail > 0 {
-                        let pad = BottomPane::BOTTOM_PAD_LINES.min(avail.saturating_sub(1));
-                        let view_height = avail.saturating_sub(pad);
+                        // Non-auto modal views fully replace the composer area, so they should
+                        // consume all available rows. Reserving bottom padding here clips one
+                        // visible table row in compact popups like the resume picker.
+                        let view_height = avail;
                         if view_height > 0 {
                             let y_base = if self.top_spacer_enabled {
                                 area.y + 1
@@ -1242,6 +1244,69 @@ impl WidgetRef for &BottomPane<'_> {
             (&self.composer).render_ref(composer_rect, buf);
         }
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::WidgetRef;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    fn make_bottom_pane() -> BottomPane<'static> {
+        let (tx, _rx) = mpsc::channel();
+        BottomPane::new(BottomPaneParams {
+            app_event_tx: AppEventSender::new(tx),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            using_chatgpt_auth: false,
+            auto_drive_variant: AutoDriveVariant::default(),
+        })
+    }
+
+    fn buffer_to_string(buf: &Buffer) -> String {
+        let area = buf.area;
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn resume_selection_renders_single_row_at_desired_height() {
+        let mut pane = make_bottom_pane();
+        pane.show_resume_selection(
+            "Resume Session".to_string(),
+            None,
+            vec![resume_selection_view::ResumeRow {
+                modified: "1m ago".to_string(),
+                created: "1h ago".to_string(),
+                user_msgs: "3".to_string(),
+                branch: "main".to_string(),
+                last_user_message: "only session row".to_string(),
+                path: PathBuf::from("/tmp/only-session.jsonl"),
+            }],
+        );
+
+        let width = 100;
+        let height = pane.desired_height(width);
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+
+        (&pane).render_ref(area, &mut buf);
+
+        let rendered = buffer_to_string(&buf);
+        assert!(
+            rendered.contains("only session row"),
+            "expected resume row text in popup, got:\n{rendered}"
+        );
     }
 }
 
