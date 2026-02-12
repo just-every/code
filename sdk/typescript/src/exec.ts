@@ -223,9 +223,6 @@ function isPlainObject(value: unknown): value is CodexConfigObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const scriptFileName = fileURLToPath(import.meta.url);
-const scriptDirName = path.dirname(scriptFileName);
-
 function findCodexPath() {
   const { platform, arch } = process;
 
@@ -276,7 +273,23 @@ function findCodexPath() {
     throw new Error(`Unsupported platform: ${platform} (${arch})`);
   }
 
-  const vendorRoot = path.join(scriptDirName, "..", "vendor");
+  const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriple];
+  if (!platformPackage) {
+    throw new Error(`Unsupported target triple: ${targetTriple}`);
+  }
+
+  let vendorRoot: string;
+  try {
+    const codexPackageJsonPath = moduleRequire.resolve(`${CODEX_NPM_NAME}/package.json`);
+    const codexRequire = createRequire(codexPackageJsonPath);
+    const platformPackageJsonPath = codexRequire.resolve(`${platformPackage}/package.json`);
+    vendorRoot = path.join(path.dirname(platformPackageJsonPath), "vendor");
+  } catch {
+    throw new Error(
+      `Unable to locate Codex CLI binaries. Ensure ${CODEX_NPM_NAME} is installed with optional dependencies.`,
+    );
+  }
+
   const archRoot = path.join(vendorRoot, targetTriple);
   const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
   const binaryPath = path.join(archRoot, "codex", codexBinaryName);
