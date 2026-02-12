@@ -78,6 +78,36 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
+            id: "gpt-5.3-codex-spark".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
+            display_name: "gpt-5.3-codex-spark".to_string(),
+            description: "Fast codex variant tuned for responsive coding loops and smaller edits."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Maximizes reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supported_text_verbosity: &[TextVerbosityConfig::Medium],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+        },
+        ModelPreset {
             id: "gpt-5.2-codex".to_string(),
             model: "gpt-5.2-codex".to_string(),
             display_name: "gpt-5.2-codex".to_string(),
@@ -434,7 +464,11 @@ pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
     PRESETS
         .iter()
         .filter(|preset| match auth_mode {
-            Some(AuthMode::ApiKey) => preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex",
+            Some(AuthMode::ApiKey) => {
+                preset.id != "gpt-5.2-codex"
+                    && preset.id != "gpt-5.3-codex"
+                    && preset.id != "gpt-5.3-codex-spark"
+            }
             _ => true,
         })
         .filter(|preset| preset.show_in_picker)
@@ -515,9 +549,11 @@ mod tests {
     #[test]
     fn gpt_5_codex_hidden_for_api_key_auth() {
         let presets = builtin_model_presets(Some(AuthMode::ApiKey));
-        assert!(presets
-            .iter()
-            .all(|preset| preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex"));
+        assert!(presets.iter().all(|preset| {
+            preset.id != "gpt-5.2-codex"
+                && preset.id != "gpt-5.3-codex"
+                && preset.id != "gpt-5.3-codex-spark"
+        }));
     }
 
     #[test]
