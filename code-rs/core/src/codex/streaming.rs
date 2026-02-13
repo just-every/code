@@ -1133,6 +1133,9 @@ pub(super) async fn submission_loop(
                             crate::skills::model::SkillScope::System => {
                                 code_protocol::protocol::SkillScope::System
                             }
+                            crate::skills::model::SkillScope::Admin => {
+                                code_protocol::protocol::SkillScope::Admin
+                            }
                         },
                         enabled: true,
                     })

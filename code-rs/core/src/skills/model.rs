@@ -5,6 +5,7 @@ pub enum SkillScope {
     Repo,
     User,
     System,
+    Admin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
