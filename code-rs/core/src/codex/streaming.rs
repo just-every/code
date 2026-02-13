@@ -743,6 +743,19 @@ pub(super) async fn submission_loop(
                         error!("failed to send event: {e:?}");
                     }
                 }
+
+                if config.approval_policy == AskForApproval::OnFailure {
+                    let warning_event = sess_arc.make_event(
+                        &sub.id,
+                        EventMsg::Warning(crate::protocol::WarningEvent {
+                            message: "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs.".to_string(),
+                        }),
+                    );
+                    if let Err(e) = tx_event.send(warning_event).await {
+                        warn!("failed to send deprecated approval policy warning: {e}");
+                    }
+                }
+
                 // If we resumed from a rollout, replay the prior transcript into the UI.
                 if replay_history_items.is_some()
                     || restored_history_snapshot.is_some()
