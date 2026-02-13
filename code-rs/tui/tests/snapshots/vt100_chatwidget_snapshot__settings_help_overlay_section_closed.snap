@@ -17,8 +17,8 @@ expression: section_closed
  |    Auto Drive         |     XHigh - Extra high reasoning depth for complex problems          | |
  |    Review             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
  |    Planning           |     Medium - Provides a solid balance of reasoning depth and latency | |
- |    Validation         |     Low - Balances speed with some reasoning; useful for straightfor | |
- |    Chrome             |                                                                      | |
+ |    Validation         |                                                                      | |
+ |    Chrome             |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
  |    MCP                |                                                                      | |
  |  ↓ Notifications      +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |

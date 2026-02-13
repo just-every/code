@@ -17,8 +17,8 @@ expression: section_open
  |    Auto Drive         |     XHi|• Shift+Tab  Cycle backwards  |for complex problems          | |
  |    Review             |     Hig|• ?      Toggle this help     |r complex or ambiguous proble | |
  |    Planning           |     Med|                              |f reasoning depth and latency | |
- |    Validation         |     Low|Press Esc to close            |oning; useful for straightfor | |
- |    Chrome             |        +------------------------------+                              | |
+ |    Validation         |        |Press Esc to close            |                              | |
+ |    Chrome             |  ↑↓ Nav+------------------------------+                              | |
  |    MCP                |                                                                      | |
  |  ↓ Notifications      +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
