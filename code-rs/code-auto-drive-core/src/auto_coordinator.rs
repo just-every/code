@@ -461,7 +461,12 @@ mod tests {
             .get("properties")
             .and_then(|v| v.as_object())
             .expect("schema properties");
-        assert!(!props.contains_key("goal"));
+        assert!(props.contains_key("goal"), "goal property missing");
+        assert!(props.contains_key("phase"), "phase property missing");
+        assert!(
+            props.contains_key("finish_evidence"),
+            "finish_evidence property missing"
+        );
         assert!(props.contains_key("status_title"), "status_title property missing");
         assert!(
             props.contains_key("status_sent_to_user"),
@@ -480,9 +485,10 @@ mod tests {
             .get("required")
             .and_then(|v| v.as_array())
             .expect("root required");
+        assert!(schema_required.contains(&json!("finish_status")));
         assert!(schema_required.contains(&json!("status_title")));
         assert!(schema_required.contains(&json!("status_sent_to_user")));
-        assert!(schema_required.contains(&json!("prompt_sent_to_cli")));
+        assert!(!schema_required.contains(&json!("prompt_sent_to_cli")));
 
         let agents_obj = props
             .get("agents")
@@ -530,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_sets_prompt_sent_to_cli_min_but_no_max_length() {
+    fn schema_sets_prompt_sent_to_cli_min_and_max_length() {
         let active_agents: Vec<String> = Vec::new();
         let schema = build_schema(&active_agents, SchemaFeatures::default());
         let prompt_schema = schema
@@ -545,9 +551,10 @@ mod tests {
             Some(&json!(CLI_PROMPT_MIN_CHARS)),
             "schema minLength should match CLI_PROMPT_MIN_CHARS"
         );
-        assert!(
-            !prompt_schema.contains_key("maxLength"),
-            "schema should omit maxLength to avoid provider truncation"
+        assert_eq!(
+            prompt_schema.get("maxLength"),
+            Some(&json!(CLI_PROMPT_MAX_CHARS)),
+            "schema maxLength should match CLI_PROMPT_MAX_CHARS"
         );
     }
 
@@ -664,7 +671,7 @@ mod tests {
             .get("description")
             .and_then(|v| v.as_str())
             .expect("goal description");
-        assert!(description.contains("primary coding goal"));
+        assert!(description.contains("bootstrapping/clarifying"));
     }
 
     #[test]
@@ -774,6 +781,78 @@ mod tests {
 
         assert!(decision.agents.is_empty());
         assert!(decision.agents_timing.is_none());
+    }
+
+    #[test]
+    fn parse_decision_continue_rejects_finish_evidence() {
+        let raw = r#"{
+            "finish_status": "continue",
+            "status_title": "Implementing",
+            "status_sent_to_user": "Driving the implementation milestone.",
+            "prompt_sent_to_cli": "Deliver the feature end-to-end and validate.",
+            "finish_evidence": {
+                "primary_outcome_achieved": "done",
+                "validation_checks_passed": ["cargo test"],
+                "edge_cases_handled": []
+            }
+        }"#;
+
+        let err = parse_decision(raw).expect_err("continue should reject finish evidence");
+        assert!(
+            err.to_string()
+                .contains("finish_evidence must be null when finish_status is continue")
+        );
+    }
+
+    #[test]
+    fn parse_decision_finish_requires_finish_evidence() {
+        let raw = r#"{
+            "finish_status": "finish_success",
+            "status_title": "Completed",
+            "status_sent_to_user": "Everything is green.",
+            "prompt_sent_to_cli": null
+        }"#;
+
+        let err = parse_decision(raw).expect_err("finish status should require evidence");
+        assert!(err.to_string().contains("missing finish_evidence"));
+    }
+
+    #[test]
+    fn parse_decision_finish_rejects_cli_prompt() {
+        let raw = r#"{
+            "finish_status": "finish_success",
+            "status_title": "Completed",
+            "status_sent_to_user": "Everything is green.",
+            "prompt_sent_to_cli": "Keep working",
+            "finish_evidence": {
+                "primary_outcome_achieved": "Resolved primary task.",
+                "validation_checks_passed": ["cargo test --workspace"],
+                "edge_cases_handled": ["empty input"]
+            }
+        }"#;
+
+        let err = parse_decision(raw).expect_err("finish statuses require null CLI prompt");
+        assert!(err.to_string().contains("must set prompt_sent_to_cli to null"));
+    }
+
+    #[test]
+    fn parse_decision_finish_accepts_finish_evidence() {
+        let raw = r#"{
+            "finish_status": "finish_success",
+            "phase": "lockdown",
+            "status_title": "Completed",
+            "status_sent_to_user": "All checks are green.",
+            "prompt_sent_to_cli": null,
+            "finish_evidence": {
+                "primary_outcome_achieved": "Resolved primary task end-to-end.",
+                "validation_checks_passed": ["cargo test --workspace", "./build-fast.sh"],
+                "edge_cases_handled": ["empty payload", "large payload"]
+            }
+        }"#;
+
+        let (decision, _) = parse_decision(raw).expect("finish decision should parse");
+        assert_eq!(decision.status, AutoCoordinatorStatus::Success);
+        assert!(decision.cli.is_none());
     }
 
     #[test]
@@ -907,6 +986,8 @@ mod tests {
 struct CoordinatorDecisionNew {
     finish_status: String,
     #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
     status_title: Option<String>,
     #[serde(default)]
     status_sent_to_user: Option<String>,
@@ -917,7 +998,19 @@ struct CoordinatorDecisionNew {
     #[serde(default)]
     agents: Option<AgentsField>,
     #[serde(default)]
+    finish_evidence: Option<FinishEvidencePayload>,
+    #[serde(default)]
     goal: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FinishEvidencePayload {
+    #[serde(default)]
+    primary_outcome_achieved: Option<String>,
+    #[serde(default)]
+    validation_checks_passed: Option<Vec<String>>,
+    #[serde(default)]
+    edge_cases_handled: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1829,6 +1922,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
 
     let models_request_property = json!({
         "type": "array",
+        "maxItems": 4,
         "description": models_description,
         "items": models_items_schema,
     });
@@ -1841,21 +1935,29 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         json!({
             "type": "string",
             "enum": ["continue", "finish_success", "finish_failed"],
-            "description": "Prefer 'continue' unless the mission is fully complete or truly blocked. Always consider what further work might be possible to confirm the goal is complete before ending."
+            "description": "Prefer 'continue' until the solution is rock solid. Do not finish if there are obvious edge cases or missing tests to write. You MUST populate the 'finish_evidence' object when finishing."
         }),
     );
     required.push(Value::String("finish_status".to_string()));
 
+    properties.insert(
+        "phase".to_string(),
+        json!({
+            "type": ["string", "null"],
+            "enum": ["explore", "implement", "validate", "lockdown", null],
+            "description": "Optional: tracks mission state. Use 'explore' for recon/planning, 'implement' for coding, and 'validate/lockdown' to trigger deep validation before finishing."
+        }),
+    );
+
+    properties.insert(
+        "goal".to_string(),
+        json!({
+            "type": ["string", "null"],
+            "maxLength": 200,
+            "description": "Use only when bootstrapping/clarifying the mission goal is required."
+        }),
+    );
     if features.include_goal_field {
-        properties.insert(
-            "goal".to_string(),
-            json!({
-                "type": "string",
-                "minLength": 4,
-                "maxLength": 200,
-                "description": "Provide the single primary coding goal derived from the recent conversation history to begin Auto Drive without a user-supplied prompt."
-            }),
-        );
         required.push(Value::String("goal".to_string()));
     }
 
@@ -1865,7 +1967,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "type": ["string", "null"],
             "minLength": 2,
             "maxLength": 80,
-            "description": "1-4 words, present-tense, what you asked the CLI to work on now."
+            "description": "1-4 words, present-tense milestone headline."
         }),
     );
     required.push(Value::String("status_title".to_string()));
@@ -1876,24 +1978,20 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "type": ["string", "null"],
             "minLength": 4,
             "maxLength": 600,
-            "description": "1-2 sentences shown to the user explaining what you asked the CLI to work on now. Will be shown in the UI to keep the user updated on the progress."
+            "description": "1-2 sentences explaining the high-level milestone the CLI (and any agents) are tackling."
         }),
     );
     required.push(Value::String("status_sent_to_user".to_string()));
 
-    // NOTE: We intentionally omit `maxLength` here. Some providers truncate
-    // responses to satisfy schema length caps, which would hide overlong
-    // prompts. We validate length after parsing and treat >600 as recoverable
-    // so the coordinator can retry with guidance instead of silently chopping.
     properties.insert(
         "prompt_sent_to_cli".to_string(),
         json!({
             "type": ["string", "null"],
             "minLength": CLI_PROMPT_MIN_CHARS,
-            "description": "Instruction sent to the CLI to push it forward with the task (4-600 chars). Write this like a human maintainer pushing the CLI forwards, without digging too deep into the technical side. Provide when finish_status is 'continue'. Keep it high-level; the CLI has more context and tools than you do. e.g. 'Execute the first two steps of the plan you provided in parellel using agents.' NEVER ask the CLI to show you files so you solve problems directly. ALWAYS allow the CLI to take control. You are the COORDINATOR not the WORKER. Prompts over 600 characters will be rejected as this indicates the CLI is not being given sufficient autonomy."
+            "maxLength": CLI_PROMPT_MAX_CHARS,
+            "description": "Single milestone instruction to the CLI. Outcome-focused, non-procedural. Set to null ONLY when finishing."
         }),
     );
-    required.push(Value::String("prompt_sent_to_cli".to_string()));
 
     if features.include_agents {
         properties.insert(
@@ -1901,47 +1999,79 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             json!({
                 "type": ["object", "null"],
                 "additionalProperties": false,
-                "description": "Parallel help agents for the CLI to spawn. Use often. Agents are faster, parallelize work and allow exploration of a range of approaches.",
+                "description": "Optional parallel helper agents. Default to null. Use strategically for parallel research, diverse planning, or parallel isolated implementation using fast models (spark/flash). Do NOT use for trivial CLI tool usage (like running tests or grep).",
                 "properties": {
                     "timing": {
                         "type": "string",
-                        "enum": ["parallel", "blocking"],
-                        "description": "Parallel: run while the CLI works. Blocking: wait for results before the CLI executes the prompt you provided."
+                        "enum": ["parallel", "blocking"]
                     },
                     "list": {
                         "type": "array",
-                        "maxItems": 5,
+                        "maxItems": 4,
                         "items": {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
                                 "write": {
                                     "type": "boolean",
-                                    "description": "Creates an isolated worktree for each agent and enable writes to that worktree. Default false so that the agent can only read files."
+                                    "description": "If true, agent can write in isolated worktree. Set to true for coding implementation."
                                 },
                                 "context": {
                                     "type": ["string", "null"],
                                     "maxLength": 1500,
-                                    "description": "Background details (agents can not see the conversation - you must provide ALL neccessary information here). You might want to include parts of the plan or conversation history relevant to the work given to the agent."
+                                    "description": "All necessary background (agents do not see chat history)."
                                 },
                                 "prompt": {
                                     "type": "string",
                                     "minLength": 8,
                                     "maxLength": 400,
-                                    "description": "Outcome-oriented instruction (what to produce)."
+                                    "description": "Outcome-oriented instruction for the agent."
                                 },
                                 "models": models_request_property.clone()
                             },
                             "required": ["prompt", "context", "write", "models"]
                         },
-                        "description": "Up to 3 batches per turn with up to 4 agents in each. Use agents whenever it will help to source a variety of opinions when planning/researching or when there a mulitple workstreams which can be extecuted at once. Instruct the agent to carefully merge in the results of the agents work. Another great reason to use agents is that it helps to split the work up in small batches with a new context history - this speeds up work and dramatically improve focus. Having said that, the CLI has to be responible for merging in the results and producing the final product, so you need to balance the work given to the agents vs work given to the CLI at each step."
                     },
                 },
                 "required": ["timing", "list"]
             }),
         );
-        required.push(Value::String("agents".to_string()));
     }
+
+    properties.insert(
+        "finish_evidence".to_string(),
+        json!({
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "description": "MANDATORY when finish_status is not 'continue'. Leave null if 'continue'. Concrete proof that the task is entirely complete, edge cases are handled, and no further work is needed.",
+            "properties": {
+                "primary_outcome_achieved": {
+                    "type": "string",
+                    "maxLength": 600,
+                    "description": "Summary of what was achieved and fully resolved end-to-end."
+                },
+                "validation_checks_passed": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "string",
+                        "maxLength": 140
+                    },
+                    "description": "Specific validation commands executed by the CLI that are now passing (e.g., 'npm test', 'cargo clippy', 'browser UX verified')."
+                },
+                "edge_cases_handled": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "string",
+                        "maxLength": 180
+                    },
+                    "description": "Specific edge cases that were actively handled and verified before finishing. (Leave empty if none apply, but do NOT use this to list unhandled risks)."
+                }
+            },
+            "required": ["primary_outcome_achieved", "validation_checks_passed", "edge_cases_handled"]
+        }),
+    );
 
     let mut schema = serde_json::Map::new();
     schema.insert(
@@ -1952,6 +2082,50 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     schema.insert("additionalProperties".to_string(), Value::Bool(false));
     schema.insert("properties".to_string(), Value::Object(properties));
     schema.insert("required".to_string(), Value::Array(required));
+    schema.insert(
+        "allOf".to_string(),
+        json!([
+            {
+                "if": {
+                    "properties": {
+                        "finish_status": {
+                            "const": "continue"
+                        }
+                    }
+                },
+                "then": {
+                    "required": ["prompt_sent_to_cli"],
+                    "properties": {
+                        "prompt_sent_to_cli": {
+                            "type": "string",
+                            "minLength": CLI_PROMPT_MIN_CHARS,
+                            "maxLength": CLI_PROMPT_MAX_CHARS
+                        },
+                        "finish_evidence": {
+                            "type": "null"
+                        }
+                    }
+                }
+            },
+            {
+                "if": {
+                    "properties": {
+                        "finish_status": {
+                            "enum": ["finish_success", "finish_failed"]
+                        }
+                    }
+                },
+                "then": {
+                    "required": ["finish_evidence"],
+                    "properties": {
+                        "prompt_sent_to_cli": {
+                            "type": "null"
+                        }
+                    }
+                }
+            }
+        ]),
+    );
 
     Value::Object(schema)
 }
@@ -2778,6 +2952,36 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         });
     }
 
+    if lower.contains("missing finish_evidence") {
+        return Some(RecoverableDecisionError {
+            summary: "missing `finish_evidence` for finish status".to_string(),
+            guidance: Some(
+                "Include a `finish_evidence` object whenever `finish_status` is `finish_success` or `finish_failed`."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("finish_evidence must be null") {
+        return Some(RecoverableDecisionError {
+            summary: "`finish_evidence` must be null for continue turns".to_string(),
+            guidance: Some(
+                "Set `finish_evidence` to null (or omit it) when `finish_status` is `continue`."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("must set prompt_sent_to_cli to null") {
+        return Some(RecoverableDecisionError {
+            summary: "`prompt_sent_to_cli` must be null for finish statuses".to_string(),
+            guidance: Some(
+                "When finishing (`finish_success`/`finish_failed`), set `prompt_sent_to_cli` to null and include `finish_evidence`."
+                    .to_string(),
+            ),
+        });
+    }
+
     if lower.contains("length limit")
         || lower.contains("cut off")
         || lower.contains("exceeds") && lower.contains("prompt_sent_to_cli")
@@ -2921,13 +3125,17 @@ fn convert_decision_new(
 ) -> Result<ParsedCoordinatorDecision> {
     let CoordinatorDecisionNew {
         finish_status: _,
+        phase,
         status_title,
         status_sent_to_user,
         progress,
         prompt_sent_to_cli,
         agents: agent_payloads,
+        finish_evidence,
         goal,
     } = decision;
+
+    validate_phase(phase)?;
 
     let mut status_title = clean_optional(status_title);
     let mut status_sent_to_user = clean_optional(status_sent_to_user);
@@ -2947,6 +3155,8 @@ fn convert_decision_new(
 
     let cli_prompt = clean_optional(prompt_sent_to_cli);
 
+    validate_finish_evidence_for_status(status, finish_evidence)?;
+
     let cli = match (status, cli_prompt) {
         (AutoCoordinatorStatus::Continue, Some(prompt)) => {
             let prompt = clean_required(&prompt, "prompt_sent_to_cli")?;
@@ -2963,7 +3173,11 @@ fn convert_decision_new(
                 "model response missing prompt_sent_to_cli for continue"
             ));
         }
-        (_, Some(_prompt)) => None,
+        (_, Some(_prompt)) => {
+            return Err(anyhow!(
+                "model response must set prompt_sent_to_cli to null when finish_status is finish_success or finish_failed"
+            ));
+        }
         (_, None) => None,
     };
 
@@ -3040,6 +3254,12 @@ fn convert_decision_legacy(
     let context = clean_optional(cli_context);
     let goal = clean_optional(goal);
 
+    if matches!(status, AutoCoordinatorStatus::Success | AutoCoordinatorStatus::Failed) {
+        return Err(anyhow!(
+            "legacy model response missing finish_evidence for finish_status finish_success or finish_failed"
+        ));
+    }
+
     let cli = match (status, cli_prompt) {
         (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
             prompt: clean_required(&prompt, "cli_prompt")?,
@@ -3049,11 +3269,11 @@ fn convert_decision_legacy(
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!("legacy model response missing cli_prompt for continue"));
         }
-        (_, Some(prompt)) => Some(CliAction {
-            prompt: clean_required(&prompt, "cli_prompt")?,
-            context: context.clone(),
-            suppress_ui_context: false,
-        }),
+        (_, Some(_prompt)) => {
+            return Err(anyhow!(
+                "model response must set prompt_sent_to_cli to null when finish_status is finish_success or finish_failed"
+            ));
+        }
         (_, None) => None,
     };
 
@@ -3121,6 +3341,71 @@ fn clean_required(value: &str, field: &str) -> Result<String> {
             Err(anyhow!("{field} is empty"))
         } else {
             Ok(final_trimmed.to_string())
+        }
+    }
+}
+
+fn clean_required_list(values: Option<Vec<String>>, field: &str) -> Result<Vec<String>> {
+    let values = values.ok_or_else(|| anyhow!("{field} is missing"))?;
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(idx, value)| clean_required(&value, &format!("{field}[{idx}]")))
+        .collect()
+}
+
+fn validate_phase(phase: Option<String>) -> Result<()> {
+    let Some(phase) = clean_optional(phase) else {
+        return Ok(());
+    };
+
+    match phase.as_str() {
+        "explore" | "implement" | "validate" | "lockdown" => Ok(()),
+        _ => Err(anyhow!(
+            "unexpected phase '{phase}'; use one of: explore, implement, validate, lockdown"
+        )),
+    }
+}
+
+fn validate_finish_evidence_for_status(
+    status: AutoCoordinatorStatus,
+    finish_evidence: Option<FinishEvidencePayload>,
+) -> Result<()> {
+    match status {
+        AutoCoordinatorStatus::Continue => {
+            if finish_evidence.is_some() {
+                return Err(anyhow!(
+                    "finish_evidence must be null when finish_status is continue"
+                ));
+            }
+            Ok(())
+        }
+        AutoCoordinatorStatus::Success | AutoCoordinatorStatus::Failed => {
+            let finish_evidence = finish_evidence.ok_or_else(|| {
+                anyhow!(
+                    "model response missing finish_evidence for finish_status finish_success or finish_failed"
+                )
+            })?;
+
+            let FinishEvidencePayload {
+                primary_outcome_achieved,
+                validation_checks_passed,
+                edge_cases_handled,
+            } = finish_evidence;
+
+            let _primary_outcome_achieved = clean_required(
+                &primary_outcome_achieved
+                    .ok_or_else(|| anyhow!("finish_evidence.primary_outcome_achieved is missing"))?,
+                "finish_evidence.primary_outcome_achieved",
+            )?;
+            let _validation_checks_passed = clean_required_list(
+                validation_checks_passed,
+                "finish_evidence.validation_checks_passed",
+            )?;
+            let _edge_cases_handled =
+                clean_required_list(edge_cases_handled, "finish_evidence.edge_cases_handled")?;
+
+            Ok(())
         }
     }
 }
