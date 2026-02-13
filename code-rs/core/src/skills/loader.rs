@@ -31,8 +31,6 @@ const REPO_ROOT_CONFIG_DIR_NAME: &str = ".codex";
 const ADMIN_SKILLS_ROOT: &str = "/etc/codex/skills";
 const MAX_NAME_LEN: usize = 64;
 const MAX_DESCRIPTION_LEN: usize = 1024;
-const MAX_SCAN_DEPTH: usize = 6;
-const MAX_SKILLS_DIRS_PER_ROOT: usize = 2000;
 
 #[derive(Debug)]
 enum SkillParseError {
@@ -201,22 +199,9 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
         return;
     }
 
-    fn enqueue_dir(
-        queue: &mut VecDeque<(PathBuf, usize)>,
-        visited_dirs: &mut HashSet<PathBuf>,
-        truncated_by_dir_limit: &mut bool,
-        path: PathBuf,
-        depth: usize,
-    ) {
-        if depth > MAX_SCAN_DEPTH {
-            return;
-        }
-        if visited_dirs.len() >= MAX_SKILLS_DIRS_PER_ROOT {
-            *truncated_by_dir_limit = true;
-            return;
-        }
+    fn enqueue_dir(queue: &mut VecDeque<PathBuf>, visited_dirs: &mut HashSet<PathBuf>, path: PathBuf) {
         if visited_dirs.insert(path.clone()) {
-            queue.push_back((path, depth));
+            queue.push_back(path);
         }
     }
 
@@ -224,10 +209,9 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
 
     let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
     visited_dirs.insert(root.clone());
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::from([(root.clone(), 0)]);
-    let mut truncated_by_dir_limit = false;
+    let mut queue: VecDeque<PathBuf> = VecDeque::from([root.clone()]);
 
-    while let Some((dir, depth)) = queue.pop_front() {
+    while let Some(dir) = queue.pop_front() {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
@@ -277,9 +261,7 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
                     enqueue_dir(
                         &mut queue,
                         &mut visited_dirs,
-                        &mut truncated_by_dir_limit,
                         resolved_dir,
-                        depth + 1,
                     );
                 }
                 continue;
@@ -292,9 +274,7 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
                 enqueue_dir(
                     &mut queue,
                     &mut visited_dirs,
-                    &mut truncated_by_dir_limit,
                     resolved_dir,
-                    depth + 1,
                 );
                 continue;
             }
@@ -315,14 +295,6 @@ fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut Skil
                 }
             }
         }
-    }
-
-    if truncated_by_dir_limit {
-        tracing::warn!(
-            "skills scan truncated after {} directories (root: {})",
-            MAX_SKILLS_DIRS_PER_ROOT,
-            root.display()
-        );
     }
 }
 
@@ -633,6 +605,66 @@ mod tests {
             "expected nested .agents skill in outcome: {:?}",
             outcome.skills
         );
+    }
+
+    #[test]
+    fn discovers_skills_beyond_previous_depth_limit() {
+        let skills_root = tempfile::tempdir().expect("tempdir");
+        let deep_path = "a/b/c/d/e/f/g/h";
+        let deep_skill_path = write_skill_at(
+            skills_root.path(),
+            deep_path,
+            "deep-skill",
+            "beyond old depth limit",
+        );
+
+        let outcome = load_skills_from_roots(vec![SkillRoot {
+            path: skills_root.path().to_path_buf(),
+            scope: SkillScope::Repo,
+        }]);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome.skills.iter().any(|skill| {
+                skill.name == "deep-skill"
+                    && skill.path == normalized(&deep_skill_path)
+                    && skill.scope == SkillScope::Repo
+            }),
+            "expected deep skill in outcome: {:?}",
+            outcome.skills
+        );
+    }
+
+    #[test]
+    fn discovers_skills_beyond_previous_directory_cap() {
+        let skills_root = tempfile::tempdir().expect("tempdir");
+        let root = skills_root.path();
+
+        for i in 0..2001 {
+            let dir = format!("dir-{i}");
+            write_skill_at(
+                root,
+                &dir,
+                &format!("skill-{i}"),
+                "past old directory cap",
+            );
+        }
+
+        let outcome = load_skills_from_roots(vec![SkillRoot {
+            path: root.to_path_buf(),
+            scope: SkillScope::Repo,
+        }]);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 2001);
     }
 
     #[test]
