@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_sets_prompt_sent_to_cli_min_and_max_length() {
+    fn schema_sets_prompt_sent_to_cli_min_without_max_length() {
         let active_agents: Vec<String> = Vec::new();
         let schema = build_schema(&active_agents, SchemaFeatures::default());
         let prompt_schema = schema
@@ -551,10 +551,9 @@ mod tests {
             Some(&json!(CLI_PROMPT_MIN_CHARS)),
             "schema minLength should match CLI_PROMPT_MIN_CHARS"
         );
-        assert_eq!(
-            prompt_schema.get("maxLength"),
-            Some(&json!(CLI_PROMPT_MAX_CHARS)),
-            "schema maxLength should match CLI_PROMPT_MAX_CHARS"
+        assert!(
+            !prompt_schema.contains_key("maxLength"),
+            "schema should omit maxLength to avoid provider truncation"
         );
     }
 
@@ -667,11 +666,13 @@ mod tests {
             .get("goal")
             .and_then(|v| v.as_object())
             .expect("goal schema");
+        assert_eq!(goal.get("type"), Some(&json!("string")));
+        assert_eq!(goal.get("minLength"), Some(&json!(4)));
         let description = goal
             .get("description")
             .and_then(|v| v.as_str())
             .expect("goal description");
-        assert!(description.contains("bootstrapping/clarifying"));
+        assert!(description.contains("primary coding goal"));
     }
 
     #[test]
@@ -1086,6 +1087,7 @@ struct CoordinatorDecisionLegacy {
     goal: Option<String>,
 }
 
+#[derive(Debug)]
 struct ParsedCoordinatorDecision {
     status: AutoCoordinatorStatus,
     status_title: Option<String>,
@@ -1949,14 +1951,21 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         }),
     );
 
-    properties.insert(
-        "goal".to_string(),
+    let goal_schema = if features.include_goal_field {
+        json!({
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 200,
+            "description": "Provide the single primary coding goal derived from the recent conversation history to begin Auto Drive without a user-supplied prompt."
+        })
+    } else {
         json!({
             "type": ["string", "null"],
             "maxLength": 200,
             "description": "Use only when bootstrapping/clarifying the mission goal is required."
-        }),
-    );
+        })
+    };
+    properties.insert("goal".to_string(), goal_schema);
     if features.include_goal_field {
         required.push(Value::String("goal".to_string()));
     }
@@ -1988,7 +1997,6 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         json!({
             "type": ["string", "null"],
             "minLength": CLI_PROMPT_MIN_CHARS,
-            "maxLength": CLI_PROMPT_MAX_CHARS,
             "description": "Single milestone instruction to the CLI. Outcome-focused, non-procedural. Set to null ONLY when finishing."
         }),
     );
@@ -2098,8 +2106,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
                     "properties": {
                         "prompt_sent_to_cli": {
                             "type": "string",
-                            "minLength": CLI_PROMPT_MIN_CHARS,
-                            "maxLength": CLI_PROMPT_MAX_CHARS
+                            "minLength": CLI_PROMPT_MIN_CHARS
                         },
                         "finish_evidence": {
                             "type": "null"
@@ -2120,6 +2127,9 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
                     "properties": {
                         "prompt_sent_to_cli": {
                             "type": "null"
+                        },
+                        "finish_evidence": {
+                            "type": "object"
                         }
                     }
                 }
