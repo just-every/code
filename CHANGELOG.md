@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.66] - 2026-02-12
+
+- App Server: add websocket transport and protocol updates. (3ebd8b72)
+- Core/Websocket: bound ingress buffering and unblock spark exec/close readers. (6b6fab16, 1458e477)
+- TUI/Model: surface gpt-5.3-codex-spark in /model. (7d6b5915)
+- Core/JS REPL: add host helpers and exec end events. (466be55a)
+
 ## [0.6.65] - 2026-02-11
 
 - CLI/Env: stop traversing parent .env files at startup. (04c45da1)
