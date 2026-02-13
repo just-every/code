@@ -1,11 +1,12 @@
-## @just-every/code v0.6.66
-A focused release that expands websocket support and smooths model/REPL behavior.
+## @just-every/code v0.6.67
+
+This release expands skill discovery, improves TUI navigation, and clarifies app-server error reporting.
 
 ### Changes
-- App Server: add websocket transport and protocol updates.
-- Core/Websocket: bound ingress buffering and unblock spark exec/close readers.
-- TUI/Model: surface gpt-5.3-codex-spark in /model.
-- Core/JS REPL: add host helpers and exec end events.
+- Skills: discover .agents and admin roots and remove deep-scan caps.
+- TUI: improve /model navigation and /resume popup visibility.
+- App Server: surface JSON-RPC errors to avoid masked auth failures.
+- Sandbox: add slash command to grant read access to inaccessible directories.
 
 ### Install
 ```
@@ -13,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.65...v0.6.66
+Compare: https://github.com/just-every/code/compare/v0.6.66...v0.6.67
