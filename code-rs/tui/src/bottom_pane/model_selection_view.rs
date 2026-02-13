@@ -23,6 +23,12 @@ struct FlatPreset {
     description: String,
 }
 
+#[derive(Clone)]
+struct ModelLine {
+    line: Line<'static>,
+    is_selected: bool,
+}
+
 impl FlatPreset {
     fn from_model_preset(preset: &ModelPreset) -> Vec<Self> {
         preset
@@ -425,6 +431,206 @@ impl ModelSelectionView {
         }
     }
 
+    fn rendered_rows(&self) -> Vec<ModelLine> {
+        let mut lines = Vec::new();
+
+        lines.push(ModelLine {
+            line: Line::from(vec![
+                Span::styled(
+                    format!("{}: ", self.target.current_label()),
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
+                Span::styled(
+                    if self.target.supports_follow_chat() && self.use_chat_model {
+                        "Follow Chat Mode".to_string()
+                    } else {
+                        Self::format_model_header(&self.current_model)
+                    },
+                    Style::default()
+                        .fg(crate::colors::warning())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            is_selected: false,
+        });
+
+        lines.push(ModelLine {
+            line: Line::from(vec![
+                Span::styled(
+                    format!("{}: ", self.target.reasoning_label()),
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
+                Span::styled(
+                    if self.target.supports_follow_chat() && self.use_chat_model {
+                        "From chat".to_string()
+                    } else {
+                        Self::effort_label(self.current_effort).to_string()
+                    },
+                    Style::default()
+                        .fg(crate::colors::warning())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            is_selected: false,
+        });
+
+        lines.push(ModelLine {
+            line: Line::from(""),
+            is_selected: false,
+        });
+
+        if self.target.supports_follow_chat() {
+            let is_selected = self.selected_index == 0;
+
+            let header_style = Style::default()
+                .fg(crate::colors::text_bright())
+                .add_modifier(Modifier::BOLD);
+            let desc_style = Style::default().fg(crate::colors::text_dim());
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled("Follow Chat Mode", header_style)]),
+                is_selected: false,
+            });
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled(
+                    "Use the active chat model and reasoning; stays in sync as chat changes.",
+                    desc_style,
+                )]),
+                is_selected: false,
+            });
+
+            let mut label_style = Style::default().fg(crate::colors::text());
+            if is_selected {
+                label_style = label_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            let mut arrow_style = Style::default().fg(crate::colors::text_dim());
+            if is_selected {
+                arrow_style = label_style;
+            }
+            let indent_style = if is_selected {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let mut status = String::new();
+            if self.use_chat_model {
+                status.push_str("(current)");
+            }
+            let arrow = if is_selected { "› " } else { "  " };
+            let mut spans = vec![
+                Span::styled(arrow, arrow_style),
+                Span::styled("   ", indent_style),
+                Span::styled("Use chat model", label_style),
+            ];
+            if !status.is_empty() {
+                spans.push(Span::raw(format!("  {}", status)));
+            }
+            lines.push(ModelLine {
+                line: Line::from(spans),
+                is_selected,
+            });
+            lines.push(ModelLine {
+                line: Line::from(""),
+                is_selected: false,
+            });
+        }
+
+        let mut previous_model: Option<&str> = None;
+        let entries = self.entries();
+        for (entry_idx, entry) in entries.iter().enumerate() {
+            let EntryKind::Preset(preset_index) = entry else { continue };
+            let flat_preset = &self.flat_presets[*preset_index];
+
+            if previous_model
+                .map(|m| !m.eq_ignore_ascii_case(&flat_preset.model))
+                .unwrap_or(true)
+            {
+                if previous_model.is_some() {
+                    lines.push(ModelLine {
+                        line: Line::from(""),
+                        is_selected: false,
+                    });
+                }
+                lines.push(ModelLine {
+                    line: Line::from(vec![Span::styled(
+                        Self::format_model_header(&flat_preset.model),
+                        Style::default()
+                            .fg(crate::colors::text_bright())
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    is_selected: false,
+                });
+                if let Some(desc) = Self::model_description(&flat_preset.model) {
+                    lines.push(ModelLine {
+                        line: Line::from(vec![Span::styled(
+                            desc.to_string(),
+                            Style::default().fg(crate::colors::text_dim()),
+                        )]),
+                        is_selected: false,
+                    });
+                }
+                previous_model = Some(&flat_preset.model);
+            }
+
+            let is_selected = entry_idx == self.selected_index;
+            let is_current = !self.use_chat_model
+                && flat_preset.model.eq_ignore_ascii_case(&self.current_model)
+                && flat_preset.effort == self.current_effort;
+            let label = Self::effort_label(flat_preset.effort);
+            let mut row_text = label.to_string();
+            if is_current {
+                row_text.push_str(" (current)");
+            }
+
+            let mut indent_style = Style::default();
+            if is_selected {
+                indent_style = indent_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+
+            let mut label_style = Style::default().fg(crate::colors::text());
+            if is_selected {
+                label_style = label_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            if is_current {
+                label_style = label_style.fg(crate::colors::success());
+            }
+
+            let mut divider_style = Style::default().fg(crate::colors::text_dim());
+            if is_selected {
+                divider_style = divider_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+
+            let mut description_style = Style::default().fg(crate::colors::dim());
+            if is_selected {
+                description_style = description_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+
+            lines.push(ModelLine {
+                line: Line::from(vec![
+                    Span::styled("   ", indent_style),
+                    Span::styled(row_text, label_style),
+                    Span::styled(" - ", divider_style),
+                    Span::styled(flat_preset.description.clone(), description_style),
+                ]),
+                is_selected,
+            });
+        }
+
+        lines
+    }
+
     fn content_line_count(&self) -> u16 {
         let mut lines: u16 = 3;
         if self.target.supports_follow_chat() {
@@ -590,164 +796,32 @@ impl ModelSelectionView {
             return;
         }
 
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", self.target.current_label()),
-                Style::default().fg(crate::colors::text_dim()),
-            ),
-            Span::styled(
-                if self.target.supports_follow_chat() && self.use_chat_model {
-                    "Follow Chat Mode".to_string()
-                } else {
-                    Self::format_model_header(&self.current_model)
-                },
-                Style::default()
-                    .fg(crate::colors::warning())
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", self.target.reasoning_label()),
-                Style::default().fg(crate::colors::text_dim()),
-            ),
-            Span::styled(
-                if self.target.supports_follow_chat() && self.use_chat_model {
-                    "From chat".to_string()
-                } else {
-                    Self::effort_label(self.current_effort).to_string()
-                },
-                Style::default()
-                    .fg(crate::colors::warning())
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(""));
+        let rows = self.rendered_rows();
+        let selected_row_index = rows.iter().position(|line| line.is_selected).unwrap_or(0);
 
-        if self.target.supports_follow_chat() {
-            let is_selected = self.selected_index == 0;
+        // Keep a one-line spacer between list content and footer so the fixed
+        // hint line never eats into selectable content.
+        let footer_rows: u16 = 1;
+        let bottom_spacer_rows: u16 = 1;
+        let rows_area_height = area
+            .height
+            .saturating_sub(footer_rows.saturating_add(bottom_spacer_rows));
 
-            let header_style = Style::default()
-                .fg(crate::colors::text_bright())
-                .add_modifier(Modifier::BOLD);
-            let desc_style = Style::default().fg(crate::colors::text_dim());
-            lines.push(Line::from(vec![Span::styled("Follow Chat Mode", header_style)]));
-            lines.push(Line::from(vec![Span::styled(
-                "Use the active chat model and reasoning; stays in sync as chat changes.",
-                desc_style,
-            )]));
+        let max_visible_rows = rows_area_height as usize;
+        let scroll_top = if max_visible_rows > 0 && rows.len() > max_visible_rows {
+            selected_row_index.min(rows.len().saturating_sub(max_visible_rows))
+        } else {
+            0
+        };
 
-            let mut label_style = Style::default().fg(crate::colors::text());
-            if is_selected {
-                label_style = label_style
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
-            let mut arrow_style = Style::default().fg(crate::colors::text_dim());
-            if is_selected {
-                arrow_style = label_style.clone();
-            }
-            let indent_style = if is_selected {
-                Style::default()
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let mut status = String::new();
-            if self.use_chat_model {
-                status.push_str("(current)");
-            }
-            let arrow = if is_selected { "› " } else { "  " };
-            let mut spans = vec![
-                Span::styled(arrow, arrow_style),
-                Span::styled("   ", indent_style),
-                Span::styled("Use chat model", label_style),
-            ];
-            if !status.is_empty() {
-                spans.push(Span::raw(format!("  {}", status)));
-            }
-            lines.push(Line::from(spans));
-            lines.push(Line::from(""));
-        }
+        let lines: Vec<Line> = rows
+            .into_iter()
+            .skip(scroll_top)
+            .take(max_visible_rows)
+            .map(|line| line.line)
+            .collect();
 
-        let mut previous_model: Option<&str> = None;
-        let entries = self.entries();
-        for (entry_idx, entry) in entries.iter().enumerate() {
-            let EntryKind::Preset(preset_index) = entry else { continue };
-            let flat_preset = &self.flat_presets[*preset_index];
-            if previous_model
-                .map(|m| !m.eq_ignore_ascii_case(&flat_preset.model))
-                .unwrap_or(true)
-            {
-                if previous_model.is_some() {
-                    lines.push(Line::from(""));
-                }
-                lines.push(Line::from(vec![Span::styled(
-                    Self::format_model_header(&flat_preset.model),
-                    Style::default()
-                        .fg(crate::colors::text_bright())
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                if let Some(desc) = Self::model_description(&flat_preset.model) {
-                    lines.push(Line::from(vec![Span::styled(
-                        desc,
-                        Style::default().fg(crate::colors::text_dim()),
-                    )]));
-                }
-                previous_model = Some(&flat_preset.model);
-            }
-
-            let is_selected = entry_idx == self.selected_index;
-            let is_current = !self.use_chat_model
-                && flat_preset.model.eq_ignore_ascii_case(&self.current_model)
-                && flat_preset.effort == self.current_effort;
-            let label = Self::effort_label(flat_preset.effort);
-            let mut row_text = label.to_string();
-            if is_current {
-                row_text.push_str(" (current)");
-            }
-
-            let mut indent_style = Style::default();
-            if is_selected {
-                indent_style = indent_style
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
-
-            let mut label_style = Style::default().fg(crate::colors::text());
-            if is_selected {
-                label_style = label_style
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
-            if is_current {
-                label_style = label_style.fg(crate::colors::success());
-            }
-
-            let mut divider_style = Style::default().fg(crate::colors::text_dim());
-            if is_selected {
-                divider_style = divider_style
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
-
-            let mut description_style = Style::default().fg(crate::colors::dim());
-            if is_selected {
-                description_style = description_style
-                    .bg(crate::colors::selection())
-                    .add_modifier(Modifier::BOLD);
-            }
-
-            lines.push(Line::from(vec![
-                Span::styled("   ", indent_style),
-                Span::styled(row_text, label_style),
-                Span::styled(" - ", divider_style),
-                Span::styled(&flat_preset.description, description_style),
-            ]));
-        }
-
+        let mut lines = lines;
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("↑↓", Style::default().fg(crate::colors::light_blue())),
@@ -803,5 +877,88 @@ impl<'a> BottomPaneView<'a> for ModelSelectionView {
             PanelFrameStyle::bottom_pane(),
             |inner, buf| self.render_panel_body(inner, buf),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_event::AppEvent;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use code_common::model_presets::{ModelPreset, ReasoningEffortPreset};
+    use code_core::config_types::TextVerbosity;
+    use std::sync::mpsc;
+
+    const TEST_VERBOSITY: [TextVerbosity; 1] = [TextVerbosity::Low];
+
+    fn make_preset(model: &str) -> ModelPreset {
+        ModelPreset {
+            id: model.to_string(),
+            model: model.to_string(),
+            display_name: model.to_string(),
+            description: format!("{model} model"),
+            default_reasoning_effort: ReasoningEffort::Low.into(),
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Low.into(),
+                description: "low".to_string(),
+            }],
+            supported_text_verbosity: &TEST_VERBOSITY,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+        }
+    }
+
+    fn buffer_body_lines(buf: &Buffer, width: u16, height: u16) -> Vec<String> {
+        let mut rows = Vec::new();
+        if width < 2 || height < 2 {
+            return rows;
+        }
+
+        for y in 1..height.saturating_sub(1) {
+            let line: String = (1..width.saturating_sub(1))
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            rows.push(line);
+        }
+        rows
+    }
+
+    #[test]
+    fn model_selection_scrolls_selected_model_into_view() {
+        let presets = (0..12).map(|i| make_preset(&format!("model-{i:02}"))).collect();
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+
+        let mut view = ModelSelectionView::new(
+            presets,
+            "model-00".to_string(),
+            ReasoningEffort::Low,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        for _ in 0..11 {
+            let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+
+        let width = 80;
+        let height = 12;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let lines = buffer_body_lines(&buf, width, height);
+        let has_last_model = lines.iter().any(|line| line.contains("MODEL-11"));
+        assert!(has_last_model);
     }
 }
