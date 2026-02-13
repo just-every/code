@@ -6,6 +6,7 @@ use crate::app_event_sender::AppEventSender;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::cell::Cell;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::Widget;
@@ -128,6 +129,7 @@ impl ModelSelectionTarget {
 pub(crate) struct ModelSelectionView {
     flat_presets: Vec<FlatPreset>,
     selected_index: usize,
+    scroll_top: Cell<usize>,
     current_model: String,
     current_effort: ReasoningEffort,
     use_chat_model: bool,
@@ -166,6 +168,7 @@ impl ModelSelectionView {
         Self {
             flat_presets,
             selected_index: initial_index,
+            scroll_top: Cell::new(0),
             current_model,
             current_effort,
             use_chat_model,
@@ -227,6 +230,45 @@ impl ModelSelectionView {
         } else if self.selected_index >= total {
             self.selected_index = total - 1;
         }
+        self.scroll_top.set(0);
+    }
+
+    fn content_scroll_top(
+        &self,
+        rows: usize,
+        selected_row: usize,
+        visible_rows: usize,
+    ) -> usize {
+        if visible_rows == 0 || rows <= visible_rows {
+            return 0;
+        }
+
+        let max_start = rows.saturating_sub(visible_rows);
+
+        if self.selected_index == 0 {
+            // Returning to the first selectable entry should show the top context
+            // whenever it still keeps the selected row visible. In compact
+            // panes (e.g. Follow Chat), keep enough scroll so the selection
+            // remains on screen.
+            if selected_row < visible_rows {
+                return 0;
+            }
+            return selected_row
+                .saturating_sub(visible_rows.saturating_sub(1))
+                .min(max_start);
+        }
+
+        let mut top = self.scroll_top.get().min(max_start);
+
+        if selected_row < top {
+            top = selected_row;
+        }
+
+        if selected_row >= top.saturating_add(visible_rows) {
+            top = selected_row.saturating_sub(visible_rows - 1);
+        }
+
+        top.min(max_start)
     }
 
     fn initial_selection(
@@ -809,13 +851,8 @@ impl ModelSelectionView {
 
         let max_visible_rows = rows_area_height as usize;
         let rows_len = rows.len();
-        let scroll_top = if max_visible_rows > 0 && rows_len > max_visible_rows {
-            let content_start = selected_row_index.saturating_sub(2);
-            let max_start = rows_len.saturating_sub(max_visible_rows);
-            content_start.min(max_start)
-        } else {
-            0
-        };
+        let scroll_top = self.content_scroll_top(rows_len, selected_row_index, max_visible_rows);
+        self.scroll_top.set(scroll_top);
 
         let lines: Vec<Line> = rows
             .into_iter()
@@ -1005,5 +1042,155 @@ mod tests {
 
         assert!(has_header);
         assert!(has_desc);
+    }
+
+    #[test]
+    fn model_selection_keeps_first_follow_chat_entry_visible_on_compact_height() {
+        let presets = vec![make_preset("gpt-5.3-codex")];
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let view = ModelSelectionView::new(
+            presets,
+            "gpt-5.3-codex".to_string(),
+            ReasoningEffort::Low,
+            true,
+            ModelSelectionTarget::Review,
+            AppEventSender::new(tx),
+        );
+
+        let width = 80;
+        let height = 9;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(
+            Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            &mut buf,
+        );
+
+        let lines = buffer_body_lines(&buf, width, height);
+        let has_follow_chat_option = lines.iter().any(|line| line.contains("Use chat model"));
+
+        assert!(has_follow_chat_option);
+        assert!(view.scroll_top.get() > 0);
+    }
+
+    #[test]
+    fn model_selection_wraps_scroll_back_to_top_entry() {
+        let presets = (0..12).map(|i| make_preset(&format!("model-{i:02}"))).collect();
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+
+        let mut view = ModelSelectionView::new(
+            presets,
+            "model-00".to_string(),
+            ReasoningEffort::Low,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        for _ in 0..11 {
+            let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+
+        let width = 80;
+        let height = 12;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let lines = buffer_body_lines(&buf, width, height);
+        let has_first_model = lines.iter().any(|line| line.contains("MODEL-00"));
+        assert!(has_first_model);
+    }
+
+    #[test]
+    fn model_selection_scrolls_up_when_selection_moves_above_viewport() {
+        let presets = (0..12).map(|i| make_preset(&format!("model-{i:02}"))).collect();
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+
+        let mut view = ModelSelectionView::new(
+            presets,
+            "model-00".to_string(),
+            ReasoningEffort::Low,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        for _ in 0..11 {
+            let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+
+        let width = 80;
+        let height = 12;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let scroll_after_down = view.scroll_top.get();
+        assert!(scroll_after_down > 0);
+
+        for _ in 0..6 {
+            let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        }
+
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let scroll_after_up = view.scroll_top.get();
+        assert!(scroll_after_up < scroll_after_down);
     }
 }
