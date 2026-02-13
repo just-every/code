@@ -808,8 +808,11 @@ impl ModelSelectionView {
             .saturating_sub(footer_rows.saturating_add(bottom_spacer_rows));
 
         let max_visible_rows = rows_area_height as usize;
-        let scroll_top = if max_visible_rows > 0 && rows.len() > max_visible_rows {
-            selected_row_index.min(rows.len().saturating_sub(max_visible_rows))
+        let rows_len = rows.len();
+        let scroll_top = if max_visible_rows > 0 && rows_len > max_visible_rows {
+            let content_start = selected_row_index.saturating_sub(2);
+            let max_start = rows_len.saturating_sub(max_visible_rows);
+            content_start.min(max_start)
         } else {
             0
         };
@@ -960,5 +963,47 @@ mod tests {
         let lines = buffer_body_lines(&buf, width, height);
         let has_last_model = lines.iter().any(|line| line.contains("MODEL-11"));
         assert!(has_last_model);
+    }
+
+    #[test]
+    fn model_selection_keeps_model_header_visible_for_first_entry() {
+        let presets = vec!["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex"]
+            .into_iter()
+            .map(make_preset)
+            .collect();
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let view = ModelSelectionView::new(
+            presets,
+            "gpt-5.3-codex".to_string(),
+            ReasoningEffort::Low,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        let width = 80;
+        let height = 9;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let lines = buffer_body_lines(&buf, width, height);
+        let has_header = lines.iter().any(|line| line.contains("GPT-5.3-Codex"));
+        let has_desc = lines
+            .iter()
+            .any(|line| line.contains("Latest frontier agentic coding model."));
+
+        assert!(has_header);
+        assert!(has_desc);
     }
 }
