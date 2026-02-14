@@ -8,6 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -23,7 +24,7 @@ use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use crate::spawn::spawn_tokio_command_with_retry;
 use crate::protocol::AgentSourceKind;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 #[cfg(target_os = "windows")]
 fn default_pathext_or_default() -> Vec<String> {
@@ -398,12 +399,48 @@ lazy_static::lazy_static! {
 
 pub struct AgentManager {
     agents: HashMap<String, Agent>,
+    // Session-scoped archive so pruned terminal agents remain queryable
+    // (including worktree/branch metadata) for the full Auto Drive run.
+    archived_terminal_agents: HashMap<String, Agent>,
     handles: HashMap<String, JoinHandle<()>>,
     event_sender: Option<mpsc::UnboundedSender<AgentStatusUpdatePayload>>,
     debug_log_root: Option<PathBuf>,
     watchdog_handle: Option<JoinHandle<()>>,
     inactivity_timeout: Duration,
+    diagnostics: AgentManagerDiagnostics,
 }
+
+#[derive(Debug, Clone, Default)]
+struct AgentManagerDiagnostics {
+    terminal_compactions: u64,
+    progress_entries_trimmed: u64,
+    progress_lines_truncated: u64,
+    payloads_truncated: u64,
+    terminal_agents_pruned: u64,
+    archived_terminal_agents: u64,
+    status_terminal_agents_omitted: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AgentCompactionDelta {
+    progress_entries_trimmed: usize,
+    progress_lines_truncated: usize,
+    payloads_truncated: usize,
+}
+
+impl AgentCompactionDelta {
+    fn any(self) -> bool {
+        self.progress_entries_trimmed > 0
+            || self.progress_lines_truncated > 0
+            || self.payloads_truncated > 0
+    }
+}
+
+const MAX_AGENT_PROGRESS_ENTRIES: usize = 96;
+const MAX_AGENT_PROGRESS_LINE_BYTES: usize = 2048;
+const MAX_AGENT_RESULT_BYTES: usize = 64 * 1024;
+const MAX_TRACKED_TERMINAL_AGENTS: usize = 512;
+const MAX_STATUS_TERMINAL_AGENTS: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct AgentStatusUpdatePayload {
@@ -416,16 +453,22 @@ impl AgentManager {
     pub fn new() -> Self {
         Self {
             agents: HashMap::new(),
+            archived_terminal_agents: HashMap::new(),
             handles: HashMap::new(),
             event_sender: None,
             debug_log_root: None,
             watchdog_handle: None,
             inactivity_timeout: Duration::minutes(30),
+            diagnostics: AgentManagerDiagnostics::default(),
         }
     }
 
     pub fn set_event_sender(&mut self, sender: mpsc::UnboundedSender<AgentStatusUpdatePayload>) {
         self.event_sender = Some(sender);
+        // New session lifecycle: keep only live agents and reset per-session
+        // diagnostics/archives so long-lived UIs start from a clean slate.
+        self.archived_terminal_agents.clear();
+        self.diagnostics = AgentManagerDiagnostics::default();
         self.start_watchdog();
     }
 
@@ -470,6 +513,7 @@ impl AgentManager {
                         agent.completed_at = Some(now);
                         Self::record_activity(agent);
                     }
+                    mgr.finalize_terminal_agent(agent_id);
                 }
 
                 // Notify listeners once per sweep.
@@ -495,6 +539,207 @@ impl AgentManager {
         agent.last_activity = Utc::now();
     }
 
+    fn trim_to_tail_utf8(text: &str, max_bytes: usize) -> String {
+        let bytes = text.as_bytes();
+        if bytes.len() <= max_bytes {
+            return text.to_string();
+        }
+
+        let mut start = bytes.len().saturating_sub(max_bytes);
+        while start < bytes.len() && (bytes[start] & 0b1100_0000) == 0b1000_0000 {
+            start += 1;
+        }
+
+        let tail = String::from_utf8_lossy(&bytes[start..]).to_string();
+        format!("…{tail}")
+    }
+
+    fn compact_terminal_agent(agent: &mut Agent) -> AgentCompactionDelta {
+        let mut delta = AgentCompactionDelta::default();
+
+        if agent.progress.len() > MAX_AGENT_PROGRESS_ENTRIES {
+            let drain = agent.progress.len() - MAX_AGENT_PROGRESS_ENTRIES;
+            agent.progress.drain(0..drain);
+            delta.progress_entries_trimmed = drain;
+        }
+
+        for line in &mut agent.progress {
+            let original_len = line.len();
+            let trimmed = Self::trim_to_tail_utf8(line, MAX_AGENT_PROGRESS_LINE_BYTES);
+            if trimmed.len() < original_len {
+                delta.progress_lines_truncated = delta.progress_lines_truncated.saturating_add(1);
+            }
+            *line = trimmed;
+        }
+
+        if let Some(result) = agent.result.as_mut() {
+            let original_len = result.len();
+            let trimmed = Self::trim_to_tail_utf8(result, MAX_AGENT_RESULT_BYTES);
+            if trimmed.len() < original_len {
+                delta.payloads_truncated = delta.payloads_truncated.saturating_add(1);
+            }
+            *result = trimmed;
+        }
+
+        if let Some(error) = agent.error.as_mut() {
+            let original_len = error.len();
+            let trimmed = Self::trim_to_tail_utf8(error, MAX_AGENT_RESULT_BYTES);
+            if trimmed.len() < original_len {
+                delta.payloads_truncated = delta.payloads_truncated.saturating_add(1);
+            }
+            *error = trimmed;
+        }
+
+        // Keep branch/worktree metadata so users can still merge/inspect results,
+        // but release heavy prompt payloads once an agent is terminal.
+        agent.prompt.clear();
+        agent.context = None;
+        agent.output_goal = None;
+        agent.files.clear();
+
+        delta
+    }
+
+    fn prune_terminal_agents(&mut self) {
+        let terminal_count = self
+            .agents
+            .values()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+                )
+            })
+            .count();
+
+        if terminal_count <= MAX_TRACKED_TERMINAL_AGENTS {
+            return;
+        }
+
+        let mut terminal: Vec<(DateTime<Utc>, String)> = self
+            .agents
+            .iter()
+            .filter(|(_, agent)| {
+                matches!(
+                    agent.status,
+                    AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+                )
+            })
+            .map(|(id, agent)| {
+                (
+                    agent.completed_at.unwrap_or(agent.created_at),
+                    id.clone(),
+                )
+            })
+            .collect();
+
+        terminal.sort_by_key(|(completed_at, _)| *completed_at);
+
+        let mut to_remove = terminal_count.saturating_sub(MAX_TRACKED_TERMINAL_AGENTS);
+        let mut pruned = 0usize;
+        for (_, agent_id) in terminal {
+            if to_remove == 0 {
+                break;
+            }
+
+            self.handles.remove(&agent_id);
+            if let Some(agent) = self.agents.remove(&agent_id) {
+                self.archived_terminal_agents.insert(agent_id.clone(), agent);
+            }
+            pruned = pruned.saturating_add(1);
+            to_remove = to_remove.saturating_sub(1);
+        }
+
+        if pruned > 0 {
+            self.diagnostics.terminal_agents_pruned = self
+                .diagnostics
+                .terminal_agents_pruned
+                .saturating_add(pruned as u64);
+            self.diagnostics.archived_terminal_agents = self.archived_terminal_agents.len() as u64;
+            info!(
+                pruned,
+                retained = self.agents.len(),
+                archived = self.archived_terminal_agents.len(),
+                "agent manager pruned terminal agents from live cache"
+            );
+        }
+    }
+
+    fn finalize_terminal_agent(&mut self, agent_id: &str) {
+        self.handles.remove(agent_id);
+
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            let delta = Self::compact_terminal_agent(agent);
+            self.diagnostics.terminal_compactions =
+                self.diagnostics.terminal_compactions.saturating_add(1);
+            self.diagnostics.progress_entries_trimmed = self
+                .diagnostics
+                .progress_entries_trimmed
+                .saturating_add(delta.progress_entries_trimmed as u64);
+            self.diagnostics.progress_lines_truncated = self
+                .diagnostics
+                .progress_lines_truncated
+                .saturating_add(delta.progress_lines_truncated as u64);
+            self.diagnostics.payloads_truncated = self
+                .diagnostics
+                .payloads_truncated
+                .saturating_add(delta.payloads_truncated as u64);
+            if delta.any() {
+                debug!(
+                    agent_id,
+                    progress_entries_trimmed = delta.progress_entries_trimmed,
+                    progress_lines_truncated = delta.progress_lines_truncated,
+                    payloads_truncated = delta.payloads_truncated,
+                    total_terminal_compactions = self.diagnostics.terminal_compactions,
+                    total_progress_entries_trimmed = self.diagnostics.progress_entries_trimmed,
+                    total_progress_lines_truncated = self.diagnostics.progress_lines_truncated,
+                    total_payloads_truncated = self.diagnostics.payloads_truncated,
+                    "compacted terminal agent state"
+                );
+            }
+        }
+
+        self.prune_terminal_agents();
+    }
+
+    fn visible_agents_for_status(&self) -> Vec<&Agent> {
+        let mut active: Vec<&Agent> = self
+            .agents
+            .values()
+            .filter(|agent| matches!(agent.status, AgentStatus::Pending | AgentStatus::Running))
+            .collect();
+
+        active.sort_by_key(|agent| agent.created_at);
+
+        let mut terminal: Vec<&Agent> = self
+            .agents
+            .values()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+                )
+            })
+            .collect();
+
+        terminal.sort_by_key(|agent| agent.completed_at.unwrap_or(agent.created_at));
+
+        if terminal.len() > MAX_STATUS_TERMINAL_AGENTS {
+            let keep_from = terminal.len() - MAX_STATUS_TERMINAL_AGENTS;
+            terminal = terminal.split_off(keep_from);
+        }
+
+        active.extend(terminal);
+        active
+    }
+
+    pub fn status_visible_agents(&self) -> Vec<Agent> {
+        self.visible_agents_for_status()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
     fn append_agent_log(&self, log_tag: &str, line: &str) {
         let Some(root) = &self.debug_log_root else { return; };
         let dir = root.join(log_tag);
@@ -514,12 +759,44 @@ impl AgentManager {
         }
     }
 
-    async fn send_agent_status_update(&self) {
+    async fn send_agent_status_update(&mut self) {
         if let Some(ref sender) = self.event_sender {
             let now = Utc::now();
-            let agents: Vec<AgentInfo> = self
+
+            let total_terminal = self
                 .agents
                 .values()
+                .filter(|agent| {
+                    matches!(
+                        agent.status,
+                        AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
+                    )
+                })
+                .count();
+            let omitted_terminal = total_terminal.saturating_sub(MAX_STATUS_TERMINAL_AGENTS);
+            if omitted_terminal > 0 {
+                self.diagnostics.status_terminal_agents_omitted = self
+                    .diagnostics
+                    .status_terminal_agents_omitted
+                    .saturating_add(omitted_terminal as u64);
+                debug!(
+                    omitted_terminal,
+                    total_terminal,
+                    running_agents = self
+                        .agents
+                        .values()
+                        .filter(|agent| {
+                            matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                        })
+                        .count(),
+                    cumulative_omitted = self.diagnostics.status_terminal_agents_omitted,
+                    "omitting terminal agents from status payload to keep UI responsive"
+                );
+            }
+
+            let agents: Vec<AgentInfo> = self
+                .visible_agents_for_status()
+                .into_iter()
                 .map(|agent| {
                     // Just show the model name - status provides the useful info
                     let name = agent
@@ -565,11 +842,14 @@ impl AgentManager {
                 })
                 .collect();
 
-            // Get context and task from the first agent (they're all the same)
-            let (context, task) = self
+            // Prefer active agents for shared context/task; terminal agents may
+            // have had heavy fields compacted already.
+            let source_agent = self
                 .agents
                 .values()
-                .next()
+                .find(|agent| matches!(agent.status, AgentStatus::Pending | AgentStatus::Running))
+                .or_else(|| self.agents.values().next());
+            let (context, task) = source_agent
                 .map(|agent| {
                     let context = agent
                         .context
@@ -758,7 +1038,11 @@ impl AgentManager {
     }
 
     pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
-        self.agents.get(agent_id).cloned()
+        self
+            .agents
+            .get(agent_id)
+            .cloned()
+            .or_else(|| self.archived_terminal_agents.get(agent_id).cloned())
     }
 
     pub fn get_all_agents(&self) -> impl Iterator<Item = &Agent> {
@@ -777,28 +1061,38 @@ impl AgentManager {
             None
         };
 
-        self.agents
-            .values()
-            .filter(|agent| {
-                if let Some(ref filter) = status_filter {
-                    if agent.status != *filter {
-                        return false;
-                    }
+        let mut out = Vec::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
+
+        let mut collect_filtered = |agent: &Agent| {
+            if let Some(ref filter) = status_filter {
+                if agent.status != *filter {
+                    return;
                 }
-                if let Some(ref batch) = batch_id {
-                    if agent.batch_id.as_ref() != Some(batch) {
-                        return false;
-                    }
+            }
+            if let Some(ref batch) = batch_id {
+                if agent.batch_id.as_ref() != Some(batch) {
+                    return;
                 }
-                if let Some(cutoff) = cutoff {
-                    if agent.created_at < cutoff {
-                        return false;
-                    }
+            }
+            if let Some(cutoff) = cutoff {
+                if agent.created_at < cutoff {
+                    return;
                 }
-                true
-            })
-            .cloned()
-            .collect()
+            }
+            if seen_ids.insert(agent.id.clone()) {
+                out.push(agent.clone());
+            }
+        };
+
+        for agent in self.agents.values() {
+            collect_filtered(agent);
+        }
+        for agent in self.archived_terminal_agents.values() {
+            collect_filtered(agent);
+        }
+
+        out
     }
 
     pub fn has_active_agents(&self) -> bool {
@@ -814,6 +1108,7 @@ impl AgentManager {
                 agent.status = AgentStatus::Cancelled;
                 agent.completed_at = Some(Utc::now());
             }
+            self.finalize_terminal_agent(agent_id);
             true
         } else {
             false
@@ -838,6 +1133,7 @@ impl AgentManager {
     }
 
     pub async fn update_agent_status(&mut self, agent_id: &str, status: AgentStatus) {
+        let mut terminal = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = status;
             if agent.status == AgentStatus::Running && agent.started_at.is_none() {
@@ -848,15 +1144,22 @@ impl AgentManager {
                 AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Cancelled
             ) {
                 agent.completed_at = Some(Utc::now());
+                terminal = true;
             }
             Self::record_activity(agent);
-            // Send status update event
-            self.send_agent_status_update().await;
         }
+
+        if terminal {
+            self.finalize_terminal_agent(agent_id);
+        }
+
+        // Send status update event
+        self.send_agent_status_update().await;
     }
 
     pub async fn update_agent_result(&mut self, agent_id: &str, result: Result<String, String>) {
         let debug_enabled = self.debug_log_root.is_some();
+        let mut updated = false;
 
         if let Some((log_tag, log_lines)) = self.agents.get_mut(agent_id).map(|agent| {
             let log_tag = if debug_enabled { agent.log_tag.clone() } else { None };
@@ -890,6 +1193,7 @@ impl AgentManager {
             }
             agent.completed_at = Some(Utc::now());
             Self::record_activity(agent);
+            updated = true;
 
             (log_tag, log_lines)
         }) {
@@ -897,6 +1201,9 @@ impl AgentManager {
                 for line in log_lines {
                     self.append_agent_log(&tag, &line);
                 }
+            }
+            if updated {
+                self.finalize_terminal_agent(agent_id);
             }
             // Send status update event
             self.send_agent_status_update().await;
@@ -906,13 +1213,44 @@ impl AgentManager {
     pub async fn add_progress(&mut self, agent_id: &str, message: String) {
         let debug_enabled = self.debug_log_root.is_some();
 
-        if let Some((log_tag, entry)) = self.agents.get_mut(agent_id).map(|agent| {
-            let entry = format!("{}: {}", Utc::now().format("%H:%M:%S"), message);
+        if let Some((log_tag, entry, line_truncated, entries_trimmed)) =
+            self.agents.get_mut(agent_id).map(|agent| {
+            let raw_entry = format!("{}: {}", Utc::now().format("%H:%M:%S"), message);
+            let line_truncated = raw_entry.len() > MAX_AGENT_PROGRESS_LINE_BYTES;
+            let entry = Self::trim_to_tail_utf8(&raw_entry, MAX_AGENT_PROGRESS_LINE_BYTES);
             let log_tag = if debug_enabled { agent.log_tag.clone() } else { None };
             agent.progress.push(entry.clone());
+            let mut entries_trimmed = 0usize;
+            if agent.progress.len() > MAX_AGENT_PROGRESS_ENTRIES {
+                let drain = agent.progress.len() - MAX_AGENT_PROGRESS_ENTRIES;
+                agent.progress.drain(0..drain);
+                entries_trimmed = drain;
+            }
             Self::record_activity(agent);
-            (log_tag, entry)
+            (log_tag, entry, line_truncated, entries_trimmed)
         }) {
+            if line_truncated {
+                self.diagnostics.progress_lines_truncated = self
+                    .diagnostics
+                    .progress_lines_truncated
+                    .saturating_add(1);
+            }
+            if entries_trimmed > 0 {
+                self.diagnostics.progress_entries_trimmed = self
+                    .diagnostics
+                    .progress_entries_trimmed
+                    .saturating_add(entries_trimmed as u64);
+            }
+            if line_truncated || entries_trimmed > 0 {
+                debug!(
+                    agent_id,
+                    line_truncated,
+                    entries_trimmed,
+                    total_progress_lines_truncated = self.diagnostics.progress_lines_truncated,
+                    total_progress_entries_trimmed = self.diagnostics.progress_entries_trimmed,
+                    "trimmed agent progress backlog"
+                );
+            }
             if let Some(tag) = log_tag {
                 self.append_agent_log(&tag, &entry);
             }
@@ -1203,7 +1541,11 @@ async fn execute_agent(agent_id: String, config: Option<AgentConfig>) {
 
 fn prefer_json_result(path: Option<&PathBuf>, fallback: Result<String, String>) -> Result<String, String> {
     if let Some(p) = path {
-        if let Ok(json) = std::fs::read_to_string(p) {
+        let json = std::fs::read_to_string(p).ok();
+        if let Err(err) = std::fs::remove_file(p) {
+            tracing::debug!("failed to clean review output file {}: {err}", p.display());
+        }
+        if let Some(json) = json {
             return Ok(json);
         }
     }
@@ -2451,6 +2793,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::Agent;
+    use super::AgentManager;
+    use super::AgentStatus;
+    use super::MAX_AGENT_PROGRESS_ENTRIES;
+    use super::MAX_AGENT_RESULT_BYTES;
+    use super::MAX_TRACKED_TERMINAL_AGENTS;
     use super::normalize_agent_name;
     use super::maybe_set_gemini_config_dir;
     use super::execute_model_with_permissions;
@@ -2502,6 +2850,7 @@ mod tests {
 
         let res = prefer_json_result(Some(&path), Err("fallback".to_string()));
         assert_eq!(res.unwrap(), payload);
+        assert!(!path.exists(), "review output file should be cleaned up");
     }
 
     #[test]
@@ -2732,6 +3081,178 @@ mod tests {
         maybe_set_gemini_config_dir(&mut env, Some(tmp.path().to_string_lossy().to_string()));
 
         assert!(!env.contains_key("GEMINI_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn prune_terminal_agents_caps_completed_state() {
+        let mut manager = AgentManager::new();
+        let now = chrono::Utc::now();
+        let total = MAX_TRACKED_TERMINAL_AGENTS + 64;
+
+        for idx in 0..total {
+            let id = format!("agent-{idx}");
+            manager.agents.insert(
+                id.clone(),
+                Agent {
+                    id,
+                    batch_id: Some("batch-1".to_string()),
+                    model: "code-gpt-5.3-codex".to_string(),
+                    name: Some("Prune Test".to_string()),
+                    prompt: "prompt".repeat(256),
+                    context: Some("ctx".repeat(256)),
+                    output_goal: Some("goal".repeat(256)),
+                    files: vec!["a".repeat(256)],
+                    read_only: false,
+                    status: AgentStatus::Completed,
+                    result: Some("result".repeat(1024)),
+                    error: None,
+                    created_at: now,
+                    started_at: Some(now),
+                    completed_at: Some(now + chrono::Duration::seconds(idx as i64)),
+                    progress: vec!["progress".repeat(1024)],
+                    worktree_path: Some("/tmp/wt".to_string()),
+                    branch_name: Some("code-branch".to_string()),
+                    worktree_base: None,
+                    source_kind: None,
+                    log_tag: None,
+                    config: None,
+                    reasoning_effort: ReasoningEffort::Low,
+                    last_activity: now,
+                },
+            );
+        }
+
+        manager.prune_terminal_agents();
+
+        assert!(manager.agents.len() <= MAX_TRACKED_TERMINAL_AGENTS);
+        assert!(
+            manager
+                .agents
+                .values()
+                .all(|agent| !agent.worktree_path.as_deref().unwrap_or_default().is_empty()),
+            "worktree metadata should be retained for remaining terminal agents"
+        );
+    }
+
+    #[test]
+    fn finalize_terminal_agent_compacts_heavy_fields_and_keeps_worktree() {
+        let mut manager = AgentManager::new();
+        let now = chrono::Utc::now();
+        let agent_id = "agent-finalize".to_string();
+
+        manager.agents.insert(
+            agent_id.clone(),
+            Agent {
+                id: agent_id.clone(),
+                batch_id: Some("batch-compact".to_string()),
+                model: "code-gpt-5.3-codex".to_string(),
+                name: Some("Finalize".to_string()),
+                prompt: "prompt".repeat(1024),
+                context: Some("context".repeat(1024)),
+                output_goal: Some("goal".repeat(1024)),
+                files: vec!["file".repeat(1024)],
+                read_only: false,
+                status: AgentStatus::Completed,
+                result: Some("result".repeat(32 * 1024)),
+                error: None,
+                created_at: now,
+                started_at: Some(now),
+                completed_at: Some(now),
+                progress: (0..(MAX_AGENT_PROGRESS_ENTRIES + 20))
+                    .map(|idx| format!("progress-entry-{idx}-{}", "x".repeat(512)))
+                    .collect(),
+                worktree_path: Some("/tmp/wt-stays".to_string()),
+                branch_name: Some("branch-stays".to_string()),
+                worktree_base: None,
+                source_kind: None,
+                log_tag: None,
+                config: None,
+                reasoning_effort: ReasoningEffort::Low,
+                last_activity: now,
+            },
+        );
+
+        manager.finalize_terminal_agent(&agent_id);
+
+        let agent = manager
+            .agents
+            .get(&agent_id)
+            .expect("agent should still be tracked");
+        assert!(agent.prompt.is_empty());
+        assert!(agent.context.is_none());
+        assert!(agent.output_goal.is_none());
+        assert!(agent.files.is_empty());
+        assert_eq!(agent.worktree_path.as_deref(), Some("/tmp/wt-stays"));
+        assert_eq!(agent.branch_name.as_deref(), Some("branch-stays"));
+        assert!(agent.progress.len() <= MAX_AGENT_PROGRESS_ENTRIES);
+
+        let result_len = agent
+            .result
+            .as_ref()
+            .map(String::len)
+            .expect("result retained");
+        assert!(
+            result_len <= MAX_AGENT_RESULT_BYTES + 4,
+            "result should be compacted to bounded size"
+        );
+    }
+
+    #[test]
+    fn pruned_terminal_agent_remains_queryable_for_session() {
+        let mut manager = AgentManager::new();
+        let now = chrono::Utc::now();
+        let batch_id = "batch-session".to_string();
+        let total = MAX_TRACKED_TERMINAL_AGENTS + 8;
+
+        for idx in 0..total {
+            let id = format!("agent-{idx}");
+            manager.agents.insert(
+                id.clone(),
+                Agent {
+                    id,
+                    batch_id: Some(batch_id.clone()),
+                    model: "code-gpt-5.3-codex".to_string(),
+                    name: Some("Archive Test".to_string()),
+                    prompt: "prompt".to_string(),
+                    context: None,
+                    output_goal: None,
+                    files: Vec::new(),
+                    read_only: false,
+                    status: AgentStatus::Completed,
+                    result: Some("ok".to_string()),
+                    error: None,
+                    created_at: now,
+                    started_at: Some(now),
+                    completed_at: Some(now + chrono::Duration::seconds(idx as i64)),
+                    progress: vec!["progress".to_string()],
+                    worktree_path: Some(format!("/tmp/worktree-{idx}")),
+                    branch_name: Some(format!("code-branch-{idx}")),
+                    worktree_base: None,
+                    source_kind: None,
+                    log_tag: None,
+                    config: None,
+                    reasoning_effort: ReasoningEffort::Low,
+                    last_activity: now,
+                },
+            );
+        }
+
+        manager.prune_terminal_agents();
+
+        let archived_id = "agent-0";
+        assert!(manager.agents.get(archived_id).is_none());
+        let archived = manager
+            .get_agent(archived_id)
+            .expect("pruned agent should remain queryable");
+        assert_eq!(archived.worktree_path.as_deref(), Some("/tmp/worktree-0"));
+        assert_eq!(archived.branch_name.as_deref(), Some("code-branch-0"));
+
+        let listed = manager.list_agents(None, Some(batch_id), false);
+        assert!(listed.iter().any(|agent| {
+            agent.id == archived_id
+                && agent.worktree_path.as_deref() == Some("/tmp/worktree-0")
+                && agent.branch_name.as_deref() == Some("code-branch-0")
+        }));
     }
 }
 

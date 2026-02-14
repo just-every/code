@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context, Result};
@@ -51,11 +52,16 @@ const RATE_LIMIT_JITTER_MAX: Duration = Duration::from_secs(3);
 const MAX_RETRY_ELAPSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_DECISION_RECOVERY_ATTEMPTS: u32 = 3;
 const MESSAGE_LIMIT_FALLBACK: usize = 120;
+const HARD_MESSAGE_LIMIT: usize = 320;
+const MAX_QUEUED_CONVERSATION_UPDATES: usize = 24;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
 const AUTO_DRIVE_CLI_MODELS: &[&str] = &["gpt-5.3-codex", "gpt-5.3-codex-spark"];
 const AUTO_DRIVE_CLI_REASONING_LEVELS: &[&str] = &["medium", "high", "xhigh"];
+
+static HARD_LIMIT_TRIMMED_ITEMS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static QUEUED_UPDATE_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -579,6 +585,72 @@ mod tests {
             !prompt_schema.contains_key("maxLength"),
             "schema should omit maxLength to avoid provider truncation"
         );
+    }
+
+    #[test]
+    fn enforce_hard_message_limit_keeps_goal_and_recent_tail() {
+        let total_messages = HARD_MESSAGE_LIMIT + 48;
+        let mut items = Vec::with_capacity(total_messages + 1);
+        items.push(make_message("user", "Primary goal should survive".to_string()));
+        for idx in 0..total_messages {
+            items.push(make_message("assistant", format!("assistant-msg-{idx}")));
+        }
+
+        let trimmed = enforce_hard_message_limit(items);
+        assert_eq!(trimmed.len(), HARD_MESSAGE_LIMIT);
+
+        let first_is_goal = matches!(
+            trimmed.first(),
+            Some(ResponseItem::Message { role, content, .. })
+                if role == "user"
+                    && content
+                        .iter()
+                        .any(|item| matches!(item, ContentItem::InputText { text } if text == "Primary goal should survive"))
+        );
+        assert!(first_is_goal, "oldest user goal should be preserved");
+
+        let latest_tail = format!("assistant-msg-{}", total_messages - 1);
+        let has_latest = trimmed.iter().any(|item| {
+            matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if content
+                        .iter()
+                        .any(|entry| matches!(entry, ContentItem::OutputText { text } if text == &latest_tail))
+            )
+        });
+        assert!(has_latest, "latest assistant message should be retained");
+    }
+
+    #[test]
+    fn queue_update_capped_discards_oldest_overflow() {
+        let mut queue: VecDeque<Arc<[ResponseItem]>> = VecDeque::new();
+
+        for idx in 0..(MAX_QUEUED_CONVERSATION_UPDATES + 7) {
+            let update = Arc::<[ResponseItem]>::from(vec![make_message(
+                "assistant",
+                format!("queued-{idx}"),
+            )]);
+            queue_update_capped(&mut queue, update);
+        }
+
+        assert_eq!(queue.len(), MAX_QUEUED_CONVERSATION_UPDATES);
+
+        let first_text = queue
+            .front()
+            .and_then(|conversation| conversation.first())
+            .and_then(|item| match item {
+                ResponseItem::Message { content, .. } => content.first(),
+                _ => None,
+            })
+            .and_then(|content| match content {
+                ContentItem::OutputText { text } => Some(text.clone()),
+                ContentItem::InputText { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("queued message text");
+
+        assert_eq!(first_text, "queued-7");
     }
 
     #[test]
@@ -1453,8 +1525,9 @@ fn run_auto_loop(
         schema_features.include_goal_field = true;
     }
     let include_agents = schema_features.include_agents;
-    let mut pending_conversation =
-        Some(Arc::<[ResponseItem]>::from(filter_popular_commands(initial_conversation)));
+    let mut pending_conversation = Some(Arc::<[ResponseItem]>::from(
+        enforce_hard_message_limit(filter_popular_commands(initial_conversation)),
+    ));
     let mut decision_seq: u64 = 0;
     let mut pending_ack_seq: Option<u64> = None;
     let mut queued_updates: VecDeque<Arc<[ResponseItem]>> = VecDeque::new();
@@ -1489,7 +1562,6 @@ fn run_auto_loop(
     debug!("[Auto coordinator] starting: goal={goal_text} platform={platform}");
 
     let mut stopped = false;
-    let mut requests_completed: u64 = 0;
     let mut consecutive_decision_failures: u32 = 0;
     let mut session_metrics = SessionMetrics::default();
     let mut coordinator_turns_seen: u32 = 0;
@@ -1506,7 +1578,7 @@ fn run_auto_loop(
         if let Some(conv) = pending_conversation.take() {
             if let Some(pending_seq) = pending_ack_seq {
                 tracing::debug!(target: "auto_drive::coordinator", pending_seq, "queueing conversation until ack");
-                queued_updates.push_back(conv);
+                queue_update_capped(&mut queued_updates, conv);
             } else {
                 next_conversation = Some(conv);
             }
@@ -1534,6 +1606,7 @@ fn run_auto_loop(
                 &active_model_slug,
                 &compact_prompt_text,
             );
+            conv = enforce_hard_message_limit(conv);
             let conv = Arc::<[ResponseItem]>::from(conv);
             if matches!(compaction_result, CompactionResult::Completed { .. }) {
                 event_tx.send(AutoCoordinatorEvent::CompactedHistory {
@@ -1764,7 +1837,11 @@ fn run_auto_loop(
                             }
                             let retry_snapshot = retry_conversation
                                 .take()
-                                .map(Arc::<[ResponseItem]>::from)
+                                .map(|conversation| {
+                                    Arc::<[ResponseItem]>::from(enforce_hard_message_limit(
+                                        filter_popular_commands(conversation),
+                                    ))
+                                })
                                 .unwrap_or_else(|| Arc::clone(&conv));
                             // Keep the model and UI in sync with the full conversation, but avoid spamming a compaction notice.
                             let _ = event_tx.send(AutoCoordinatorEvent::CompactedHistory {
@@ -1845,7 +1922,10 @@ fn run_auto_loop(
                         if let Some(response_text) = user_response.clone() {
                             updated_conversation.push(make_message("assistant", response_text.clone()));
                         }
-                        pending_conversation = Some(Arc::<[ResponseItem]>::from(updated_conversation));
+                        let updated_conversation =
+                            enforce_hard_message_limit(filter_popular_commands(updated_conversation));
+                        pending_conversation =
+                            Some(Arc::<[ResponseItem]>::from(updated_conversation));
                         event_tx.send(AutoCoordinatorEvent::UserReply {
                             user_response,
                             cli_command,
@@ -1877,17 +1957,18 @@ fn run_auto_loop(
                 }
             }
             Ok(AutoCoordinatorCommand::UpdateConversation(conv)) => {
-                requests_completed = requests_completed.saturating_add(1);
                 consecutive_decision_failures = 0;
                 let conv = conv.as_ref().to_vec();
-                let filtered = Arc::<[ResponseItem]>::from(filter_popular_commands(conv));
+                let filtered = Arc::<[ResponseItem]>::from(enforce_hard_message_limit(
+                    filter_popular_commands(conv),
+                ));
                 if let Some(pending_seq) = pending_ack_seq {
                     tracing::debug!(target: "auto_drive::coordinator", pending_seq, "queueing update while awaiting ack");
                     session_metrics.record_replay();
-                    queued_updates.push_back(filtered);
+                    queue_update_capped(&mut queued_updates, filtered);
                 } else if pending_conversation.is_some() {
                     session_metrics.record_replay();
-                    queued_updates.push_back(filtered);
+                    queue_update_capped(&mut queued_updates, filtered);
                 } else {
                     pending_conversation = Some(filtered);
                 }
@@ -1909,6 +1990,65 @@ fn filter_popular_commands(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
         .into_iter()
         .filter(|item| !is_popular_commands_message(item))
         .collect()
+}
+
+fn enforce_hard_message_limit(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    if items.len() <= HARD_MESSAGE_LIMIT {
+        return items;
+    }
+
+    let original_len = items.len();
+
+    let mut trimmed: Vec<ResponseItem> = Vec::with_capacity(HARD_MESSAGE_LIMIT);
+    let goal_index = items.iter().position(
+        |item| matches!(item, ResponseItem::Message { role, .. } if role == "user"),
+    );
+
+    if let Some(idx) = goal_index {
+        trimmed.push(items[idx].clone());
+    }
+
+    let remaining = HARD_MESSAGE_LIMIT.saturating_sub(trimmed.len());
+    let tail_start = items.len().saturating_sub(remaining);
+    for (idx, item) in items.into_iter().enumerate().skip(tail_start) {
+        if goal_index == Some(idx) {
+            continue;
+        }
+        trimmed.push(item);
+    }
+
+    if trimmed.len() > HARD_MESSAGE_LIMIT {
+        let drop = trimmed.len() - HARD_MESSAGE_LIMIT;
+        trimmed.drain(0..drop);
+    }
+
+    let dropped = original_len.saturating_sub(trimmed.len());
+    if dropped > 0 {
+        let total = HARD_LIMIT_TRIMMED_ITEMS_TOTAL.fetch_add(dropped as u64, Ordering::Relaxed)
+            + dropped as u64;
+        debug!(
+            dropped,
+            original_len,
+            retained = trimmed.len(),
+            total_trimmed = total,
+            "auto coordinator trimmed conversation to hard message limit"
+        );
+    }
+
+    trimmed
+}
+
+fn queue_update_capped(queue: &mut VecDeque<Arc<[ResponseItem]>>, update: Arc<[ResponseItem]>) {
+    if queue.len() >= MAX_QUEUED_CONVERSATION_UPDATES {
+        queue.pop_front();
+        let total = QUEUED_UPDATE_DROPS_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
+        warn!(
+            cap = MAX_QUEUED_CONVERSATION_UPDATES,
+            total_dropped = total,
+            "auto coordinator dropped oldest queued conversation update"
+        );
+    }
+    queue.push_back(update);
 }
 
 fn is_popular_commands_message(item: &ResponseItem) -> bool {

@@ -15,6 +15,11 @@ use super::session::{
     is_connectivity_error,
     spawn_usage_task,
 };
+use super::session::{
+    MAX_AGENT_COMPLETION_WAKE_BATCHES,
+    MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+    MAX_WAIT_TRACKED_BATCHES,
+};
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
@@ -805,13 +810,10 @@ pub(super) async fn submission_loop(
                     let tx_event_clone = tx_event.clone();
                     tokio::spawn(async move {
                         while let Some(payload) = agent_rx.recv().await {
-                            let wake_messages = {
-                                let mut state = sess_for_agents.state.lock().unwrap();
-                                agent_completion_wake_messages(
-                                    &payload,
-                                    &mut state.agent_completion_wake_batches,
-                                )
-                            };
+                    let wake_messages = {
+                        let mut state = sess_for_agents.state.lock().unwrap();
+                        agent_completion_wake_messages(&payload, &mut state)
+                    };
                             if !wake_messages.is_empty() {
                                 enqueue_agent_completion_wake(&sess_for_agents, wake_messages)
                                     .await;
@@ -7816,19 +7818,27 @@ async fn handle_wait_for_agent(
                     } else {
                         // Sequential behavior: return the next unseen completed agent if available
                         let mut state = sess.state.lock().unwrap();
-                        let seen = state
-                            .seen_completed_agents_by_batch
-                            .entry(batch_id.clone())
-                            .or_default();
+                        ensure_wait_batch_tracking_capacity(&mut state, &batch_id);
+                        let unseen = {
+                            let seen = state
+                                .seen_completed_agents_by_batch
+                                .entry(batch_id.clone())
+                                .or_default();
+
+                            completed_agents
+                                .iter()
+                                .find(|a| !seen.contains(&a.id))
+                                .cloned()
+                        };
 
                         // Find the first completed agent that we haven't returned yet
-                        if let Some(unseen) = completed_agents
-                            .iter()
-                            .find(|a| !seen.contains(&a.id))
-                            .cloned()
-                        {
+                        if let Some(unseen) = unseen {
                             // Record as seen and return immediately
-                            seen.insert(unseen.id.clone());
+                            track_seen_completed_agent_for_batch(
+                                &mut state,
+                                &batch_id,
+                                unseen.id.as_str(),
+                            );
                             drop(state);
 
                             // Include output/error preview for the unseen completed agent
@@ -7903,7 +7913,11 @@ async fn handle_wait_for_agent(
                         if !any_in_progress && !completed_agents.is_empty() {
                             // Mark all as seen to keep state consistent
                             for a in &completed_agents {
-                                seen.insert(a.id.clone());
+                                track_seen_completed_agent_for_batch(
+                                    &mut state,
+                                    &batch_id,
+                                    a.id.as_str(),
+                                );
                             }
                             drop(state);
 
@@ -9728,9 +9742,62 @@ fn build_agent_completion_wake_message(batch_id: &str) -> ResponseInputItem {
     }
 }
 
+fn ensure_wait_batch_tracking_capacity(state: &mut State, batch_id: &str) {
+    if !state.seen_completed_agents_by_batch.contains_key(batch_id) {
+        state
+            .seen_completed_batch_order
+            .push_back(batch_id.to_string());
+    }
+
+    while state.seen_completed_agents_by_batch.len() > MAX_WAIT_TRACKED_BATCHES {
+        let Some(oldest_batch) = state.seen_completed_batch_order.pop_front() else {
+            break;
+        };
+        if state
+            .seen_completed_agents_by_batch
+            .remove(&oldest_batch)
+            .is_some()
+        {
+            warn!(
+                cap = MAX_WAIT_TRACKED_BATCHES,
+                dropped_batch = oldest_batch,
+                retained = state.seen_completed_agents_by_batch.len(),
+                "trimmed wait-for-agent seen batch tracking"
+            );
+        }
+    }
+}
+
+fn track_seen_completed_agent_for_batch(state: &mut State, batch_id: &str, agent_id: &str) {
+    ensure_wait_batch_tracking_capacity(state, batch_id);
+    {
+        let seen = state
+            .seen_completed_agents_by_batch
+            .entry(batch_id.to_string())
+            .or_default();
+        seen.insert(agent_id.to_string());
+
+        while seen.len() > MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH {
+            let Some(evicted) = seen.iter().next().cloned() else {
+                break;
+            };
+            seen.remove(&evicted);
+            warn!(
+                cap = MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+                batch_id,
+                dropped_agent_id = evicted,
+                retained = seen.len(),
+                "trimmed wait-for-agent seen-id tracking for batch"
+            );
+        }
+    }
+
+    ensure_wait_batch_tracking_capacity(state, batch_id);
+}
+
 fn agent_completion_wake_messages(
     payload: &AgentStatusUpdatePayload,
-    seen_batches: &mut HashSet<String>,
+    state: &mut State,
 ) -> Vec<ResponseInputItem> {
     let mut batches: HashMap<String, AgentBatchCompletionStatus> = HashMap::new();
 
@@ -9759,8 +9826,21 @@ fn agent_completion_wake_messages(
         if !status.has_terminal || status.has_non_terminal {
             continue;
         }
-        if !seen_batches.insert(batch_id.clone()) {
+        if !state.agent_completion_wake_batches.insert(batch_id.clone()) {
             continue;
+        }
+        state.agent_completion_wake_order.push_back(batch_id.clone());
+        while state.agent_completion_wake_batches.len() > MAX_AGENT_COMPLETION_WAKE_BATCHES {
+            let Some(oldest) = state.agent_completion_wake_order.pop_front() else {
+                break;
+            };
+            state.agent_completion_wake_batches.remove(&oldest);
+            warn!(
+                cap = MAX_AGENT_COMPLETION_WAKE_BATCHES,
+                dropped_batch = oldest,
+                retained = state.agent_completion_wake_batches.len(),
+                "trimmed agent completion wake dedupe state"
+            );
         }
         messages.push(build_agent_completion_wake_message(batch_id.as_str()));
     }
@@ -9797,10 +9877,15 @@ async fn enqueue_agent_completion_wake(
 
 #[cfg(test)]
 mod agent_completion_wake_tests {
-    use std::collections::HashSet;
-
     use super::agent_completion_wake_messages;
+    use super::track_seen_completed_agent_for_batch;
+    use super::State;
     use super::AgentSourceKind;
+    use crate::codex::session::{
+        MAX_AGENT_COMPLETION_WAKE_BATCHES,
+        MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+        MAX_WAIT_TRACKED_BATCHES,
+    };
     use crate::agent_tool::AgentStatusUpdatePayload;
     use crate::protocol::AgentInfo;
 
@@ -9829,13 +9914,13 @@ mod agent_completion_wake_tests {
 
     #[test]
     fn agent_completion_wake_messages_dedupes_and_skips_non_terminal() {
-        let mut seen = HashSet::new();
+        let mut state = State::default();
         let running = AgentStatusUpdatePayload {
             agents: vec![agent_info("agent-1", "running", Some("batch-1"), None)],
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&running, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&running, &mut state).is_empty());
 
         let mixed = AgentStatusUpdatePayload {
             agents: vec![
@@ -9845,17 +9930,17 @@ mod agent_completion_wake_tests {
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&mixed, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&mixed, &mut state).is_empty());
 
         let completed = AgentStatusUpdatePayload {
             agents: vec![agent_info("agent-1", "completed", Some("batch-1"), None)],
             context: None,
             task: None,
         };
-        let messages = agent_completion_wake_messages(&completed, &mut seen);
+        let messages = agent_completion_wake_messages(&completed, &mut state);
         assert_eq!(messages.len(), 1);
 
-        let messages_again = agent_completion_wake_messages(&completed, &mut seen);
+        let messages_again = agent_completion_wake_messages(&completed, &mut state);
         assert!(messages_again.is_empty());
 
         let auto_review = AgentStatusUpdatePayload {
@@ -9868,7 +9953,59 @@ mod agent_completion_wake_tests {
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&auto_review, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&auto_review, &mut state).is_empty());
+    }
+
+    #[test]
+    fn agent_completion_wake_messages_caps_seen_batches() {
+        let mut state = State::default();
+
+        for idx in 0..(MAX_AGENT_COMPLETION_WAKE_BATCHES + 16) {
+            let batch = format!("batch-{idx}");
+            let payload = AgentStatusUpdatePayload {
+                agents: vec![agent_info(
+                    &format!("agent-{idx}"),
+                    "completed",
+                    Some(batch.as_str()),
+                    None,
+                )],
+                context: None,
+                task: None,
+            };
+
+            let messages = agent_completion_wake_messages(&payload, &mut state);
+            assert_eq!(messages.len(), 1, "each fresh batch should emit one wake message");
+        }
+
+        assert!(state.agent_completion_wake_batches.len() <= MAX_AGENT_COMPLETION_WAKE_BATCHES);
+        assert!(state.agent_completion_wake_order.len() <= MAX_AGENT_COMPLETION_WAKE_BATCHES);
+    }
+
+    #[test]
+    fn wait_seen_tracking_caps_batches_and_agent_ids() {
+        let mut state = State::default();
+
+        for idx in 0..(MAX_WAIT_TRACKED_BATCHES + 12) {
+            let batch = format!("batch-{idx}");
+            track_seen_completed_agent_for_batch(&mut state, &batch, "agent-1");
+        }
+
+        assert!(state.seen_completed_agents_by_batch.len() <= MAX_WAIT_TRACKED_BATCHES);
+
+        let hot_batch = "batch-hot";
+        for idx in 0..(MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH + 16) {
+            track_seen_completed_agent_for_batch(
+                &mut state,
+                hot_batch,
+                &format!("agent-{idx}"),
+            );
+        }
+
+        let seen = state
+            .seen_completed_agents_by_batch
+            .get(hot_batch)
+            .expect("hot batch should be tracked");
+        assert!(seen.len() <= MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH);
     }
 }
 
@@ -9876,11 +10013,14 @@ mod agent_completion_wake_tests {
 async fn send_agent_status_update(sess: &Session) {
     let manager = AGENT_MANAGER.read().await;
 
-    // Collect all agents; include completed/failed so HUD can show final messages
+    // Collect active agents plus a bounded tail of terminal agents so the HUD
+    // stays responsive in long-running sessions.
     let now = Utc::now();
     let agents: Vec<crate::protocol::AgentInfo> = manager
-        .get_all_agents()
+        .status_visible_agents()
+        .into_iter()
         .map(|agent| {
+            let status = agent.status.clone();
             let start = agent.started_at.unwrap_or(agent.created_at);
             let end = agent.completed_at.unwrap_or(now);
             let elapsed_ms = match end.signed_duration_since(start).num_milliseconds() {
@@ -9889,26 +10029,26 @@ async fn send_agent_status_update(sess: &Session) {
             };
 
             crate::protocol::AgentInfo {
-                id: agent.id.clone(),
+                id: agent.id,
                 name: agent.model.clone(), // Use model name as the display name
-                status: match agent.status {
+                status: match &status {
                     AgentStatus::Pending => "pending".to_string(),
                     AgentStatus::Running => "running".to_string(),
                     AgentStatus::Completed => "completed".to_string(),
                     AgentStatus::Failed => "failed".to_string(),
                     AgentStatus::Cancelled => "cancelled".to_string(),
                 },
-                batch_id: agent.batch_id.clone(),
+                batch_id: agent.batch_id,
                 model: Some(agent.model.clone()),
                 last_progress: agent.progress.last().cloned(),
-                result: agent.result.clone(),
-                error: agent.error.clone(),
+                result: agent.result,
+                error: agent.error,
                 elapsed_ms,
                 token_count: None,
-                last_activity_at: matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                last_activity_at: matches!(status, AgentStatus::Pending | AgentStatus::Running)
                     .then(|| agent.last_activity.to_rfc3339()),
                 seconds_since_last_activity: matches!(
-                    agent.status,
+                    status,
                     AgentStatus::Pending | AgentStatus::Running
                 )
                 .then(|| {
@@ -9917,7 +10057,7 @@ async fn send_agent_status_update(sess: &Session) {
                         .num_seconds()
                         .max(0) as u64
                 }),
-                source_kind: agent.source_kind.clone(),
+                source_kind: agent.source_kind,
             }
         })
         .collect();

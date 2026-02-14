@@ -15,6 +15,13 @@ use super::streaming::{
     write_agent_file,
 };
 
+pub(super) const MAX_EVENT_SEQ_SUB_IDS: usize = 1024;
+pub(super) const MAX_BACKGROUND_SEQ_SUB_IDS: usize = 1024;
+pub(super) const MAX_WAIT_TRACKED_BATCHES: usize = 1024;
+pub(super) const MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH: usize = 2048;
+pub(super) const MAX_AGENT_COMPLETION_WAKE_BATCHES: usize = 2048;
+pub(super) const MAX_PENDING_MANUAL_COMPACTS: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ApprovedCommandPattern {
     argv: Vec<String>,
@@ -145,8 +152,13 @@ pub(super) struct State {
     /// `return_all=false`.
     /// This enables sequential waiting behavior across multiple calls.
     pub(super) seen_completed_agents_by_batch: HashMap<String, HashSet<String>>,
+    /// FIFO order for `seen_completed_agents_by_batch` so old batches can be
+    /// evicted under sustained long-session churn.
+    pub(super) seen_completed_batch_order: VecDeque<String>,
     /// Tracks agent batches that already triggered a wake-up after completion.
     pub(super) agent_completion_wake_batches: HashSet<String>,
+    /// FIFO order for wake-batch dedupe keys.
+    pub(super) agent_completion_wake_order: VecDeque<String>,
     /// Scratchpad that buffers streamed items/deltas for the current HTTP attempt
     /// so we can seed retries without losing progress.
     pub(super) turn_scratchpad: Option<TurnScratchpad>,
@@ -432,6 +444,13 @@ impl Session {
 
     fn next_background_sequence(&self, sub_id: &str) -> u64 {
         let mut state = self.state.lock().unwrap();
+        if state.background_seq_by_sub_id.len() > MAX_BACKGROUND_SEQ_SUB_IDS {
+            trim_sub_id_sequence_map(
+                &mut state.background_seq_by_sub_id,
+                MAX_BACKGROUND_SEQ_SUB_IDS,
+                "background_seq_by_sub_id",
+            );
+        }
         let entry = state
             .background_seq_by_sub_id
             .entry(sub_id.to_string())
@@ -840,6 +859,25 @@ impl Session {
         let mut state = self.state.lock().unwrap();
         state.turn_scratchpad = None;
     }
+}
+
+fn trim_sub_id_sequence_map(
+    map: &mut HashMap<String, u64>,
+    cap: usize,
+    label: &str,
+) {
+    while map.len() > cap {
+        let Some(key) = map.keys().next().cloned() else {
+            break;
+        };
+        map.remove(&key);
+    }
+    warn!(
+        label,
+        cap,
+        retained = map.len(),
+        "trimmed long-lived sequence map to cap memory growth"
+    );
 }
 impl Session {
     pub(super) fn set_task(&self, agent: AgentTask) {
@@ -1864,6 +1902,13 @@ impl Session {
     pub fn enqueue_manual_compact(&self, sub_id: String) -> bool {
         let mut state = self.state.lock().unwrap();
         let was_empty = state.pending_manual_compacts.is_empty();
+        while state.pending_manual_compacts.len() >= MAX_PENDING_MANUAL_COMPACTS {
+            state.pending_manual_compacts.pop_front();
+            warn!(
+                cap = MAX_PENDING_MANUAL_COMPACTS,
+                "dropped oldest pending manual compact request to cap queue growth"
+            );
+        }
         state.pending_manual_compacts.push_back(sub_id);
         was_empty
     }

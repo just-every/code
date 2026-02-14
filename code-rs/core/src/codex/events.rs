@@ -1,4 +1,5 @@
 use super::*;
+use super::session::MAX_EVENT_SEQ_SUB_IDS;
 
 impl Session {
     pub(crate) async fn send_event(&self, event: Event) {
@@ -41,6 +42,19 @@ impl Session {
     /// Create a stamped Event with a per-turn sequence number.
     fn stamp_event(&self, sub_id: &str, msg: EventMsg) -> Event {
         let mut state = self.state.lock().unwrap();
+        if state.event_seq_by_sub_id.len() > MAX_EVENT_SEQ_SUB_IDS {
+            while state.event_seq_by_sub_id.len() > MAX_EVENT_SEQ_SUB_IDS {
+                let Some(old_key) = state.event_seq_by_sub_id.keys().next().cloned() else {
+                    break;
+                };
+                state.event_seq_by_sub_id.remove(&old_key);
+            }
+            warn!(
+                cap = MAX_EVENT_SEQ_SUB_IDS,
+                retained = state.event_seq_by_sub_id.len(),
+                "trimmed event_seq_by_sub_id map to cap long-session growth"
+            );
+        }
         let seq = match msg {
             EventMsg::TaskStarted => {
                 // Reset per-sub_id sequence at the start of a turn.
