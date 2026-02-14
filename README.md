@@ -5,7 +5,7 @@
 **Every Code** (Code for short) is a fast, local coding agent for your terminal. It's a community-driven fork of `openai/codex` focused on real developer ergonomics: Browser integration, multi-agents, theming, and reasoning control — all while staying compatible with upstream.
 
 &ensp;
-## What's new in v0.6.0 (December 2025)
+## What's new
 
 - **Latest long-session stability sweep** (post-0.6): Auto Drive and Auto Review were decoupled so auto-reviews now run fully in the background and can no longer stall Esc or typing. Core long-running agent/session maps now have hard caps, terminal agents are compacted after completion, and Auto Drive conversation/update queues are bounded in coordinator and UI paths. This helps long runs stay responsive over hour+ sessions and beyond.
 
