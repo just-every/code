@@ -7,6 +7,17 @@
 &ensp;
 ## What's new in v0.6.0 (December 2025)
 
+- **Latest long-session stability sweep** (post-0.6): Auto Drive and Auto Review were decoupled so auto-reviews now run fully in the background and can no longer stall Esc or typing. Core long-running agent/session maps now have hard caps, terminal agents are compacted after completion, and Auto Drive conversation/update queues are bounded in coordinator and UI paths. This helps long runs stay responsive over hour+ sessions and beyond.
+
+- **Operational behavior changes from current sweep:**
+  - Auto Review and branch-worktree review metadata remain queryable through active Auto Drive while non-essential payloads are compacted.
+  - Conversation/wait/wake tracking is now capped at runtime with explicit drop/truncate diagnostics.
+  - Periodic housekeeping in the TUI runner has a bounded scheduler lifecycle.
+  - New stress tests cover heavy agent churn with concurrent Auto Review and Esc/typing responsiveness.
+
+  See commit `60727b068` and related Auto Drive hardening commits in git history for details.
+
+
 - **Auto Review** – background ghost-commit watcher runs reviews in a separate worktree whenever a turn changes code; uses `codex-5.1-mini-high` and reports issues plus ready-to-apply fixes without blocking the main thread.
 - **Code Bridge** – Sentry-style local bridge that streams errors, console, screenshots, and control from running apps into Code; ships an MCP server; install by asking Code to pull `https://github.com/just-every/code-bridge`.
 - **Plays well with Auto Drive** – reviews run in parallel with long Auto Drive tasks so quality checks land while the flow keeps moving.
