@@ -7,13 +7,21 @@
 &ensp;
 ## What's new
 
-- **Latest long-session stability sweep** (post-0.6): Auto Drive and Auto Review were decoupled so auto-reviews now run fully in the background and can no longer stall Esc or typing. Core long-running agent/session maps now have hard caps, terminal agents are compacted after completion, and Auto Drive conversation/update queues are bounded in coordinator and UI paths. This helps long runs stay responsive over hour+ sessions and beyond.
+- **Latest long-session stability sweep** (post-0.6): Auto Drive and Auto Review are now decoupled so background reviews no longer block the command flow. `Esc` returns control immediately and typing works while review finalization continues.
 
-- **Operational behavior changes from current sweep:**
-  - Auto Review and branch-worktree review metadata remain queryable through active Auto Drive while non-essential payloads are compacted.
-  - Conversation/wait/wake tracking is now capped at runtime with explicit drop/truncate diagnostics.
-  - Periodic housekeeping in the TUI runner has a bounded scheduler lifecycle.
-  - New stress tests cover heavy agent churn with concurrent Auto Review and Esc/typing responsiveness.
+- **Operational upgrades in this cycle**
+  - Auto Review metadata (branch/worktree context) remains queryable through the active Auto Drive session after completion.
+  - Terminal agents are compacted and archived so heavy payloads are reduced while review linkage is preserved.
+  - Core `core`, coordinator, and TUI state maps now have hard caps with bounded drop/trim behavior.
+  - Auto Drive conversation/update queues are bounded in the coordinator; TUI has bounded prompt/agent/runtime caches.
+  - Background review notes are added as non-blocking history-visible notes instead of foreground task-injection.
+  - TUI housekeeping lifecycle is bounded with deterministic stop control.
+  - Stress tests now cover heavy agent churn plus concurrent Auto Review + Esc/typing responsiveness.
+
+- **New/updated models and agents**
+  - Auto Drive CLI model support includes `gpt-5.3-codex` (planning/problem-solving) and `gpt-5.3-codex-spark` (fast coding/fix loops), with `medium | high | xhigh` reasoning controls.
+  - Frontline and alias-aware agent model handling now includes `code-gpt-5.3-codex` and `code-gpt-5.3-codex-spark`, with compatibility alias upgrades for `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.2-codex`, etc.
+  - Auto Drive decision schema and coordinator payloads now enforce bounded history while preserving goal and recent context.
 
   See commit `60727b068` and related Auto Drive hardening commits in git history for details.
 
