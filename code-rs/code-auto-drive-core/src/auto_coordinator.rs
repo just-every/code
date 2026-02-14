@@ -486,9 +486,18 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("root required");
         assert!(schema_required.contains(&json!("finish_status")));
+        assert!(schema_required.contains(&json!("phase")));
+        assert!(schema_required.contains(&json!("goal")));
         assert!(schema_required.contains(&json!("status_title")));
         assert!(schema_required.contains(&json!("status_sent_to_user")));
-        assert!(!schema_required.contains(&json!("prompt_sent_to_cli")));
+        assert!(schema_required.contains(&json!("prompt_sent_to_cli")));
+        assert!(schema_required.contains(&json!("finish_evidence")));
+        assert!(schema_required.contains(&json!("agents")));
+        assert_eq!(
+            schema_required.len(),
+            props.len(),
+            "strict schema requires every property to be listed in required"
+        );
 
         let agents_obj = props
             .get("agents")
@@ -533,6 +542,10 @@ mod tests {
 
         assert!(!props.contains_key("code_review"));
         assert!(!props.contains_key("cross_check"));
+        assert!(
+            schema.get("allOf").is_none(),
+            "schema should avoid unsupported allOf"
+        );
     }
 
     #[test]
@@ -644,7 +657,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("required array");
         assert!(!required.contains(&json!("agents")));
-        assert!(!required.contains(&json!("goal")));
+        assert!(required.contains(&json!("goal")));
     }
 
     #[test]
@@ -857,6 +870,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_decision_finish_requires_nonempty_validation_checks() {
+        let raw = r#"{
+            "finish_status": "finish_success",
+            "status_title": "Completed",
+            "status_sent_to_user": "All checks are green.",
+            "prompt_sent_to_cli": null,
+            "finish_evidence": {
+                "primary_outcome_achieved": "Resolved primary task end-to-end.",
+                "validation_checks_passed": [],
+                "edge_cases_handled": ["empty payload"]
+            }
+        }"#;
+
+        let err = parse_decision(raw).expect_err("finish decision should require validations");
+        assert!(
+            err.to_string()
+                .contains("validation_checks_passed must include at least one")
+        );
+    }
+
+    #[test]
     fn classify_missing_cli_prompt_is_recoverable() {
         let err = anyhow!("model response missing prompt_sent_to_cli for continue");
         let info = classify_recoverable_decision_error(&err).expect("recoverable error");
@@ -882,6 +916,16 @@ mod tests {
             .as_ref()
             .expect("guidance")
             .contains("agents[*].prompt"));
+    }
+
+    #[test]
+    fn classify_missing_field_is_recoverable() {
+        let err = anyhow!("finish_evidence.validation_checks_passed is missing");
+        let info = classify_recoverable_decision_error(&err).expect("recoverable error");
+        assert!(
+            info.summary
+                .contains("finish_evidence.validation_checks_passed")
+        );
     }
 
     #[test]
@@ -1950,6 +1994,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "description": "Optional: tracks mission state. Use 'explore' for recon/planning, 'implement' for coding, and 'validate/lockdown' to trigger deep validation before finishing."
         }),
     );
+    required.push(Value::String("phase".to_string()));
 
     let goal_schema = if features.include_goal_field {
         json!({
@@ -1966,9 +2011,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
         })
     };
     properties.insert("goal".to_string(), goal_schema);
-    if features.include_goal_field {
-        required.push(Value::String("goal".to_string()));
-    }
+    required.push(Value::String("goal".to_string()));
 
     properties.insert(
         "status_title".to_string(),
@@ -2000,6 +2043,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "description": "Single milestone instruction to the CLI. Outcome-focused, non-procedural. Set to null ONLY when finishing."
         }),
     );
+    required.push(Value::String("prompt_sent_to_cli".to_string()));
 
     if features.include_agents {
         properties.insert(
@@ -2044,6 +2088,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
                 "required": ["timing", "list"]
             }),
         );
+        required.push(Value::String("agents".to_string()));
     }
 
     properties.insert(
@@ -2080,6 +2125,7 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
             "required": ["primary_outcome_achieved", "validation_checks_passed", "edge_cases_handled"]
         }),
     );
+    required.push(Value::String("finish_evidence".to_string()));
 
     let mut schema = serde_json::Map::new();
     schema.insert(
@@ -2090,52 +2136,9 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     schema.insert("additionalProperties".to_string(), Value::Bool(false));
     schema.insert("properties".to_string(), Value::Object(properties));
     schema.insert("required".to_string(), Value::Array(required));
-    schema.insert(
-        "allOf".to_string(),
-        json!([
-            {
-                "if": {
-                    "properties": {
-                        "finish_status": {
-                            "const": "continue"
-                        }
-                    }
-                },
-                "then": {
-                    "required": ["prompt_sent_to_cli"],
-                    "properties": {
-                        "prompt_sent_to_cli": {
-                            "type": "string",
-                            "minLength": CLI_PROMPT_MIN_CHARS
-                        },
-                        "finish_evidence": {
-                            "type": "null"
-                        }
-                    }
-                }
-            },
-            {
-                "if": {
-                    "properties": {
-                        "finish_status": {
-                            "enum": ["finish_success", "finish_failed"]
-                        }
-                    }
-                },
-                "then": {
-                    "required": ["finish_evidence"],
-                    "properties": {
-                        "prompt_sent_to_cli": {
-                            "type": "null"
-                        },
-                        "finish_evidence": {
-                            "type": "object"
-                        }
-                    }
-                }
-            }
-        ]),
-    );
+    // Avoid JSON schema combinators like allOf/if/then here because the
+    // Responses API validator currently rejects them for text.format.schema.
+    // We enforce conditional requirements in parse-time validation instead.
 
     Value::Object(schema)
 }
@@ -2972,6 +2975,16 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         });
     }
 
+    if lower.contains("validation_checks_passed must include at least one") {
+        return Some(RecoverableDecisionError {
+            summary: "finish evidence is missing passing validation checks".to_string(),
+            guidance: Some(
+                "Provide at least one concrete passing validation check in `finish_evidence.validation_checks_passed` before finishing."
+                    .to_string(),
+            ),
+        });
+    }
+
     if lower.contains("finish_evidence must be null") {
         return Some(RecoverableDecisionError {
             summary: "`finish_evidence` must be null for continue turns".to_string(),
@@ -3022,6 +3035,22 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
                 let summary = format!("`{field_trimmed}` was empty");
                 let guidance = format!(
                     "Provide a meaningful value for `{field_trimmed}` instead of leaving it blank."
+                );
+                return Some(RecoverableDecisionError {
+                    summary,
+                    guidance: Some(guidance),
+                });
+            }
+        }
+    }
+
+    if lower.contains(" is missing") {
+        if let Some((field, _)) = text.split_once(" is missing") {
+            let field_trimmed = field.trim().trim_matches('`');
+            if !field_trimmed.is_empty() {
+                let summary = format!("`{field_trimmed}` was missing");
+                let guidance = format!(
+                    "Include `{field_trimmed}` with a meaningful value before retrying."
                 );
                 return Some(RecoverableDecisionError {
                     summary,
@@ -3408,10 +3437,15 @@ fn validate_finish_evidence_for_status(
                     .ok_or_else(|| anyhow!("finish_evidence.primary_outcome_achieved is missing"))?,
                 "finish_evidence.primary_outcome_achieved",
             )?;
-            let _validation_checks_passed = clean_required_list(
+            let validation_checks_passed = clean_required_list(
                 validation_checks_passed,
                 "finish_evidence.validation_checks_passed",
             )?;
+            if validation_checks_passed.is_empty() {
+                return Err(anyhow!(
+                    "finish_evidence.validation_checks_passed must include at least one passing validation check"
+                ));
+            }
             let _edge_cases_handled =
                 clean_required_list(edge_cases_handled, "finish_evidence.edge_cases_handled")?;
 
