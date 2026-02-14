@@ -25,6 +25,7 @@ pub(crate) struct AutoDriveSettingsView {
     cross_check_enabled: bool,
     qa_automation_enabled: bool,
     diagnostics_enabled: bool,
+    model_routing_enabled: bool,
     continue_mode: AutoContinueMode,
     closing: bool,
 }
@@ -41,6 +42,7 @@ impl AutoDriveSettingsView {
         agents_enabled: bool,
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
+        model_routing_enabled: bool,
         continue_mode: AutoContinueMode,
     ) -> Self {
         let diagnostics_enabled = qa_automation_enabled
@@ -56,13 +58,14 @@ impl AutoDriveSettingsView {
             cross_check_enabled,
             qa_automation_enabled,
             diagnostics_enabled,
+            model_routing_enabled,
             continue_mode,
             closing: false,
         }
     }
 
     fn option_count() -> usize {
-        4
+        5
     }
 
     fn send_update(&self) {
@@ -71,6 +74,7 @@ impl AutoDriveSettingsView {
             agents_enabled: self.agents_enabled,
             cross_check_enabled: self.cross_check_enabled,
             qa_automation_enabled: self.qa_automation_enabled,
+            model_routing_enabled: self.model_routing_enabled,
             continue_mode: self.continue_mode,
         });
     }
@@ -158,7 +162,11 @@ impl AutoDriveSettingsView {
                 self.set_diagnostics(next);
                 self.send_update();
             }
-            3 => self.cycle_continue_mode(true),
+            3 => {
+                self.model_routing_enabled = !self.model_routing_enabled;
+                self.send_update();
+            }
+            4 => self.cycle_continue_mode(true),
             _ => {}
         }
     }
@@ -201,6 +209,10 @@ impl AutoDriveSettingsView {
                 self.diagnostics_enabled,
             ),
             3 => (
+                "Coordinator model routing (choose model + reasoning per turn)",
+                self.model_routing_enabled,
+            ),
+            4 => (
                 "Auto-continue delay",
                 matches!(self.continue_mode, AutoContinueMode::Manual),
             ),
@@ -240,14 +252,14 @@ impl AutoDriveSettingsView {
                     }
                 }
             }
-            1 | 2 => {
+            1 | 2 | 3 => {
                 let checkbox = if enabled { "[x]" } else { "[ ]" };
                 spans.push(Span::styled(
                     format!("{checkbox} {label}"),
                     label_style,
                 ));
             }
-            3 => {
+            4 => {
                 spans.push(Span::styled(label.to_string(), label_style));
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
@@ -269,6 +281,7 @@ impl AutoDriveSettingsView {
         lines.push(self.option_label(1));
         lines.push(self.option_label(2));
         lines.push(self.option_label(3));
+        lines.push(self.option_label(4));
         lines.push(Line::default());
 
         let footer_style = Style::default().fg(colors::text_dim());
@@ -320,13 +333,13 @@ impl AutoDriveSettingsView {
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
             KeyCode::Left => {
-                if self.selected_index == 2 {
+                if self.selected_index == 4 {
                     self.cycle_continue_mode(false);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
             }
             KeyCode::Right => {
-                if self.selected_index == 2 {
+                if self.selected_index == 4 {
                     self.cycle_continue_mode(true);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
@@ -376,13 +389,13 @@ impl<'a> BottomPaneView<'a> for AutoDriveSettingsView {
                 pane.request_redraw();
             }
             KeyCode::Left => {
-                if self.selected_index == 2 {
+                if self.selected_index == 4 {
                     self.cycle_continue_mode(false);
                     pane.request_redraw();
                 }
             }
             KeyCode::Right => {
-                if self.selected_index == 2 {
+                if self.selected_index == 4 {
                     self.cycle_continue_mode(true);
                     pane.request_redraw();
                 }
@@ -396,7 +409,7 @@ impl<'a> BottomPaneView<'a> for AutoDriveSettingsView {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        9
+        10
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {

@@ -877,6 +877,8 @@ pub fn set_auto_drive_settings(
         toml_edit::value(settings.observer_enabled);
     doc["auto_drive"]["coordinator_routing"] =
         toml_edit::value(settings.coordinator_routing);
+    doc["auto_drive"]["model_routing_enabled"] =
+        toml_edit::value(settings.model_routing_enabled);
     doc["auto_drive"]["model"] = toml_edit::value(settings.model.trim());
     doc["auto_drive"]["model_reasoning_effort"] = toml_edit::value(
         settings

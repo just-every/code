@@ -54,6 +54,8 @@ const MESSAGE_LIMIT_FALLBACK: usize = 120;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
+const AUTO_DRIVE_CLI_MODELS: &[&str] = &["gpt-5.3-codex", "gpt-5.3-codex-spark"];
+const AUTO_DRIVE_CLI_REASONING_LEVELS: &[&str] = &["medium", "high", "xhigh"];
 
 #[derive(Debug, thiserror::Error)]
 #[error("auto coordinator cancelled")]
@@ -185,6 +187,8 @@ pub struct AutoTurnCliAction {
     pub prompt: String,
     pub context: Option<String>,
     pub suppress_ui_context: bool,
+    pub model_override: Option<String>,
+    pub reasoning_effort_override: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,8 +477,13 @@ mod tests {
             "status_sent_to_user property missing"
         );
         assert!(
-            props.contains_key("prompt_sent_to_cli"),
-            "prompt_sent_to_cli property missing"
+            props.contains_key("cli_milestone_instruction"),
+            "cli_milestone_instruction property missing"
+        );
+        assert!(props.contains_key("cli_model"), "cli_model property missing");
+        assert!(
+            props.contains_key("cli_reasoning_effort"),
+            "cli_reasoning_effort property missing"
         );
         assert!(props.contains_key("agents"), "agents property missing");
         assert!(!props.contains_key("code_review"));
@@ -490,7 +499,9 @@ mod tests {
         assert!(schema_required.contains(&json!("goal")));
         assert!(schema_required.contains(&json!("status_title")));
         assert!(schema_required.contains(&json!("status_sent_to_user")));
-        assert!(schema_required.contains(&json!("prompt_sent_to_cli")));
+        assert!(schema_required.contains(&json!("cli_milestone_instruction")));
+        assert!(schema_required.contains(&json!("cli_model")));
+        assert!(schema_required.contains(&json!("cli_reasoning_effort")));
         assert!(schema_required.contains(&json!("finish_evidence")));
         assert!(schema_required.contains(&json!("agents")));
         assert_eq!(
@@ -549,15 +560,15 @@ mod tests {
     }
 
     #[test]
-    fn schema_sets_prompt_sent_to_cli_min_without_max_length() {
+    fn schema_sets_cli_milestone_instruction_min_without_max_length() {
         let active_agents: Vec<String> = Vec::new();
         let schema = build_schema(&active_agents, SchemaFeatures::default());
         let prompt_schema = schema
             .get("properties")
             .and_then(|v| v.as_object())
-            .and_then(|obj| obj.get("prompt_sent_to_cli"))
+            .and_then(|obj| obj.get("cli_milestone_instruction"))
             .and_then(|v| v.as_object())
-            .expect("prompt_sent_to_cli schema");
+            .expect("cli_milestone_instruction schema");
 
         assert_eq!(
             prompt_schema.get("minLength"),
@@ -652,12 +663,39 @@ mod tests {
             .and_then(|v| v.as_object())
             .expect("schema properties");
         assert!(!props.contains_key("agents"));
+        assert!(props.contains_key("cli_model"));
+        assert!(props.contains_key("cli_reasoning_effort"));
         let required = schema
             .get("required")
             .and_then(|v| v.as_array())
             .expect("required array");
         assert!(!required.contains(&json!("agents")));
         assert!(required.contains(&json!("goal")));
+        assert!(required.contains(&json!("cli_model")));
+        assert!(required.contains(&json!("cli_reasoning_effort")));
+    }
+
+    #[test]
+    fn schema_omits_cli_model_routing_when_disabled() {
+        let schema = build_schema(
+            &Vec::new(),
+            SchemaFeatures {
+                include_cli_model_routing: false,
+                ..SchemaFeatures::default()
+            },
+        );
+        let props = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("schema properties");
+        assert!(!props.contains_key("cli_model"));
+        assert!(!props.contains_key("cli_reasoning_effort"));
+        let required = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("required array");
+        assert!(!required.contains(&json!("cli_model")));
+        assert!(!required.contains(&json!("cli_reasoning_effort")));
     }
 
     #[test]
@@ -710,7 +748,7 @@ mod tests {
             "finish_status": "continue",
             "status_title": "Dispatching fix",
             "status_sent_to_user": "Ran smoke tests while validating the fix.",
-            "prompt_sent_to_cli": "Apply the patch for the failing test",
+            "cli_milestone_instruction": "Apply the patch for the failing test",
             "agents": {
                 "timing": "blocking",
                 "list": [
@@ -719,7 +757,8 @@ mod tests {
             }
         }"#;
 
-        let (decision, _) = parse_decision(raw).expect("parse new schema decision");
+        let (decision, _) = parse_decision(raw, DecisionParseOptions::default())
+            .expect("parse new schema decision");
         assert_eq!(decision.status, AutoCoordinatorStatus::Continue);
         assert_eq!(
             decision.status_sent_to_user.as_deref(),
@@ -747,18 +786,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_decision_requires_cli_model_and_reasoning_when_enabled() {
+        let raw = r#"{
+            "finish_status": "continue",
+            "status_title": "Dispatching fix",
+            "status_sent_to_user": "Running failing test loop.",
+            "cli_milestone_instruction": "Run the failing test, apply a minimal fix, and iterate until green."
+        }"#;
+
+        let err = parse_decision(
+            raw,
+            DecisionParseOptions {
+                require_cli_model_routing: true,
+            },
+        )
+        .expect_err("routing-enabled parse should require model fields");
+
+        assert!(err.to_string().contains("missing cli_model"));
+    }
+
+    #[test]
+    fn parse_decision_accepts_cli_model_and_reasoning_when_enabled() {
+        let raw = r#"{
+            "finish_status": "continue",
+            "status_title": "Fixing tests",
+            "status_sent_to_user": "Running clear failing-test loops.",
+            "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
+            "cli_model": "gpt-5.3-codex-spark",
+            "cli_reasoning_effort": "high"
+        }"#;
+
+        let (decision, _) = parse_decision(
+            raw,
+            DecisionParseOptions {
+                require_cli_model_routing: true,
+            },
+        )
+        .expect("routing-enabled decision should parse");
+
+        let cli = decision.cli.expect("cli action expected");
+        assert_eq!(cli.model_override.as_deref(), Some("gpt-5.3-codex-spark"));
+        assert_eq!(cli.reasoning_effort_override, Some(ReasoningEffort::High));
+    }
+
+    #[test]
     fn parse_decision_new_schema_array_backcompat() {
         let raw = r#"{
             "finish_status": "continue",
             "status_title": "Running tests",
             "status_sent_to_user": "Outlined fix before execution.",
-            "prompt_sent_to_cli": "Run cargo test",
+            "cli_milestone_instruction": "Run cargo test",
             "agents": [
                 {"prompt": "Investigate benchmark", "write": false}
             ]
         }"#;
 
-        let (decision, _) = parse_decision(raw).expect("parse array-style agents");
+        let (decision, _) = parse_decision(raw, DecisionParseOptions::default())
+            .expect("parse array-style agents");
         assert_eq!(decision.status, AutoCoordinatorStatus::Continue);
         assert!(decision.cli.is_some());
         assert_eq!(decision.agents.len(), 1);
@@ -775,10 +859,11 @@ mod tests {
         let raw = r#"{
             "finish_status": "continue",
             "progress": {"past": "Drafted fix", "current": "Running unit tests"},
-            "prompt_sent_to_cli": "Run cargo test --package core"
+            "cli_milestone_instruction": "Run cargo test --package core"
         }"#;
 
-        let (decision, _) = parse_decision(raw).expect("parse legacy decision");
+        let (decision, _) = parse_decision(raw, DecisionParseOptions::default())
+            .expect("parse legacy decision");
         assert_eq!(decision.status, AutoCoordinatorStatus::Continue);
         assert_eq!(
             decision.status_sent_to_user.as_deref(),
@@ -803,7 +888,7 @@ mod tests {
             "finish_status": "continue",
             "status_title": "Implementing",
             "status_sent_to_user": "Driving the implementation milestone.",
-            "prompt_sent_to_cli": "Deliver the feature end-to-end and validate.",
+            "cli_milestone_instruction": "Deliver the feature end-to-end and validate.",
             "finish_evidence": {
                 "primary_outcome_achieved": "done",
                 "validation_checks_passed": ["cargo test"],
@@ -811,7 +896,8 @@ mod tests {
             }
         }"#;
 
-        let err = parse_decision(raw).expect_err("continue should reject finish evidence");
+        let err = parse_decision(raw, DecisionParseOptions::default())
+            .expect_err("continue should reject finish evidence");
         assert!(
             err.to_string()
                 .contains("finish_evidence must be null when finish_status is continue")
@@ -824,10 +910,11 @@ mod tests {
             "finish_status": "finish_success",
             "status_title": "Completed",
             "status_sent_to_user": "Everything is green.",
-            "prompt_sent_to_cli": null
+            "cli_milestone_instruction": null
         }"#;
 
-        let err = parse_decision(raw).expect_err("finish status should require evidence");
+        let err = parse_decision(raw, DecisionParseOptions::default())
+            .expect_err("finish status should require evidence");
         assert!(err.to_string().contains("missing finish_evidence"));
     }
 
@@ -837,7 +924,7 @@ mod tests {
             "finish_status": "finish_success",
             "status_title": "Completed",
             "status_sent_to_user": "Everything is green.",
-            "prompt_sent_to_cli": "Keep working",
+            "cli_milestone_instruction": "Keep working",
             "finish_evidence": {
                 "primary_outcome_achieved": "Resolved primary task.",
                 "validation_checks_passed": ["cargo test --workspace"],
@@ -845,8 +932,12 @@ mod tests {
             }
         }"#;
 
-        let err = parse_decision(raw).expect_err("finish statuses require null CLI prompt");
-        assert!(err.to_string().contains("must set prompt_sent_to_cli to null"));
+        let err = parse_decision(raw, DecisionParseOptions::default())
+            .expect_err("finish statuses require null CLI prompt");
+        assert!(
+            err.to_string()
+                .contains("must set cli_milestone_instruction to null")
+        );
     }
 
     #[test]
@@ -856,7 +947,7 @@ mod tests {
             "phase": "lockdown",
             "status_title": "Completed",
             "status_sent_to_user": "All checks are green.",
-            "prompt_sent_to_cli": null,
+            "cli_milestone_instruction": null,
             "finish_evidence": {
                 "primary_outcome_achieved": "Resolved primary task end-to-end.",
                 "validation_checks_passed": ["cargo test --workspace", "./build-fast.sh"],
@@ -864,7 +955,8 @@ mod tests {
             }
         }"#;
 
-        let (decision, _) = parse_decision(raw).expect("finish decision should parse");
+        let (decision, _) = parse_decision(raw, DecisionParseOptions::default())
+            .expect("finish decision should parse");
         assert_eq!(decision.status, AutoCoordinatorStatus::Success);
         assert!(decision.cli.is_none());
     }
@@ -875,7 +967,7 @@ mod tests {
             "finish_status": "finish_success",
             "status_title": "Completed",
             "status_sent_to_user": "All checks are green.",
-            "prompt_sent_to_cli": null,
+            "cli_milestone_instruction": null,
             "finish_evidence": {
                 "primary_outcome_achieved": "Resolved primary task end-to-end.",
                 "validation_checks_passed": [],
@@ -883,7 +975,8 @@ mod tests {
             }
         }"#;
 
-        let err = parse_decision(raw).expect_err("finish decision should require validations");
+        let err = parse_decision(raw, DecisionParseOptions::default())
+            .expect_err("finish decision should require validations");
         assert!(
             err.to_string()
                 .contains("validation_checks_passed must include at least one")
@@ -892,17 +985,17 @@ mod tests {
 
     #[test]
     fn classify_missing_cli_prompt_is_recoverable() {
-        let err = anyhow!("model response missing prompt_sent_to_cli for continue");
+        let err = anyhow!("model response missing cli_milestone_instruction for continue");
         let info = classify_recoverable_decision_error(&err).expect("recoverable error");
         assert!(info
             .summary
-            .contains("prompt_sent_to_cli"));
+            .contains("cli_milestone_instruction"));
         assert!(
             info
                 .guidance
                 .as_ref()
                 .expect("guidance")
-                .contains("prompt_sent_to_cli")
+                .contains("cli_milestone_instruction")
         );
     }
 
@@ -1039,7 +1132,11 @@ struct CoordinatorDecisionNew {
     #[serde(default)]
     progress: Option<ProgressPayload>,
     #[serde(default)]
-    prompt_sent_to_cli: Option<String>,
+    cli_milestone_instruction: Option<String>,
+    #[serde(default)]
+    cli_model: Option<String>,
+    #[serde(default)]
+    cli_reasoning_effort: Option<String>,
     #[serde(default)]
     agents: Option<AgentsField>,
     #[serde(default)]
@@ -1145,11 +1242,18 @@ struct ParsedCoordinatorDecision {
     model_slug: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct DecisionParseOptions {
+    require_cli_model_routing: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CliAction {
     prompt: String,
     context: Option<String>,
     suppress_ui_context: bool,
+    model_override: Option<String>,
+    reasoning_effort_override: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone)]
@@ -1361,6 +1465,8 @@ fn run_auto_loop(
                 prompt: seed.cli_prompt.clone(),
                 context: Some(seed.goal_message.clone()),
                 suppress_ui_context: true,
+                model_override: None,
+                reasoning_effort_override: None,
             };
             let event = AutoCoordinatorEvent::Decision {
                 seq: decision_seq,
@@ -1458,6 +1564,7 @@ fn run_auto_loop(
                 &event_tx,
                 &cancel_token,
                 &active_model_slug,
+                schema_features.include_cli_model_routing,
             ) {
                 Ok(ParsedCoordinatorDecision {
                     status,
@@ -1597,7 +1704,7 @@ fn run_auto_loop(
                         if consecutive_decision_failures <= MAX_DECISION_RECOVERY_ATTEMPTS {
                             let attempt = consecutive_decision_failures;
 
-                            const OVERLONG_MSG: &str = "ERROR: Your last prompt_sent_to_cli was greater than 600 characters and was not sent to the CLI. Please try again with a shorter prompt. You must keep prompts succinct (<=600 chars) to give the CLI autonomy to decide how to best execute the task.";
+                            const OVERLONG_MSG: &str = "ERROR: Your last cli_milestone_instruction was greater than 600 characters and was not sent to the CLI. Please try again with a shorter prompt. You must keep prompts succinct (<=600 chars) to give the CLI autonomy to decide how to best execute the task.";
 
                             let mut already_shared_raw = false;
                             if let Some(raw) = raw_output.as_ref() {
@@ -1874,7 +1981,7 @@ fn build_initial_planning_seed(goal_text: &str, include_agents: bool) -> Option<
     };
 
     let response_json = format!(
-        "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"prompt_sent_to_cli\":\"{cli_prompt}\"}}"
+        "{{\"finish_status\":\"continue\",\"status_title\":\"Planning\",\"status_sent_to_user\":\"Started initial planning phase\",\"cli_milestone_instruction\":\"{cli_prompt}\"}}"
     );
 
     Some(InitialPlanningSeed {
@@ -1928,6 +2035,7 @@ fn run_git_command<const N: usize>(args: [&str; N]) -> Option<String> {
 struct SchemaFeatures {
     include_agents: bool,
     include_goal_field: bool,
+    include_cli_model_routing: bool,
 }
 
 impl SchemaFeatures {
@@ -1935,6 +2043,7 @@ impl SchemaFeatures {
         Self {
             include_agents: settings.agents_enabled,
             include_goal_field: false,
+            include_cli_model_routing: settings.model_routing_enabled,
         }
     }
 }
@@ -1944,6 +2053,7 @@ impl Default for SchemaFeatures {
         Self {
             include_agents: true,
             include_goal_field: false,
+            include_cli_model_routing: true,
         }
     }
 }
@@ -2036,14 +2146,36 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures) -> Value {
     required.push(Value::String("status_sent_to_user".to_string()));
 
     properties.insert(
-        "prompt_sent_to_cli".to_string(),
+        "cli_milestone_instruction".to_string(),
         json!({
             "type": ["string", "null"],
             "minLength": CLI_PROMPT_MIN_CHARS,
-            "description": "Single milestone instruction to the CLI. Outcome-focused, non-procedural. Set to null ONLY when finishing."
+            "description": "Single milestone instruction to the CLI. Outcome-focused, non-procedural. Keep this between 4 and 600 characters; set to null ONLY when finishing."
         }),
     );
-    required.push(Value::String("prompt_sent_to_cli".to_string()));
+    required.push(Value::String("cli_milestone_instruction".to_string()));
+
+    if features.include_cli_model_routing {
+        properties.insert(
+            "cli_model".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "enum": ["gpt-5.3-codex", "gpt-5.3-codex-spark", null],
+                "description": "CLI model for this turn. Use gpt-5.3-codex for planning/problem-solving (xhigh/high/medium) and gpt-5.3-codex-spark for clear coding loops or failing-test iteration (high). Set to null only when finishing."
+            }),
+        );
+        required.push(Value::String("cli_model".to_string()));
+
+        properties.insert(
+            "cli_reasoning_effort".to_string(),
+            json!({
+                "type": ["string", "null"],
+                "enum": ["medium", "high", "xhigh", null],
+                "description": "Reasoning effort for the selected CLI model this turn. Prefer xhigh for hard planning, high for main coding loops, and medium for straightforward execution. Set to null only when finishing."
+            }),
+        );
+        required.push(Value::String("cli_reasoning_effort".to_string()));
+    }
 
     if features.include_agents {
         properties.insert(
@@ -2167,6 +2299,7 @@ fn request_coordinator_decision(
     event_tx: &AutoCoordinatorEventSender,
     cancel_token: &CancellationToken,
     preferred_model_slug: &str,
+    require_cli_model_routing: bool,
 ) -> Result<ParsedCoordinatorDecision, DecisionFailure> {
     let RequestStreamResult {
         output_text,
@@ -2197,7 +2330,12 @@ fn request_coordinator_decision(
             Some(output_text),
         ));
     }
-    let (mut decision, value) = parse_decision(&output_text)
+    let (mut decision, value) = parse_decision(
+        &output_text,
+        DecisionParseOptions {
+            require_cli_model_routing,
+        },
+    )
         .map_err(|err| DecisionFailure::new(err, "coordinator_decision", Some(output_text.clone())))?;
     debug!("[Auto coordinator] model decision: {:?}", value);
     decision.response_items = response_items;
@@ -2951,15 +3089,16 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
     let text = err.to_string();
     let lower = text.to_ascii_lowercase();
 
-    if lower.contains("missing prompt_sent_to_cli")
+    if lower.contains("missing cli_milestone_instruction")
         || lower.contains("missing cli prompt for continue")
         || lower.contains("missing cli prompt for `finish_status")
         || lower.contains("missing cli prompt")
     {
         return Some(RecoverableDecisionError {
-            summary: "missing `prompt_sent_to_cli` for `finish_status: \"continue\"`".to_string(),
+            summary: "missing `cli_milestone_instruction` for `finish_status: \"continue\"`"
+                .to_string(),
             guidance: Some(
-                "Include a non-empty `prompt_sent_to_cli` string whenever `finish_status` is `\"continue\"`."
+                "Include a non-empty `cli_milestone_instruction` string whenever `finish_status` is `\"continue\"`."
                     .to_string(),
             ),
         });
@@ -2970,6 +3109,26 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
             summary: "missing `finish_evidence` for finish status".to_string(),
             guidance: Some(
                 "Include a `finish_evidence` object whenever `finish_status` is `finish_success` or `finish_failed`."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("missing cli_model") {
+        return Some(RecoverableDecisionError {
+            summary: "missing `cli_model` for continue turn".to_string(),
+            guidance: Some(
+                "When Auto Drive model routing is enabled, include `cli_model` on every continue turn."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("missing cli_reasoning_effort") {
+        return Some(RecoverableDecisionError {
+            summary: "missing `cli_reasoning_effort` for continue turn".to_string(),
+            guidance: Some(
+                "When Auto Drive model routing is enabled, include `cli_reasoning_effort` on every continue turn."
                     .to_string(),
             ),
         });
@@ -2995,11 +3154,33 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         });
     }
 
-    if lower.contains("must set prompt_sent_to_cli to null") {
+    if lower.contains("must set cli_milestone_instruction to null") {
         return Some(RecoverableDecisionError {
-            summary: "`prompt_sent_to_cli` must be null for finish statuses".to_string(),
+            summary: "`cli_milestone_instruction` must be null for finish statuses".to_string(),
             guidance: Some(
-                "When finishing (`finish_success`/`finish_failed`), set `prompt_sent_to_cli` to null and include `finish_evidence`."
+                "When finishing (`finish_success`/`finish_failed`), set `cli_milestone_instruction` to null and include `finish_evidence`."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("must set cli_model to null")
+        || lower.contains("must set cli_reasoning_effort to null")
+    {
+        return Some(RecoverableDecisionError {
+            summary: "CLI model routing fields must be null for finish statuses".to_string(),
+            guidance: Some(
+                "When finishing (`finish_success`/`finish_failed`), set `cli_model` and `cli_reasoning_effort` to null."
+                    .to_string(),
+            ),
+        });
+    }
+
+    if lower.contains("unsupported cli_model") || lower.contains("unsupported cli_reasoning_effort") {
+        return Some(RecoverableDecisionError {
+            summary: "unsupported CLI model routing selection".to_string(),
+            guidance: Some(
+                "Use `cli_model` in {gpt-5.3-codex, gpt-5.3-codex-spark} and `cli_reasoning_effort` in {medium, high, xhigh}."
                     .to_string(),
             ),
         });
@@ -3007,12 +3188,12 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
 
     if lower.contains("length limit")
         || lower.contains("cut off")
-        || lower.contains("exceeds") && lower.contains("prompt_sent_to_cli")
+        || lower.contains("exceeds") && lower.contains("cli_milestone_instruction")
     {
         return Some(RecoverableDecisionError {
             summary: "model output was cut off by a length cap".to_string(),
             guidance: Some(
-                "Regenerate with a shorter `prompt_sent_to_cli` (<=600 chars) and more concise status text so the response fits within provider limits."
+                "Regenerate with a shorter `cli_milestone_instruction` (<=600 chars) and more concise status text so the response fits within provider limits."
                     .to_string(),
             ),
         });
@@ -3115,7 +3296,7 @@ fn push_unique_guidance(guidance: &mut Vec<String>, message: &str) {
 }
 
 
-fn parse_decision(raw: &str) -> Result<(ParsedCoordinatorDecision, Value)> {
+fn parse_decision(raw: &str, options: DecisionParseOptions) -> Result<(ParsedCoordinatorDecision, Value)> {
     let value: Value = match serde_json::from_str(raw) {
         Ok(v) => v,
         Err(_) => {
@@ -3128,7 +3309,7 @@ fn parse_decision(raw: &str) -> Result<(ParsedCoordinatorDecision, Value)> {
     match serde_json::from_value::<CoordinatorDecisionNew>(value.clone()) {
         Ok(decision) => {
             let status = parse_finish_status(&decision.finish_status)?;
-            let parsed = convert_decision_new(decision, status)?;
+            let parsed = convert_decision_new(decision, status, options)?;
             Ok((parsed, value))
         }
         Err(new_err) => {
@@ -3142,7 +3323,7 @@ fn parse_decision(raw: &str) -> Result<(ParsedCoordinatorDecision, Value)> {
                 anyhow!("decoding coordinator decision failed: new_schema_err={new_err}; legacy_err={legacy_err}; payload_snippet={snippet}")
             })?;
             let status = parse_finish_status(&decision.finish_status)?;
-            let parsed = convert_decision_legacy(decision, status)?;
+            let parsed = convert_decision_legacy(decision, status, options)?;
             Ok((parsed, value))
         }
     }
@@ -3161,6 +3342,7 @@ fn parse_finish_status(finish_status: &str) -> Result<AutoCoordinatorStatus> {
 fn convert_decision_new(
     decision: CoordinatorDecisionNew,
     status: AutoCoordinatorStatus,
+    options: DecisionParseOptions,
 ) -> Result<ParsedCoordinatorDecision> {
     let CoordinatorDecisionNew {
         finish_status: _,
@@ -3168,7 +3350,9 @@ fn convert_decision_new(
         status_title,
         status_sent_to_user,
         progress,
-        prompt_sent_to_cli,
+        cli_milestone_instruction,
+        cli_model,
+        cli_reasoning_effort,
         agents: agent_payloads,
         finish_evidence,
         goal,
@@ -3192,29 +3376,35 @@ fn convert_decision_new(
 
     let goal = clean_optional(goal);
 
-    let cli_prompt = clean_optional(prompt_sent_to_cli);
+    let cli_prompt = clean_optional(cli_milestone_instruction);
+    let cli_model = clean_optional(cli_model);
+    let cli_reasoning_effort = clean_optional(cli_reasoning_effort);
 
     validate_finish_evidence_for_status(status, finish_evidence)?;
+    let (cli_model, cli_reasoning_effort) =
+        validate_cli_model_selection(status, cli_model, cli_reasoning_effort, options)?;
 
     let cli = match (status, cli_prompt) {
         (AutoCoordinatorStatus::Continue, Some(prompt)) => {
-            let prompt = clean_required(&prompt, "prompt_sent_to_cli")?;
+            let prompt = clean_required(&prompt, "cli_milestone_instruction")?;
             ensure_cli_prompt_length(&prompt)?;
 
             Some(CliAction {
                 prompt,
                 context: None,
                 suppress_ui_context: false,
+                model_override: cli_model,
+                reasoning_effort_override: cli_reasoning_effort,
             })
         }
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!(
-                "model response missing prompt_sent_to_cli for continue"
+                "model response missing cli_milestone_instruction for continue"
             ));
         }
         (_, Some(_prompt)) => {
             return Err(anyhow!(
-                "model response must set prompt_sent_to_cli to null when finish_status is finish_success or finish_failed"
+                "model response must set cli_milestone_instruction to null when finish_status is finish_success or finish_failed"
             ));
         }
         (_, None) => None,
@@ -3278,6 +3468,7 @@ fn convert_decision_new(
 fn convert_decision_legacy(
     decision: CoordinatorDecisionLegacy,
     status: AutoCoordinatorStatus,
+    options: DecisionParseOptions,
 ) -> Result<ParsedCoordinatorDecision> {
     let CoordinatorDecisionLegacy {
         finish_status: _,
@@ -3299,18 +3490,26 @@ fn convert_decision_legacy(
         ));
     }
 
+    if options.require_cli_model_routing {
+        return Err(anyhow!(
+            "legacy model response missing cli_model and cli_reasoning_effort for continue"
+        ));
+    }
+
     let cli = match (status, cli_prompt) {
         (AutoCoordinatorStatus::Continue, Some(prompt)) => Some(CliAction {
             prompt: clean_required(&prompt, "cli_prompt")?,
             context: context.clone(),
             suppress_ui_context: false,
+            model_override: None,
+            reasoning_effort_override: None,
         }),
         (AutoCoordinatorStatus::Continue, None) => {
             return Err(anyhow!("legacy model response missing cli_prompt for continue"));
         }
         (_, Some(_prompt)) => {
             return Err(anyhow!(
-                "model response must set prompt_sent_to_cli to null when finish_status is finish_success or finish_failed"
+                "model response must set cli_milestone_instruction to null when finish_status is finish_success or finish_failed"
             ));
         }
         (_, None) => None,
@@ -3406,6 +3605,77 @@ fn validate_phase(phase: Option<String>) -> Result<()> {
     }
 }
 
+fn parse_cli_reasoning_effort(value: &str) -> Result<ReasoningEffort> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !AUTO_DRIVE_CLI_REASONING_LEVELS
+        .iter()
+        .any(|level| normalized == *level)
+    {
+        return Err(anyhow!(
+            "unsupported cli_reasoning_effort '{normalized}'; expected one of: {}",
+            AUTO_DRIVE_CLI_REASONING_LEVELS.join(", ")
+        ));
+    }
+
+    match normalized.as_str() {
+        "medium" => Ok(ReasoningEffort::Medium),
+        "high" => Ok(ReasoningEffort::High),
+        "xhigh" => Ok(ReasoningEffort::XHigh),
+        _ => Err(anyhow!("unsupported cli_reasoning_effort '{normalized}'")),
+    }
+}
+
+fn normalize_cli_model(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    for model in AUTO_DRIVE_CLI_MODELS {
+        if trimmed.eq_ignore_ascii_case(model) {
+            return Ok((*model).to_string());
+        }
+    }
+    Err(anyhow!(
+        "unsupported cli_model '{trimmed}'; expected one of: {}",
+        AUTO_DRIVE_CLI_MODELS.join(", ")
+    ))
+}
+
+fn validate_cli_model_selection(
+    status: AutoCoordinatorStatus,
+    cli_model: Option<String>,
+    cli_reasoning_effort: Option<String>,
+    options: DecisionParseOptions,
+) -> Result<(Option<String>, Option<ReasoningEffort>)> {
+    if !options.require_cli_model_routing {
+        return Ok((None, None));
+    }
+
+    match status {
+        AutoCoordinatorStatus::Continue => {
+            let model = cli_model
+                .ok_or_else(|| anyhow!("model response missing cli_model for continue"))?;
+            let reasoning = cli_reasoning_effort.ok_or_else(|| {
+                anyhow!("model response missing cli_reasoning_effort for continue")
+            })?;
+
+            let model = normalize_cli_model(&model)?;
+            let reasoning = parse_cli_reasoning_effort(&reasoning)?;
+            Ok((Some(model), Some(reasoning)))
+        }
+        AutoCoordinatorStatus::Success | AutoCoordinatorStatus::Failed => {
+            if cli_model.is_some() {
+                return Err(anyhow!(
+                    "model response must set cli_model to null when finish_status is finish_success or finish_failed"
+                ));
+            }
+            if cli_reasoning_effort.is_some() {
+                return Err(anyhow!(
+                    "model response must set cli_reasoning_effort to null when finish_status is finish_success or finish_failed"
+                ));
+            }
+            Ok((None, None))
+        }
+    }
+}
+
 fn validate_finish_evidence_for_status(
     status: AutoCoordinatorStatus,
     finish_evidence: Option<FinishEvidencePayload>,
@@ -3458,12 +3728,12 @@ fn ensure_cli_prompt_length(prompt: &str) -> Result<()> {
     let len = prompt.chars().count();
     if len < CLI_PROMPT_MIN_CHARS {
         return Err(anyhow!(
-            "prompt_sent_to_cli must be at least {CLI_PROMPT_MIN_CHARS} characters; keep it concise but not empty"
+            "cli_milestone_instruction must be at least {CLI_PROMPT_MIN_CHARS} characters; keep it concise but not empty"
         ));
     }
     if len > CLI_PROMPT_MAX_CHARS {
         return Err(anyhow!(
-            "prompt_sent_to_cli exceeds {CLI_PROMPT_MAX_CHARS} characters; keep prompts succinct (<=600 chars) and let the CLI decide how to execute the task"
+            "cli_milestone_instruction exceeds {CLI_PROMPT_MAX_CHARS} characters; keep prompts succinct (<=600 chars) and let the CLI decide how to execute the task"
         ));
     }
 
@@ -3475,6 +3745,8 @@ fn cli_action_to_event(action: &CliAction) -> AutoTurnCliAction {
         prompt: action.prompt.clone(),
         context: action.context.clone(),
         suppress_ui_context: action.suppress_ui_context,
+        model_override: action.model_override.clone(),
+        reasoning_effort_override: action.reasoning_effort_override,
     }
 }
 

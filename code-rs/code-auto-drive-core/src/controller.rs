@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use code_common::elapsed::format_duration;
+use code_core::config_types::ReasoningEffort;
 use code_core::protocol::ReviewContextMetadata;
 use code_core::protocol::ReviewOutputEvent;
 use code_core::review_coord::{bump_snapshot_epoch, try_acquire_lock};
@@ -289,6 +290,8 @@ pub struct AutoDriveController {
     pub current_status_title: Option<String>,
     pub current_cli_prompt: Option<String>,
     pub current_cli_context: Option<String>,
+    pub current_cli_model_override: Option<String>,
+    pub current_cli_reasoning_effort_override: Option<ReasoningEffort>,
     pub hide_cli_context_in_ui: bool,
     pub suppress_next_cli_display: bool,
     pub current_display_line: Option<String>,
@@ -528,6 +531,8 @@ impl AutoDriveController {
         self.current_status_title = None;
         self.current_cli_prompt = None;
         self.current_cli_context = None;
+        self.current_cli_model_override = None;
+        self.current_cli_reasoning_effort_override = None;
         self.hide_cli_context_in_ui = false;
         self.suppress_next_cli_display = false;
         self.current_display_line = None;
@@ -606,6 +611,8 @@ impl AutoDriveController {
         let truncated_reason = Self::truncate_error(&reason);
         self.current_cli_prompt = None;
         self.current_cli_context = None;
+        self.current_cli_model_override = None;
+        self.current_cli_reasoning_effort_override = None;
         self.hide_cli_context_in_ui = false;
         self.suppress_next_cli_display = false;
         self.pending_agent_actions.clear();
@@ -659,9 +666,13 @@ impl AutoDriveController {
         &mut self,
         decision_seq: u64,
         prompt_text: String,
+        cli_model_override: Option<String>,
+        cli_reasoning_effort_override: Option<ReasoningEffort>,
         countdown_override: Option<u8>,
     ) -> Vec<AutoControllerEffect> {
         self.current_cli_prompt = Some(prompt_text);
+        self.current_cli_model_override = cli_model_override;
+        self.current_cli_reasoning_effort_override = cli_reasoning_effort_override;
         self.apply_phase(AutoRunPhase::AwaitingCoordinator { prompt_ready: true });
         self.countdown_override = countdown_override;
         self.reset_countdown();
@@ -988,7 +999,7 @@ mod tests {
     fn countdown_tick_respects_decision_seq() {
         let mut controller = AutoDriveController::default();
 
-        let _effects = controller.schedule_cli_prompt(1, "Test prompt".to_string(), None);
+        let _effects = controller.schedule_cli_prompt(1, "Test prompt".to_string(), None, None, None);
         let countdown_id = controller.countdown_id;
 
         let effects = controller.handle_countdown_tick(countdown_id, 1, 5);
@@ -1002,7 +1013,7 @@ mod tests {
     fn countdown_tick_final_emits_submit() {
         let mut controller = AutoDriveController::default();
 
-        let _effects = controller.schedule_cli_prompt(7, "Prompt".to_string(), None);
+        let _effects = controller.schedule_cli_prompt(7, "Prompt".to_string(), None, None, None);
         let countdown_id = controller.countdown_id;
 
         let effects = controller.handle_countdown_tick(countdown_id, 7, 0);
@@ -1013,7 +1024,7 @@ mod tests {
     #[test]
     fn countdown_tick_ignores_stopped_phase() {
         let mut controller = AutoDriveController::default();
-        let _effects = controller.schedule_cli_prompt(3, "Prompt".to_string(), None);
+        let _effects = controller.schedule_cli_prompt(3, "Prompt".to_string(), None, None, None);
         let countdown_id = controller.countdown_id;
         controller.set_phase(AutoRunPhase::Idle);
 

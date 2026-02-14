@@ -804,6 +804,10 @@ pub struct AutoDriveSettings {
     #[serde(default = "default_true")]
     pub coordinator_routing: bool,
 
+    /// Allow the coordinator to select the CLI model and reasoning effort per turn.
+    #[serde(default = "default_true")]
+    pub model_routing_enabled: bool,
+
     #[serde(default)]
     pub continue_mode: AutoDriveContinueMode,
 
@@ -835,6 +839,7 @@ impl Default for AutoDriveSettings {
             cross_check_enabled: true,
             observer_enabled: true,
             coordinator_routing: true,
+            model_routing_enabled: true,
             continue_mode: AutoDriveContinueMode::TenSeconds,
             model: default_auto_drive_model(),
             model_reasoning_effort: default_auto_drive_reasoning_effort(),

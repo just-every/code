@@ -235,6 +235,7 @@ pub(crate) enum AppEvent {
         agents_enabled: bool,
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
+        model_routing_enabled: bool,
         continue_mode: AutoContinueMode,
     },
 
