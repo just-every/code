@@ -1514,6 +1514,86 @@ async fn capture_review_snapshot(session: &Session) -> Option<ReviewSnapshotInfo
     })
 }
 
+fn is_context_overflow_stream_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("exceeds the context window")
+        || lower.contains("exceed the context window")
+        || lower.contains("context length exceeded")
+        || lower.contains("maximum context length")
+        || (lower.contains("context window")
+            && (lower.contains("exceed")
+                || lower.contains("exceeded")
+                || lower.contains("full")
+                || lower.contains("too long")))
+}
+
+fn spark_fallback_model(model: &str) -> Option<String> {
+    if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
+        Some("gpt-5.3-codex".to_string())
+    } else if model.eq_ignore_ascii_case("code-gpt-5.3-codex-spark") {
+        Some("code-gpt-5.3-codex".to_string())
+    } else {
+        None
+    }
+}
+
+fn context_window_for_model(model: &str) -> Option<u64> {
+    find_family_for_model(model)
+        .or_else(|| Some(derive_default_model_family(model)))
+        .and_then(|family| family.context_window)
+}
+
+fn choose_larger_context_model_from_candidates(
+    current_model: &str,
+    candidates: Vec<(String, Option<u64>)>,
+) -> Option<String> {
+    let current_window = context_window_for_model(current_model).unwrap_or(0);
+    let mut best: Option<(u64, String)> = None;
+
+    for (model, candidate_window) in candidates {
+        if model.eq_ignore_ascii_case(current_model) {
+            continue;
+        }
+        let Some(window) = candidate_window.or_else(|| context_window_for_model(&model)) else {
+            continue;
+        };
+        if window <= current_window {
+            continue;
+        }
+
+        match best {
+            Some((best_window, _)) if window <= best_window => {}
+            _ => {
+                best = Some((window, model));
+            }
+        }
+    }
+
+    best.map(|(_, model)| model)
+}
+
+async fn choose_larger_context_model(sess: &Arc<Session>, current_model: &str) -> Option<String> {
+    let mut candidates: Vec<(String, Option<u64>)> = Vec::new();
+
+    if let Some(remote) = sess.remote_models_manager.as_ref() {
+        for model in remote.remote_models_snapshot().await {
+            let context_window = model.context_window.and_then(|window| {
+                if window <= 0 {
+                    None
+                } else {
+                    u64::try_from(window).ok()
+                }
+            });
+            candidates.push((model.slug, context_window));
+        }
+    }
+
+    // Best-effort fallback when remote metadata is unavailable.
+    candidates.push(("gpt-4.1".to_string(), context_window_for_model("gpt-4.1")));
+
+    choose_larger_context_model_from_candidates(current_model, candidates)
+}
+
 fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
     if let Ok(parsed) = serde_json::from_str::<ReviewOutputEvent>(text) {
         return parsed;
@@ -2047,6 +2127,9 @@ async fn run_turn(
     let mut rate_limit_switch_state = RateLimitSwitchState::default();
     // Ensure we only auto-compact once per turn to avoid loops
     let mut did_auto_compact = false;
+    let mut did_context_model_fallback = false;
+    let mut did_usage_limit_model_fallback = false;
+    let mut forced_model_override: Option<String> = None;
     // Attempt input starts as the provided input, and may be augmented with
     // items from a previous dropped stream attempt so we don't lose progress.
     let mut attempt_input: Vec<ResponseItem> = input.clone();
@@ -2094,6 +2177,25 @@ async fn run_turn(
         };
 
         sess.apply_remote_model_overrides(&mut prompt).await;
+
+        if let Some(override_model) = forced_model_override.clone() {
+            let override_family = if let Some(remote) = sess.remote_models_manager.as_ref() {
+                let base_family = find_family_for_model(&override_model)
+                    .unwrap_or_else(|| derive_default_model_family(&override_model));
+                remote
+                    .apply_remote_overrides_with_personality(
+                        &override_model,
+                        base_family,
+                        tc.client.model_personality(),
+                    )
+                    .await
+            } else {
+                find_family_for_model(&override_model)
+                    .unwrap_or_else(|| derive_default_model_family(&override_model))
+            };
+            prompt.model_override = Some(override_model);
+            prompt.model_family_override = Some(override_family);
+        }
 
         let effective_family = prompt
             .model_family_override
@@ -2241,6 +2343,29 @@ async fn run_turn(
                     continue;
                 }
 
+                if !did_usage_limit_model_fallback {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
+
                 let now = Utc::now();
                 let retry_after = limit_err
                     .retry_after(now)
@@ -2259,71 +2384,84 @@ async fn run_turn(
             Err(CodexErr::UsageNotIncluded) => return Err(CodexErr::UsageNotIncluded),
             Err(CodexErr::QuotaExceeded) => return Err(CodexErr::QuotaExceeded),
             Err(e) => {
-                // Detect context-window overflow and auto-run a compact summarization once
-                if !did_auto_compact {
-                    if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e {
-                        let lower = msg.to_ascii_lowercase();
-                        let looks_like_context_overflow =
-                            lower.contains("exceeds the context window")
-                                || lower.contains("exceed the context window")
-                                || lower.contains("context length exceeded")
-                                || lower.contains("maximum context length")
-                                || (lower.contains("context window")
-                                    && (lower.contains("exceed")
-                                        || lower.contains("exceeded")
-                                        || lower.contains("full")
-                                        || lower.contains("too long")));
+                if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e
+                    && is_context_overflow_stream_error(msg)
+                {
+                    if !did_auto_compact {
+                        did_auto_compact = true;
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                "Model hit context-window limit; running /compact and retrying…"
+                                    .to_string(),
+                            )
+                            .await;
 
-                        if looks_like_context_overflow {
-                            did_auto_compact = true;
+                        let previous_input_snapshot = input.clone();
+                        let compacted_history = if compact::should_use_remote_compact_task(sess).await {
+                            run_inline_remote_auto_compact_task(
+                                Arc::clone(&sess),
+                                Arc::clone(&turn_context),
+                                Vec::new(),
+                            )
+                            .await
+                        } else {
+                            compact::run_inline_auto_compact_task(
+                                Arc::clone(&sess),
+                                Arc::clone(&turn_context),
+                            )
+                            .await
+                        };
+
+                        // Reset any partial attempt state and rebuild the request payload using the
+                        // newly compacted history plus the current user turn items.
+                        sess.clear_scratchpad();
+
+                        if compacted_history.is_empty() {
+                            attempt_input = input.clone();
+                        } else {
+                            let mut rebuilt = compacted_history;
+                            if let Some(initial_item) = initial_user_item.clone() {
+                                rebuilt.push(initial_item);
+                            }
+                            if !pending_input_tail.is_empty() {
+                                let (missing_calls, filtered_outputs) =
+                                    reconcile_pending_tool_outputs(&pending_input_tail, &rebuilt, &previous_input_snapshot);
+                                if !missing_calls.is_empty() {
+                                    rebuilt.extend(missing_calls);
+                                }
+                                if !filtered_outputs.is_empty() {
+                                    rebuilt.extend(filtered_outputs);
+                                }
+                            }
+                            input = rebuilt.clone();
+                            attempt_input = rebuilt;
+                        }
+                        continue;
+                    }
+
+                    if !did_context_model_fallback {
+                        let active_model = prompt
+                            .model_override
+                            .clone()
+                            .unwrap_or_else(|| tc.client.get_model());
+                        if let Some(fallback_model) =
+                            choose_larger_context_model(sess, &active_model).await
+                        {
+                            did_context_model_fallback = true;
+                            did_auto_compact = false;
+                            forced_model_override = Some(fallback_model.clone());
+                            retries = 0;
+                            sess.clear_scratchpad();
+                            attempt_input = input.clone();
                             sess
                                 .notify_stream_error(
                                     &sub_id,
-                                    "Model hit context-window limit; running /compact and retrying…"
-                                        .to_string(),
+                                    format!(
+                                        "History still exceeds {active_model}; retrying with larger-context model {fallback_model}…"
+                                    ),
                                 )
                                 .await;
-
-                            let previous_input_snapshot = input.clone();
-                            let compacted_history = if compact::should_use_remote_compact_task(sess).await {
-                                run_inline_remote_auto_compact_task(
-                                    Arc::clone(&sess),
-                                    Arc::clone(&turn_context),
-                                    Vec::new(),
-                                )
-                                .await
-                            } else {
-                                compact::run_inline_auto_compact_task(
-                                    Arc::clone(&sess),
-                                    Arc::clone(&turn_context),
-                                )
-                                .await
-                            };
-
-                            // Reset any partial attempt state and rebuild the request payload using the
-                            // newly compacted history plus the current user turn items.
-                            sess.clear_scratchpad();
-
-                            if compacted_history.is_empty() {
-                                attempt_input = input.clone();
-                            } else {
-                                let mut rebuilt = compacted_history;
-                                if let Some(initial_item) = initial_user_item.clone() {
-                                    rebuilt.push(initial_item);
-                                }
-                                if !pending_input_tail.is_empty() {
-                                    let (missing_calls, filtered_outputs) =
-                                        reconcile_pending_tool_outputs(&pending_input_tail, &rebuilt, &previous_input_snapshot);
-                                    if !missing_calls.is_empty() {
-                                        rebuilt.extend(missing_calls);
-                                    }
-                                    if !filtered_outputs.is_empty() {
-                                        rebuilt.extend(filtered_outputs);
-                                    }
-                                }
-                                input = rebuilt.clone();
-                                attempt_input = rebuilt;
-                            }
                             continue;
                         }
                     }
@@ -12421,7 +12559,13 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 
 #[cfg(test)]
 mod tests {
-    use super::{format_exec_output_with_limit, TRUNCATION_MARKER};
+    use super::{
+        choose_larger_context_model_from_candidates,
+        format_exec_output_with_limit,
+        is_context_overflow_stream_error,
+        spark_fallback_model,
+        TRUNCATION_MARKER,
+    };
     use crate::exec::{ExecToolCallOutput, StreamOutput};
     use serde_json::Value;
     use std::time::Duration;
@@ -12475,5 +12619,37 @@ mod tests {
 
         assert!(!content.contains(TRUNCATION_MARKER));
         assert!(content.contains("line"));
+    }
+
+    #[test]
+    fn context_overflow_detection_matches_provider_errors() {
+        assert!(is_context_overflow_stream_error(
+            "Transport error: Your input exceeds the context window of this model"
+        ));
+        assert!(is_context_overflow_stream_error(
+            "maximum context length reached"
+        ));
+        assert!(!is_context_overflow_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn picks_larger_context_model_from_candidates() {
+        let chosen = choose_larger_context_model_from_candidates(
+            "gpt-5.3-codex-spark",
+            vec![
+                ("gpt-5.3-codex".to_string(), Some(272_000)),
+                ("gpt-4.1".to_string(), Some(1_047_576)),
+            ],
+        );
+        assert_eq!(chosen.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn spark_usage_limit_falls_back_to_non_spark_model() {
+        assert_eq!(
+            spark_fallback_model("gpt-5.3-codex-spark").as_deref(),
+            Some("gpt-5.3-codex")
+        );
+        assert!(spark_fallback_model("gpt-5.3-codex").is_none());
     }
 }
