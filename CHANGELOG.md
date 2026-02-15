@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.68] - 2026-02-14
+
+- Auto Drive: add per-turn model routing and rename decision schema. (fb17527)
+- Auto Drive: enforce finish evidence with paste fallback. (46d537e)
+- Auto Drive: require strict decision fields without allOf and align coordinator schema. (e4559ac4, 873604d6)
+- Auto Drive: decouple auto review and cap long-session growth. (60727b0)
+
 ## [0.6.67] - 2026-02-13
 
 - Skills: discover .agents and admin roots and remove deep-scan caps. (eff5ad73, 4b1faf08)
