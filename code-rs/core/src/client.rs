@@ -2644,7 +2644,16 @@ async fn process_sse<S>(
                     if let Some(error) = error {
                         match serde_json::from_value::<Error>(error.clone()) {
                             Ok(error) => {
-                                if is_quota_exceeded_error(&error) {
+                                if error.r#type.as_deref() == Some("usage_limit_reached") {
+                                    response_error = Some(CodexErr::UsageLimitReached(
+                                        UsageLimitReachedError {
+                                            plan_type: error.plan_type,
+                                            resets_in_seconds: error.resets_in_seconds,
+                                        },
+                                    ));
+                                } else if error.r#type.as_deref() == Some("usage_not_included") {
+                                    response_error = Some(CodexErr::UsageNotIncluded);
+                                } else if is_quota_exceeded_error(&error) {
                                     response_error = Some(CodexErr::QuotaExceeded);
                                 } else if is_server_overloaded_error(&error) {
                                     response_error = Some(CodexErr::ServerOverloaded);
@@ -3704,6 +3713,71 @@ mod tests {
         match &events[0] {
             Err(CodexErr::QuotaExceeded) => {}
             other => panic!("unexpected quota event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_failed_usage_limit_maps_to_typed_error() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_limit","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"type":"usage_limit_reached","message":"You've hit your usage limit.","plan_type":"pro","resets_in_seconds":120},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::UsageLimitReached(err)) => {
+                assert_eq!(err.plan_type.as_deref(), Some("pro"));
+                assert_eq!(err.resets_in_seconds, Some(120));
+            }
+            other => panic!("unexpected usage-limit event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_failed_usage_not_included_maps_to_typed_error() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_not_included","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"type":"usage_not_included","message":"Usage is not included for this model."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::UsageNotIncluded) => {}
+            other => panic!("unexpected usage-not-included event: {other:?}"),
         }
     }
 

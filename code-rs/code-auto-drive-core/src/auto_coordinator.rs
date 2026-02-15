@@ -111,6 +111,36 @@ fn auto_drive_cli_models_for_auth(
     models
 }
 
+fn spark_fallback_model(model: &str) -> Option<&'static str> {
+    if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
+        Some("gpt-5.3-codex")
+    } else if model.eq_ignore_ascii_case("code-gpt-5.3-codex-spark") {
+        Some("code-gpt-5.3-codex")
+    } else {
+        None
+    }
+}
+
+fn is_usage_limit_stream_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("usage limit")
+        || lower.contains("usage_limit_reached")
+        || lower.contains("usage_not_included")
+}
+
+fn error_mentions_usage_limit(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if let Some(code_err) = cause.downcast_ref::<CodexErr>() {
+            return match code_err {
+                CodexErr::UsageLimitReached(_) | CodexErr::UsageNotIncluded => true,
+                CodexErr::Stream(message, _, _) => is_usage_limit_stream_error_message(message),
+                _ => false,
+            };
+        }
+        false
+    })
+}
+
 #[derive(Debug, Clone)]
 struct AutoTimeBudget {
     deadline: Instant,
@@ -1230,6 +1260,30 @@ mod tests {
             }
             other => panic!("expected fatal usage limit decision, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn usage_limit_stream_errors_are_detected() {
+        let err = anyhow!(CodexErr::Stream(
+            "[transport] Transport error: You've hit your usage limit. Try again in 5 days 47 minutes."
+                .to_string(),
+            None,
+            None,
+        ));
+        assert!(error_mentions_usage_limit(&err));
+    }
+
+    #[test]
+    fn spark_models_have_non_spark_fallback() {
+        assert_eq!(
+            spark_fallback_model("gpt-5.3-codex-spark"),
+            Some("gpt-5.3-codex")
+        );
+        assert_eq!(
+            spark_fallback_model("code-gpt-5.3-codex-spark"),
+            Some("code-gpt-5.3-codex")
+        );
+        assert!(spark_fallback_model("gpt-5.3-codex").is_none());
     }
 
     #[test]
@@ -2788,10 +2842,37 @@ fn request_decision_with_model(
     let tx = event_tx.clone();
     let cancel = cancel_token.clone();
     let mut rate_limit_switch_state = RateLimitSwitchState::default();
+    let selected_model = Arc::new(Mutex::new(model_slug.to_string()));
+    let selected_model_for_retry = Arc::clone(&selected_model);
+    let mut did_usage_limit_model_fallback = false;
     let classify = |error: &anyhow::Error| {
+        if !did_usage_limit_model_fallback && error_mentions_usage_limit(error) {
+            let active_model = selected_model_for_retry
+                .lock()
+                .ok()
+                .map(|guard| guard.clone())
+                .unwrap_or_else(|| model_slug.to_string());
+            if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                did_usage_limit_model_fallback = true;
+                if let Ok(mut guard) = selected_model_for_retry.lock() {
+                    *guard = fallback_model.to_string();
+                }
+                event_tx.send(AutoCoordinatorEvent::Action {
+                    message: format!(
+                        "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                    ),
+                });
+                return RetryDecision::RateLimited {
+                    wait_until: Instant::now(),
+                    reason: "usage limit reached; switched to non-spark model".to_string(),
+                };
+            }
+        }
+
         classify_model_error_with_auto_switch(client, &mut rate_limit_switch_state, event_tx, error)
     };
     let options = RetryOptions::with_defaults(retry_max_elapsed(time_budget_deadline));
+    let selected_model_for_run = Arc::clone(&selected_model);
 
     let result = runtime.block_on(async move {
         retry_with_backoff(
@@ -2801,6 +2882,11 @@ fn request_decision_with_model(
                 let time_budget_message = time_budget_message.clone();
                 let loop_warning = loop_warning.clone();
                 let conversation = Arc::clone(&conversation);
+                let model_slug = selected_model_for_run
+                    .lock()
+                    .ok()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_else(|| model_slug.to_string());
                 let prompt = build_user_turn_prompt(
                     &developer_intro,
                     &primary_goal,
@@ -2809,7 +2895,7 @@ fn request_decision_with_model(
                     loop_warning.as_deref(),
                     &schema,
                     conversation.as_ref(),
-                    model_slug,
+                    &model_slug,
                     instructions.as_deref(),
                 );
                 let tx_inner = tx.clone();

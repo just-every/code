@@ -1527,6 +1527,13 @@ fn is_context_overflow_stream_error(message: &str) -> bool {
                 || lower.contains("too long")))
 }
 
+fn is_usage_limit_stream_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("usage limit")
+        || lower.contains("usage_limit_reached")
+        || lower.contains("usage_not_included")
+}
+
 fn spark_fallback_model(model: &str) -> Option<String> {
     if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
         Some("gpt-5.3-codex".to_string())
@@ -2381,9 +2388,60 @@ async fn run_turn(
                 retries = 0;
                 continue;
             }
-            Err(CodexErr::UsageNotIncluded) => return Err(CodexErr::UsageNotIncluded),
+            Err(CodexErr::UsageNotIncluded) => {
+                if !did_usage_limit_model_fallback {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
+
+                return Err(CodexErr::UsageNotIncluded);
+            }
             Err(CodexErr::QuotaExceeded) => return Err(CodexErr::QuotaExceeded),
             Err(e) => {
+                if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e
+                    && is_usage_limit_stream_error(msg)
+                    && !did_usage_limit_model_fallback
+                {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
+
                 if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e
                     && is_context_overflow_stream_error(msg)
                 {
@@ -12563,6 +12621,7 @@ mod tests {
         choose_larger_context_model_from_candidates,
         format_exec_output_with_limit,
         is_context_overflow_stream_error,
+        is_usage_limit_stream_error,
         spark_fallback_model,
         TRUNCATION_MARKER,
     };
@@ -12630,6 +12689,17 @@ mod tests {
             "maximum context length reached"
         ));
         assert!(!is_context_overflow_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn usage_limit_detection_matches_transport_errors() {
+        assert!(is_usage_limit_stream_error(
+            "[transport] Transport error: You've hit your usage limit. Try again in 5 days 47 minutes."
+        ));
+        assert!(is_usage_limit_stream_error(
+            "response.failed: usage_not_included"
+        ));
+        assert!(!is_usage_limit_stream_error("temporary network timeout"));
     }
 
     #[test]
