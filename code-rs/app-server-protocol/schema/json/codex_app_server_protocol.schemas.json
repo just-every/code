@@ -3451,6 +3451,17 @@
               "description": "The command's working directory.",
               "type": "string"
             },
+            "network_approval_context": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NetworkApprovalContext"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional network context for a blocked request that can be approved."
+            },
             "parsed_cmd": {
               "items": {
                 "$ref": "#/definitions/ParsedCommand"
@@ -3472,17 +3483,6 @@
               "type": [
                 "string",
                 "null"
-              ]
-            },
-            "network_approval_context": {
-              "description": "Optional network context for a blocked request that can be approved.",
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/NetworkApprovalContext"
-                },
-                {
-                  "type": "null"
-                }
               ]
             },
             "turn_id": {
