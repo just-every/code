@@ -38,7 +38,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
-use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
+use crate::agent_defaults::{
+    default_agent_configs,
+    enabled_agent_model_specs_for_auth,
+    filter_agent_model_names_for_auth,
+};
 use crate::chat_completions::AggregateStreamExt;
 use crate::chat_completions::stream_chat_completions;
 use crate::client_common::Prompt;
@@ -391,6 +395,20 @@ impl ModelClient {
         tools_config.web_search_external = self.config.tools_web_search_external;
         tools_config.search_tool = self.config.tools_search_tool;
 
+        let auth_mode = self
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.auth().map(|auth| auth.mode))
+            .or(Some(if self.config.using_chatgpt_auth {
+                AuthMode::Chatgpt
+            } else {
+                AuthMode::ApiKey
+            }));
+        let supports_pro_only_models = self
+            .auth_manager
+            .as_ref()
+            .is_some_and(|manager| manager.supports_pro_only_models());
+
         let mut agent_models: Vec<String> = if self.config.agents.is_empty() {
             default_agent_configs()
                 .into_iter()
@@ -400,8 +418,13 @@ impl ModelClient {
         } else {
             get_enabled_agents(&self.config.agents)
         };
+        agent_models = filter_agent_model_names_for_auth(
+            agent_models,
+            auth_mode,
+            supports_pro_only_models,
+        );
         if agent_models.is_empty() {
-            agent_models = enabled_agent_model_specs()
+            agent_models = enabled_agent_model_specs_for_auth(auth_mode, supports_pro_only_models)
                 .into_iter()
                 .map(|spec| spec.slug.to_string())
                 .collect();

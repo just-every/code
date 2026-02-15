@@ -81,8 +81,17 @@ impl App<'_> {
                         Some(AuthMode::ApiKey)
                     }
                 });
-            let presets = code_common::model_presets::builtin_model_presets(auth_mode);
-            let presets = crate::remote_model_presets::merge_remote_models(remote_models, presets);
+            let supports_pro_only_models = remote_auth_manager.supports_pro_only_models();
+            let presets = code_common::model_presets::builtin_model_presets(
+                auth_mode,
+                supports_pro_only_models,
+            );
+            let presets = crate::remote_model_presets::merge_remote_models(
+                remote_models,
+                presets,
+                auth_mode,
+                supports_pro_only_models,
+            );
             let default_model = remote_manager.default_model_slug(auth_mode).await;
             remote_tx.send(AppEvent::ModelPresetsUpdated {
                 presets,

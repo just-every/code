@@ -22292,7 +22292,7 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             Some(AuthMode::ApiKey)
         };
-        builtin_model_presets(auth_mode)
+        builtin_model_presets(auth_mode, self.auth_manager.supports_pro_only_models())
     }
 
     pub(crate) fn update_model_presets(

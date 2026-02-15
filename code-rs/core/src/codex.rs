@@ -73,7 +73,12 @@ use crate::protocol::WebSearchBeginEvent;
 use crate::protocol::WebSearchCompleteEvent;
 use crate::account_usage;
 use crate::auth_accounts;
-use crate::agent_defaults::{agent_model_spec, default_agent_configs, enabled_agent_model_specs};
+use crate::agent_defaults::{
+    agent_model_spec,
+    default_agent_configs,
+    enabled_agent_model_specs_for_auth,
+    filter_agent_model_names_for_auth,
+};
 use code_protocol::models::WebSearchAction;
 use code_protocol::protocol::RolloutItem;
 use shlex::split as shlex_split;

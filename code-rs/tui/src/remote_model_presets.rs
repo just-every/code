@@ -3,8 +3,10 @@ use std::collections::HashSet;
 use code_common::model_presets::ModelPreset;
 use code_common::model_presets::ModelUpgrade;
 use code_common::model_presets::ReasoningEffortPreset;
+use code_common::model_presets::model_preset_available_for_auth;
 use code_core::config_types::TextVerbosity as TextVerbosityConfig;
 use code_core::protocol_config_types::ReasoningEffort as ProtocolReasoningEffort;
+use code_login::AuthMode;
 use code_protocol::openai_models::ModelInfo;
 use code_protocol::openai_models::ModelVisibility;
 use code_protocol::openai_models::ReasoningEffort as RemoteReasoningEffort;
@@ -16,7 +18,12 @@ const REMOTE_TEXT_VERBOSITY_ALL: &[TextVerbosityConfig] = &[
 ];
 const REMOTE_TEXT_VERBOSITY_MEDIUM: &[TextVerbosityConfig] = &[TextVerbosityConfig::Medium];
 
-pub(crate) fn merge_remote_models(remote_models: Vec<ModelInfo>, local_presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+pub(crate) fn merge_remote_models(
+    remote_models: Vec<ModelInfo>,
+    local_presets: Vec<ModelPreset>,
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> Vec<ModelPreset> {
     if remote_models.is_empty() {
         return local_presets;
     }
@@ -42,7 +49,10 @@ pub(crate) fn merge_remote_models(remote_models: Vec<ModelInfo>, local_presets: 
         remote_presets.push(preset);
     }
 
-    remote_presets.retain(|preset| preset.show_in_picker);
+    remote_presets.retain(|preset| {
+        preset.show_in_picker
+            && model_preset_available_for_auth(preset, auth_mode, supports_pro_only_models)
+    });
     if let Some(default) = remote_presets.first_mut() {
         default.is_default = true;
     }
@@ -51,6 +61,7 @@ pub(crate) fn merge_remote_models(remote_models: Vec<ModelInfo>, local_presets: 
 }
 
 fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
+    let pro_only = info.slug.eq_ignore_ascii_case("gpt-5.3-codex-spark");
     let show_in_picker = info.visibility == ModelVisibility::List
         && !info.slug.eq_ignore_ascii_case("gpt-5.1-codex");
 
@@ -86,6 +97,7 @@ fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
             reasoning_effort_mapping: None,
             migration_config_key: info.slug,
         }),
+        pro_only,
         show_in_picker,
     }
 }
