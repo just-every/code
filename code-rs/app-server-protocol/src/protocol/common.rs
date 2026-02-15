@@ -1091,7 +1091,8 @@ mod tests {
                 "id": 6,
                 "params": {
                     "limit": null,
-                    "cursor": null
+                    "cursor": null,
+                    "includeHidden": null
                 }
             }),
             serde_json::to_value(&request)?,
@@ -1201,4 +1202,3 @@ mod tests {
         assert_eq!(reason, Some("thread/start.mockExperimentalField"));
     }
 }
-

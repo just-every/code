@@ -1150,6 +1150,7 @@ impl Session {
                 command,
                 cwd,
                 reason,
+                network_approval_context: None,
             }),
         );
         let _ = self.tx_event.send(event).await;
