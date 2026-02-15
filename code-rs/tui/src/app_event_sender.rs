@@ -50,6 +50,7 @@ impl AppEventSender {
                 | AppEvent::ExitRequest
                 | AppEvent::SetTerminalTitle { .. }
                 | AppEvent::EmitTuiNotification { .. }
+                | AppEvent::AutoCoordinatorCountdown { .. }
         );
 
         let tx = if is_high { &self.high_tx } else { &self.bulk_tx };
@@ -113,4 +114,45 @@ impl AppEventSender {
         );
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    #[test]
+    fn auto_coordinator_countdown_bypasses_bulk_backlog() {
+        let (high_tx, high_rx) = channel();
+        let (bulk_tx, bulk_rx) = channel();
+        let sender = AppEventSender::new_dual(high_tx, bulk_tx);
+
+        for idx in 0..64 {
+            sender.send(AppEvent::AutoCoordinatorAction {
+                message: format!("bulk-{idx}"),
+            });
+        }
+
+        sender.send(AppEvent::AutoCoordinatorCountdown {
+            countdown_id: 99,
+            seconds_left: 9,
+        });
+
+        let prioritized = high_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("countdown event should bypass bulk backlog");
+        assert!(matches!(
+            prioritized,
+            AppEvent::AutoCoordinatorCountdown {
+                countdown_id: 99,
+                seconds_left: 9
+            }
+        ));
+
+        assert!(matches!(
+            bulk_rx.try_recv(),
+            Ok(AppEvent::AutoCoordinatorAction { .. })
+        ));
+    }
 }

@@ -31485,6 +31485,58 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn auto_drive_countdown_tick_decrements_then_auto_submits() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| {
+            chat.auto_state.continue_mode = AutoContinueMode::TenSeconds;
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.schedule_auto_cli_prompt(7, "echo ready".to_string());
+        });
+
+        let countdown_id = harness.with_chat(|chat| {
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 10);
+            chat.auto_state.countdown_id
+        });
+
+        harness.with_chat(|chat| {
+            chat.auto_handle_countdown(countdown_id, 9);
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 9);
+        });
+
+        harness.with_chat(|chat| {
+            chat.auto_handle_countdown(countdown_id, 0);
+            assert!(!chat.auto_state.awaiting_coordinator_submit());
+            assert!(chat.auto_state.is_waiting_for_response());
+            assert_eq!(chat.auto_state.seconds_remaining, 0);
+        });
+    }
+
+    #[test]
+    fn auto_drive_enter_override_submits_with_active_countdown() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| {
+            chat.auto_state.continue_mode = AutoContinueMode::TenSeconds;
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.schedule_auto_cli_prompt(8, "echo ready".to_string());
+
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 10);
+
+            chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(!chat.auto_state.awaiting_coordinator_submit());
+            assert!(chat.auto_state.is_waiting_for_response());
+            assert_eq!(chat.auto_state.seconds_remaining, 0);
+        });
+    }
+
+    #[test]
     fn auto_drive_view_marks_running_when_agents_active() {
         let mut harness = ChatWidgetHarness::new();
         harness.with_chat(|chat| {
