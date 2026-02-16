@@ -12,7 +12,12 @@ use code_core::agent_defaults::{
     enabled_agent_model_specs_for_auth,
     filter_agent_model_names_for_auth,
 };
-use code_core::config_types::{AutoDriveSettings, ReasoningEffort, TextVerbosity};
+use code_core::config_types::{
+    AutoDriveModelRoutingEntry,
+    AutoDriveSettings,
+    ReasoningEffort,
+    TextVerbosity,
+};
 use code_core::debug_logger::DebugLogger;
 use code_core::codex::compact::resolve_compact_prompt_text;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
@@ -63,7 +68,10 @@ const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
 const AUTO_DRIVE_CLI_MODEL_PRIMARY: &str = "gpt-5.3-codex";
 const AUTO_DRIVE_CLI_MODEL_SPARK: &str = "gpt-5.3-codex-spark";
-const AUTO_DRIVE_CLI_REASONING_LEVELS: &[&str] = &["medium", "high", "xhigh"];
+const AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION: &str =
+    "Hard planning and complex problem solving";
+const AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION: &str =
+    "Fast implementation loops and failing-test iteration";
 
 static HARD_LIMIT_TRIMMED_ITEMS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static QUEUED_UPDATE_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -91,24 +99,196 @@ fn supported_text_verbosity_for_model(model: &str) -> &'static [TextVerbosity] {
     }
 }
 
-fn default_auto_drive_cli_models() -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoDriveCliRoutingEntry {
+    model: String,
+    reasoning_levels: Vec<ReasoningEffort>,
+    description: String,
+}
+
+fn cli_routing_reasoning_priority(level: ReasoningEffort) -> u8 {
+    match level {
+        ReasoningEffort::Minimal => 0,
+        ReasoningEffort::Low => 1,
+        ReasoningEffort::Medium => 2,
+        ReasoningEffort::High => 3,
+        ReasoningEffort::XHigh => 4,
+        ReasoningEffort::None => 5,
+    }
+}
+
+fn normalize_cli_routing_reasoning_levels(levels: &[ReasoningEffort]) -> Vec<ReasoningEffort> {
+    let mut normalized = Vec::new();
+    for level in [
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ] {
+        if levels.contains(&level) {
+            normalized.push(level);
+        }
+    }
+    normalized
+}
+
+fn cli_reasoning_effort_to_str(level: ReasoningEffort) -> &'static str {
+    match level {
+        ReasoningEffort::Minimal => "minimal",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::None => "minimal",
+    }
+}
+
+fn format_cli_reasoning_levels(levels: &[ReasoningEffort]) -> String {
+    levels
+        .iter()
+        .map(|level| cli_reasoning_effort_to_str(*level))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn default_auto_drive_cli_routing_entries() -> Vec<AutoDriveCliRoutingEntry> {
     vec![
-        AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
-        AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+        AutoDriveCliRoutingEntry {
+            model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+            reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
+            description: AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION.to_string(),
+        },
+        AutoDriveCliRoutingEntry {
+            model: AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION.to_string(),
+        },
     ]
 }
 
+fn auto_drive_cli_routing_entries_for_auth(
+    auth_mode: Option<code_app_server_protocol::AuthMode>,
+    supports_pro_only_models: bool,
+) -> Vec<AutoDriveCliRoutingEntry> {
+    let mut entries = vec![AutoDriveCliRoutingEntry {
+        model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+        reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
+        description: AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION.to_string(),
+    }];
+    if auth_mode.is_some_and(code_app_server_protocol::AuthMode::is_chatgpt)
+        && supports_pro_only_models
+    {
+        entries.push(AutoDriveCliRoutingEntry {
+            model: AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION.to_string(),
+        });
+    }
+    entries
+}
+
+#[cfg(test)]
 fn auto_drive_cli_models_for_auth(
     auth_mode: Option<code_app_server_protocol::AuthMode>,
     supports_pro_only_models: bool,
 ) -> Vec<String> {
-    let mut models = vec![AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()];
-    if auth_mode.is_some_and(code_app_server_protocol::AuthMode::is_chatgpt)
-        && supports_pro_only_models
-    {
-        models.push(AUTO_DRIVE_CLI_MODEL_SPARK.to_string());
+    auto_drive_cli_routing_entries_for_auth(auth_mode, supports_pro_only_models)
+        .into_iter()
+        .map(|entry| entry.model)
+        .collect()
+}
+
+fn normalize_routing_entry_model(model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    models
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if !normalized.starts_with("gpt-") {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn normalize_auto_drive_cli_routing_entries(
+    entries: &[AutoDriveModelRoutingEntry],
+) -> Vec<AutoDriveCliRoutingEntry> {
+    let mut normalized: Vec<AutoDriveCliRoutingEntry> = Vec::new();
+
+    for entry in entries {
+        if !entry.enabled {
+            continue;
+        }
+
+        let Some(model) = normalize_routing_entry_model(&entry.model) else {
+            continue;
+        };
+
+        let reasoning_levels = normalize_cli_routing_reasoning_levels(&entry.reasoning_levels);
+        if reasoning_levels.is_empty() {
+            continue;
+        }
+
+        let description = entry.description.trim().to_string();
+        if let Some(existing) = normalized
+            .iter_mut()
+            .find(|candidate| candidate.model.eq_ignore_ascii_case(&model))
+        {
+            let mut combined = existing.reasoning_levels.clone();
+            for level in reasoning_levels {
+                if !combined.contains(&level) {
+                    combined.push(level);
+                }
+            }
+            combined.sort_by_key(|level| cli_routing_reasoning_priority(*level));
+            existing.reasoning_levels = combined;
+            if existing.description.is_empty() && !description.is_empty() {
+                existing.description = description;
+            }
+            continue;
+        }
+
+        normalized.push(AutoDriveCliRoutingEntry {
+            model,
+            reasoning_levels,
+            description,
+        });
+    }
+
+    normalized
+}
+
+fn resolve_auto_drive_cli_routing_entries(
+    settings: &AutoDriveSettings,
+    auth_mode: Option<code_app_server_protocol::AuthMode>,
+    supports_pro_only_models: bool,
+    available_models: &[String],
+) -> Vec<AutoDriveCliRoutingEntry> {
+    let mut entries = normalize_auto_drive_cli_routing_entries(&settings.model_routing_entries);
+    if !auth_mode.is_some_and(|mode| mode.is_chatgpt()) || !supports_pro_only_models {
+        entries.retain(|entry| !entry.model.eq_ignore_ascii_case(AUTO_DRIVE_CLI_MODEL_SPARK));
+    }
+    entries.retain(|entry| {
+        available_models
+            .iter()
+            .any(|model| model.eq_ignore_ascii_case(&entry.model))
+    });
+
+    if entries.is_empty() {
+        return auto_drive_cli_routing_entries_for_auth(auth_mode, supports_pro_only_models)
+            .into_iter()
+            .filter(|entry| {
+                available_models
+                    .iter()
+                    .any(|model| model.eq_ignore_ascii_case(&entry.model))
+            })
+            .collect();
+    }
+
+    entries
 }
 
 fn spark_fallback_model(model: &str) -> Option<&'static str> {
@@ -525,7 +705,7 @@ mod tests {
         let schema = build_schema(
             &active_agents,
             SchemaFeatures::default(),
-            &default_auto_drive_cli_models(),
+            &default_auto_drive_cli_routing_entries(),
         );
         let props = schema
             .get("properties")
@@ -631,7 +811,7 @@ mod tests {
         let schema = build_schema(
             &active_agents,
             SchemaFeatures::default(),
-            &default_auto_drive_cli_models(),
+            &default_auto_drive_cli_routing_entries(),
         );
         let prompt_schema = schema
             .get("properties")
@@ -752,7 +932,7 @@ mod tests {
                 .map(|name| (*name).to_string())
                 .collect::<Vec<_>>(),
             SchemaFeatures::default(),
-            &default_auto_drive_cli_models(),
+            &default_auto_drive_cli_routing_entries(),
         );
         let props = schema
             .get("properties")
@@ -794,7 +974,7 @@ mod tests {
                 include_agents: false,
                 ..SchemaFeatures::default()
             },
-            &default_auto_drive_cli_models(),
+            &default_auto_drive_cli_routing_entries(),
         );
         let props = schema
             .get("properties")
@@ -821,7 +1001,7 @@ mod tests {
                 include_cli_model_routing: false,
                 ..SchemaFeatures::default()
             },
-            &default_auto_drive_cli_models(),
+            &default_auto_drive_cli_routing_entries(),
         );
         let props = schema
             .get("properties")
@@ -839,8 +1019,16 @@ mod tests {
 
     #[test]
     fn schema_cli_model_enum_respects_allowed_models() {
-        let allowed_cli_models = vec![AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()];
-        let schema = build_schema(&Vec::new(), SchemaFeatures::default(), &allowed_cli_models);
+        let allowed_cli_routing_entries = vec![AutoDriveCliRoutingEntry {
+            model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: String::new(),
+        }];
+        let schema = build_schema(
+            &Vec::new(),
+            SchemaFeatures::default(),
+            &allowed_cli_routing_entries,
+        );
         let cli_model_enum = schema
             .get("properties")
             .and_then(|v| v.as_object())
@@ -857,10 +1045,34 @@ mod tests {
     }
 
     #[test]
+    fn schema_cli_reasoning_enum_respects_allowed_entries() {
+        let allowed_cli_routing_entries = vec![AutoDriveCliRoutingEntry {
+            model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: "High only".to_string(),
+        }];
+        let schema = build_schema(
+            &Vec::new(),
+            SchemaFeatures::default(),
+            &allowed_cli_routing_entries,
+        );
+        let cli_reasoning_enum = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .and_then(|obj| obj.get("cli_reasoning_effort"))
+            .and_then(|v| v.as_object())
+            .and_then(|obj| obj.get("enum"))
+            .and_then(|v| v.as_array())
+            .expect("cli_reasoning_effort enum");
+
+        assert_eq!(cli_reasoning_enum, &vec![json!("high"), Value::Null]);
+    }
+
+    #[test]
     fn schema_marks_goal_required_with_bootstrap_description() {
         let mut features = SchemaFeatures::default();
         features.include_goal_field = true;
-        let schema = build_schema(&Vec::new(), features, &default_auto_drive_cli_models());
+        let schema = build_schema(&Vec::new(), features, &default_auto_drive_cli_routing_entries());
         let required = schema
             .get("required")
             .and_then(|v| v.as_array())
@@ -1004,13 +1216,46 @@ mod tests {
             raw,
             DecisionParseOptions {
                 require_cli_model_routing: true,
-                allowed_cli_models: vec![AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()],
+                allowed_cli_routing_entries: vec![AutoDriveCliRoutingEntry {
+                    model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+                    reasoning_levels: vec![ReasoningEffort::High],
+                    description: String::new(),
+                }],
             },
         )
         .expect_err("non-pro routing should reject spark");
 
         assert!(err.to_string().contains("unsupported cli_model"));
         assert!(err.to_string().contains(AUTO_DRIVE_CLI_MODEL_PRIMARY));
+    }
+
+    #[test]
+    fn parse_decision_rejects_reasoning_not_allowed_for_model() {
+        let raw = r#"{
+            "finish_status": "continue",
+            "status_title": "Fixing tests",
+            "status_sent_to_user": "Running clear failing-test loops.",
+            "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
+            "cli_model": "gpt-5.3-codex",
+            "cli_reasoning_effort": "xhigh"
+        }"#;
+
+        let err = parse_decision(
+            raw,
+            DecisionParseOptions {
+                require_cli_model_routing: true,
+                allowed_cli_routing_entries: vec![AutoDriveCliRoutingEntry {
+                    model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+                    reasoning_levels: vec![ReasoningEffort::High],
+                    description: String::new(),
+                }],
+            },
+        )
+        .expect_err("unsupported reasoning should fail");
+
+        assert!(err
+            .to_string()
+            .contains("unsupported cli_reasoning_effort 'xhigh'"));
     }
 
     #[test]
@@ -1026,6 +1271,82 @@ mod tests {
         let api_key_models = auto_drive_cli_models_for_auth(Some(AuthMode::ApiKey), false);
         assert!(api_key_models.contains(&AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()));
         assert!(!api_key_models.contains(&AUTO_DRIVE_CLI_MODEL_SPARK.to_string()));
+    }
+
+    #[test]
+    fn resolve_cli_routing_entries_falls_back_when_enabled_entries_missing() {
+        let mut settings = AutoDriveSettings::default();
+        settings.model_routing_entries = vec![AutoDriveModelRoutingEntry {
+            model: "gpt-5.3-codex".to_string(),
+            enabled: false,
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: "disabled".to_string(),
+        }];
+
+        let available_models = vec![
+            AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+            AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+        ];
+
+        let entries = resolve_auto_drive_cli_routing_entries(
+            &settings,
+            Some(AuthMode::Chatgpt),
+            true,
+            &available_models,
+        );
+
+        assert!(entries.iter().any(|entry| entry.model == AUTO_DRIVE_CLI_MODEL_PRIMARY));
+        assert!(entries.iter().any(|entry| entry.model == AUTO_DRIVE_CLI_MODEL_SPARK));
+    }
+
+    #[test]
+    fn resolve_cli_routing_entries_drop_unavailable_models() {
+        let settings = AutoDriveSettings {
+            model_routing_entries: vec![
+                AutoDriveModelRoutingEntry {
+                    model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+                    enabled: true,
+                    reasoning_levels: vec![ReasoningEffort::High],
+                    description: String::new(),
+                },
+                AutoDriveModelRoutingEntry {
+                    model: "gpt-5.3-codex-experimental".to_string(),
+                    enabled: true,
+                    reasoning_levels: vec![ReasoningEffort::High],
+                    description: String::new(),
+                },
+            ],
+            ..AutoDriveSettings::default()
+        };
+
+        let available_models = vec![AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()];
+        let entries = resolve_auto_drive_cli_routing_entries(
+            &settings,
+            Some(AuthMode::Chatgpt),
+            true,
+            &available_models,
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, AUTO_DRIVE_CLI_MODEL_PRIMARY);
+    }
+
+    #[test]
+    fn resolve_cli_routing_entries_empty_when_no_available_models() {
+        let settings = AutoDriveSettings {
+            model_routing_entries: vec![AutoDriveModelRoutingEntry {
+                model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
+                enabled: true,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            }],
+            ..AutoDriveSettings::default()
+        };
+
+        let entries =
+            resolve_auto_drive_cli_routing_entries(&settings, Some(AuthMode::Chatgpt), true, &[]);
+
+        assert!(entries.is_empty());
     }
 
     #[test]
@@ -1468,14 +1789,14 @@ struct ParsedCoordinatorDecision {
 #[derive(Debug, Clone)]
 struct DecisionParseOptions {
     require_cli_model_routing: bool,
-    allowed_cli_models: Vec<String>,
+    allowed_cli_routing_entries: Vec<AutoDriveCliRoutingEntry>,
 }
 
 impl Default for DecisionParseOptions {
     fn default() -> Self {
         Self {
             require_cli_model_routing: false,
-            allowed_cli_models: default_auto_drive_cli_models(),
+            allowed_cli_routing_entries: default_auto_drive_cli_routing_entries(),
         }
     }
 }
@@ -1615,8 +1936,20 @@ fn run_auto_loop(
         .map(|auth| auth.mode)
         .or(Some(preferred_auth));
     let supports_pro_only_models = auth_mgr.supports_pro_only_models();
-    let allowed_cli_models =
-        auto_drive_cli_models_for_auth(auth_mode_for_model_access, supports_pro_only_models);
+    let available_cli_routing_models = enabled_agent_model_specs_for_auth(
+        auth_mode_for_model_access,
+        supports_pro_only_models,
+    )
+    .into_iter()
+    .map(|spec| spec.slug.to_ascii_lowercase())
+    .filter(|model| model.starts_with("gpt-"))
+    .collect::<Vec<_>>();
+    let allowed_cli_routing_entries = resolve_auto_drive_cli_routing_entries(
+        &config.auto_drive,
+        auth_mode_for_model_access,
+        supports_pro_only_models,
+        &available_cli_routing_models,
+    );
     let model_provider = config.model_provider.clone();
     let model_reasoning_summary = config.model_reasoning_summary;
     let model_text_verbosity = config.model_text_verbosity;
@@ -1701,7 +2034,29 @@ fn run_auto_loop(
             "\n\nThe current working directory is not a git repository. Auto Drive must only launch read-only agents. If a request includes write: true, downgrade it to read-only.",
         );
     }
+    if config.auto_drive.model_routing_enabled && !allowed_cli_routing_entries.is_empty() {
+        let mut routing_lines = Vec::new();
+        for entry in &allowed_cli_routing_entries {
+            let levels = format_cli_reasoning_levels(&entry.reasoning_levels);
+            let description = if entry.description.trim().is_empty() {
+                "No additional description".to_string()
+            } else {
+                entry.description.trim().to_string()
+            };
+            routing_lines.push(format!(
+                "- {} ({levels}) — {description}",
+                entry.model
+            ));
+        }
+        if !routing_lines.is_empty() {
+            base_developer_intro.push_str("\n\nConfigured CLI routing entries:");
+            base_developer_intro.push_str(&format!("\n{}", routing_lines.join("\n")));
+        }
+    }
     let mut schema_features = SchemaFeatures::from_auto_settings(&config.auto_drive);
+    if schema_features.include_cli_model_routing && allowed_cli_routing_entries.is_empty() {
+        schema_features.include_cli_model_routing = false;
+    }
     if derive_goal_from_history {
         schema_features.include_goal_field = true;
     }
@@ -1738,7 +2093,11 @@ fn run_auto_loop(
             pending_conversation = None;
         }
     }
-    let mut schema = build_schema(&active_agent_names, schema_features, &allowed_cli_models);
+    let mut schema = build_schema(
+        &active_agent_names,
+        schema_features,
+        &allowed_cli_routing_entries,
+    );
     let platform = std::env::consts::OS;
     debug!("[Auto coordinator] starting: goal={goal_text} platform={platform}");
 
@@ -1819,7 +2178,7 @@ fn run_auto_loop(
                 &cancel_token,
                 &active_model_slug,
                 schema_features.include_cli_model_routing,
-                &allowed_cli_models,
+                &allowed_cli_routing_entries,
             ) {
                 Ok(ParsedCoordinatorDecision {
                     status,
@@ -1889,8 +2248,11 @@ fn run_auto_loop(
                         primary_goal_message = format!("**Primary Goal**\n{goal_text}");
                         if schema_features.include_goal_field {
                             schema_features.include_goal_field = false;
-                            schema =
-                                build_schema(&active_agent_names, schema_features, &allowed_cli_models);
+                            schema = build_schema(
+                                &active_agent_names,
+                                schema_features,
+                                &allowed_cli_routing_entries,
+                            );
                         }
                     }
                     decision_seq = decision_seq.wrapping_add(1);
@@ -2381,7 +2743,11 @@ impl Default for SchemaFeatures {
     }
 }
 
-fn build_schema(active_agents: &[String], features: SchemaFeatures, cli_models: &[String]) -> Value {
+fn build_schema(
+    active_agents: &[String],
+    features: SchemaFeatures,
+    cli_routing_entries: &[AutoDriveCliRoutingEntry],
+) -> Value {
     let models_enum_values: Vec<Value> = active_agents
         .iter()
         .map(|name| Value::String(name.clone()))
@@ -2479,17 +2845,29 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures, cli_models: 
     required.push(Value::String("cli_milestone_instruction".to_string()));
 
     if features.include_cli_model_routing {
-        let mut cli_model_enum: Vec<Value> = cli_models
+        let mut cli_model_enum: Vec<Value> = cli_routing_entries
             .iter()
-            .map(|model| Value::String(model.clone()))
+            .map(|entry| Value::String(entry.model.clone()))
             .collect();
         cli_model_enum.push(Value::Null);
-        let cli_models_description = if cli_models.is_empty() {
+        let cli_models_description = if cli_routing_entries.is_empty() {
             "CLI model for this turn. Set to null only when finishing.".to_string()
         } else {
+            let routes = cli_routing_entries
+                .iter()
+                .map(|entry| {
+                    let levels = format_cli_reasoning_levels(&entry.reasoning_levels);
+                    let description = if entry.description.trim().is_empty() {
+                        "No description".to_string()
+                    } else {
+                        entry.description.trim().to_string()
+                    };
+                    format!("{} ({levels}) — {description}", entry.model)
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
             format!(
-                "CLI model for this turn. Allowed values: {}. Set to null only when finishing.",
-                cli_models.join(", ")
+                "CLI model for this turn. Allowed routes: {routes}. Set to null only when finishing."
             )
         };
         properties.insert(
@@ -2502,12 +2880,49 @@ fn build_schema(active_agents: &[String], features: SchemaFeatures, cli_models: 
         );
         required.push(Value::String("cli_model".to_string()));
 
+        let mut reasoning_enum: Vec<Value> = Vec::new();
+        for level in [
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+        ] {
+            if cli_routing_entries
+                .iter()
+                .any(|entry| entry.reasoning_levels.contains(&level))
+            {
+                reasoning_enum.push(Value::String(cli_reasoning_effort_to_str(level).to_string()));
+            }
+        }
+        reasoning_enum.push(Value::Null);
+
+        let reasoning_description = if cli_routing_entries.is_empty() {
+            "Reasoning effort for the selected CLI model this turn. Set to null only when finishing."
+                .to_string()
+        } else {
+            let per_model = cli_routing_entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}: {}",
+                        entry.model,
+                        format_cli_reasoning_levels(&entry.reasoning_levels)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!(
+                "Reasoning effort for the selected CLI model this turn. Allowed by model: {per_model}. Set to null only when finishing."
+            )
+        };
+
         properties.insert(
             "cli_reasoning_effort".to_string(),
             json!({
                 "type": ["string", "null"],
-                "enum": ["medium", "high", "xhigh", null],
-                "description": "Reasoning effort for the selected CLI model this turn. Prefer xhigh for hard planning, high for main coding loops, and medium for straightforward execution. Set to null only when finishing."
+                "enum": reasoning_enum,
+                "description": reasoning_description,
             }),
         );
         required.push(Value::String("cli_reasoning_effort".to_string()));
@@ -2636,7 +3051,7 @@ fn request_coordinator_decision(
     cancel_token: &CancellationToken,
     preferred_model_slug: &str,
     require_cli_model_routing: bool,
-    allowed_cli_models: &[String],
+    allowed_cli_routing_entries: &[AutoDriveCliRoutingEntry],
 ) -> Result<ParsedCoordinatorDecision, DecisionFailure> {
     let RequestStreamResult {
         output_text,
@@ -2671,7 +3086,7 @@ fn request_coordinator_decision(
         &output_text,
         DecisionParseOptions {
             require_cli_model_routing,
-            allowed_cli_models: allowed_cli_models.to_vec(),
+            allowed_cli_routing_entries: allowed_cli_routing_entries.to_vec(),
         },
     )
         .map_err(|err| DecisionFailure::new(err, "coordinator_decision", Some(output_text.clone())))?;
@@ -3550,7 +3965,7 @@ fn classify_recoverable_decision_error(err: &anyhow::Error) -> Option<Recoverabl
         return Some(RecoverableDecisionError {
             summary: "unsupported CLI model routing selection".to_string(),
             guidance: Some(
-                "Use a `cli_model` value listed in the schema and `cli_reasoning_effort` in {medium, high, xhigh}."
+                "Use a `cli_model` listed in the schema and a `cli_reasoning_effort` allowed for that model."
                     .to_string(),
             ),
         });
@@ -3977,35 +4392,37 @@ fn validate_phase(phase: Option<String>) -> Result<()> {
 
 fn parse_cli_reasoning_effort(value: &str) -> Result<ReasoningEffort> {
     let normalized = value.trim().to_ascii_lowercase();
-    if !AUTO_DRIVE_CLI_REASONING_LEVELS
-        .iter()
-        .any(|level| normalized == *level)
-    {
-        return Err(anyhow!(
-            "unsupported cli_reasoning_effort '{normalized}'; expected one of: {}",
-            AUTO_DRIVE_CLI_REASONING_LEVELS.join(", ")
-        ));
-    }
-
     match normalized.as_str() {
+        "minimal" => Ok(ReasoningEffort::Minimal),
+        "none" => Ok(ReasoningEffort::Minimal),
+        "low" => Ok(ReasoningEffort::Low),
         "medium" => Ok(ReasoningEffort::Medium),
         "high" => Ok(ReasoningEffort::High),
         "xhigh" => Ok(ReasoningEffort::XHigh),
-        _ => Err(anyhow!("unsupported cli_reasoning_effort '{normalized}'")),
+        _ => Err(anyhow!(
+            "unsupported cli_reasoning_effort '{normalized}'; expected one of: minimal, low, medium, high, xhigh"
+        )),
     }
 }
 
-fn normalize_cli_model(value: &str, allowed_cli_models: &[String]) -> Result<String> {
+fn normalize_cli_model(
+    value: &str,
+    allowed_cli_routing_entries: &[AutoDriveCliRoutingEntry],
+) -> Result<AutoDriveCliRoutingEntry> {
     let trimmed = value.trim();
-    for model in allowed_cli_models {
-        if trimmed.eq_ignore_ascii_case(model) {
-            return Ok(model.to_string());
+    for entry in allowed_cli_routing_entries {
+        if trimmed.eq_ignore_ascii_case(&entry.model) {
+            return Ok(entry.clone());
         }
     }
-    let expected_models = if allowed_cli_models.is_empty() {
+    let expected_models = if allowed_cli_routing_entries.is_empty() {
         "<none>".to_string()
     } else {
-        allowed_cli_models.join(", ")
+        allowed_cli_routing_entries
+            .iter()
+            .map(|entry| entry.model.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     Err(anyhow!(
         "unsupported cli_model '{trimmed}'; expected one of: {}",
@@ -4027,13 +4444,29 @@ fn validate_cli_model_selection(
         AutoCoordinatorStatus::Continue => {
             let model = cli_model
                 .ok_or_else(|| anyhow!("model response missing cli_model for continue"))?;
-            let reasoning = cli_reasoning_effort.ok_or_else(|| {
+            let reasoning_raw = cli_reasoning_effort.ok_or_else(|| {
                 anyhow!("model response missing cli_reasoning_effort for continue")
             })?;
 
-            let model = normalize_cli_model(&model, &options.allowed_cli_models)?;
-            let reasoning = parse_cli_reasoning_effort(&reasoning)?;
-            Ok((Some(model), Some(reasoning)))
+            let model =
+                normalize_cli_model(&model, &options.allowed_cli_routing_entries)?;
+            let reasoning = parse_cli_reasoning_effort(&reasoning_raw)?;
+            if !model.reasoning_levels.contains(&reasoning) {
+                let expected = model
+                    .reasoning_levels
+                    .iter()
+                    .map(|level| cli_reasoning_effort_to_str(*level))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "unsupported cli_reasoning_effort '{}' for cli_model '{}'; expected one of: {}",
+                    reasoning_raw,
+                    model.model,
+                    expected
+                ));
+            }
+
+            Ok((Some(model.model), Some(reasoning)))
         }
         AutoCoordinatorStatus::Success | AutoCoordinatorStatus::Failed => {
             if cli_model.is_some() {

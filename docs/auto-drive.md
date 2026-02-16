@@ -56,7 +56,13 @@ What Auto Drive is, how to start it, and how it behaves in Every Code.
 
 ## Settings (config.toml)
 - Top-level keys: `auto_drive_use_chat_model` (default false), `auto_drive_observer_cadence` (default 5).
-- `[auto_drive]` defaults: `review_enabled=true`, `agents_enabled=true`, `qa_automation_enabled=true`, `cross_check_enabled=true`, `observer_enabled=true`, `coordinator_routing=true`, `continue_mode="ten-seconds"`, `model="gpt-5.1"`, `model_reasoning_effort="high"`, `auto_resolve_review_attempts=5`.
+- `[auto_drive]` defaults: `review_enabled=true`, `agents_enabled=true`, `qa_automation_enabled=true`, `cross_check_enabled=true`, `observer_enabled=true`, `coordinator_routing=true`, `model_routing_enabled=true`, `continue_mode="ten-seconds"`, `model="gpt-5.1"`, `model_reasoning_effort="high"`, `auto_resolve_review_attempts=5`.
+- Routing entries live under `[[auto_drive.model_routing_entries]]` with:
+  - `model` (`gpt-*`),
+  - `enabled` (bool),
+  - `reasoning_levels` (array, any of `minimal|low|medium|high|xhigh`),
+  - `description` (free text shown to the coordinator as usage guidance).
+- If routing is enabled, at least one routing entry must remain enabled.
 - All of these can be changed from `/auto settings` in the TUI or directly in `config.toml`.
 
 ## Tips

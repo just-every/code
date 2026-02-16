@@ -889,6 +889,7 @@ impl App<'_> {
                     cross_check_enabled,
                     qa_automation_enabled,
                     model_routing_enabled,
+                    model_routing_entries,
                     continue_mode,
                 } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -898,6 +899,7 @@ impl App<'_> {
                             cross_check_enabled,
                             qa_automation_enabled,
                             model_routing_enabled,
+                            model_routing_entries,
                             continue_mode,
                         );
                     }
