@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.69] - 2026-02-15
+
+- TUI/Approvals: show structured network approval prompts with host/protocol context. (31646701, b527ee28, 2bced810)
+- Models: gate gpt-5.3-codex-spark behind pro-only auth capabilities. (d165389f)
+- Core/Auto Drive: add fallback routing when spark hits overflow or usage limits. (7973a790, 2a4c39fd)
+- TUI: preserve remote image attachments across resume and backtrack flows. (26a7cd21)
+
 ## [0.6.68] - 2026-02-14
 
 - Auto Drive: add per-turn model routing and rename decision schema. (fb17527)
