@@ -38,6 +38,8 @@ enum AgentTaskKind {
 
 const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
     include_str!("../../templates/search_tool/developer_instructions.md");
+const SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
+const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -738,6 +740,13 @@ pub(super) async fn submission_loop(
                             let mut st = sess_arc.state.lock().unwrap();
                             st.history = ConversationHistory::new();
                             st.history.record_items(reconstructed.iter());
+                        }
+                        if let Some(selected_tools) =
+                            extract_mcp_tool_selection_from_history(&reconstructed)
+                        {
+                            sess_arc.set_mcp_tool_selection(selected_tools);
+                        } else {
+                            sess_arc.clear_mcp_tool_selection();
                         }
                         replay_history_items = Some(reconstructed);
                     }
@@ -1659,9 +1668,6 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
             InputItem::Text { text } if text == PENDING_ONLY_SENTINEL
         );
 
-    // MCP tool search selections are scoped to a single top-level turn.
-    sess.clear_mcp_tool_selection();
-
     // Debug logging for ephemeral images
     let ephemeral_count = input
         .iter()
@@ -2068,8 +2074,6 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         exit_review_mode(sess.clone(), sub_id.clone(), output).await;
     }
 
-    sess.clear_mcp_tool_selection();
-
     sess.remove_task(&sub_id);
     let event = sess.make_event(
         &sub_id,
@@ -2137,6 +2141,7 @@ async fn run_turn(
     let mut did_context_model_fallback = false;
     let mut did_usage_limit_model_fallback = false;
     let mut forced_model_override: Option<String> = None;
+    let mut fallback_metadata_warning_sent = false;
     // Attempt input starts as the provided input, and may be augmented with
     // items from a previous dropped stream attempt so we don't lose progress.
     let mut attempt_input: Vec<ResponseItem> = input.clone();
@@ -2183,7 +2188,7 @@ async fn run_turn(
             model_descriptions: sess.model_descriptions.clone(),
         };
 
-        sess.apply_remote_model_overrides(&mut prompt).await;
+        let used_fallback_model_metadata = sess.apply_remote_model_overrides(&mut prompt).await;
 
         if let Some(override_model) = forced_model_override.clone() {
             let override_family = if let Some(remote) = sess.remote_models_manager.as_ref() {
@@ -2202,6 +2207,26 @@ async fn run_turn(
             };
             prompt.model_override = Some(override_model);
             prompt.model_family_override = Some(override_family);
+        }
+
+        if used_fallback_model_metadata
+            && forced_model_override.is_none()
+            && !fallback_metadata_warning_sent
+        {
+            let resolved_model_slug = prompt
+                .model_override
+                .clone()
+                .unwrap_or_else(|| sess.client.get_model());
+            sess.send_event(sess.make_event(
+                &sub_id,
+                EventMsg::Warning(crate::protocol::WarningEvent {
+                    message: format!(
+                        "Model metadata for `{resolved_model_slug}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+                    ),
+                }),
+            ))
+            .await;
+            fallback_metadata_warning_sent = true;
         }
 
         let effective_family = prompt
@@ -2680,20 +2705,70 @@ fn select_mcp_tools_for_turn(
         return mcp_tools;
     }
 
-    let Some(selected_tools) = selected_tools else {
-        return HashMap::new();
-    };
-
-    let selected: std::collections::HashSet<String> = selected_tools.into_iter().collect();
+    let selected: std::collections::HashSet<String> = selected_tools
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     mcp_tools
         .into_iter()
-        .filter(|(name, _tool)| selected.contains(name))
+        .filter(|(name, _tool)| {
+            if !name.starts_with(CODEX_APPS_TOOL_PREFIX) {
+                return true;
+            }
+            selected.contains(name)
+        })
         .collect()
+}
+
+fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<Vec<String>> {
+    let mut search_call_ids = HashSet::new();
+    let mut active_selected_tools: Option<Vec<String>> = None;
+
+    for item in history {
+        match item {
+            ResponseItem::FunctionCall { name, call_id, .. } => {
+                if name == SEARCH_TOOL_BM25_TOOL_NAME {
+                    search_call_ids.insert(call_id.clone());
+                }
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                if !search_call_ids.contains(call_id) {
+                    continue;
+                }
+                let Some(content) = output.body.to_text() else {
+                    continue;
+                };
+                let Ok(payload) = serde_json::from_str::<serde_json::Value>(&content) else {
+                    continue;
+                };
+                let Some(selected_tools) = payload
+                    .get("active_selected_tools")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                let Some(selected_tools) = selected_tools
+                    .iter()
+                    .map(|value| value.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                active_selected_tools = Some(selected_tools);
+            }
+            _ => {}
+        }
+    }
+
+    active_selected_tools
 }
 
 #[cfg(test)]
 mod mcp_tool_selection_tests {
+    use super::extract_mcp_tool_selection_from_history;
     use super::select_mcp_tools_for_turn;
+    use code_protocol::models::FunctionCallOutputPayload;
+    use code_protocol::models::ResponseItem;
     use mcp_types::Tool;
     use mcp_types::ToolInputSchema;
     use std::collections::HashMap;
@@ -2714,30 +2789,43 @@ mod mcp_tool_selection_tests {
     }
 
     #[test]
-    fn search_tool_enabled_hides_mcp_tools_until_selection_exists() {
+    fn search_tool_enabled_hides_apps_tools_without_selection() {
         let mcp_tools = HashMap::from([
-            ("mcp__one__a".to_string(), test_tool("a")),
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                test_tool("calendar_create_event"),
+            ),
             ("mcp__two__b".to_string(), test_tool("b")),
         ]);
 
         let selected = select_mcp_tools_for_turn(mcp_tools, None, true);
-        assert!(selected.is_empty());
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains_key("mcp__two__b"));
     }
 
     #[test]
-    fn search_tool_enabled_returns_only_selected_mcp_tools() {
+    fn search_tool_enabled_includes_selected_apps_plus_non_apps() {
         let mcp_tools = HashMap::from([
-            ("mcp__one__a".to_string(), test_tool("a")),
-            ("mcp__two__b".to_string(), test_tool("b")),
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                test_tool("calendar_create_event"),
+            ),
+            (
+                "mcp__codex_apps__calendar_list_events".to_string(),
+                test_tool("calendar_list_events"),
+            ),
+            ("mcp__rmcp__echo".to_string(), test_tool("echo")),
         ]);
 
         let selected = select_mcp_tools_for_turn(
             mcp_tools,
-            Some(vec!["mcp__two__b".to_string()]),
+            Some(vec!["mcp__codex_apps__calendar_list_events".to_string()]),
             true,
         );
-        assert_eq!(selected.len(), 1);
-        assert!(selected.contains_key("mcp__two__b"));
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains_key("mcp__rmcp__echo"));
+        assert!(selected.contains_key("mcp__codex_apps__calendar_list_events"));
+        assert!(!selected.contains_key("mcp__codex_apps__calendar_create_event"));
     }
 
     #[test]
@@ -2751,6 +2839,93 @@ mod mcp_tool_selection_tests {
         assert_eq!(selected.len(), 2);
         assert!(selected.contains_key("mcp__one__a"));
         assert!(selected.contains_key("mcp__two__b"));
+    }
+
+    #[test]
+    fn restore_selection_reads_latest_valid_search_output() {
+        let history = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-shell".to_string(),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search-1".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search-1".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": ["mcp__codex_apps__calendar_create_event"]
+                    })
+                    .to_string(),
+                ),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search-2".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search-2".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": [
+                            "mcp__codex_apps__calendar_list_events",
+                            "mcp__codex_apps__calendar_delete_event"
+                        ]
+                    })
+                    .to_string(),
+                ),
+            },
+        ];
+
+        let selected = extract_mcp_tool_selection_from_history(&history);
+        assert_eq!(
+            selected,
+            Some(vec![
+                "mcp__codex_apps__calendar_list_events".to_string(),
+                "mcp__codex_apps__calendar_delete_event".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn restore_selection_ignores_non_search_and_invalid_payloads() {
+        let history = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-shell".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-shell".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": ["mcp__codex_apps__ignored"]
+                    })
+                    .to_string(),
+                ),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search".to_string(),
+                output: FunctionCallOutputPayload::from_text("not-json".to_string()),
+            },
+        ];
+
+        assert!(extract_mcp_tool_selection_from_history(&history).is_none());
     }
 }
 
@@ -3587,7 +3762,7 @@ async fn handle_function_call(
         "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
-        "search_tool_bm25" => handle_search_tool_bm25(sess, &ctx, arguments).await,
+        SEARCH_TOOL_BM25_TOOL_NAME => handle_search_tool_bm25(sess, &ctx, arguments).await,
         _ => {
             if sess.is_dynamic_tool(&name) {
                 return handle_dynamic_tool_call(sess, &ctx, name, arguments).await;
@@ -3909,7 +4084,7 @@ async fn handle_search_tool_bm25(
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
                     body: code_protocol::models::FunctionCallOutputBody::Text(format!(
-                        "invalid search_tool_bm25 arguments: {err}"
+                        "invalid {SEARCH_TOOL_BM25_TOOL_NAME} arguments: {err}"
                     )),
                     success: Some(false),
                 },

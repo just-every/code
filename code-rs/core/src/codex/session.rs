@@ -489,7 +489,7 @@ impl Session {
         &self.cwd
     }
 
-    pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) {
+    pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) -> bool {
         let configured_model = self.client.get_model();
 
         if prompt.model_override.is_none() {
@@ -520,16 +520,24 @@ impl Session {
             }
         }
 
+        let mut used_fallback_model_metadata = false;
         if prompt.model_family_override.is_none() {
             let model_slug = prompt
                 .model_override
                 .as_deref()
                 .unwrap_or(configured_model.as_str());
-            let base_family = find_family_for_model(model_slug)
-                .unwrap_or_else(|| derive_default_model_family(model_slug));
+            let base_family = if let Some(family) = find_family_for_model(model_slug) {
+                family
+            } else {
+                used_fallback_model_metadata = true;
+                derive_default_model_family(model_slug)
+            };
             let personality = self.client.model_personality();
 
             let family = if let Some(remote) = self.remote_models_manager.as_ref() {
+                if remote.has_model_slug(model_slug).await {
+                    used_fallback_model_metadata = false;
+                }
                 remote
                     .apply_remote_overrides_with_personality(
                         model_slug,
@@ -542,6 +550,7 @@ impl Session {
             };
             prompt.model_family_override = Some(family);
         }
+        used_fallback_model_metadata
     }
 
     pub(crate) async fn record_bridge_event(&self, text: String) {
@@ -952,6 +961,17 @@ impl Session {
         }
         state.selected_mcp_tools.sort();
         state.selected_mcp_tools.clone()
+    }
+
+    pub(super) fn set_mcp_tool_selection(&self, tool_names: Vec<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.selected_mcp_tools.clear();
+        for tool_name in tool_names {
+            if !state.selected_mcp_tools.iter().any(|name| name == &tool_name) {
+                state.selected_mcp_tools.push(tool_name);
+            }
+        }
+        state.selected_mcp_tools.sort();
     }
 
     pub(super) fn get_mcp_tool_selection(&self) -> Option<Vec<String>> {
@@ -2411,6 +2431,7 @@ impl State {
             // do not reset provider ordering mid-session.
             request_ordinal: self.request_ordinal,
             background_seq_by_sub_id: self.background_seq_by_sub_id.clone(),
+            selected_mcp_tools: self.selected_mcp_tools.clone(),
             dry_run_guard: self.dry_run_guard.clone(),
             next_internal_sub_id: self.next_internal_sub_id,
             context_timeline: self.context_timeline.clone(),

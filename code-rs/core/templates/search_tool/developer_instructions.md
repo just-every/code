@@ -1,6 +1,7 @@
 # MCP tool discovery
 
-When `search_tool_bm25` is available, MCP tools (`mcp__...`) are hidden until you search for them.
+When `search_tool_bm25` is available, Codex Apps MCP tools (`mcp__codex_apps__...`) are hidden until you search for them.
+Non-Apps MCP tools remain available without searching.
 
 Follow this workflow:
 
@@ -8,9 +9,8 @@ Follow this workflow:
    - `query` (required): focused terms that describe the capability you need.
    - `limit` (optional): maximum number of tools to return (default `8`).
 2. Use the returned `tools` list to decide which MCP tools are relevant.
-3. Matching tools are added to `active_selected_tools`. Only tools in `active_selected_tools` are available for the remainder of the current turn.
-4. Repeated searches in the same turn are additive: new matches are unioned into `active_selected_tools`.
-5. `active_selected_tools` resets at the start of the next turn.
+3. Matching tools are added to `active_selected_tools` and remain available for the remainder of the current session/thread.
+4. Repeated searches in the same session/thread are additive: new matches are unioned into `active_selected_tools`.
 
 Notes:
 - Core tools remain available without searching.
@@ -22,7 +22,6 @@ Notes:
   - `title`
   - `description`
   - `connector_name`
-  - `connector_id`
   - input schema property keys (`input_keys`)
 - When the user asks to search/lookup/query any external system (logs, tickets, metrics, Slack, etc.), you must call `search_tool_bm25` first before running any shell command or repo search.
 - Only use shell commands if (a) MCP tools for that system are not available or not sufficient, and (b) the user explicitly wants a local file/CLI search.
