@@ -536,6 +536,11 @@
 - TUI: keep multiline slash commands intact when dispatching plan or solve sequences. (8d9398d)
 - Stability: recover gracefully when the working directory vanishes mid-run instead of crashing. (97b956f)
 
+## [0.4.12] - 2025-11-08
+
+- Auto Drive/Compaction: refresh the compaction prompt and shorten rate-limit waits so automation resumes faster after throttles. (482fe13, a40fe2c)
+- TUI/Browser: prevent foreign background events from flooding the embedded console in browser sessions. (a7da0eb)
+
 ## [0.4.11] - 2025-11-07
 
 - Model: add gpt-5-codex-mini presets for quick access to lighter variants. (febfa7e)
@@ -543,6 +548,12 @@
 - Client: normalize retry-after handling, show resume times, and stop retrying fatal quota errors so recoveries are predictable. (0c82670, 0e0e85c, d996507)
 - CLI: enable CTRL-n and CTRL-p to navigate slash commands, files, and history without leaving the keyboard. (e30f651)
 - SDK: add network_access and web_search toggles to the TypeScript client for richer tool control. (c76528c)
+
+## [0.4.10] - 2025-11-07
+
+- Auto Drive: add seeded planning turns, richer status fields, reliability docs, and browser screenshots so `/auto` transcripts stay contextual. (82d4519, 77d2169, 9727a05)
+- TUI/Settings: move auto-resolve controls into Settings → Review and fix composer spacers/AltGr text so layouts stay steady. (7172f08, 10482ee, f9fc887, 648993a)
+- Core/Env: include the current date in environment context and block DevTools shortcuts inside embedded browsers. (ed823f3, e2369fb)
 
 ## [0.4.9] - 2025-11-03
 
@@ -566,6 +577,12 @@
 - Build: drop the release notes gate so `build-fast` runs cleanly in CI. (b0bfd1f)
 - CLI: publish the v0.4.6 package metadata for all platform bundles. (ceccd4b)
 
+## [0.4.5] - 2025-10-30
+
+- Auto Drive: refresh the coordinator prompt, prefer reasoning-high GPT-5 defaults, and relax agent limits so `/auto` completes more reliably. (d31fd3d, 4fdea51, 467009b)
+- TUI/Limits: realign columns and hide stale compaction data in the history view. (29d8d5e)
+- CI/Preview: add a fallback build path for external PRs so preview artifacts still publish. (c289579)
+
 ## [0.4.4] - 2025-10-29
 
 - TUI: Interrupts in-flight runs when `/new` starts a fresh chat so responses never bleed between sessions. (0421f643)
@@ -573,6 +590,12 @@
 - Agents: Refreshes the Enabled toggle UX and persists state immediately in history. (56a0b37d)
 - Config: Surfaces legacy `~/.codex/prompts` directories so custom prompts load automatically. (0be4f19c)
 - Rollout: Sorts session history by latest activity to make resume picks faster. (9f6481a1)
+
+## [0.4.3] - 2025-10-27
+
+- TUI/Undo: ship multi-turn undo operations, async ghost commit, and aggregated output cards so recoveries stay accurate. (afc4eaa, e92c4f6, 3ab6028)
+- Conversations: annotate threads with optional `model_provider`, allow provider filtering, and capture feedback uploads for regression triage. (15fa228, 5907422, f178805)
+- MCP/Tools: gate login after `mcp add`, redact env vars in listings, and upgrade rmcp to 0.8.3 for safer onboarding. (e2e1b65, 817d150, abccd3e)
 
 ## [0.4.2] - 2025-10-27
 
@@ -607,6 +630,17 @@
 - CLI: Prefer rollout `.jsonl` transcripts when resuming sessions so `code resume` stays reliable after snapshots. (7f69aa55)
 - Core/Auth: Automatically use stored API keys for enterprise ChatGPT plans and honor retry hints from rate-limit errors. (fa1bd81f)
 
+## [0.2.186] - 2025-10-06
+
+- Tools/Exec: enable parallel tool calls, add freeform `apply_patch` output, and emit only the final exec message to keep transcripts tidy. (dc3c6bf, 4764fc1, 042d4d5)
+- CLI/Sandbox: add `codex sandbox {linux|macos}` and low-level stdin fixes so sandbox sessions remain stable offline. (77a8b7f, a30a902)
+- Auto Drive/TUI: add setup toggles, skip review waits when disabled, and polish exploring headers plus truncated exec hints. (40ff662, e39685b, 5f84f7c)
+
+## [0.2.185] - 2025-10-03
+
+- CLI/Login: replace the deprecated `--api-key` flag with `--with-api-key` and restore color detection so `codex login` behaves on every shell. (69ac515, 1d94b91)
+- Search/Composer: include filenames in fuzzy search results, fix Tab+Enter handling in slash commands, and make the model effort picker dismissible with Esc. (7be3b48, 1e4541b, 16b6951, 9617b69)
+
 ## [0.2.184] - 2025-10-03
 
 - Core: Record pid alongside port in server info to simplify local process debugging. (3778659)
@@ -626,6 +660,12 @@
 - Protocol: introduce MCP shim and sync the tool stack for new runtime integrations. (d0a0f01)
 - Auto-drive: forward CLI context, export rendered history, and surface progress for coordinator runs. (0d2e51f, ec0bbc4, bccd39f)
 - TUI: open the undo timeline overlay on double Esc and persist auto-resolve workflows between sessions. (a658b1a, e1916f7, 4e35c09)
+
+## [0.2.181] - 2025-10-01
+
+- Cloud Tasks: add backend support plus the `/cloud` command so queued jobs, browser uploads, and task status live in one panel. (eec6aa1, 73fff03)
+- CLI/Exec: split `codex mcp` into `codex mcp-server` and `codex app-server`, scaffold the TypeScript SDK, and enable process hardening for release builds. (d9dbf48, adbc38a, b8e1fe6)
+- Browser/TUI: retry `goto` after recoverable failures and promote the cloud command in quick picks for faster discovery. (c698bc3, 32b1899)
 
 ## [0.2.180] - 2025-10-01
 
@@ -687,6 +727,11 @@
 - Auto-drive: stream coordinator reasoning, keep plan context, and smooth heading presentation. (fc8da8cf, 0d5bc1f1, 45a6fb94, aaa91865)
 - TUI/History: route diff and explore cells through domain events for consistent playback. (0ae94dca, 0d5d57ee)
 
+## [0.2.171] - 2025-09-27
+
+- Config/Subagents: document the long-context `context-collector` agent, `/context` helper, and env overrides so coding runs can pull repo summaries on demand. (3484b7f)
+- Profiles: drop the always-on Codex requirement from `/plan`, `/solve`, and `/code` defaults so customized agent rosters stay respected. (1e0f459)
+
 ## [0.2.170] - 2025-09-27
 
 - TUI/History: drive exec, assistant, explore, and rate-limit cells from domain events for consistent streaming. (38abccc, 5409493, e6e72d3, f851369, d7e9ee7)
@@ -694,6 +739,12 @@
 - Usage/Rate-limits: compact persisted stats, relog after resets, and persist reset state to keep quotas current. (7573b40, bf325f7, 51fd601)
 - TUI/Accounts: prioritize ChatGPT accounts in login flows and restore the label prefix for clarity. (1db6193, 489bfb1)
 - UX: show a session resume hint on exit, surface Zed model selection, and restore Option+Enter newline plus Cmd+Z undo. (13dd4ca, 0e39d1f, eed1952)
+
+## [0.2.169] - 2025-09-26
+
+- TUI/Streaming: drive merged exec and assistant cells directly from recorded state so reasoning stays ordered even when cells merge. (1377166, 8f295c5, ae43387)
+- Core/Safety: add a potentially dangerous command check before running shell snippets to block destructive invocations. (eb2b739)
+- Security: introduce `CODEX_SECURE_MODE=1` to strip process observability in hardened environments. (d61dea6)
 
 ## [0.2.168] - 2025-09-26
 
@@ -732,6 +783,12 @@
 - CLI/Postinstall: restore shim detector and avoid overwriting existing code shim so installs stay intact. (ff63c4d0, 480640fa, ce317cbf)
 - Core/Config: allow overriding OpenAI wire API and support OpenRouter routing metadata for custom deployments. (a49cd2cd, 060cd5e2)
 - Core/Agents: cap agent previews and handle updated truncation tuple to stay within API limits. (a52dd361, c47f6767)
+
+## [0.2.163] - 2025-09-25
+
+- TUI/Agents: add overlays for agent logs and batch groups plus reliable ESC dismissal so multi-agent runs stay readable. (d2522c9, d3211d7, a42e0cc)
+- Limits/Usage: track per-account rate limits/tokens and surface a tabbed `/limits` overlay before throttles hit. (78038b8, eab74e1)
+- Undo/Git tooling: add workspace snapshot undo, VT100 overlays, and a `/demo` history generator to rehearse flows safely. (37f996a, 902fa5e, de276eb)
 
 ## [0.2.162] - 2025-09-22
 
@@ -891,6 +948,19 @@
 ## [0.2.137] - 2025-09-12
 
 - Proxy: default Responses v1; fail-fast on 5xx; add STRICT_HEADERS and RESPONSES_BETA override. (acfaeb7d, 1ddedb8b)
+
+## [0.2.134] - 2025-09-12
+
+- Release/Homebrew: compute bottle hashes from local artifacts and retry/backoff remote fetches so CDN propagation no longer blocks releases. (fd38d77)
+- Dev/Proxy: add `scripts/openai-proxy.js` to mirror CI proxy constraints for local SSE testing. (7e9203c)
+
+## [0.2.135] - 2025-09-12
+
+- CI/Proxy: centralize the SSE-safe OpenAI proxy script across upstream-merge, issue, and release workflows for consistent behavior. (7304efe)
+
+## [0.2.136] - 2025-09-12
+
+- Proxy Debug: add toggles for keepalive, gzip, session IDs, idempotency keys, and error-body logging to chase Responses API 500s. (a88f97c)
 
 ## [0.2.133] - 2025-09-12
 
@@ -1186,6 +1256,10 @@
 - TUI: apply UI-themed JSON highlighting for stdout; clear ANSI backgrounds so output inherits theme. (722fb439)
 - Core: replace fragile tree-sitter query with a heredoc scanner in embedded apply_patch to prevent panics. (00ffb316)
 
+## [0.2.82] - 2025-09-07
+
+- Exec/Apply Patch: split embedded apply_patch heredocs into a dedicated Updated block so combined scripts keep executing after edits. (0e2edea)
+
 ## [0.2.81] - 2025-09-07
 
 - CI: run TUI invariants guard only on TUI changes and downgrade to warnings to reduce false failures. (d41da1d1, 53558af0)
@@ -1290,6 +1364,10 @@
 - TUI: inline images only; keep non-image paths as text; drop pending file tracking. (ff19a9d9)
 - TUI: align composer/history wrapping; add sanitize markers. (9e3e0d86)
 - Core: embed display version via tiny crate; remove CODE_VERSION env. (32f18333)
+
+## [0.2.62] - 2025-09-05
+
+- Release: align the crate/npm 0.2.62 version and make publish steps idempotent for per-target optional dependencies. (eeb8670, 6de0e0c)
 
 ## [0.2.61] - 2025-09-05
 
