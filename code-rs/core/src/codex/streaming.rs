@@ -1559,18 +1559,37 @@ fn context_window_for_model(model: &str) -> Option<u64> {
         .and_then(|family| family.context_window)
 }
 
+#[derive(Debug, Clone)]
+struct ContextFallbackCandidate {
+    model: String,
+    context_window: Option<u64>,
+    priority: i32,
+}
+
+fn is_deprecated_context_fallback_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower == "gpt-4.1" || lower.starts_with("gpt-4.1-")
+}
+
 fn choose_larger_context_model_from_candidates(
     current_model: &str,
-    candidates: Vec<(String, Option<u64>)>,
+    candidates: Vec<ContextFallbackCandidate>,
 ) -> Option<String> {
     let current_window = context_window_for_model(current_model).unwrap_or(0);
-    let mut best: Option<(u64, String)> = None;
+    let mut best: Option<(u64, i32, String)> = None;
 
-    for (model, candidate_window) in candidates {
+    for candidate in candidates {
+        let model = candidate.model;
         if model.eq_ignore_ascii_case(current_model) {
             continue;
         }
-        let Some(window) = candidate_window.or_else(|| context_window_for_model(&model)) else {
+        if is_deprecated_context_fallback_model(&model) {
+            continue;
+        }
+        let Some(window) = candidate
+            .context_window
+            .or_else(|| context_window_for_model(&model))
+        else {
             continue;
         };
         if window <= current_window {
@@ -1578,18 +1597,20 @@ fn choose_larger_context_model_from_candidates(
         }
 
         match best {
-            Some((best_window, _)) if window <= best_window => {}
+            Some((best_window, _, _)) if window < best_window => {}
+            Some((best_window, best_priority, _))
+                if window == best_window && candidate.priority < best_priority => {}
             _ => {
-                best = Some((window, model));
+                best = Some((window, candidate.priority, model));
             }
         }
     }
 
-    best.map(|(_, model)| model)
+    best.map(|(_, _, model)| model)
 }
 
 async fn choose_larger_context_model(sess: &Arc<Session>, current_model: &str) -> Option<String> {
-    let mut candidates: Vec<(String, Option<u64>)> = Vec::new();
+    let mut candidates: Vec<ContextFallbackCandidate> = Vec::new();
 
     if let Some(remote) = sess.remote_models_manager.as_ref() {
         for model in remote.remote_models_snapshot().await {
@@ -1600,12 +1621,13 @@ async fn choose_larger_context_model(sess: &Arc<Session>, current_model: &str) -
                     u64::try_from(window).ok()
                 }
             });
-            candidates.push((model.slug, context_window));
+            candidates.push(ContextFallbackCandidate {
+                model: model.slug,
+                context_window,
+                priority: model.priority,
+            });
         }
     }
-
-    // Best-effort fallback when remote metadata is unavailable.
-    candidates.push(("gpt-4.1".to_string(), context_window_for_model("gpt-4.1")));
 
     choose_larger_context_model_from_candidates(current_model, candidates)
 }
@@ -12794,6 +12816,7 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 mod tests {
     use super::{
         choose_larger_context_model_from_candidates,
+        ContextFallbackCandidate,
         format_exec_output_with_limit,
         is_context_overflow_stream_error,
         is_usage_limit_stream_error,
@@ -12880,13 +12903,41 @@ mod tests {
     #[test]
     fn picks_larger_context_model_from_candidates() {
         let chosen = choose_larger_context_model_from_candidates(
-            "gpt-5.3-codex-spark",
+            "o3",
             vec![
-                ("gpt-5.3-codex".to_string(), Some(272_000)),
-                ("gpt-4.1".to_string(), Some(1_047_576)),
+                ContextFallbackCandidate {
+                    model: "gpt-5.3-codex".to_string(),
+                    context_window: Some(272_000),
+                    priority: 10,
+                },
+                ContextFallbackCandidate {
+                    model: "gpt-5.2-codex".to_string(),
+                    context_window: Some(272_000),
+                    priority: 20,
+                },
             ],
         );
-        assert_eq!(chosen.as_deref(), Some("gpt-4.1"));
+        assert_eq!(chosen.as_deref(), Some("gpt-5.2-codex"));
+    }
+
+    #[test]
+    fn larger_context_fallback_skips_gpt_4_1_family() {
+        let chosen = choose_larger_context_model_from_candidates(
+            "gpt-5.3-codex-spark",
+            vec![
+                ContextFallbackCandidate {
+                    model: "gpt-4.1".to_string(),
+                    context_window: Some(1_047_576),
+                    priority: 100,
+                },
+                ContextFallbackCandidate {
+                    model: "gpt-5.2-codex".to_string(),
+                    context_window: Some(400_000),
+                    priority: 10,
+                },
+            ],
+        );
+        assert_eq!(chosen.as_deref(), Some("gpt-5.2-codex"));
     }
 
     #[test]
