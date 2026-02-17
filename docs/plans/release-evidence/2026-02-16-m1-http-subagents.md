@@ -48,8 +48,8 @@ All commands below were run locally from repo root.
 
 | Gate | Command | Result | Evidence |
 |---|---|---|---|
-| Build gate | `./build-fast.sh` | Pass | Binary hash `2348403bb23628b0cb704f5f56575abf439035ac268f97e4f3f552a76a0b8596` |
-| Pre-release gate | `./pre-release.sh` | Pass | `nextest` run ID `3b11d2b4-2e69-4556-93b9-e90823e75fe4` (1325 passed, 4 skipped) |
+| Build gate | `./build-fast.sh` | Pass | Binary hash `f8e5cf244517e86f0790514df4ed6f4577910c73b5d54e3b8854b804291dc1de` |
+| Pre-release gate | `./pre-release.sh` | Pass | `nextest` run ID `d3a38480-1f55-4698-ac7a-1aede91170ff` (1364 passed, 4 skipped) |
 
 ## Behavioral Check Boundaries
 

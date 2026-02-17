@@ -82,18 +82,36 @@ Notes:
 
 ## Post-Edit Gate Re-Run
 
-These were re-run after the auto-review P1 write-mode HTTP semantics fix and release-monitoring/smoke automation hardening changes.
+These were re-run after the auto-review P1 write-mode HTTP semantics fix, release-monitoring/smoke automation hardening changes, and merge with `origin/main`.
 
 | Gate | Command | Result |
 |---|---|---|
 | Local build gate | `./build-fast.sh` | Pass |
-| Local pre-release gate | `./pre-release.sh` | Pass (`nextest` run ID `3b11d2b4-2e69-4556-93b9-e90823e75fe4`, 1325 passed / 4 skipped) |
+| Local pre-release gate | `./pre-release.sh` | Pass (`nextest` run ID `d3a38480-1f55-4698-ac7a-1aede91170ff`, 1364 passed / 4 skipped) |
+
+## Fresh Live Release Run Attempt (Post-Change)
+
+Goal was to push the post-change commits and validate a fresh `release.yml` run.
+
+| Step | Command | Result |
+|---|---|---|
+| Push to main | `git push origin main` | Blocked: `remote: Permission to just-every/code.git denied to hermia-ai` + HTTP 403 |
+| Check GH CLI auth | `gh auth status -h github.com` | No authenticated GitHub host |
+| Check token env | `env | grep -E '^(GH_TOKEN|GITHUB_TOKEN)='` | No token present |
+| Check SSH credential path | `ssh -o BatchMode=yes -T git@github.com` | Blocked: `Permission denied (publickey)` |
+
+Exhaustion outcome:
+- No available credential in this environment can push to `just-every/code`, so a fresh post-change live release run cannot be triggered from here.
+- Commits prepared locally for landing:
+  - `58e91d6f6` (`feat(core/release): ship HTTP agents and release hardening`)
+  - `939c76d19` (`Merge origin/main: sync upstream release updates and keep Hermia deployment hardening`)
 
 ## Final GO/NO-GO
 
 | Item | Status | Evidence |
 |---|---|---|
 | Run monitoring without authenticated `gh` | GO | `scripts/wait-for-gh-run.sh` succeeded via API fallback for both `--run` and `--workflow --branch` paths with `GH_TOKEN`/`GITHUB_TOKEN` unset. |
-| Cross-platform smoke enforcement before publish | GO | `release.yml` now includes `cross-platform-artifact-smoke` (linux x64/arm64, macOS x64/arm64, windows x64), and `release` depends on it. |
+| Cross-platform smoke enforcement before publish | GO | `release.yml` includes `cross-platform-artifact-smoke` (linux x64/arm64, macOS x64/arm64, windows x64), and `release` depends on it. |
 | Private-repo monitoring without auth | NO-GO boundary | REST fallback can require token for private repositories; current proof is for public repo `just-every/code`. |
-| Published-run execution evidence for new automation | NO-GO boundary | Automation is configured and validated statically; full live proof appears on next release workflow run. |
+| Fresh post-change live release run | NO-GO (hard permission block) | Push to `origin/main` blocked by 403 (no usable HTTPS/SSH credential in environment). |
+| Published-run execution evidence for new automation | NO-GO boundary | Blocked until push permission is available and a new release workflow run executes. |
