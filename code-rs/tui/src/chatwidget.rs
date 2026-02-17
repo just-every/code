@@ -30309,6 +30309,72 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn background_review_findings_are_forwarded_to_coordinator_resume() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::AwaitingReview {
+            diagnostics_pending: false,
+        });
+
+        chat.auto_history.replace_all(vec![code_protocol::models::ResponseItem::Message {
+            id: Some("seed-item".to_string()),
+            role: "user".to_string(),
+            content: vec![code_protocol::models::ContentItem::InputText {
+                text: "seed transcript".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        }]);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: std::time::Instant::now(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            1,
+            Some("needs work".to_string()),
+            None,
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let mut transcript = String::new();
+        for item in chat.auto_history.raw_snapshot().iter() {
+            if let code_protocol::models::ResponseItem::Message { content, .. } = item {
+                for content_item in content {
+                    match content_item {
+                        code_protocol::models::ContentItem::InputText { text }
+                        | code_protocol::models::ContentItem::OutputText { text } => {
+                            transcript.push_str(text);
+                            transcript.push('\n');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        assert!(
+            transcript.contains("Background auto-review completed and reported 1 issue(s)"),
+            "auto review findings should be present when auto drive resumes"
+        );
+        assert!(
+            transcript.contains("Summary: needs work"),
+            "auto review summary should be forwarded to the coordinator"
+        );
+    }
+
+    #[test]
     fn background_review_busy_path_enqueues_developer_note_with_merge_hint() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -35547,6 +35613,14 @@ impl ChatWidget<'_> {
             inflight_base,
             inflight_snapshot,
         );
+
+        // Auto review findings are inserted as history notices, but Auto Drive
+        // resumes from cached conversation state. Rebuild before resuming so
+        // the coordinator receives the latest background review context.
+        if self.auto_state.is_active() {
+            self.rebuild_auto_history();
+        }
+
         self.maybe_resume_auto_after_review();
         self.request_redraw();
     }
