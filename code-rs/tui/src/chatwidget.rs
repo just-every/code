@@ -37,6 +37,7 @@ use code_core::config::Config;
 use code_core::git_info::CommitLogEntry;
 use code_core::config_types::AgentConfig;
 use code_core::config_types::AutoDriveContinueMode;
+use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::Notifications;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::TextVerbosity;
@@ -16921,6 +16922,13 @@ impl ChatWidget<'_> {
         let cross = self.auto_state.cross_check_enabled;
         let qa = self.auto_state.qa_automation_enabled;
         let model_routing = self.config.auto_drive.model_routing_enabled;
+        let model_routing_entries = self.config.auto_drive.model_routing_entries.clone();
+        let routing_model_options = self
+            .available_model_presets()
+            .into_iter()
+            .map(|preset| preset.model)
+            .filter(|model| model.to_ascii_lowercase().starts_with("gpt-"))
+            .collect::<Vec<_>>();
         let mode = self.auto_state.continue_mode;
         let view = AutoDriveSettingsView::new(
             self.app_event_tx.clone(),
@@ -16932,6 +16940,8 @@ impl ChatWidget<'_> {
             cross,
             qa,
             model_routing,
+            model_routing_entries,
+            routing_model_options,
             mode,
         );
         AutoDriveSettingsContent::new(view)
@@ -18527,6 +18537,29 @@ fi\n\
             auto_config.model = code_auto_drive_core::MODEL_SLUG.to_string();
         }
         auto_config.model_reasoning_effort = self.config.auto_drive.model_reasoning_effort;
+        let available_gpt_models = self
+            .available_model_presets()
+            .into_iter()
+            .map(|preset| preset.model)
+            .filter(|model| model.to_ascii_lowercase().starts_with("gpt-"))
+            .collect::<Vec<_>>();
+        auto_config.auto_drive.model_routing_entries = Self::sanitize_auto_drive_routing_entries(
+            auto_config.auto_drive.model_routing_entries.clone(),
+            &available_gpt_models,
+        );
+        if auto_config.auto_drive.model_routing_enabled
+            && !auto_config
+                .auto_drive
+                .model_routing_entries
+                .iter()
+                .any(|entry| entry.enabled)
+        {
+            auto_config.auto_drive.model_routing_enabled = false;
+            self.bottom_pane.flash_footer_notice(
+                "Auto Drive model routing disabled for this run because no enabled routing entries are available."
+                    .to_string(),
+            );
+        }
 
         let mut pid_guard = AutoDrivePidFile::write(
             &self.config.code_home,
@@ -18657,8 +18690,28 @@ fi\n\
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
         model_routing_enabled: bool,
+        model_routing_entries: Vec<AutoDriveModelRoutingEntry>,
         continue_mode: AutoContinueMode,
     ) {
+        let available_gpt_models = self
+            .available_model_presets()
+            .into_iter()
+            .map(|preset| preset.model)
+            .filter(|model| model.to_ascii_lowercase().starts_with("gpt-"))
+            .collect::<Vec<_>>();
+        let sanitized_routing_entries =
+            Self::sanitize_auto_drive_routing_entries(model_routing_entries, &available_gpt_models);
+        if model_routing_enabled
+            && !sanitized_routing_entries.iter().any(|entry| entry.enabled)
+        {
+            self.bottom_pane.flash_footer_notice(
+                "Enable at least one Auto Drive routing entry before turning routing on."
+                    .to_string(),
+            );
+            self.request_redraw();
+            return;
+        }
+
         let mut changed = false;
         if self.auto_state.review_enabled != review_enabled {
             self.auto_state.review_enabled = review_enabled;
@@ -18680,6 +18733,10 @@ fi\n\
             self.config.auto_drive.model_routing_enabled = model_routing_enabled;
             changed = true;
         }
+        if self.config.auto_drive.model_routing_entries != sanitized_routing_entries {
+            self.config.auto_drive.model_routing_entries = sanitized_routing_entries.clone();
+            changed = true;
+        }
         if self.auto_state.continue_mode != continue_mode {
             let effects = self.auto_state.update_continue_mode(continue_mode);
             self.auto_apply_controller_effects(effects);
@@ -18695,6 +18752,7 @@ fi\n\
         self.config.auto_drive.cross_check_enabled = cross_check_enabled;
         self.config.auto_drive.qa_automation_enabled = qa_automation_enabled;
         self.config.auto_drive.model_routing_enabled = model_routing_enabled;
+        self.config.auto_drive.model_routing_entries = sanitized_routing_entries;
         self.config.auto_drive.continue_mode = auto_continue_to_config(continue_mode);
         self.restore_auto_resolve_attempts_if_lost();
 
@@ -22298,7 +22356,7 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             Some(AuthMode::ApiKey)
         };
-        builtin_model_presets(auth_mode)
+        builtin_model_presets(auth_mode, self.auth_manager.supports_pro_only_models())
     }
 
     pub(crate) fn update_model_presets(
@@ -22664,6 +22722,69 @@ Have we met every part of this goal and is there no further work to do?"#
                 (requested_rank.abs_diff(effort_rank), u8::MAX - effort_rank)
             })
             .unwrap_or(requested)
+    }
+
+    fn sanitize_auto_drive_routing_entries(
+        entries: Vec<AutoDriveModelRoutingEntry>,
+        available_models: &[String],
+    ) -> Vec<AutoDriveModelRoutingEntry> {
+        fn normalize_reasoning(levels: &[ReasoningEffort]) -> Vec<ReasoningEffort> {
+            let mut normalized = Vec::new();
+            for level in [
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ] {
+                if levels.contains(&level) {
+                    normalized.push(level);
+                }
+            }
+            normalized
+        }
+
+        let mut normalized_entries = Vec::new();
+        for entry in entries {
+            let model = entry.model.trim().to_ascii_lowercase();
+            if !model.starts_with("gpt-") {
+                continue;
+            }
+
+            if !available_models
+                .iter()
+                .any(|available| available.eq_ignore_ascii_case(&model))
+            {
+                continue;
+            }
+
+            let reasoning_levels = normalize_reasoning(&entry.reasoning_levels);
+            if reasoning_levels.is_empty() {
+                continue;
+            }
+
+            normalized_entries.push(AutoDriveModelRoutingEntry {
+                model,
+                enabled: entry.enabled,
+                reasoning_levels,
+                description: entry.description.trim().to_string(),
+            });
+        }
+
+        if normalized_entries.is_empty() {
+            let mut defaults = code_core::config_types::default_auto_drive_model_routing_entries();
+            defaults.retain(|entry| {
+                available_models
+                    .iter()
+                    .any(|available| available.eq_ignore_ascii_case(&entry.model))
+            });
+            if defaults.is_empty() {
+                return Vec::new();
+            }
+            return defaults;
+        }
+
+        normalized_entries
     }
 
     fn apply_model_selection_inner(
@@ -24437,12 +24558,22 @@ Have we met every part of this goal and is there no further work to do?"#
         } else {
             format!("Model: {}", model_text)
         };
+        let routing_enabled = self
+            .config
+            .auto_drive
+            .model_routing_entries
+            .iter()
+            .filter(|entry| entry.enabled)
+            .count();
+        let routing_total = self.config.auto_drive.model_routing_entries.len();
         Some(format!(
-            "{} · Agents: {} · Diagnostics: {} · Model routing: {} · Continue: {}",
+            "{} · Agents: {} · Diagnostics: {} · Model routing: {} ({}/{}) · Continue: {}",
             model_segment,
             Self::on_off_label(self.auto_state.subagents_enabled),
             Self::on_off_label(diagnostics_enabled),
             Self::on_off_label(self.config.auto_drive.model_routing_enabled),
+            routing_enabled,
+            routing_total,
             self.auto_state.continue_mode.label()
         ))
     }
@@ -31491,6 +31622,58 @@ use code_core::protocol::OrderMeta;
 
         let auto_pending = harness.with_chat(|chat| chat.auto_pending_goal_request);
         assert!(!auto_pending);
+    }
+
+    #[test]
+    fn auto_drive_countdown_tick_decrements_then_auto_submits() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| {
+            chat.auto_state.continue_mode = AutoContinueMode::TenSeconds;
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.schedule_auto_cli_prompt(7, "echo ready".to_string());
+        });
+
+        let countdown_id = harness.with_chat(|chat| {
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 10);
+            chat.auto_state.countdown_id
+        });
+
+        harness.with_chat(|chat| {
+            chat.auto_handle_countdown(countdown_id, 9);
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 9);
+        });
+
+        harness.with_chat(|chat| {
+            chat.auto_handle_countdown(countdown_id, 0);
+            assert!(!chat.auto_state.awaiting_coordinator_submit());
+            assert!(chat.auto_state.is_waiting_for_response());
+            assert_eq!(chat.auto_state.seconds_remaining, 0);
+        });
+    }
+
+    #[test]
+    fn auto_drive_enter_override_submits_with_active_countdown() {
+        let mut harness = ChatWidgetHarness::new();
+
+        harness.with_chat(|chat| {
+            chat.auto_state.continue_mode = AutoContinueMode::TenSeconds;
+            chat.auto_state.goal = Some("Ship feature".to_string());
+            chat.auto_state.set_phase(AutoRunPhase::Active);
+            chat.schedule_auto_cli_prompt(8, "echo ready".to_string());
+
+            assert!(chat.auto_state.awaiting_coordinator_submit());
+            assert_eq!(chat.auto_state.seconds_remaining, 10);
+
+            chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+            assert!(!chat.auto_state.awaiting_coordinator_submit());
+            assert!(chat.auto_state.is_waiting_for_response());
+            assert_eq!(chat.auto_state.seconds_remaining, 0);
+        });
     }
 
     #[test]

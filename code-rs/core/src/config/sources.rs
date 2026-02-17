@@ -865,6 +865,10 @@ pub fn set_auto_drive_settings(
         tui_tbl.remove("auto_drive");
     }
 
+    if !doc.as_table().contains_key("auto_drive") || !doc["auto_drive"].is_table() {
+        doc["auto_drive"] = TomlItem::Table(TomlTable::new());
+    }
+
     doc["auto_drive_use_chat_model"] = toml_edit::value(use_chat_model);
 
     doc["auto_drive"]["review_enabled"] = toml_edit::value(settings.review_enabled);
@@ -879,6 +883,35 @@ pub fn set_auto_drive_settings(
         toml_edit::value(settings.coordinator_routing);
     doc["auto_drive"]["model_routing_enabled"] =
         toml_edit::value(settings.model_routing_enabled);
+    if settings.model_routing_entries.is_empty() {
+        if let Some(auto_drive_tbl) = doc["auto_drive"].as_table_mut() {
+            auto_drive_tbl.remove("model_routing_entries");
+        }
+    } else {
+        let mut routing_entries = TomlArrayOfTables::new();
+        for entry in &settings.model_routing_entries {
+            let mut table = TomlTable::new();
+            table.insert("model", TomlItem::Value(entry.model.trim().into()));
+            table.insert("enabled", TomlItem::Value(entry.enabled.into()));
+
+            let mut reasoning_levels = TomlArray::new();
+            for level in &entry.reasoning_levels {
+                reasoning_levels.push(level.to_string().to_ascii_lowercase());
+            }
+            table.insert(
+                "reasoning_levels",
+                TomlItem::Value(toml_edit::Value::Array(reasoning_levels)),
+            );
+
+            table.insert(
+                "description",
+                TomlItem::Value(entry.description.trim().into()),
+            );
+
+            routing_entries.push(table);
+        }
+        doc["auto_drive"]["model_routing_entries"] = TomlItem::ArrayOfTables(routing_entries);
+    }
     doc["auto_drive"]["model"] = toml_edit::value(settings.model.trim());
     doc["auto_drive"]["model_reasoning_effort"] = toml_edit::value(
         settings

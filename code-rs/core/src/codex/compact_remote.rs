@@ -99,7 +99,7 @@ async fn run_remote_compact_task_inner(
         prompt.include_additional_instructions = false;
         prompt.log_tag = Some("codex/remote-compact".to_string());
 
-        sess.apply_remote_model_overrides(&mut prompt).await;
+        let _used_fallback_model_metadata = sess.apply_remote_model_overrides(&mut prompt).await;
 
         match turn_context
             .client

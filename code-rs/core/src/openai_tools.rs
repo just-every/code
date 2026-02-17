@@ -516,7 +516,8 @@ fn create_search_tool_bm25_tool() -> OpenAiTool {
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "search_tool_bm25".to_string(),
-        description: "Searches MCP tool metadata with BM25 and exposes matching tools for the next model call.".to_string(),
+        description: "Searches MCP tool metadata with BM25 and exposes matching tools for the current session/thread."
+            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

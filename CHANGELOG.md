@@ -7,6 +7,20 @@
 
 - (none)
 
+## [0.6.70] - 2026-02-16
+
+- Core/Search: persist and restore tool selection after search. (02abd9a8)
+- Core/Search: warn when falling back to default metadata and keep selection. (81a2a7eb, 060a320e)
+- Auto Drive: add configurable CLI routing entries. (2be7be99)
+- Linux Sandbox: allow GPU device paths in landlock. (d827c2d8)
+
+## [0.6.69] - 2026-02-15
+
+- TUI/Approvals: show structured network approval prompts with host/protocol context. (31646701, b527ee28, 2bced810)
+- Models: gate gpt-5.3-codex-spark behind pro-only auth capabilities. (d165389f)
+- Core/Auto Drive: add fallback routing when spark hits overflow or usage limits. (7973a790, 2a4c39fd)
+- TUI: preserve remote image attachments across resume and backtrack flows. (26a7cd21)
+
 ## [0.6.68] - 2026-02-14
 
 - Auto Drive: add per-turn model routing and rename decision schema. (fb17527)

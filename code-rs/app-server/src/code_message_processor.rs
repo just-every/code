@@ -1516,6 +1516,7 @@ async fn apply_bespoke_event_handling(
             command,
             cwd,
             reason,
+            network_approval_context: _,
         }) => {
             let params = ExecCommandApprovalParams {
                 conversation_id,

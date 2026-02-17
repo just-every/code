@@ -1247,6 +1247,22 @@ pub enum ExecOutputStream {
     Stderr,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkApprovalProtocol {
+    Http,
+    #[serde(alias = "https_connect", alias = "http-connect")]
+    Https,
+    Socks5Tcp,
+    Socks5Udp,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct NetworkApprovalContext {
+    pub host: String,
+    pub protocol: NetworkApprovalProtocol,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecCommandOutputDeltaEvent {
     /// Identifier for the ExecCommandBegin that produced this chunk.
@@ -1273,6 +1289,9 @@ pub struct ExecApprovalRequestEvent {
     /// Optional human-readable reason for the approval (e.g. retry without sandbox).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Optional network context for a blocked request that can be approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_approval_context: Option<NetworkApprovalContext>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

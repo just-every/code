@@ -4,6 +4,7 @@ use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use std::collections::HashMap;
 use crate::config_types::AutoDriveSettings;
+use crate::config_types::AutoDriveModelRoutingEntry;
 use crate::config_types::AllowedCommand;
 use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
@@ -17,6 +18,7 @@ use crate::config_types::Notifications;
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
 use crate::config_types::OtelExporterKind;
+use crate::config_types::default_auto_drive_model_routing_entries;
 use crate::config_types::ProjectCommandConfig;
 use crate::config_types::ProjectHookConfig;
 use crate::config_types::SandboxWorkspaceWrite;
@@ -114,6 +116,60 @@ pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "code_cli_rs";
+
+fn normalize_auto_drive_routing_reasoning_levels(
+    levels: &[ReasoningEffort],
+) -> Vec<ReasoningEffort> {
+    let mut normalized = Vec::new();
+    for level in [
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ] {
+        if levels.contains(&level) {
+            normalized.push(level);
+        }
+    }
+    normalized
+}
+
+fn normalize_auto_drive_routing_model(model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if !normalized.starts_with("gpt-") {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn sanitize_auto_drive_routing_entries(entries: &mut Vec<AutoDriveModelRoutingEntry>) {
+    let mut normalized_entries = Vec::new();
+    for entry in entries.drain(..) {
+        let Some(model) = normalize_auto_drive_routing_model(&entry.model) else {
+            continue;
+        };
+
+        let reasoning_levels = normalize_auto_drive_routing_reasoning_levels(&entry.reasoning_levels);
+        if reasoning_levels.is_empty() {
+            continue;
+        }
+
+        normalized_entries.push(AutoDriveModelRoutingEntry {
+            model,
+            enabled: entry.enabled,
+            reasoning_levels,
+            description: entry.description.trim().to_string(),
+        });
+    }
+    *entries = normalized_entries;
+}
 
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
@@ -1403,6 +1459,21 @@ impl Config {
                 }
                 defaults
             });
+        sanitize_auto_drive_routing_entries(&mut auto_drive.model_routing_entries);
+        if auto_drive.model_routing_entries.is_empty() {
+            auto_drive.model_routing_entries = default_auto_drive_model_routing_entries();
+        }
+
+        if auto_drive.model_routing_enabled
+            && !auto_drive
+                .model_routing_entries
+                .iter()
+                .any(|entry| entry.enabled)
+        {
+            if let Some(first_entry) = auto_drive.model_routing_entries.first_mut() {
+                first_entry.enabled = true;
+            }
+        }
         if auto_drive_use_chat_model {
             auto_drive.model = model.clone();
             auto_drive.model_reasoning_effort = chat_reasoning_effort;
@@ -2596,6 +2667,178 @@ model_verbosity = "high"
         assert!(config.auto_drive_use_chat_model);
         assert_eq!(config.auto_drive.model, config.model);
         assert_eq!(config.auto_drive.model_reasoning_effort, config.model_reasoning_effort);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_model_routing_defaults_are_present_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(config.auto_drive.model_routing_entries.len(), 2);
+        assert_eq!(
+            config.auto_drive.model_routing_entries[0].model,
+            "gpt-5.3-codex"
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[0].reasoning_levels,
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[1].model,
+            "gpt-5.3-codex-spark"
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[1].reasoning_levels,
+            vec![ReasoningEffort::High]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_model_routing_entries_are_sanitized_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        let mut auto_drive = AutoDriveSettings::default();
+        auto_drive.model_routing_entries = vec![
+            AutoDriveModelRoutingEntry {
+                model: " custom-not-gpt ".to_string(),
+                enabled: true,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: "invalid model should be dropped".to_string(),
+            },
+            AutoDriveModelRoutingEntry {
+                model: " GPT-5.3-CODEX ".to_string(),
+                enabled: true,
+                reasoning_levels: vec![
+                    ReasoningEffort::XHigh,
+                    ReasoningEffort::High,
+                    ReasoningEffort::High,
+                ],
+                description: "  keep me trimmed  ".to_string(),
+            },
+        ];
+        cfg.auto_drive = Some(auto_drive);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(config.auto_drive.model_routing_entries.len(), 1);
+        let entry = &config.auto_drive.model_routing_entries[0];
+        assert_eq!(entry.model, "gpt-5.3-codex");
+        assert_eq!(
+            entry.reasoning_levels,
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert_eq!(entry.description, "keep me trimmed");
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_model_routing_enforces_at_least_one_enabled_entry() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        let mut auto_drive = AutoDriveSettings::default();
+        auto_drive.model_routing_enabled = true;
+        auto_drive.model_routing_entries = vec![
+            AutoDriveModelRoutingEntry {
+                model: "gpt-5.3-codex".to_string(),
+                enabled: false,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            },
+            AutoDriveModelRoutingEntry {
+                model: "gpt-5.3-codex-spark".to_string(),
+                enabled: false,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            },
+        ];
+        cfg.auto_drive = Some(auto_drive);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(
+            config
+                .auto_drive
+                .model_routing_entries
+                .iter()
+                .any(|entry| entry.enabled),
+            "at least one routing entry should be enabled when routing is enabled"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_auto_drive_settings_persists_model_routing_entries() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let mut settings = AutoDriveSettings::default();
+        settings.model_routing_entries = vec![AutoDriveModelRoutingEntry {
+            model: " GPT-5.3-CODEX-EXPERIMENTAL ".to_string(),
+            enabled: false,
+            reasoning_levels: vec![ReasoningEffort::XHigh, ReasoningEffort::High],
+            description: "  planning-heavy tasks  ".to_string(),
+        }];
+
+        set_auto_drive_settings(code_home.path(), &settings, false)?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        assert!(
+            written.contains("model_routing_entries"),
+            "written config missing routing entries: {written}"
+        );
+        assert!(written.contains("model = \"GPT-5.3-CODEX-EXPERIMENTAL\""));
+        assert!(written.contains("enabled = false"));
+        assert!(written.contains("reasoning_levels = [\"xhigh\", \"high\"]"));
+        assert!(written.contains("description = \"planning-heavy tasks\""));
+        Ok(())
+    }
+
+    #[test]
+    fn set_auto_drive_settings_removes_model_routing_entries_when_empty() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let mut settings = AutoDriveSettings::default();
+        settings.model_routing_entries = Vec::new();
+
+        set_auto_drive_settings(code_home.path(), &settings, false)?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let parsed: toml::Value = toml::from_str(&written)?;
+        let auto_drive = parsed
+            .get("auto_drive")
+            .and_then(toml::Value::as_table)
+            .expect("auto_drive table should exist");
+        assert!(
+            !auto_drive.contains_key("model_routing_entries"),
+            "model_routing_entries should be removed when entries are empty"
+        );
         Ok(())
     }
 

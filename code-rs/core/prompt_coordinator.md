@@ -35,9 +35,9 @@ Agents work in isolated, parallel worktrees. Use them strategically based on the
 
 # CLI Model Routing
 When schema fields are available, pick `cli_model` and `cli_reasoning_effort` on every continue turn.
-- Use `gpt-5.3-codex` with `xhigh` for hard planning/problem-solving turns.
-- Use `gpt-5.3-codex` with `high` or `medium` for broad implementation/integration turns.
-- Use `gpt-5.3-codex-spark` with `high` for clear coding loops and failing-test iteration.
+- Use the configured routing entries from the environment guidance, including each model's allowed reasoning levels.
+- Prefer higher reasoning levels for hard planning/problem-solving turns.
+- Prefer faster routing entries for clear implementation loops and failing-test iteration.
 - Only set these fields to `null` when finishing.
 
 # Completion Gate

@@ -250,6 +250,13 @@ impl CodexAuth {
             .and_then(|t| t.id_token.chatgpt_plan_type.as_ref().map(|p| p.as_string()))
     }
 
+    pub fn supports_pro_only_models(&self) -> bool {
+        self.mode.is_chatgpt()
+            && self
+                .get_plan_type()
+                .is_some_and(|plan| plan.eq_ignore_ascii_case("pro"))
+    }
+
     fn get_current_auth_json(&self) -> Option<AuthDotJson> {
         #[expect(clippy::unwrap_used)]
         self.auth_dot_json.lock().unwrap().clone()
@@ -1408,6 +1415,11 @@ impl AuthManager {
     /// Current cached auth (clone). May be `None` if not logged in or load failed.
     pub fn auth(&self) -> Option<CodexAuth> {
         self.inner.read().ok().and_then(|c| c.auth.clone())
+    }
+
+    pub fn supports_pro_only_models(&self) -> bool {
+        self.auth()
+            .is_some_and(|auth| auth.supports_pro_only_models())
     }
 
     /// Preferred auth method used when (re)loading.

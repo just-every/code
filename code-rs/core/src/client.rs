@@ -38,7 +38,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const AUTH_REQUIRED_MESSAGE: &str = "Authentication required. Run `code login` to continue.";
 
-use crate::agent_defaults::{default_agent_configs, enabled_agent_model_specs};
+use crate::agent_defaults::{
+    default_agent_configs,
+    enabled_agent_model_specs_for_auth,
+    filter_agent_model_names_for_auth,
+};
 use crate::chat_completions::AggregateStreamExt;
 use crate::chat_completions::stream_chat_completions;
 use crate::client_common::Prompt;
@@ -46,6 +50,7 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
+use crate::client_common::replace_image_payloads_for_model;
 use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -390,6 +395,20 @@ impl ModelClient {
         tools_config.web_search_external = self.config.tools_web_search_external;
         tools_config.search_tool = self.config.tools_search_tool;
 
+        let auth_mode = self
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.auth().map(|auth| auth.mode))
+            .or(Some(if self.config.using_chatgpt_auth {
+                AuthMode::Chatgpt
+            } else {
+                AuthMode::ApiKey
+            }));
+        let supports_pro_only_models = self
+            .auth_manager
+            .as_ref()
+            .is_some_and(|manager| manager.supports_pro_only_models());
+
         let mut agent_models: Vec<String> = if self.config.agents.is_empty() {
             default_agent_configs()
                 .into_iter()
@@ -399,8 +418,13 @@ impl ModelClient {
         } else {
             get_enabled_agents(&self.config.agents)
         };
+        agent_models = filter_agent_model_names_for_auth(
+            agent_models,
+            auth_mode,
+            supports_pro_only_models,
+        );
         if agent_models.is_empty() {
-            agent_models = enabled_agent_model_specs()
+            agent_models = enabled_agent_model_specs_for_auth(auth_mode, supports_pro_only_models)
                 .into_iter()
                 .map(|spec| spec.slug.to_string())
                 .collect();
@@ -582,7 +606,8 @@ impl ModelClient {
             });
         }
 
-        let input_with_instructions = prompt.get_formatted_input();
+        let mut input_with_instructions = prompt.get_formatted_input();
+        replace_image_payloads_for_model(&mut input_with_instructions, request_model);
 
         let want_format = prompt.text_format.clone().or_else(|| {
             prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
@@ -982,7 +1007,8 @@ impl ModelClient {
                 });
         }
 
-        let input_with_instructions = prompt.get_formatted_input();
+        let mut input_with_instructions = prompt.get_formatted_input();
+        replace_image_payloads_for_model(&mut input_with_instructions, request_model);
 
         // Build `text` parameter with conditional verbosity and optional format.
         // - Omit entirely for ChatGPT auth unless a `text.format` or output schema is present.
@@ -2618,7 +2644,16 @@ async fn process_sse<S>(
                     if let Some(error) = error {
                         match serde_json::from_value::<Error>(error.clone()) {
                             Ok(error) => {
-                                if is_quota_exceeded_error(&error) {
+                                if error.r#type.as_deref() == Some("usage_limit_reached") {
+                                    response_error = Some(CodexErr::UsageLimitReached(
+                                        UsageLimitReachedError {
+                                            plan_type: error.plan_type,
+                                            resets_in_seconds: error.resets_in_seconds,
+                                        },
+                                    ));
+                                } else if error.r#type.as_deref() == Some("usage_not_included") {
+                                    response_error = Some(CodexErr::UsageNotIncluded);
+                                } else if is_quota_exceeded_error(&error) {
                                     response_error = Some(CodexErr::QuotaExceeded);
                                 } else if is_server_overloaded_error(&error) {
                                     response_error = Some(CodexErr::ServerOverloaded);
@@ -3678,6 +3713,71 @@ mod tests {
         match &events[0] {
             Err(CodexErr::QuotaExceeded) => {}
             other => panic!("unexpected quota event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_failed_usage_limit_maps_to_typed_error() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_limit","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"type":"usage_limit_reached","message":"You've hit your usage limit.","plan_type":"pro","resets_in_seconds":120},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::UsageLimitReached(err)) => {
+                assert_eq!(err.plan_type.as_deref(), Some("pro"));
+                assert_eq!(err.resets_in_seconds, Some(120));
+            }
+            other => panic!("unexpected usage-limit event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_failed_usage_not_included_maps_to_typed_error() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_not_included","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"type":"usage_not_included","message":"Usage is not included for this model."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::UsageNotIncluded) => {}
+            other => panic!("unexpected usage-not-included event: {other:?}"),
         }
     }
 
