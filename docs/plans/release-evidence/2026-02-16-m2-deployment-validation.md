@@ -99,7 +99,7 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 |---|---|
 | PR URL (`hermia-ai:main` -> `just-every:main`) | `https://github.com/just-every/code/pull/547` |
 | PR head branch (verified) | `hermia-ai:main` |
-| PR head SHA at closure-watch check | `71e6dd459d767b460b1e6b5306450649f5603093` |
+| PR head SHA (latest verified) | `29b2ab036a99c3038e05e454ccf8e6621faaa510` |
 | PR checks-state verification | `gh pr view 547 --repo just-every/code --json statusCheckRollup` |
 | Core implementation commit | `58e91d6f6` |
 | Merge-sync commit | `939c76d19` |
