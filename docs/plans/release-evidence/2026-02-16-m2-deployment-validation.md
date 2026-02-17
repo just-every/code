@@ -98,10 +98,12 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 | Item | Value |
 |---|---|
 | PR URL (`hermia-ai:main` -> `just-every:main`) | `https://github.com/just-every/code/pull/547` |
-| Fork branch head | `68b3be6f3` |
+| PR head branch (verified) | `hermia-ai:main` |
+| PR head SHA verification | `gh pr view 547 --repo just-every/code --json headRefOid,headRefName,headRepositoryOwner` |
+| PR checks-state verification | `gh pr view 547 --repo just-every/code --json statusCheckRollup` |
 | Core implementation commit | `58e91d6f6` |
 | Merge-sync commit | `939c76d19` |
-| Evidence update commits | `78e231198`, `64258a3d8`, `68b3be6f3` |
+| Evidence update commits | `78e231198`, `64258a3d8`, `68b3be6f3`, `ab335ccf7` |
 
 ### Credential path sweep
 
