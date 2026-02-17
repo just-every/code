@@ -99,11 +99,12 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 |---|---|
 | PR URL (`hermia-ai:main` -> `just-every:main`) | `https://github.com/just-every/code/pull/547` |
 | PR head branch (verified) | `hermia-ai:main` |
-| PR head SHA verification | `gh pr view 547 --repo just-every/code --json headRefOid,headRefName,headRepositoryOwner` |
+| PR head SHA (latest verified) | `dc1226a789c8960d0a1b30e9c928560e4b7e3729` |
 | PR checks-state verification | `gh pr view 547 --repo just-every/code --json statusCheckRollup` |
 | Core implementation commit | `58e91d6f6` |
 | Merge-sync commit | `939c76d19` |
-| Evidence update commits | `78e231198`, `64258a3d8`, `68b3be6f3`, `ab335ccf7` |
+| Evidence update commits | `78e231198`, `64258a3d8`, `68b3be6f3`, `ab335ccf7`, `dc1226a78` |
+| Maintainer handoff comment | `https://github.com/just-every/code/pull/547#issuecomment-3912368232` |
 
 ### Credential path sweep
 
@@ -148,6 +149,18 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 | GitHub release assets | `GH_TOKEN=<helper-token> gh api repos/just-every/code/releases/tags/v0.6.70 --jq ...` | `v0.6.70`, published `2026-02-16T05:17:36Z`, 9 assets. |
 | npm package versions | `npm view @just-every/code{,-darwin-arm64,-darwin-x64,-linux-x64-musl,-linux-arm64-musl,-win32-x64} version` | All `0.6.70`. |
 | Homebrew formula | `curl -fsSL https://raw.githubusercontent.com/just-every/homebrew-tap/main/Formula/Code.rb \| grep version` | `version "v0.6.70"`. |
+
+## Closure Watch Cycle (2026-02-17 UTC)
+
+| Step | Command | Result |
+|---|---|---|
+| PR merge status check | `GH_TOKEN=<helper-token> gh pr view 547 --repo just-every/code --json state,mergedAt,mergeCommit,headRefOid,mergeStateStatus` | Not merged (`state=OPEN`, `mergedAt=null`, `mergeCommit=null`). |
+| Origin release run on PR head SHA | `GH_TOKEN=<helper-token> gh api '/repos/just-every/code/actions/workflows/release.yml/runs?branch=main&per_page=20'` filtered by head SHA `dc1226a789...` | No origin release run found for PR head SHA. |
+| Origin release latest checkpoint | Same API query, latest run | Latest remains `22050457338` (success, head SHA `7714fe70f0...`). |
+
+Irrecoverable block at watch-cycle close:
+- Origin `Release` cannot be observed on merge SHA because PR is not merged and this environment cannot merge/push/dispatch on origin.
+- Fork run confirms next blocker after merge rights: release path requires valid `NPM_TOKEN` to pass `npm-auth-check` and unblock build/smoke/publish jobs.
 
 ## Final Blocked-vs-Complete Matrix
 
