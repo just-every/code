@@ -99,11 +99,11 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 |---|---|
 | PR URL (`hermia-ai:main` -> `just-every:main`) | `https://github.com/just-every/code/pull/547` |
 | PR head branch (verified) | `hermia-ai:main` |
-| PR head SHA (latest verified) | `dc1226a789c8960d0a1b30e9c928560e4b7e3729` |
+| PR head SHA at closure-watch check | `71e6dd459d767b460b1e6b5306450649f5603093` |
 | PR checks-state verification | `gh pr view 547 --repo just-every/code --json statusCheckRollup` |
 | Core implementation commit | `58e91d6f6` |
 | Merge-sync commit | `939c76d19` |
-| Evidence update commits | `78e231198`, `64258a3d8`, `68b3be6f3`, `ab335ccf7`, `dc1226a78` |
+| Key landing commits | `58e91d6f6`, `939c76d19`, `78e231198`, `64258a3d8` |
 | Maintainer handoff comment | `https://github.com/just-every/code/pull/547#issuecomment-3912368232` |
 
 ### Credential path sweep
@@ -155,7 +155,7 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 | Step | Command | Result |
 |---|---|---|
 | PR merge status check | `GH_TOKEN=<helper-token> gh pr view 547 --repo just-every/code --json state,mergedAt,mergeCommit,headRefOid,mergeStateStatus` | Not merged (`state=OPEN`, `mergedAt=null`, `mergeCommit=null`). |
-| Origin release run on PR head SHA | `GH_TOKEN=<helper-token> gh api '/repos/just-every/code/actions/workflows/release.yml/runs?branch=main&per_page=20'` filtered by head SHA `dc1226a789...` | No origin release run found for PR head SHA. |
+| Origin release run on PR head SHA | `GH_TOKEN=<helper-token> gh api '/repos/just-every/code/actions/workflows/release.yml/runs?branch=main&per_page=20'` filtered by head SHA `71e6dd459d...` | No origin release run found for PR head SHA. |
 | Origin release latest checkpoint | Same API query, latest run | Latest remains `22050457338` (success, head SHA `7714fe70f0...`). |
 
 Irrecoverable block at watch-cycle close:
