@@ -44,6 +44,7 @@ use async_channel::Sender;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterAgent;
 use codex_hooks::HookPayload;
+use codex_hooks::HookResult;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_network_proxy::NetworkProxy;
@@ -1846,11 +1847,13 @@ impl Session {
             }
         }
 
-        let resolved_model_slug = session_configuration.collaboration_mode.model().to_string();
         let model_info = self
             .services
             .models_manager
-            .get_model_info(resolved_model_slug.as_str(), &per_turn_config)
+            .get_model_info(
+                session_configuration.collaboration_mode.model(),
+                &per_turn_config,
+            )
             .await;
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
@@ -1858,7 +1861,7 @@ impl Session {
             session_configuration.provider.clone(),
             &session_configuration,
             per_turn_config,
-            model_info.clone(),
+            model_info,
             self.services
                 .network_proxy
                 .as_ref()
@@ -1871,19 +1874,23 @@ impl Session {
             turn_context.final_output_json_schema = final_schema;
         }
         let turn_context = Arc::new(turn_context);
-        if model_info.used_fallback_model_metadata {
+        turn_context.turn_metadata_state.spawn_git_enrichment_task();
+        turn_context
+    }
+
+    pub(crate) async fn maybe_emit_unknown_model_warning_for_turn(&self, tc: &TurnContext) {
+        if tc.model_info.used_fallback_model_metadata {
             self.send_event(
-                turn_context.as_ref(),
+                tc,
                 EventMsg::Warning(WarningEvent {
                     message: format!(
-                        "Model metadata for `{resolved_model_slug}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+                        "Model metadata for `{}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+                        tc.model_info.slug
                     ),
                 }),
             )
             .await;
         }
-        turn_context.turn_metadata_state.spawn_git_enrichment_task();
-        turn_context
     }
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
@@ -1997,7 +2004,6 @@ impl Session {
                 &next.sandbox_policy,
                 next.approval_policy,
                 self.services.exec_policy.current().as_ref(),
-                self.features.enabled(Feature::RequestRule),
                 &next.cwd,
             )
             .into(),
@@ -2617,7 +2623,6 @@ impl Session {
                 &turn_context.sandbox_policy,
                 turn_context.approval_policy,
                 self.services.exec_policy.current().as_ref(),
-                self.features.enabled(Feature::RequestRule),
                 &turn_context.cwd,
             )
             .into(),
@@ -3454,6 +3459,8 @@ mod handlers {
             // new_turn_with_sub_id already emits the error event.
             return;
         };
+        sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
+            .await;
         current_context.otel_manager.user_prompt(&items);
 
         // Attempt to inject input into current task.
@@ -4058,6 +4065,8 @@ mod handlers {
         review_request: ReviewRequest,
     ) {
         let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
+        sess.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+            .await;
         sess.refresh_mcp_servers_if_requested(&turn_context).await;
         match resolve_review_request(review_request, turn_context.cwd.as_path()) {
             Ok(resolved) => {
@@ -4523,7 +4532,8 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
-                    sess.hooks()
+                    let hook_outcomes = sess
+                        .hooks()
                         .dispatch(HookPayload {
                             session_id: sess.conversation_id,
                             cwd: turn_context.cwd.clone(),
@@ -4538,6 +4548,47 @@ pub(crate) async fn run_turn(
                             },
                         })
                         .await;
+
+                    let mut abort_message = None;
+                    for hook_outcome in hook_outcomes {
+                        let hook_name = hook_outcome.hook_name;
+                        match hook_outcome.result {
+                            HookResult::Success => {}
+                            HookResult::FailedContinue(error) => {
+                                warn!(
+                                    turn_id = %turn_context.sub_id,
+                                    hook_name = %hook_name,
+                                    error = %error,
+                                    "after_agent hook failed; continuing"
+                                );
+                            }
+                            HookResult::FailedAbort(error) => {
+                                let message = format!(
+                                    "after_agent hook '{hook_name}' failed and aborted turn completion: {error}"
+                                );
+                                warn!(
+                                    turn_id = %turn_context.sub_id,
+                                    hook_name = %hook_name,
+                                    error = %error,
+                                    "after_agent hook failed; aborting operation"
+                                );
+                                if abort_message.is_none() {
+                                    abort_message = Some(message);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(message) = abort_message {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::Error(ErrorEvent {
+                                message,
+                                codex_error_info: None,
+                            }),
+                        )
+                        .await;
+                        return None;
+                    }
                     break;
                 }
                 continue;
@@ -4944,14 +4995,13 @@ async fn built_tools(
     skills_outcome: Option<&SkillLoadOutcome>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<Arc<ToolRouter>> {
-    let mut mcp_tools = sess
-        .services
-        .mcp_connection_manager
-        .read()
-        .await
+    let mcp_connection_manager = sess.services.mcp_connection_manager.read().await;
+    let has_mcp_servers = mcp_connection_manager.has_servers();
+    let mut mcp_tools = mcp_connection_manager
         .list_all_tools()
         .or_cancel(cancellation_token)
         .await?;
+    drop(mcp_connection_manager);
 
     let mut effective_explicitly_enabled_connectors = explicitly_enabled_connectors.clone();
     effective_explicitly_enabled_connectors.extend(sess.get_connector_selection().await);
@@ -4997,12 +5047,12 @@ async fn built_tools(
 
     Ok(Arc::new(ToolRouter::from_config(
         &turn_context.tools_config,
-        Some(
+        has_mcp_servers.then(|| {
             mcp_tools
                 .into_iter()
                 .map(|(name, tool)| (name, tool.tool))
-                .collect(),
-        ),
+                .collect()
+        }),
         app_tools,
         turn_context.dynamic_tools.as_slice(),
     )))
