@@ -420,6 +420,9 @@ pub fn agent_config_from_spec(spec: &AgentModelSpec) -> AgentConfig {
         args_read_only: some_args(spec.read_only_args),
         args_write: some_args(spec.write_args),
         instructions: None,
+        http_endpoint: None,
+        http_model: None,
+        http_bearer_token: None,
     }
 }
 

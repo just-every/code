@@ -487,9 +487,68 @@ jobs:
           if-no-files-found: ignore
           compression-level: 0
 
+  cross-platform-artifact-smoke:
+    name: Smoke ${{ matrix.target }}
+    needs: [build-binaries]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: code-x86_64-unknown-linux-musl.tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: code-aarch64-unknown-linux-musl.tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: code-x86_64-apple-darwin.tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: code-aarch64-apple-darwin.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: code-x86_64-pc-windows-msvc.exe.zip
+
+    steps:
+      - name: Download target artifact bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: smoke-artifacts
+
+      - name: Smoke target binary [Unix]
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="smoke-artifacts/${{ matrix.archive }}"
+          test -f "$archive"
+          mkdir -p smoke-bin
+          tar -xzf "$archive" -C smoke-bin
+          exe="smoke-bin/${{ matrix.archive }}"
+          exe="${exe%.tar.gz}"
+          chmod +x "$exe"
+          "$exe" --version
+          "$exe" completion bash > /dev/null
+
+      - name: Smoke target binary [Windows]
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $archive = "smoke-artifacts/${{ matrix.archive }}"
+          if (!(Test-Path $archive)) { throw "missing archive: $archive" }
+          New-Item -ItemType Directory -Force -Path smoke-bin | Out-Null
+          Expand-Archive -Path $archive -DestinationPath smoke-bin -Force
+          $exe = "smoke-bin/code-x86_64-pc-windows-msvc.exe"
+          if (!(Test-Path $exe)) { throw "missing executable: $exe" }
+          & $exe --version | Out-Null
+          & $exe completion bash | Out-Null
+
   release:
     name: Publish to npm
-    needs: [determine-version, build-binaries, preflight-tests]
+    needs: [determine-version, build-binaries, preflight-tests, cross-platform-artifact-smoke]
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     timeout-minutes: 30

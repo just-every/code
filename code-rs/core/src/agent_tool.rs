@@ -213,12 +213,20 @@ pub fn external_agent_command_exists(command: &str) -> bool {
 }
 
 use crate::agent_defaults::{agent_model_spec, default_params_for};
+use crate::chat_completions::stream_chat_completions;
+use crate::client_common::Prompt;
+use crate::client_common::ResponseEvent;
 use shlex::split as shlex_split;
 use crate::config_types::AgentConfig;
+use crate::debug_logger::DebugLogger;
+use crate::model_family::find_family_for_model;
+use crate::model_provider_info::create_oss_provider_with_base_url;
 use crate::openai_tools::JsonSchema;
 use crate::openai_tools::OpenAiTool;
 use crate::openai_tools::ResponsesApiTool;
 use crate::protocol::AgentInfo;
+use code_protocol::models::ContentItem;
+use code_protocol::models::ResponseItem;
 
 fn current_code_binary_path() -> Result<std::path::PathBuf, String> {
     if let Ok(path) = std::env::var("CODE_BINARY_PATH") {
@@ -1552,6 +1560,142 @@ fn prefer_json_result(path: Option<&PathBuf>, fallback: Result<String, String>) 
     fallback
 }
 
+fn has_http_endpoint(config: Option<&AgentConfig>) -> bool {
+    config
+        .and_then(|cfg| cfg.http_endpoint.as_deref())
+        .is_some_and(|endpoint| !endpoint.trim().is_empty())
+}
+
+fn assistant_text_from_output_item(item: &ResponseItem) -> Option<String> {
+    let ResponseItem::Message { role, content, .. } = item else {
+        return None;
+    };
+    if role != "assistant" {
+        return None;
+    }
+
+    let text = content
+        .iter()
+        .filter_map(|part| match part {
+            ContentItem::OutputText { text } | ContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+async fn push_agent_progress(agent_id: &str, chunk: &str) {
+    if chunk.trim().is_empty() {
+        return;
+    }
+    let mut manager = AGENT_MANAGER.write().await;
+    manager.add_progress(agent_id, chunk.to_string()).await;
+}
+
+async fn execute_http_agent(
+    agent_id: &str,
+    model: &str,
+    prompt: &str,
+    config: &AgentConfig,
+    log_tag: Option<&str>,
+) -> Result<String, String> {
+    let endpoint = config
+        .http_endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("HTTP agent {agent_id} missing http_endpoint"))?;
+
+    let model_slug = config
+        .http_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(model);
+
+    let model_family = find_family_for_model(model_slug)
+        .or_else(|| find_family_for_model("gpt-oss"))
+        .ok_or_else(|| format!("Unable to resolve model family for HTTP agent model '{model_slug}'"))?;
+
+    let mut provider = create_oss_provider_with_base_url(endpoint.trim_end_matches('/'));
+    provider.name = format!("http-agent-{}", config.name);
+    provider.experimental_bearer_token = config
+        .http_bearer_token
+        .as_ref()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+
+    let debug_logger = Arc::new(std::sync::Mutex::new(
+        DebugLogger::new(false).map_err(|err| format!("Failed to init debug logger: {err}"))?,
+    ));
+
+    let mut request_prompt = Prompt {
+        include_additional_instructions: false,
+        base_instructions_override: Some(String::new()),
+        ..Prompt::default()
+    };
+    request_prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: prompt.to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
+    if let Some(tag) = log_tag {
+        request_prompt.set_log_tag(tag);
+    }
+
+    let client = reqwest::Client::new();
+    let mut stream = stream_chat_completions(
+        &request_prompt,
+        &model_family,
+        model_slug,
+        &client,
+        &provider,
+        &debug_logger,
+        None,
+        None,
+        log_tag,
+    )
+    .await
+    .map_err(|err| format!("HTTP agent {agent_id} request failed: {err}"))?;
+
+    let mut output = String::new();
+    let mut saw_text_delta = false;
+
+    use futures::StreamExt;
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ResponseEvent::OutputTextDelta { delta, .. }) => {
+                saw_text_delta = true;
+                output.push_str(&delta);
+                push_agent_progress(agent_id, &delta).await;
+            }
+            Ok(ResponseEvent::OutputItemDone { item, .. }) if !saw_text_delta => {
+                if let Some(text) = assistant_text_from_output_item(&item) {
+                    output.push_str(&text);
+                    push_agent_progress(agent_id, &text).await;
+                }
+            }
+            Ok(ResponseEvent::Completed { .. }) => break,
+            Ok(_) => {}
+            Err(err) => {
+                return Err(format!("HTTP agent {agent_id} stream failed: {err}"));
+            }
+        }
+    }
+
+    Ok(output)
+}
+
 async fn execute_model_with_permissions(
     agent_id: &str,
     model: &str,
@@ -1577,6 +1721,12 @@ async fn execute_model_with_permissions(
                 ));
             }
             return Err(format!("agent model '{}' is disabled", spec.slug));
+        }
+    }
+
+    if read_only && has_http_endpoint(config.as_ref()) {
+        if let Some(cfg) = config.as_ref() {
+            return execute_http_agent(agent_id, model, prompt, cfg, log_tag).await;
         }
     }
 
@@ -2808,12 +2958,15 @@ mod tests {
     use super::current_code_binary_path;
     use crate::config_types::AgentConfig;
     use code_protocol::config_types::ReasoningEffort;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::ffi::OsString;
     use tempfile::tempdir;
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn drops_empty_names() {
@@ -2872,7 +3025,25 @@ mod tests {
             args_read_only: None,
             args_write: None,
             instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
         }
+    }
+
+    fn make_chat_sse_response(text: &str) -> String {
+        let chunk = json!({
+            "id": "chatcmpl-test",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": text,
+                },
+                "finish_reason": null,
+            }]
+        });
+
+        format!("data: {chunk}\n\ndata: [DONE]\n\n")
     }
 
     #[test]
@@ -2942,12 +3113,165 @@ mod tests {
         assert_eq!(output.trim(), "current");
     }
 
+    #[tokio::test]
+    async fn http_agents_dispatch_via_endpoint_without_subprocess_binary() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(make_chat_sse_response("hello from http")),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = AgentConfig {
+            name: "hermia-athena".to_string(),
+            command: "definitely-not-installed-command".to_string(),
+            args: Vec::new(),
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+            http_endpoint: Some(format!("{}/v1", server.uri())),
+            http_model: Some("gpt-oss".to_string()),
+            http_bearer_token: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-http",
+            "hermia-athena",
+            "Say hello",
+            true,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("http agent execution should succeed");
+
+        assert_eq!(output, "hello from http");
+    }
+
+    #[tokio::test]
+    async fn write_mode_agents_with_http_endpoint_still_use_subprocess_execution() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _reset_path = EnvReset::capture("PATH");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(make_chat_sse_response("hello from http")),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().expect("tempdir");
+        let subprocess = script_path(dir.path(), "write-agent-bin");
+        write_script(&subprocess, "subprocess-write-ok");
+
+        unsafe {
+            std::env::set_var("PATH", prepend_path(dir.path()));
+        }
+
+        let cfg = AgentConfig {
+            name: "custom-write-agent".to_string(),
+            command: "write-agent-bin".to_string(),
+            args: Vec::new(),
+            read_only: false,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+            http_endpoint: Some(format!("{}/v1", server.uri())),
+            http_model: Some("gpt-oss".to_string()),
+            http_bearer_token: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-write",
+            "custom-write-agent",
+            "ignored",
+            false,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("write-mode subprocess execution should still work");
+
+        assert_eq!(output.trim(), "subprocess-write-ok");
+    }
+
+    #[tokio::test]
+    async fn subprocess_agents_still_execute_without_http_endpoint() {
+        let _lock = env_lock().lock().expect("env lock");
+        let _reset_path = EnvReset::capture("PATH");
+
+        let dir = tempdir().expect("tempdir");
+        let subprocess = script_path(dir.path(), "subprocess-agent");
+        write_script(&subprocess, "subprocess-ok");
+
+        unsafe {
+            std::env::set_var("PATH", prepend_path(dir.path()));
+        }
+
+        let cfg = AgentConfig {
+            name: "custom-subprocess-agent".to_string(),
+            command: "subprocess-agent".to_string(),
+            args: Vec::new(),
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-subprocess",
+            "custom-subprocess-agent",
+            "ignored",
+            true,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("subprocess execution should still work");
+
+        assert_eq!(output.trim(), "subprocess-ok");
+    }
+
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn claude_agent_uses_local_install_when_not_on_path() {
         let _lock = env_lock().lock().expect("env lock");
         let _reset_path = EnvReset::capture("PATH");
         let _reset_home = EnvReset::capture("HOME");
+        let _reset_claude_config_dir = EnvReset::capture("CLAUDE_CONFIG_DIR");
 
         let dir = tempdir().expect("tempdir");
         let claude_dir = dir.path().join(".claude").join("local");
@@ -2957,7 +3281,8 @@ mod tests {
 
         unsafe {
             std::env::set_var("HOME", dir.path());
-            std::env::set_var("PATH", "/usr/bin:/bin");
+            std::env::set_var("PATH", "");
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
 
         let cfg = AgentConfig {
@@ -2971,6 +3296,9 @@ mod tests {
             args_read_only: None,
             args_write: None,
             instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
         };
 
         let output = execute_model_with_permissions(

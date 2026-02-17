@@ -437,6 +437,21 @@ pub struct AgentConfig {
     /// prompt provided to the agent whenever it runs.
     #[serde(default)]
     pub instructions: Option<String>,
+
+    /// Optional OpenAI-compatible endpoint for HTTP-native agent execution.
+    /// When this is set, Codex calls the endpoint directly instead of spawning
+    /// the configured subprocess command.
+    #[serde(default)]
+    pub http_endpoint: Option<String>,
+
+    /// Optional model override for HTTP-native agent execution.
+    /// Falls back to `name` when omitted.
+    #[serde(default)]
+    pub http_model: Option<String>,
+
+    /// Optional bearer token used for HTTP-native agent requests.
+    #[serde(default)]
+    pub http_bearer_token: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1630,5 +1645,47 @@ mod tests {
         "#,
         )
         .expect_err("should reject bearer token for stdio transport");
+    }
+
+    #[test]
+    fn deserialize_agent_config_http_fields() {
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            agents: Vec<AgentConfig>,
+        }
+
+        let parsed: Wrapper = toml::from_str(
+            r#"
+            [[agents]]
+            name = "hermia-athena"
+            command = ""
+            enabled = true
+            http-endpoint = "http://127.0.0.1:18080/v1"
+            http-model = "qwen3-next-80b"
+            http-bearer-token = "secret"
+            "#,
+        )
+        .expect("should deserialize agent http fields");
+
+        let agent = parsed.agents.first().expect("agent entry");
+        assert_eq!(agent.name, "hermia-athena");
+        assert_eq!(agent.http_endpoint.as_deref(), Some("http://127.0.0.1:18080/v1"));
+        assert_eq!(agent.http_model.as_deref(), Some("qwen3-next-80b"));
+        assert_eq!(agent.http_bearer_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn deserialize_agent_config_without_http_fields() {
+        let parsed: AgentConfig = toml::from_str(
+            r#"
+            name = "code-gpt-5.3-codex"
+            command = "coder"
+            "#,
+        )
+        .expect("should deserialize without optional http fields");
+
+        assert_eq!(parsed.http_endpoint, None);
+        assert_eq!(parsed.http_model, None);
+        assert_eq!(parsed.http_bearer_token, None);
     }
 }

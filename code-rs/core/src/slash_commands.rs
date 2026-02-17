@@ -20,6 +20,14 @@ pub fn get_enabled_agents(agents: &[AgentConfig]) -> Vec<String> {
     }
 
     fn agent_is_runnable(agent: &AgentConfig) -> bool {
+        if agent
+            .http_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| !endpoint.trim().is_empty())
+        {
+            return true;
+        }
+
         let spec = agent_model_spec(&agent.name).or_else(|| agent_model_spec(&agent.command));
         if let Some(spec) = spec {
             if matches!(spec.family, "code" | "codex" | "cloud") {
@@ -393,6 +401,9 @@ mod tests {
                 args_read_only: None,
                 args_write: None,
                 instructions: None,
+                http_endpoint: None,
+                http_model: None,
+                http_bearer_token: None,
             },
             AgentConfig {
                 name: "test-gemini".to_string(),
@@ -405,6 +416,9 @@ mod tests {
                 args_read_only: None,
                 args_write: None,
                 instructions: None,
+                http_endpoint: None,
+                http_model: None,
+                http_bearer_token: None,
             },
         ];
 
@@ -414,5 +428,27 @@ mod tests {
         let prompt = result.unwrap();
         assert!(prompt.contains("code-gpt-5.2"));
         assert!(!prompt.contains("test-gemini"));
+    }
+
+    #[test]
+    fn test_http_agents_are_runnable_without_local_cli() {
+        let agents = vec![AgentConfig {
+            name: "hermia-athena".to_string(),
+            command: String::new(),
+            args: vec![],
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+            http_endpoint: Some("http://127.0.0.1:8000/v1".to_string()),
+            http_model: Some("qwen3-next-80b".to_string()),
+            http_bearer_token: None,
+        }];
+
+        let enabled = get_enabled_agents(&agents);
+        assert_eq!(enabled, vec!["hermia-athena".to_string()]);
     }
 }
