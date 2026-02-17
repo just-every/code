@@ -93,6 +93,16 @@ These were re-run after the auto-review P1 write-mode HTTP semantics fix, releas
 
 Goal was to exhaust non-interactive credential paths, push current commits, and validate a fresh release run.
 
+### PR/Handoff metadata
+
+| Item | Value |
+|---|---|
+| PR URL (`hermia-ai:main` -> `just-every:main`) | `https://github.com/just-every/code/pull/547` |
+| Fork branch head | `64258a3d847c3c96a2d77af2f190073ad8adc2ea` |
+| Core implementation commit | `58e91d6f6` |
+| Merge-sync commit | `939c76d19` |
+| Evidence update commits | `78e231198`, `64258a3d8` |
+
 ### Credential path sweep
 
 | Step | Command | Result |
@@ -120,6 +130,13 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 | Job outcomes | `GH_TOKEN=<helper-token> gh api repos/hermia-ai/code/actions/runs/22087028099/jobs?per_page=100` | `Validate npm auth` failed; all downstream jobs (`Determine Version`, `Preflight Tests`, `Build`, `Smoke`, `Publish`) skipped. |
 | Failure root cause | `GH_TOKEN=<helper-token> gh run view 22087028099 --repo hermia-ai/code --log --job 63823879436` | Explicit failure: `NPM_TOKEN is missing`. |
 
+### Origin trigger-path attempts (no push) 
+
+| Step | Command | Result |
+|---|---|---|
+| Dispatch `Release` on origin | `GH_TOKEN=<helper-token> gh workflow run Release --repo just-every/code --ref main` | Denied: `HTTP 403: Must have admin rights to Repository.` |
+| Dispatch `rust-ci` on origin | `GH_TOKEN=<helper-token> gh workflow run rust-ci --repo just-every/code --ref main` | Denied: `HTTP 403: Must have admin rights to Repository.` |
+
 ### Remaining non-push validation artifacts (completed)
 
 | Check | Command | Result |
@@ -140,3 +157,22 @@ Goal was to exhaust non-interactive credential paths, push current commits, and 
 | Fresh release run execution | COMPLETE (fork), BLOCKED (origin) | Fresh run `22087028099` executed on writable fork; origin run cannot be created without push permission. |
 | `cross-platform-artifact-smoke` success proof on fresh run | BLOCKED by upstream `npm-auth-check` gate | In run `22087028099`, `Validate npm auth` failed (`NPM_TOKEN missing`), so smoke/publish jobs were skipped. |
 | Publish success proof on fresh run | BLOCKED by upstream `npm-auth-check` gate | `Publish to npm` skipped in `22087028099` because gate failed. |
+
+## Final Unblock Checklist (Maintainer)
+
+1. Merge PR `https://github.com/just-every/code/pull/547` into `just-every/code:main`.
+2. Ensure org/repo credentials are present for release:
+   - `NPM_TOKEN` (publish + bypass-2FA for `@just-every/*`).
+   - Any required release credentials already used by `release.yml` (GitHub token scope, etc.).
+3. Confirm a fresh origin `Release` workflow run starts for merge commit SHA.
+4. Verify in that run that these jobs succeed:
+   - `Validate npm auth`
+   - `Preflight Tests (Linux fast E2E)`
+   - `Build ...` matrix
+   - `Smoke ...` matrix (`cross-platform-artifact-smoke`)
+   - `Publish to npm`
+5. Run post-release checks:
+   - Git tag and GitHub release assets
+   - npm package versions for root + platform packages
+   - Homebrew formula version bump
+6. Append the new run ID/timestamps and results into this evidence doc.
