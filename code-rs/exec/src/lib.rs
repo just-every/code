@@ -1189,7 +1189,7 @@ async fn resolve_resume_path(
     args: &crate::cli::ResumeArgs,
 ) -> anyhow::Result<Option<PathBuf>> {
     if !args.last && args.session_id.is_none() {
-        return Ok(None);
+        anyhow::bail!("resume requires SESSION_ID or --last");
     }
 
     let catalog = SessionCatalog::new(config.code_home.clone());
@@ -1199,7 +1199,10 @@ async fn resolve_resume_path(
             .find_by_id(id_str)
             .await
             .context("failed to look up session by id")?;
-        Ok(entry.map(|entry| entry_to_rollout_path(&config.code_home, &entry)))
+        match entry {
+            Some(entry) => Ok(Some(entry_to_rollout_path(&config.code_home, &entry))),
+            None => anyhow::bail!("no session found matching id {id_str}"),
+        }
     } else if args.last {
         let query = SessionQuery {
             cwd: None,
@@ -1214,9 +1217,12 @@ async fn resolve_resume_path(
             .get_latest(&query)
             .await
             .context("failed to get latest session from catalog")?;
-        Ok(entry.map(|entry| entry_to_rollout_path(&config.code_home, &entry)))
+        match entry {
+            Some(entry) => Ok(Some(entry_to_rollout_path(&config.code_home, &entry))),
+            None => anyhow::bail!("no recorded sessions found to resume"),
+        }
     } else {
-        Ok(None)
+        anyhow::bail!("resume requires SESSION_ID or --last")
     }
 }
 
@@ -3008,6 +3014,66 @@ mod tests {
             path_str.contains("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
             "resolved path should ignore mtime drift, got {}",
             path_str
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_resume_requires_selector() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+
+        let args = crate::cli::ResumeArgs {
+            session_id: None,
+            last: false,
+            prompt: None,
+        };
+
+        let err = resolve_resume_path(&config, &args)
+            .await
+            .expect_err("missing selector should error");
+        assert!(
+            err.to_string().contains("SESSION_ID or --last"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_by_id_errors_when_not_found() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+
+        let args = crate::cli::ResumeArgs {
+            session_id: Some("ffffffff".to_string()),
+            last: false,
+            prompt: None,
+        };
+
+        let err = resolve_resume_path(&config, &args)
+            .await
+            .expect_err("unknown id should error");
+        assert!(
+            err.to_string().contains("no session found matching id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_resolve_last_errors_when_no_sessions() {
+        let temp = TempDir::new().unwrap();
+        let config = test_config(temp.path());
+
+        let args = crate::cli::ResumeArgs {
+            session_id: None,
+            last: true,
+            prompt: None,
+        };
+
+        let err = resolve_resume_path(&config, &args)
+            .await
+            .expect_err("--last without sessions should error");
+        assert!(
+            err.to_string().contains("no recorded sessions found to resume"),
+            "unexpected error: {err}"
         );
     }
 
