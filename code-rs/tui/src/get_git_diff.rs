@@ -21,8 +21,10 @@ pub(crate) async fn get_git_diff() -> io::Result<(bool, String)> {
     }
 
     // Run tracked diff and untracked file listing in parallel.
+    // Force-disable ANSI color escapes so the TUI diff renderer can apply its own
+    // styling without leaking raw escape sequences into the buffer.
     let (tracked_diff_res, untracked_output_res) = tokio::join!(
-        run_git_capture_diff(&["diff", "--color"]),
+        run_git_capture_diff(&["diff", "--no-color"]),
         run_git_capture_stdout(&["ls-files", "--others", "--exclude-standard"]),
     );
     let tracked_diff = tracked_diff_res?;
@@ -45,7 +47,7 @@ pub(crate) async fn get_git_diff() -> io::Result<(bool, String)> {
         let null_path = null_path.clone();
         let file = file.to_string();
         join_set.spawn(async move {
-            let args = ["diff", "--color", "--no-index", "--", &null_path, &file];
+            let args = ["diff", "--no-color", "--no-index", "--", &null_path, &file];
             run_git_capture_diff(&args).await
         });
     }
