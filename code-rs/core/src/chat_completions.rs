@@ -331,6 +331,24 @@ pub(crate) async fn stream_chat_completions(
         }
     }
 
+// --- sanitize outgoing chat roles for strict providers ---
+if let Some(msgs) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
+    for msg in msgs.iter_mut() {
+        if let Some(obj) = msg.as_object_mut() {
+            let replace = match obj.get("role") {
+                Some(serde_json::Value::String(s)) => {
+                    !matches!(s.as_str(), "system" | "user" | "assistant" | "tool")
+                }
+                _ => true,
+            };
+            if replace {
+                obj.insert("role".to_string(), serde_json::Value::String("system".to_string()));
+            }
+        }
+    }
+}
+// --- end sanitize ---
+
     let endpoint = provider.get_full_url(&None);
     debug!(
         "POST to {}: {}",
