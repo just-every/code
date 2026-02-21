@@ -808,38 +808,57 @@ impl App {
 
     async fn open_agent_picker(&mut self) {
         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        let mut agent_threads = Vec::new();
         for thread_id in thread_ids {
-            if self.server.get_thread(thread_id).await.is_err() {
-                self.thread_event_channels.remove(&thread_id);
+            match self.server.get_thread(thread_id).await {
+                Ok(thread) => {
+                    let session_source = thread.config_snapshot().await.session_source;
+                    agent_threads.push((
+                        thread_id,
+                        session_source.get_nickname(),
+                        session_source.get_agent_role(),
+                    ));
+                }
+                Err(_) => {
+                    self.thread_event_channels.remove(&thread_id);
+                }
             }
         }
 
-        if self.thread_event_channels.is_empty() {
+        if agent_threads.is_empty() {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), None);
             return;
         }
 
-        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
-        thread_ids.sort_by_key(ToString::to_string);
+        agent_threads.sort_by(|(left, ..), (right, ..)| left.to_string().cmp(&right.to_string()));
 
         let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = thread_ids
+        let items: Vec<SelectionItem> = agent_threads
             .iter()
             .enumerate()
-            .map(|(idx, thread_id)| {
+            .map(|(idx, (thread_id, agent_nickname, agent_role))| {
                 if self.active_thread_id == Some(*thread_id) {
                     initial_selected_idx = Some(idx);
                 }
                 let id = *thread_id;
+                let is_primary = self.primary_thread_id == Some(*thread_id);
+                let name = format_agent_picker_item_name(
+                    *thread_id,
+                    agent_nickname.as_deref(),
+                    agent_role.as_deref(),
+                    is_primary,
+                );
+                let uuid = thread_id.to_string();
                 SelectionItem {
-                    name: thread_id.to_string(),
+                    name: name.clone(),
+                    description: Some(uuid.clone()),
                     is_current: self.active_thread_id == Some(*thread_id),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
                     })],
                     dismiss_on_select: true,
-                    search_value: Some(thread_id.to_string()),
+                    search_value: Some(format!("{name} {uuid}")),
                     ..Default::default()
                 }
             })
@@ -978,6 +997,27 @@ impl App {
         self.refresh_status_line();
     }
 
+    fn should_wait_for_initial_session(session_selection: &SessionSelection) -> bool {
+        matches!(
+            session_selection,
+            SessionSelection::StartFresh | SessionSelection::Exit
+        )
+    }
+
+    fn should_handle_active_thread_events(
+        waiting_for_initial_session_configured: bool,
+        has_active_thread_receiver: bool,
+    ) -> bool {
+        has_active_thread_receiver && !waiting_for_initial_session_configured
+    }
+
+    fn should_stop_waiting_for_initial_session(
+        waiting_for_initial_session_configured: bool,
+        primary_thread_id: Option<ThreadId>,
+    ) -> bool {
+        waiting_for_initial_session_configured && primary_thread_id.is_some()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn run(
         tui: &mut tui::Tui,
@@ -1005,14 +1045,15 @@ impl App {
             config.codex_home.clone(),
             auth_manager.clone(),
             SessionSource::Cli,
+            config.model_catalog.clone(),
         ));
         let mut model = thread_manager
             .get_models_manager()
-            .get_default_model(&config.model, &config, RefreshStrategy::Offline)
+            .get_default_model(&config.model, RefreshStrategy::Offline)
             .await;
         let available_models = thread_manager
             .get_models_manager()
-            .list_models(&config, RefreshStrategy::Offline)
+            .list_models(RefreshStrategy::Offline)
             .await;
         let exit_info = handle_model_migration_prompt_if_needed(
             tui,
@@ -1068,6 +1109,8 @@ impl App {
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
+        let wait_for_initial_session_configured =
+            Self::should_wait_for_initial_session(&session_selection);
         let mut chat_widget = match session_selection {
             SessionSelection::StartFresh | SessionSelection::Exit => {
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -1252,6 +1295,7 @@ impl App {
 
         let mut thread_created_rx = thread_manager.subscribe_thread_created();
         let mut listen_for_threads = true;
+        let mut waiting_for_initial_session_configured = wait_for_initial_session_configured;
 
         let exit_reason = loop {
             let control = select! {
@@ -1264,7 +1308,10 @@ impl App {
                     } else {
                         None
                     }
-                }, if app.active_thread_rx.is_some() => {
+                }, if App::should_handle_active_thread_events(
+                    waiting_for_initial_session_configured,
+                    app.active_thread_rx.is_some()
+                ) => {
                     if let Some(event) = active {
                         app.handle_active_thread_event(tui, event).await?;
                     } else {
@@ -1291,6 +1338,12 @@ impl App {
                     AppRunControl::Continue
                 }
             };
+            if App::should_stop_waiting_for_initial_session(
+                waiting_for_initial_session_configured,
+                app.primary_thread_id,
+            ) {
+                waiting_for_initial_session_configured = false;
+            }
             match control {
                 AppRunControl::Continue => {}
                 AppRunControl::Exit(reason) => break reason,
@@ -1419,8 +1472,11 @@ impl App {
                         )
                         .await?
                         {
-                            Some(cwd) => cwd,
-                            None => current_cwd.clone(),
+                            crate::ResolveCwdOutcome::Continue(Some(cwd)) => cwd,
+                            crate::ResolveCwdOutcome::Continue(None) => current_cwd.clone(),
+                            crate::ResolveCwdOutcome::Exit => {
+                                return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+                            }
                         };
                         let mut resume_config = if crate::cwds_differ(&current_cwd, &resume_cwd) {
                             match self.rebuild_config_for_cwd(resume_cwd).await {
@@ -2480,11 +2536,7 @@ impl App {
                     .await;
                 match apply_result {
                     Ok(()) => {
-                        self.config.tui_status_line = if ids.is_empty() {
-                            None
-                        } else {
-                            Some(ids.clone())
-                        };
+                        self.config.tui_status_line = Some(ids.clone());
                         self.chat_widget.setup_status_line(items);
                     }
                     Err(err) => {
@@ -2859,6 +2911,28 @@ impl App {
     }
 }
 
+fn format_agent_picker_item_name(
+    _thread_id: ThreadId,
+    agent_nickname: Option<&str>,
+    agent_role: Option<&str>,
+    is_primary: bool,
+) -> String {
+    if is_primary {
+        return "Main [default]".to_string();
+    }
+
+    let agent_nickname = agent_nickname
+        .map(str::trim)
+        .filter(|nickname| !nickname.is_empty());
+    let agent_role = agent_role.map(str::trim).filter(|role| !role.is_empty());
+    match (agent_nickname, agent_role) {
+        (Some(agent_nickname), Some(agent_role)) => format!("{agent_nickname} [{agent_role}]"),
+        (Some(agent_nickname), None) => agent_nickname.to_string(),
+        (None, Some(agent_role)) => format!("[{agent_role}]"),
+        (None, None) => "Agent".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2915,6 +2989,76 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn startup_waiting_gate_is_only_for_fresh_or_exit_session_selection() {
+        assert_eq!(
+            App::should_wait_for_initial_session(&SessionSelection::StartFresh),
+            true
+        );
+        assert_eq!(
+            App::should_wait_for_initial_session(&SessionSelection::Exit),
+            true
+        );
+        assert_eq!(
+            App::should_wait_for_initial_session(&SessionSelection::Resume(PathBuf::from(
+                "/tmp/restore"
+            ))),
+            false
+        );
+        assert_eq!(
+            App::should_wait_for_initial_session(&SessionSelection::Fork(PathBuf::from(
+                "/tmp/fork"
+            ))),
+            false
+        );
+    }
+
+    #[test]
+    fn startup_waiting_gate_holds_active_thread_events_until_primary_thread_configured() {
+        let mut wait_for_initial_session =
+            App::should_wait_for_initial_session(&SessionSelection::StartFresh);
+        assert_eq!(wait_for_initial_session, true);
+        assert_eq!(
+            App::should_handle_active_thread_events(wait_for_initial_session, true),
+            false
+        );
+
+        assert_eq!(
+            App::should_stop_waiting_for_initial_session(wait_for_initial_session, None),
+            false
+        );
+        if App::should_stop_waiting_for_initial_session(
+            wait_for_initial_session,
+            Some(ThreadId::new()),
+        ) {
+            wait_for_initial_session = false;
+        }
+        assert_eq!(wait_for_initial_session, false);
+
+        assert_eq!(
+            App::should_handle_active_thread_events(wait_for_initial_session, true),
+            true
+        );
+    }
+
+    #[test]
+    fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
+        let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
+            PathBuf::from("/tmp/restore"),
+        ));
+        assert_eq!(
+            App::should_handle_active_thread_events(wait_for_resume, true),
+            true
+        );
+        let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
+            PathBuf::from("/tmp/fork"),
+        ));
+        assert_eq!(
+            App::should_handle_active_thread_events(wait_for_fork, true),
+            true
+        );
+    }
+
     #[tokio::test]
     async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         let mut app = make_test_app().await;
@@ -2967,6 +3111,41 @@ mod tests {
 
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), false);
         Ok(())
+    }
+
+    #[test]
+    fn agent_picker_item_name_snapshot() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
+        let snapshot = [
+            format!(
+                "{} | {}",
+                format_agent_picker_item_name(thread_id, Some("Robie"), Some("explorer"), true),
+                thread_id
+            ),
+            format!(
+                "{} | {}",
+                format_agent_picker_item_name(thread_id, Some("Robie"), Some("explorer"), false),
+                thread_id
+            ),
+            format!(
+                "{} | {}",
+                format_agent_picker_item_name(thread_id, Some("Robie"), None, false),
+                thread_id
+            ),
+            format!(
+                "{} | {}",
+                format_agent_picker_item_name(thread_id, None, Some("explorer"), false),
+                thread_id
+            ),
+            format!(
+                "{} | {}",
+                format_agent_picker_item_name(thread_id, None, None, false),
+                thread_id
+            ),
+        ]
+        .join("\n");
+        assert_snapshot!("agent_picker_item_name", snapshot);
     }
 
     #[tokio::test]
