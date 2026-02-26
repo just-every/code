@@ -23,10 +23,10 @@ fmt:
     cargo fmt -- --config imports_granularity=Item 2>/dev/null
 
 fix *args:
-    cargo clippy --fix --all-features --tests --allow-dirty "$@"
+    cargo clippy --fix --tests --allow-dirty "$@"
 
 clippy:
-    cargo clippy --all-features --tests "$@"
+    cargo clippy --tests "$@"
 
 install:
     rustup show active-toolchain
@@ -36,6 +36,8 @@ install:
 # --no-fail-fast is important to ensure all tests are run.
 #
 # Run `cargo install cargo-nextest` if you don't have it installed.
+# Prefer this for routine local runs; use explicit `cargo test --all-features`
+# only when you specifically need full feature coverage.
 test:
     cargo nextest run --no-fail-fast
 
