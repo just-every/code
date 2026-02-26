@@ -40,6 +40,7 @@ use crate::transport::start_websocket_acceptor;
 
 pub mod code_message_processor;
 mod error_code;
+mod external_agent_config_api;
 mod fuzzy_file_search;
 mod message_processor;
 pub mod outgoing_message;

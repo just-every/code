@@ -365,6 +365,11 @@ pub struct SubagentCommandConfig {
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct SubagentsToml {
+    /// Maximum nesting depth for agent-spawned agent runs.
+    /// `1` allows root sessions to spawn agents, but blocks further nesting.
+    #[serde(default)]
+    pub max_depth: Option<i32>,
+
     #[serde(default)]
     pub commands: Vec<SubagentCommandConfig>,
 }

@@ -23,6 +23,7 @@ use super::session::{
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
+use crate::agent_tool::current_agent_spawn_depth;
 use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
@@ -683,6 +684,7 @@ pub(super) async fn submission_loop(
                     client_tools: config.experimental_client_tools.clone(),
                     session_manager: crate::exec_command::ExecSessionManager::default(),
                     agents: config.agents.clone(),
+                    subagent_max_depth: config.subagent_max_depth,
                     model_reasoning_effort: config.model_reasoning_effort,
                     notify,
                     state: Mutex::new(state),
@@ -7324,6 +7326,36 @@ pub(crate) async fn handle_run_agent(
                     output: FunctionCallOutputPayload {
                         body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
                         success: Some(false)},
+                };
+            }
+
+            let current_depth = current_agent_spawn_depth();
+            if current_depth >= sess.subagent_max_depth {
+                let guidance = format!(
+                    "⚠️ Agent nesting limit reached (current depth: {current_depth}, max depth: {}). Finish current agent runs before spawning additional layers.",
+                    sess.subagent_max_depth,
+                );
+                let req = sess.current_request_ordinal();
+                let order = sess.background_order_for_ctx(ctx, req);
+                sess
+                    .notify_background_event_with_order(&ctx.sub_id, order, guidance.clone())
+                    .await;
+
+                let response = serde_json::json!({
+                    "status": "blocked",
+                    "reason": "max_depth_reached",
+                    "message": guidance,
+                    "current_depth": current_depth,
+                    "max_depth": sess.subagent_max_depth,
+                });
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id: call_id_clone,
+                    output: FunctionCallOutputPayload {
+                        body: code_protocol::models::FunctionCallOutputBody::Text(
+                            response.to_string(),
+                        ),
+                        success: Some(false),
+                    },
                 };
             }
 

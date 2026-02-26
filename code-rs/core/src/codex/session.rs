@@ -388,6 +388,9 @@ pub(crate) struct Session {
     /// Configuration for available agent models
     pub(super) agents: Vec<crate::config_types::AgentConfig>,
 
+    /// Maximum allowed nesting depth for agent-spawned agent runs.
+    pub(super) subagent_max_depth: i32,
+
     /// Default reasoning effort for spawned agents and model calls in this session
     pub(super) model_reasoning_effort: ReasoningEffortConfig,
 

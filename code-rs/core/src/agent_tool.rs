@@ -441,6 +441,15 @@ const MAX_AGENT_PROGRESS_LINE_BYTES: usize = 2048;
 const MAX_AGENT_RESULT_BYTES: usize = 64 * 1024;
 const MAX_TRACKED_TERMINAL_AGENTS: usize = 512;
 const MAX_STATUS_TERMINAL_AGENTS: usize = 128;
+pub(crate) const CODE_AGENT_SPAWN_DEPTH_ENV: &str = "CODE_AGENT_SPAWN_DEPTH";
+
+pub(crate) fn current_agent_spawn_depth() -> i32 {
+    std::env::var(CODE_AGENT_SPAWN_DEPTH_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .filter(|depth| *depth >= 0)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone)]
 pub struct AgentStatusUpdatePayload {
@@ -1780,6 +1789,11 @@ async fn execute_model_with_permissions(
     if let Some(ref cfg) = config {
         if let Some(ref e) = cfg.env { for (k, v) in e { env.insert(k.clone(), v.clone()); } }
     }
+    let child_spawn_depth = current_agent_spawn_depth().saturating_add(1);
+    env.insert(
+        CODE_AGENT_SPAWN_DEPTH_ENV.to_string(),
+        child_spawn_depth.to_string(),
+    );
 
     if debug_subagent {
         env.entry("CODE_SUBAGENT_DEBUG".to_string())

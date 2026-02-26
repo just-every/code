@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use crate::code_message_processor::CodexMessageProcessor;
+use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::ConnectionId;
@@ -24,6 +25,8 @@ use code_app_server_protocol::ConfigRequirementsReadResponse;
 use code_app_server_protocol::ConfigValueWriteParams;
 use code_app_server_protocol::ConfigWriteErrorCode;
 use code_app_server_protocol::ConfigWriteResponse;
+use code_app_server_protocol::ExternalAgentConfigDetectParams;
+use code_app_server_protocol::ExternalAgentConfigImportParams;
 use code_app_server_protocol::GetAccountParams;
 use code_app_server_protocol::LoginAccountParams;
 use code_app_server_protocol::MergeStrategy;
@@ -56,6 +59,7 @@ use toml::Value as TomlValue;
 pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     code_message_processor: CodexMessageProcessor,
+    external_agent_config_api: ExternalAgentConfigApi,
     base_config: Arc<Config>,
     config_warnings: Arc<Vec<serde_json::Value>>,
     cli_overrides: Vec<(String, TomlValue)>,
@@ -96,10 +100,13 @@ impl MessageProcessor {
             code_linux_sandbox_exe,
             config_for_processor.clone(),
         );
+        let external_agent_config_api =
+            ExternalAgentConfigApi::new(config.code_home.clone());
 
         Self {
             outgoing,
             code_message_processor,
+            external_agent_config_api,
             base_config: config_for_processor,
             config_warnings: Arc::new(config_warnings),
             cli_overrides,
@@ -269,6 +276,8 @@ impl MessageProcessor {
                 | "configRequirements/read"
                 | "config/value/write"
                 | "config/batchWrite"
+                | "externalAgentConfig/detect"
+                | "externalAgentConfig/import"
                 | "account/read"
                 | "account/login/start"
                 | "account/login/cancel"
@@ -390,6 +399,54 @@ impl MessageProcessor {
                 };
 
                 match self.apply_config_batch_write(params) {
+                    Ok(response) => self.outgoing.send_response(request_id, response).await,
+                    Err(error) => self.outgoing.send_error(request_id, error).await,
+                }
+                true
+            }
+            "externalAgentConfig/detect" => {
+                let params_value = request.params.clone().unwrap_or_else(|| json!({}));
+                let params: ExternalAgentConfigDetectParams =
+                    match serde_json::from_value(params_value) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            let error = JSONRPCErrorError {
+                                code: INVALID_REQUEST_ERROR_CODE,
+                                message: format!(
+                                    "Invalid externalAgentConfig/detect params: {err}"
+                                ),
+                                data: None,
+                            };
+                            self.outgoing.send_error(request_id, error).await;
+                            return true;
+                        }
+                    };
+
+                match self.external_agent_config_api.detect(params).await {
+                    Ok(response) => self.outgoing.send_response(request_id, response).await,
+                    Err(error) => self.outgoing.send_error(request_id, error).await,
+                }
+                true
+            }
+            "externalAgentConfig/import" => {
+                let params_value = request.params.clone().unwrap_or_else(|| json!({}));
+                let params: ExternalAgentConfigImportParams =
+                    match serde_json::from_value(params_value) {
+                        Ok(params) => params,
+                        Err(err) => {
+                            let error = JSONRPCErrorError {
+                                code: INVALID_REQUEST_ERROR_CODE,
+                                message: format!(
+                                    "Invalid externalAgentConfig/import params: {err}"
+                                ),
+                                data: None,
+                            };
+                            self.outgoing.send_error(request_id, error).await;
+                            return true;
+                        }
+                    };
+
+                match self.external_agent_config_api.import(params).await {
                     Ok(response) => self.outgoing.send_response(request_id, response).await,
                     Err(error) => self.outgoing.send_error(request_id, error).await,
                 }

@@ -108,6 +108,7 @@ pub(crate) use validation::upgrade_legacy_model_slugs;
 pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.3-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.3-codex";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.3-codex";
+pub(crate) const DEFAULT_SUBAGENT_MAX_DEPTH: i32 = 1;
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -465,6 +466,11 @@ pub struct Config {
     /// If a command with name `plan|solve|code` exists here, it overrides
     /// the built-in defaults for that slash command.
     pub subagent_commands: Vec<crate::config_types::SubagentCommandConfig>,
+
+    /// Maximum allowed nesting depth for agent-spawned agent runs.
+    /// `1` allows root sessions to spawn agents, and blocks deeper nesting.
+    pub subagent_max_depth: i32,
+
     /// Experimental: path to a rollout file to resume a prior session from.
     /// When set, the core will send this path in the initial ConfigureSession
     /// so the backend can attempt to resume.
@@ -1464,6 +1470,18 @@ impl Config {
             auto_drive.model_routing_entries = default_auto_drive_model_routing_entries();
         }
 
+        let subagent_max_depth = cfg
+            .subagents
+            .as_ref()
+            .and_then(|subagents| subagents.max_depth)
+            .unwrap_or(DEFAULT_SUBAGENT_MAX_DEPTH);
+        if subagent_max_depth < 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "subagents.max-depth must be at least 1",
+            ));
+        }
+
         if auto_drive.model_routing_enabled
             && !auto_drive
                 .model_routing_entries
@@ -1606,6 +1624,7 @@ impl Config {
                 .subagents
                 .map(|s| s.commands)
                 .unwrap_or_default(),
+            subagent_max_depth,
             experimental_resume: cfg.experimental_resume,
             max_run_seconds: None,
             max_run_deadline: None,

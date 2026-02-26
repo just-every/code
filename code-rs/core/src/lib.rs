@@ -53,6 +53,7 @@ pub mod error;
 pub mod exec;
 mod exec_command;
 pub mod exec_env;
+pub mod external_agent_config;
 mod flags;
 pub mod git_info;
 pub mod landlock;
