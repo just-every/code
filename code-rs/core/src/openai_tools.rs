@@ -568,10 +568,14 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
             "sandbox_permissions".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                    "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem access (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                         .to_string(),
                 ),
-                allowed_values: Some(vec!["use_default".to_string(), "require_escalated".to_string()]),
+                allowed_values: Some(vec![
+                    "use_default".to_string(),
+                    "with_additional_permissions".to_string(),
+                    "require_escalated".to_string(),
+                ]),
             },
         );
         properties.insert(
@@ -582,6 +586,48 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
                         .to_string(),
                 ),
                 allowed_values: None,
+            },
+        );
+        properties.insert(
+            "additional_permissions".to_string(),
+            JsonSchema::Object {
+                properties: BTreeMap::from([(
+                    "file_system".to_string(),
+                    JsonSchema::Object {
+                        properties: BTreeMap::from([
+                            (
+                                "read".to_string(),
+                                JsonSchema::Array {
+                                    items: Box::new(JsonSchema::String {
+                                        description: None,
+                                        allowed_values: None,
+                                    }),
+                                    description: Some(
+                                        "Additional filesystem paths to grant read access for this command."
+                                            .to_string(),
+                                    ),
+                                },
+                            ),
+                            (
+                                "write".to_string(),
+                                JsonSchema::Array {
+                                    items: Box::new(JsonSchema::String {
+                                        description: None,
+                                        allowed_values: None,
+                                    }),
+                                    description: Some(
+                                        "Additional filesystem paths to grant write access for this command."
+                                            .to_string(),
+                                    ),
+                                },
+                            ),
+                        ]),
+                        required: None,
+                        additional_properties: Some(false.into()),
+                    },
+                )]),
+                required: Some(vec!["file_system".to_string()]),
+                additional_properties: Some(false.into()),
             },
         );
     }
@@ -616,6 +662,9 @@ The shell tool is used to execute shell commands.
 - When invoking a command that will require escalated privileges:
   - Provide the sandbox_permissions parameter with the value \"require_escalated\"
   - Include a short, 1 sentence explanation for why we need escalated permissions in the justification parameter.
+- When additional sandboxed filesystem access is enough:
+  - Provide the sandbox_permissions parameter with the value \"with_additional_permissions\"
+  - Provide additional_permissions.file_system.read and/or additional_permissions.file_system.write with the minimal paths needed.
 
 Long-running commands may be backgrounded after an initial window. Use `wait` to await background tasks. Optional `timeout` can set a hard kill if needed."#,
                 roots_str,

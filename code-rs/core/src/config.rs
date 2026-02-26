@@ -105,9 +105,9 @@ pub use crate::config_constraint::ConstraintResult;
 pub(crate) use defaults::merge_with_default_agents;
 pub(crate) use validation::upgrade_legacy_model_slugs;
 
-pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.2-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.2-codex";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
+pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.3-codex";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.3-codex";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.3-codex";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of

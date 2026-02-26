@@ -3570,6 +3570,7 @@ async fn handle_response_item(
                 timeout_ms: action.timeout_ms,
                 sandbox_permissions: None,
                 prefix_rule: None,
+                additional_permissions: None,
                 justification: None,
             };
             let effective_call_id = match (call_id, id) {
@@ -6838,7 +6839,8 @@ fn parse_container_exec_arguments(
 ) -> Result<ExecParams, Box<ResponseInputItem>> {
     // Parse command.
     //
-    // Newer prompts use `sandbox_permissions` ("use_default" | "require_escalated");
+    // Newer prompts use `sandbox_permissions` ("use_default" |
+    // "with_additional_permissions" | "require_escalated");
     // older ones used `with_escalated_permissions: bool`. Accept both.
     let parsed: std::result::Result<serde_json::Value, serde_json::Error> =
         serde_json::from_str(&arguments);

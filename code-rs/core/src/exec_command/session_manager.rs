@@ -433,8 +433,15 @@ async fn create_exec_command_session(
         shell,
         login,
         sandbox_permissions: _,
+        additional_permissions,
         justification: _,
     } = params;
+
+    if additional_permissions.is_some() {
+        tracing::debug!(
+            "exec_command additional_permissions is accepted for compatibility but not yet enforced"
+        );
+    }
 
     // Use the native pty implementation for the system
     let pty_system = native_pty_system();
@@ -584,6 +591,7 @@ PY"#
             shell: "/bin/bash".to_string(),
             login: false,
             sandbox_permissions: None,
+            additional_permissions: None,
             justification: None,
         };
         let initial_output = match session_manager
