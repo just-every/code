@@ -1194,6 +1194,8 @@ impl Session {
         command: Vec<String>,
         cwd: PathBuf,
         reason: Option<String>,
+        network_approval_context: Option<crate::protocol::NetworkApprovalContext>,
+        additional_permissions: Option<code_protocol::models::PermissionProfile>,
     ) -> oneshot::Receiver<ReviewDecision> {
         let (tx_approve, rx_approve) = oneshot::channel();
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
@@ -1206,7 +1208,8 @@ impl Session {
                 command,
                 cwd,
                 reason,
-                network_approval_context: None,
+                network_approval_context,
+                additional_permissions,
             }),
         );
         let _ = self.tx_event.send(event).await;

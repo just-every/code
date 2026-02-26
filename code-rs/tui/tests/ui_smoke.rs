@@ -465,6 +465,7 @@ fn smoke_exec_approval_event_structure() {
         cwd: PathBuf::from("/tmp"),
         reason: Some("verify".into()),
         network_approval_context: None,
+        additional_permissions: None,
     };
 
     let encoded = serde_json::to_string(&approval).expect("serialize exec approval");

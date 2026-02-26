@@ -95,6 +95,14 @@ use code_core::timeboxed_exec_guidance::{
 /// How long exec waits after task completion before sending Shutdown when Auto Review
 /// may be about to start. Guarded so sub-agents are not delayed.
 const AUTO_REVIEW_SHUTDOWN_GRACE_MS: u64 = 1_500;
+const REVIEW_SCOPE_MAX_LISTED_PATHS: usize = 120;
+const REVIEW_SCOPE_EXCLUDED_PREFIXES: [&str; 5] = [
+    "codex-rs/",
+    "node_modules/",
+    "target/",
+    ".git/",
+    ".code/",
+];
 
 pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("code_exec") {
@@ -2103,6 +2111,12 @@ fn snapshot_parent_diff_paths(cwd: &Path, parent: &str, head: &str) -> Option<Ve
     Some(paths)
 }
 
+fn should_include_review_scope_path(path: &str) -> bool {
+    !REVIEW_SCOPE_EXCLUDED_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
 fn apply_commit_scope_to_review_request(
     mut request: ReviewRequest,
     commit: &str,
@@ -2122,11 +2136,51 @@ fn apply_commit_scope_to_review_request(
 
     if let Some(paths) = paths {
         if !paths.is_empty() {
-            prompt.push_str("\nFiles changed in this snapshot:\n");
-            for path in paths {
-                prompt.push_str("- ");
-                prompt.push_str(path);
-                prompt.push('\n');
+            let mut listed_paths: Vec<&str> = Vec::new();
+            let mut seen_paths: HashSet<&str> = HashSet::new();
+            let mut excluded_count = 0usize;
+            let mut truncated_count = 0usize;
+
+            for raw_path in paths {
+                let normalized = raw_path.trim().trim_start_matches("./");
+                if normalized.is_empty() {
+                    continue;
+                }
+                if !seen_paths.insert(normalized) {
+                    continue;
+                }
+                if !should_include_review_scope_path(normalized) {
+                    excluded_count = excluded_count.saturating_add(1);
+                    continue;
+                }
+                if listed_paths.len() < REVIEW_SCOPE_MAX_LISTED_PATHS {
+                    listed_paths.push(normalized);
+                } else {
+                    truncated_count = truncated_count.saturating_add(1);
+                }
+            }
+
+            if !listed_paths.is_empty() {
+                prompt.push_str("\nFiles changed in this snapshot:\n");
+                for path in listed_paths {
+                    prompt.push_str("- ");
+                    prompt.push_str(path);
+                    prompt.push('\n');
+                }
+            }
+
+            let omitted_count = excluded_count.saturating_add(truncated_count);
+            if omitted_count > 0 {
+                prompt.push_str(&format!(
+                    "\nOmitted {omitted_count} changed path(s) from this list ({excluded_count} excluded by path policy; {truncated_count} truncated for prompt size)."
+                ));
+            }
+
+            if excluded_count > 0 {
+                let excluded = REVIEW_SCOPE_EXCLUDED_PREFIXES.join(", ");
+                prompt.push_str(&format!(
+                    "\nExcluded prefixes: {excluded}. Do not spend review effort on those paths unless explicitly asked."
+                ));
             }
         }
     }
@@ -2701,6 +2755,63 @@ mod tests {
         assert!(!cleaned.contains("Review scope"));
         assert!(!cleaned.contains(AUTO_RESOLVE_REVIEW_FOLLOWUP));
         assert!(cleaned.contains("Please review."));
+    }
+
+    #[test]
+    fn apply_commit_scope_filters_and_truncates_paths() {
+        let mut paths = vec![
+            "./src/main.rs".to_string(),
+            "codex-rs/Cargo.lock".to_string(),
+            "./src/main.rs".to_string(),
+        ];
+        for idx in 0..130 {
+            paths.push(format!("src/generated_{idx}.rs"));
+        }
+
+        let request = ReviewRequest {
+            target: code_protocol::protocol::ReviewTarget::Custom {
+                instructions: "baseline".to_string(),
+            },
+            user_facing_hint: None,
+            prompt: "baseline".to_string(),
+        };
+
+        let scoped = apply_commit_scope_to_review_request(request, "abc1234", "def5678", Some(&paths));
+        assert!(scoped.prompt.contains("Files changed in this snapshot:"));
+        assert!(scoped.prompt.contains("- src/main.rs"));
+        assert!(!scoped.prompt.contains("codex-rs/Cargo.lock"));
+        assert!(
+            scoped
+                .prompt
+                .contains("Omitted 12 changed path(s) from this list (1 excluded by path policy; 11 truncated for prompt size).")
+        );
+        assert!(scoped.prompt.contains("Excluded prefixes: codex-rs/"));
+    }
+
+    #[test]
+    fn apply_commit_scope_reports_when_all_paths_excluded() {
+        let paths = vec![
+            "codex-rs/Cargo.lock".to_string(),
+            "target/debug/code".to_string(),
+            "node_modules/pkg/index.js".to_string(),
+        ];
+
+        let request = ReviewRequest {
+            target: code_protocol::protocol::ReviewTarget::Custom {
+                instructions: "baseline".to_string(),
+            },
+            user_facing_hint: None,
+            prompt: "baseline".to_string(),
+        };
+
+        let scoped = apply_commit_scope_to_review_request(request, "abc1234", "def5678", Some(&paths));
+        assert!(!scoped.prompt.contains("Files changed in this snapshot:"));
+        assert!(
+            scoped
+                .prompt
+                .contains("Omitted 3 changed path(s) from this list (3 excluded by path policy; 0 truncated for prompt size).")
+        );
+        assert!(scoped.prompt.contains("Excluded prefixes: codex-rs/"));
     }
 
     #[test]

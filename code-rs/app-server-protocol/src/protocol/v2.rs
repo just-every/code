@@ -5,6 +5,8 @@ use crate::protocol::common::AuthMode;
 use code_experimental_api_macros::ExperimentalApi;
 use code_protocol::account::PlanType;
 use code_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
+use code_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
+use code_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
 use code_protocol::config_types::CollaborationMode;
 use code_protocol::config_types::CollaborationModeMask;
 use code_protocol::config_types::ForcedLoginMethod;
@@ -18,6 +20,11 @@ use code_protocol::items::TurnItem as CoreTurnItem;
 use code_protocol::mcp::Resource as McpResource;
 use code_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use code_protocol::mcp::Tool as McpTool;
+use code_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
+use code_protocol::models::MacOsAutomationValue as CoreMacOsAutomationValue;
+use code_protocol::models::MacOsPermissions as CoreMacOsPermissions;
+use code_protocol::models::MacOsPreferencesValue as CoreMacOsPreferencesValue;
+use code_protocol::models::PermissionProfile as CorePermissionProfile;
 use code_protocol::models::ResponseItem;
 use code_protocol::openai_models::InputModality;
 use code_protocol::openai_models::ReasoningEffort;
@@ -642,6 +649,89 @@ pub enum CommandExecutionApprovalDecision {
     Decline,
     /// User denied the command. The turn will also be immediately interrupted.
     Cancel,
+}
+
+v2_enum_from_core! {
+    pub enum NetworkApprovalProtocol from CoreNetworkApprovalProtocol {
+        Http,
+        Https,
+        Socks5Tcp,
+        Socks5Udp,
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct NetworkApprovalContext {
+    pub host: String,
+    pub protocol: NetworkApprovalProtocol,
+}
+
+impl From<CoreNetworkApprovalContext> for NetworkApprovalContext {
+    fn from(value: CoreNetworkApprovalContext) -> Self {
+        Self {
+            host: value.host,
+            protocol: value.protocol.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AdditionalFileSystemPermissions {
+    pub read: Option<Vec<PathBuf>>,
+    pub write: Option<Vec<PathBuf>>,
+}
+
+impl From<CoreFileSystemPermissions> for AdditionalFileSystemPermissions {
+    fn from(value: CoreFileSystemPermissions) -> Self {
+        Self {
+            read: value.read,
+            write: value.write,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AdditionalMacOsPermissions {
+    pub preferences: Option<CoreMacOsPreferencesValue>,
+    pub automations: Option<CoreMacOsAutomationValue>,
+    pub accessibility: Option<bool>,
+    pub calendar: Option<bool>,
+}
+
+impl From<CoreMacOsPermissions> for AdditionalMacOsPermissions {
+    fn from(value: CoreMacOsPermissions) -> Self {
+        Self {
+            preferences: value.preferences,
+            automations: value.automations,
+            accessibility: value.accessibility,
+            calendar: value.calendar,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AdditionalPermissionProfile {
+    pub network: Option<bool>,
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+    pub macos: Option<AdditionalMacOsPermissions>,
+}
+
+impl From<CorePermissionProfile> for AdditionalPermissionProfile {
+    fn from(value: CorePermissionProfile) -> Self {
+        Self {
+            network: value.network,
+            file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
+            macos: value.macos.map(AdditionalMacOsPermissions::from),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -2991,7 +3081,7 @@ pub struct ContextCompactedNotification {
     pub turn_id: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct CommandExecutionRequestApprovalParams {
@@ -3003,8 +3093,13 @@ pub struct CommandExecutionRequestApprovalParams {
     #[ts(optional = nullable)]
     pub approval_id: Option<String>,
     /// Optional explanatory reason (e.g. request for network access).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub reason: Option<String>,
+    /// Optional context for a managed-network approval prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub network_approval_context: Option<NetworkApprovalContext>,
     /// The command to be executed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -3017,9 +3112,21 @@ pub struct CommandExecutionRequestApprovalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub command_actions: Option<Vec<CommandAction>>,
+    /// Optional additional permissions requested for this command.
+    #[experimental("item/commandExecution/requestApproval.additionalPermissions")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub additional_permissions: Option<AdditionalPermissionProfile>,
     /// Optional proposed execpolicy amendment to allow similar commands without prompting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
+}
+
+impl CommandExecutionRequestApprovalParams {
+    pub fn strip_experimental_fields(&mut self) {
+        self.additional_permissions = None;
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

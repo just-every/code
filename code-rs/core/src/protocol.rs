@@ -1328,6 +1328,9 @@ pub struct ExecApprovalRequestEvent {
     /// Optional network context for a blocked request that can be approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_approval_context: Option<NetworkApprovalContext>,
+    /// Optional additional permissions requested for this command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_permissions: Option<code_protocol::models::PermissionProfile>,
 }
 
 impl ExecApprovalRequestEvent {

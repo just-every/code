@@ -1518,6 +1518,7 @@ async fn apply_bespoke_event_handling(
             cwd,
             reason,
             network_approval_context: _,
+            additional_permissions,
         }) => {
             let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
             let params = ExecCommandApprovalParams {
@@ -1527,6 +1528,7 @@ async fn apply_bespoke_event_handling(
                 command,
                 cwd,
                 reason,
+                additional_permissions,
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing

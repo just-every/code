@@ -83,8 +83,22 @@ use std::sync::RwLock;
 
 const RESPONSES_BETA_HEADER_V1: &str = "responses=v1";
 const RESPONSES_BETA_HEADER_EXPERIMENTAL: &str = "responses=experimental";
-const RESPONSES_WEBSOCKETS_BETA_HEADER: &str = "responses_websockets=2026-02-06";
+const RESPONSES_WEBSOCKETS_BETA_HEADER_V1: &str = "responses_websockets=2026-02-04";
+const RESPONSES_WEBSOCKETS_BETA_HEADER_V2: &str = "responses_websockets=2026-02-06";
 const RESPONSES_WEBSOCKET_INGRESS_BUFFER: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesWebsocketVersion {
+    V1,
+    V2,
+}
+
+fn preferred_ws_version_from_env() -> ResponsesWebsocketVersion {
+    match std::env::var("CODE_RESPONSES_WEBSOCKET_VERSION") {
+        Ok(value) if value.eq_ignore_ascii_case("v1") => ResponsesWebsocketVersion::V1,
+        _ => ResponsesWebsocketVersion::V2,
+    }
+}
 
 // Sticky-routing token captured at the start of a turn. When present, it must
 // be replayed on every subsequent request within the same turn (retries,
@@ -246,6 +260,7 @@ pub struct ModelClient {
     effort: ReasoningEffortConfig,
     summary: ReasoningSummaryConfig,
     reasoning_summary_disabled: AtomicBool,
+    websockets_disabled: AtomicBool,
     verbosity: TextVerbosityConfig,
     debug_logger: Arc<Mutex<DebugLogger>>,
 }
@@ -263,6 +278,9 @@ impl Clone for ModelClient {
             summary: self.summary,
             reasoning_summary_disabled: AtomicBool::new(
                 self.reasoning_summary_disabled.load(Ordering::Relaxed),
+            ),
+            websockets_disabled: AtomicBool::new(
+                self.websockets_disabled.load(Ordering::Relaxed),
             ),
             verbosity: self.verbosity,
             debug_logger: Arc::clone(&self.debug_logger),
@@ -296,8 +314,36 @@ impl ModelClient {
             effort: clamped_effort,
             summary,
             reasoning_summary_disabled: AtomicBool::new(false),
+            websockets_disabled: AtomicBool::new(false),
             verbosity: effective_verbosity,
             debug_logger,
+        }
+    }
+
+    fn active_ws_version_for_prompt(&self, prompt: &Prompt) -> Option<ResponsesWebsocketVersion> {
+        if self.websockets_disabled.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        match self.provider.wire_api {
+            WireApi::ResponsesWebsocket => Some(preferred_ws_version_from_env()),
+            WireApi::Responses => {
+                let prefer_websockets = prompt
+                    .model_family_override
+                    .as_ref()
+                    .map(|family| family.prefer_websockets)
+                    .or_else(|| {
+                        prompt
+                            .model_override
+                            .as_deref()
+                            .and_then(find_family_for_model)
+                            .map(|family| family.prefer_websockets)
+                    })
+                    .unwrap_or(self.config.model_family.prefer_websockets);
+
+                prefer_websockets.then_some(preferred_ws_version_from_env())
+            }
+            WireApi::Chat => None,
         }
     }
 
@@ -490,23 +536,14 @@ impl ModelClient {
             .or(prompt.log_tag.as_deref());
         match self.provider.wire_api {
             WireApi::Responses => {
-                let prefer_websockets = prompt
-                    .model_family_override
-                    .as_ref()
-                    .map(|family| family.prefer_websockets)
-                    .or_else(|| {
-                        prompt
-                            .model_override
-                            .as_deref()
-                            .and_then(find_family_for_model)
-                            .map(|family| family.prefer_websockets)
-                    })
-                    .unwrap_or(self.config.model_family.prefer_websockets);
-
-                if prefer_websockets {
-                    match self.stream_responses_websocket(prompt, log_tag).await {
+                if let Some(ws_version) = self.active_ws_version_for_prompt(prompt) {
+                    match self
+                        .stream_responses_websocket(prompt, log_tag, ws_version)
+                        .await
+                    {
                         Ok(stream) => Ok(stream),
                         Err(err) => {
+                            self.websockets_disabled.store(true, Ordering::Relaxed);
                             warn!(
                                 "preferred websocket transport failed; falling back to responses HTTP stream: {err}"
                             );
@@ -517,7 +554,30 @@ impl ModelClient {
                     self.stream_responses(prompt, log_tag).await
                 }
             }
-            WireApi::ResponsesWebsocket => self.stream_responses_websocket(prompt, log_tag).await,
+            WireApi::ResponsesWebsocket => {
+                if self.websockets_disabled.load(Ordering::Relaxed) {
+                    warn!(
+                        "responses_websocket transport disabled for this session; using responses HTTP stream"
+                    );
+                    return self.stream_responses(prompt, log_tag).await;
+                }
+                let ws_version = self
+                    .active_ws_version_for_prompt(prompt)
+                    .unwrap_or(preferred_ws_version_from_env());
+                match self
+                    .stream_responses_websocket(prompt, log_tag, ws_version)
+                    .await
+                {
+                    Ok(stream) => Ok(stream),
+                    Err(err) => {
+                        self.websockets_disabled.store(true, Ordering::Relaxed);
+                        warn!(
+                            "responses_websocket transport failed; falling back to responses HTTP stream: {err}"
+                        );
+                        self.stream_responses(prompt, log_tag).await
+                    }
+                }
+            }
             WireApi::Chat => {
                 let effective_family = prompt
                     .model_family_override
@@ -573,6 +633,7 @@ impl ModelClient {
         &self,
         prompt: &Prompt,
         log_tag: Option<&str>,
+        ws_version: ResponsesWebsocketVersion,
     ) -> Result<ResponseStream> {
         let auth_manager = self.auth_manager.clone();
         let auth_mode = auth_manager
@@ -775,7 +836,10 @@ impl ModelClient {
             // `responses=v1` / `responses=experimental`).
             ws_request.headers_mut().insert(
                 reqwest::header::HeaderName::from_static("openai-beta"),
-                HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA_HEADER),
+                HeaderValue::from_static(match ws_version {
+                    ResponsesWebsocketVersion::V2 => RESPONSES_WEBSOCKETS_BETA_HEADER_V2,
+                    ResponsesWebsocketVersion::V1 => RESPONSES_WEBSOCKETS_BETA_HEADER_V1,
+                }),
             );
 
             // Wrap the normal /responses request payload in the WebSocket envelope.
@@ -945,6 +1009,7 @@ impl ModelClient {
                 }
                 Err(err) => {
                     if websocket_connect_is_upgrade_required(&err) {
+                        self.websockets_disabled.store(true, Ordering::Relaxed);
                         warn!("responses websocket upgrade required; falling back to HTTP responses transport");
                         return self.stream_responses(prompt, log_tag).await;
                     }
@@ -958,6 +1023,7 @@ impl ModelClient {
                         tokio::time::sleep(backoff(attempt as u64)).await;
                         continue;
                     }
+                    self.websockets_disabled.store(true, Ordering::Relaxed);
                     return Err(err);
                 }
             }

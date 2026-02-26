@@ -9341,6 +9341,8 @@ async fn handle_container_exec_with_params(
                     params.command.clone(),
                     params.cwd.clone(),
                     params.justification.clone(),
+                    None,
+                    None,
                 )
                 .await;
 
@@ -9793,6 +9795,8 @@ async fn handle_sandbox_error(
             params.command.clone(),
             cwd.clone(),
             Some("command failed; retry without sandbox?".to_string()),
+            None,
+            None,
         )
         .await;
 
