@@ -856,6 +856,7 @@ mod tests {
         let params = v1::ExecCommandApprovalParams {
             conversation_id,
             call_id: "call-42".to_string(),
+            approval_id: None,
             command: vec!["echo".to_string(), "hello".to_string()],
             cwd: PathBuf::from("/tmp"),
             reason: Some("because tests".to_string()),

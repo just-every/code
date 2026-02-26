@@ -1512,15 +1512,18 @@ async fn apply_bespoke_event_handling(
         }
         EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
             call_id,
+            approval_id,
             turn_id,
             command,
             cwd,
             reason,
             network_approval_context: _,
         }) => {
+            let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
             let params = ExecCommandApprovalParams {
                 conversation_id,
                 call_id: call_id.clone(),
+                approval_id,
                 command,
                 cwd,
                 reason,
@@ -1531,7 +1534,7 @@ async fn apply_bespoke_event_handling(
                 .await;
 
             // TODO(mbolin): Enforce a timeout so this task does not live indefinitely?
-            let approval_id = call_id.clone(); // correlate by call_id, not event_id
+            let approval_id = effective_approval_id; // correlate by approval_id/call_id, not event_id
             tokio::spawn(async move {
                 on_exec_approval_response(approval_id, Some(turn_id), rx, conversation).await;
             });
@@ -2102,6 +2105,13 @@ fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) ->
         code_protocol::protocol::AskForApproval::UnlessTrusted => core_protocol::AskForApproval::UnlessTrusted,
         code_protocol::protocol::AskForApproval::OnFailure => core_protocol::AskForApproval::OnFailure,
         code_protocol::protocol::AskForApproval::OnRequest => core_protocol::AskForApproval::OnRequest,
+        code_protocol::protocol::AskForApproval::Reject(config) => {
+            core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
+                sandbox_approval: config.sandbox_approval,
+                rules: config.rules,
+                mcp_elicitations: config.mcp_elicitations,
+            })
+        }
         code_protocol::protocol::AskForApproval::Never => core_protocol::AskForApproval::Never,
     }
 }
@@ -2111,6 +2121,13 @@ fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protoc
         core_protocol::AskForApproval::UnlessTrusted => code_protocol::protocol::AskForApproval::UnlessTrusted,
         core_protocol::AskForApproval::OnFailure => code_protocol::protocol::AskForApproval::OnFailure,
         core_protocol::AskForApproval::OnRequest => code_protocol::protocol::AskForApproval::OnRequest,
+        core_protocol::AskForApproval::Reject(config) => {
+            code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
+                sandbox_approval: config.sandbox_approval,
+                rules: config.rules,
+                mcp_elicitations: config.mcp_elicitations,
+            })
+        }
         core_protocol::AskForApproval::Never => code_protocol::protocol::AskForApproval::Never,
     }
 }

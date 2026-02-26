@@ -298,14 +298,47 @@ pub(super) fn is_connectivity_error(err: &CodexErr) -> bool {
         CodexErr::Reqwest(e) => e.is_connect() || e.is_timeout() || e.is_request(),
         CodexErr::Stream(msg, _, _) => {
             let lower = msg.to_ascii_lowercase();
-            msg.starts_with("[transport]")
+            (msg.starts_with("[transport]")
+                || lower.contains("transport")
                 || lower.contains("network")
                 || lower.contains("connection")
                 || lower.contains("connectivity")
-                || lower.contains("timeout")
-                || lower.contains("transport")
+                || lower.contains("timeout"))
+                && !lower.contains("context window")
+                && !lower.contains("context length")
+                && !lower.contains("usage limit")
+                && !lower.contains("usage_not_included")
+                && !lower.contains("quota exceeded")
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_connectivity_error;
+    use crate::error::CodexErr;
+
+    #[test]
+    fn context_overflow_transport_stream_is_not_connectivity() {
+        let err = CodexErr::Stream(
+            "[transport] Transport error: stream disconnected before completion: Your input exceeds the context window of this model. Please adjust your input and try again.".to_string(),
+            None,
+            None,
+        );
+
+        assert!(!is_connectivity_error(&err));
+    }
+
+    #[test]
+    fn network_stream_is_connectivity() {
+        let err = CodexErr::Stream(
+            "[transport] network timeout while connecting to api".to_string(),
+            None,
+            None,
+        );
+
+        assert!(is_connectivity_error(&err));
     }
 }
 
@@ -1157,15 +1190,18 @@ impl Session {
         &self,
         sub_id: String,
         call_id: String,
+        approval_id: Option<String>,
         command: Vec<String>,
         cwd: PathBuf,
         reason: Option<String>,
     ) -> oneshot::Receiver<ReviewDecision> {
         let (tx_approve, rx_approve) = oneshot::channel();
+        let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         let event = self.make_event(
             &sub_id,
             EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
                 call_id: call_id.clone(),
+                approval_id,
                 turn_id: sub_id.clone(),
                 command,
                 cwd,
@@ -1176,9 +1212,9 @@ impl Session {
         let _ = self.tx_event.send(event).await;
         {
             let mut state = self.state.lock().unwrap();
-            // Track pending approval by call_id (unique per request) rather than sub_id
+            // Track pending approval by approval id (or call_id fallback) rather than sub_id
             // so parallel approvals in the same turn do not clobber each other.
-            state.pending_approvals.insert(call_id, tx_approve);
+            state.pending_approvals.insert(effective_approval_id, tx_approve);
         }
         rx_approve
     }

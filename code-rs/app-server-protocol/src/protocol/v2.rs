@@ -27,6 +27,7 @@ use code_protocol::plan_tool::PlanItemArg as CorePlanItemArg;
 use code_protocol::plan_tool::StepStatus as CorePlanStepStatus;
 use code_protocol::protocol::AgentStatus as CoreAgentStatus;
 use code_protocol::protocol::AskForApproval as CoreAskForApproval;
+use code_protocol::protocol::RejectConfig as CoreRejectConfig;
 use code_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use code_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
 use code_protocol::protocol::NetworkAccess as CoreNetworkAccess;
@@ -166,6 +167,11 @@ pub enum AskForApproval {
     UnlessTrusted,
     OnFailure,
     OnRequest,
+    Reject {
+        sandbox_approval: bool,
+        rules: bool,
+        mcp_elicitations: bool,
+    },
     Never,
 }
 
@@ -175,6 +181,15 @@ impl AskForApproval {
             AskForApproval::UnlessTrusted => CoreAskForApproval::UnlessTrusted,
             AskForApproval::OnFailure => CoreAskForApproval::OnFailure,
             AskForApproval::OnRequest => CoreAskForApproval::OnRequest,
+            AskForApproval::Reject {
+                sandbox_approval,
+                rules,
+                mcp_elicitations,
+            } => CoreAskForApproval::Reject(CoreRejectConfig {
+                sandbox_approval,
+                rules,
+                mcp_elicitations,
+            }),
             AskForApproval::Never => CoreAskForApproval::Never,
         }
     }
@@ -186,6 +201,11 @@ impl From<CoreAskForApproval> for AskForApproval {
             CoreAskForApproval::UnlessTrusted => AskForApproval::UnlessTrusted,
             CoreAskForApproval::OnFailure => AskForApproval::OnFailure,
             CoreAskForApproval::OnRequest => AskForApproval::OnRequest,
+            CoreAskForApproval::Reject(reject_config) => AskForApproval::Reject {
+                sandbox_approval: reject_config.sandbox_approval,
+                rules: reject_config.rules,
+                mcp_elicitations: reject_config.mcp_elicitations,
+            },
             CoreAskForApproval::Never => AskForApproval::Never,
         }
     }
@@ -2978,6 +2998,10 @@ pub struct CommandExecutionRequestApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    /// Identifier for this specific approval callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub approval_id: Option<String>,
     /// Optional explanatory reason (e.g. request for network access).
     #[ts(optional = nullable)]
     pub reason: Option<String>,

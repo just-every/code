@@ -190,6 +190,7 @@ async fn run_code_tool_session_inner(
                         command,
                         cwd,
                         call_id,
+                        approval_id,
                         reason: _,
                         ..
                     }) => {
@@ -202,6 +203,7 @@ async fn run_code_tool_session_inner(
                             request_id_str.clone(),
                             event.id.clone(),
                             call_id,
+                            approval_id,
                         )
                         .await;
                         continue;

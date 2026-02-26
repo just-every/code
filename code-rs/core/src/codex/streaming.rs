@@ -2570,6 +2570,8 @@ async fn run_turn(
                             continue;
                         }
                     }
+
+                    return Err(e);
                 }
 
                 // Use the configured provider-specific stream retry budget.
@@ -9333,6 +9335,7 @@ async fn handle_container_exec_with_params(
                 .request_command_approval(
                     sub_id.clone(),
                     call_id.clone(),
+                    None,
                     params.command.clone(),
                     params.cwd.clone(),
                     params.justification.clone(),
@@ -9734,7 +9737,7 @@ async fn handle_sandbox_error(
     // Early out if either the user never wants to be asked for approval, or
     // we're letting the model manage escalation requests. Otherwise, continue
     match sess.approval_policy {
-        AskForApproval::Never | AskForApproval::OnRequest => {
+        AskForApproval::Never | AskForApproval::OnRequest | AskForApproval::Reject(_) => {
             // Clarify when Read Only mode is the reason a command cannot proceed.
             let content = if matches!(sess.sandbox_policy, SandboxPolicy::ReadOnly) {
                 format!("command blocked by Read Only mode: {error}")
@@ -9784,6 +9787,7 @@ async fn handle_sandbox_error(
         .request_command_approval(
             sub_id.clone(),
             call_id.clone(),
+            None,
             params.command.clone(),
             cwd.clone(),
             Some("command failed; retry without sandbox?".to_string()),

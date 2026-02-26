@@ -254,6 +254,10 @@ pub struct ExecCommandApprovalParams {
     /// Use to correlate this with [codex_core::protocol::ExecCommandBeginEvent]
     /// and [codex_core::protocol::ExecCommandEndEvent].
     pub call_id: String,
+    /// Identifier for this specific approval callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval_id: Option<String>,
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub reason: Option<String>,
@@ -554,4 +558,3 @@ pub struct SessionConfiguredNotification {
 pub struct AuthStatusChangeNotification {
     pub auth_method: Option<AuthMode>,
 }
-

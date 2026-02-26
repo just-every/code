@@ -510,6 +510,11 @@ impl MessageProcessor {
                 }
                 code_core::protocol::AskForApproval::OnFailure => V2AskForApproval::OnFailure,
                 code_core::protocol::AskForApproval::OnRequest => V2AskForApproval::OnRequest,
+                code_core::protocol::AskForApproval::Reject(config) => V2AskForApproval::Reject {
+                    sandbox_approval: config.sandbox_approval,
+                    rules: config.rules,
+                    mcp_elicitations: config.mcp_elicitations,
+                },
                 code_core::protocol::AskForApproval::Never => V2AskForApproval::Never,
             }),
             sandbox_mode: None,
@@ -700,6 +705,11 @@ fn map_approval_policy_to_v2(
         code_core::protocol::AskForApproval::UnlessTrusted => V2AskForApproval::UnlessTrusted,
         code_core::protocol::AskForApproval::OnFailure => V2AskForApproval::OnFailure,
         code_core::protocol::AskForApproval::OnRequest => V2AskForApproval::OnRequest,
+        code_core::protocol::AskForApproval::Reject(config) => V2AskForApproval::Reject {
+            sandbox_approval: config.sandbox_approval,
+            rules: config.rules,
+            mcp_elicitations: config.mcp_elicitations,
+        },
         code_core::protocol::AskForApproval::Never => V2AskForApproval::Never,
     }
 }

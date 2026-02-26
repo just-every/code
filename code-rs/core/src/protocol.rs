@@ -314,9 +314,39 @@ pub enum AskForApproval {
     #[default]
     OnRequest,
 
+    /// Fine-grained rejection controls for approval prompts.
+    ///
+    /// When a field is `true`, prompts of that category are automatically
+    /// rejected instead of shown to the user.
+    Reject(RejectConfig),
+
     /// Never ask the user to approve commands. Failures are immediately returned
     /// to the model, and never escalated to the user for approval.
     Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RejectConfig {
+    /// Reject approval prompts related to sandbox escalation.
+    pub sandbox_approval: bool,
+    /// Reject prompts triggered by execpolicy `prompt` rules.
+    pub rules: bool,
+    /// Reject MCP elicitation prompts.
+    pub mcp_elicitations: bool,
+}
+
+impl RejectConfig {
+    pub const fn rejects_sandbox_approval(self) -> bool {
+        self.sandbox_approval
+    }
+
+    pub const fn rejects_rules_approval(self) -> bool {
+        self.rules
+    }
+
+    pub const fn rejects_mcp_elicitations(self) -> bool {
+        self.mcp_elicitations
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -1276,8 +1306,14 @@ pub struct ExecCommandOutputDeltaEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecApprovalRequestEvent {
-    /// Identifier for the associated exec call, if available.
+    /// Identifier for the associated command execution item.
     pub call_id: String,
+    /// Identifier for this specific approval callback.
+    ///
+    /// When absent, the approval is for the command item itself (`call_id`).
+    /// This is present for subcommand approvals (via execve intercept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     /// Turn ID that this command belongs to.
     /// Uses `#[serde(default)]` for backwards compatibility.
     #[serde(default)]
@@ -1292,6 +1328,14 @@ pub struct ExecApprovalRequestEvent {
     /// Optional network context for a blocked request that can be approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_approval_context: Option<NetworkApprovalContext>,
+}
+
+impl ExecApprovalRequestEvent {
+    pub fn effective_approval_id(&self) -> String {
+        self.approval_id
+            .clone()
+            .unwrap_or_else(|| self.call_id.clone())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

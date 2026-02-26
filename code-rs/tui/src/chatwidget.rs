@@ -5235,9 +5235,8 @@ impl ChatWidget<'_> {
     }
     /// Handle exec approval request immediately
     fn handle_exec_approval_now(&mut self, _id: String, ev: ExecApprovalRequestEvent) {
-        // Use call_id as the approval correlation id so responses map to the
-        // exact pending approval in core (supports multiple approvals per turn).
-        let approval_id = ev.call_id.clone();
+        // Use approval_id when present, otherwise fall back to call_id.
+        let approval_id = ev.effective_approval_id();
         let ticket = self.make_background_before_next_output_ticket();
         self.bottom_pane
             .push_approval_request(ApprovalRequest::Exec {

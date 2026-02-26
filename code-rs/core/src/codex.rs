@@ -35,6 +35,7 @@ use code_protocol::config_types::ReasoningEffort as ProtoReasoningEffort;
 use code_protocol::config_types::ReasoningSummary as ProtoReasoningSummary;
 use code_utils_absolute_path::AbsolutePathBuf as ProtoAbsolutePathBuf;
 use code_protocol::protocol::AskForApproval as ProtoAskForApproval;
+use code_protocol::protocol::RejectConfig as ProtoRejectConfig;
 use code_protocol::protocol::ReviewDecision as ProtoReviewDecision;
 use code_protocol::protocol::SandboxPolicy as ProtoSandboxPolicy;
 use code_protocol::protocol::BROWSER_SNAPSHOT_OPEN_TAG;
@@ -184,6 +185,11 @@ fn to_proto_approval_policy(policy: AskForApproval) -> ProtoAskForApproval {
         AskForApproval::UnlessTrusted => ProtoAskForApproval::UnlessTrusted,
         AskForApproval::OnFailure => ProtoAskForApproval::OnFailure,
         AskForApproval::OnRequest => ProtoAskForApproval::OnRequest,
+        AskForApproval::Reject(config) => ProtoAskForApproval::Reject(ProtoRejectConfig {
+            sandbox_approval: config.sandbox_approval,
+            rules: config.rules,
+            mcp_elicitations: config.mcp_elicitations,
+        }),
         AskForApproval::Never => ProtoAskForApproval::Never,
     }
 }

@@ -56,6 +56,7 @@ pub(crate) async fn handle_exec_approval_request(
     tool_call_id: String,
     event_id: String,
     call_id: String,
+    approval_id: Option<String>,
 ) {
     let escaped_command =
         shlex::try_join(command.iter().map(String::as_str)).unwrap_or_else(|_| command.join(" "));
@@ -106,8 +107,8 @@ pub(crate) async fn handle_exec_approval_request(
     // Listen for the response on a separate task so we don't block the main agent loop.
     {
         let codex = codex.clone();
-        // Correlate by call_id for core pending approvals
-        let approval_id = call_id.clone();
+        // Correlate by approval_id when present; fall back to call_id.
+        let approval_id = approval_id.unwrap_or_else(|| call_id.clone());
         tokio::spawn(async move {
             on_exec_approval_response(approval_id, on_response, codex).await;
         });

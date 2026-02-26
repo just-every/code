@@ -748,6 +748,9 @@ pub struct ExecCommandApprovalParams {
     /// Use to correlate this with [code_core::protocol::ExecCommandBeginEvent]
     /// and [code_core::protocol::ExecCommandEndEvent].
     pub call_id: String,
+    /// Identifier for this specific approval callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     pub command: Vec<String>,
     pub cwd: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
