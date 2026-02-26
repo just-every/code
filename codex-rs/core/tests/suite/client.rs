@@ -1,14 +1,10 @@
 use codex_core::CodexAuth;
-use codex_core::ContentItem;
-use codex_core::LocalShellAction;
-use codex_core::LocalShellExecAction;
-use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
 use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
-use codex_core::ResponseItem;
+use codex_core::ResponsesWebsocketVersion;
 use codex_core::ThreadManager;
 use codex_core::WireApi;
 use codex_core::auth::AuthCredentialsStoreMode;
@@ -16,9 +12,7 @@ use codex_core::built_in_model_providers;
 use codex_core::default_client::originator;
 use codex_core::error::CodexErr;
 use codex_core::features::Feature;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::Op;
-use codex_core::protocol::SessionSource;
+use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
@@ -27,12 +21,20 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::LocalShellAction;
+use codex_protocol::models::LocalShellExecAction;
+use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::load_default_config_for_test;
@@ -72,40 +74,14 @@ fn assert_message_role(request_body: &serde_json::Value, role: &str) {
     assert_eq!(request_body["role"].as_str().unwrap(), role);
 }
 
-#[expect(clippy::expect_used)]
-fn assert_message_equals(request_body: &serde_json::Value, text: &str) {
-    let content = request_body["content"][0]["text"]
-        .as_str()
-        .expect("invalid message content");
-
-    assert_eq!(
-        content, text,
-        "expected message content '{content}' to equal '{text}'"
-    );
-}
-
-#[expect(clippy::expect_used)]
-fn assert_message_starts_with(request_body: &serde_json::Value, text: &str) {
-    let content = request_body["content"][0]["text"]
-        .as_str()
-        .expect("invalid message content");
-
-    assert!(
-        content.starts_with(text),
-        "expected message content '{content}' to start with '{text}'"
-    );
-}
-
-#[expect(clippy::expect_used)]
-fn assert_message_ends_with(request_body: &serde_json::Value, text: &str) {
-    let content = request_body["content"][0]["text"]
-        .as_str()
-        .expect("invalid message content");
-
-    assert!(
-        content.ends_with(text),
-        "expected message content '{content}' to end with '{text}'"
-    );
+#[expect(clippy::unwrap_used)]
+fn message_input_texts(item: &serde_json::Value) -> Vec<&str> {
+    item["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.get("text").and_then(|text| text.as_str()))
+        .collect()
 }
 
 /// Writes an `auth.json` into the provided `codex_home` with the specified parameters.
@@ -303,19 +279,15 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
     let request = resp_mock.single_request();
     let request_body = request.body_json();
     let input = request_body["input"].as_array().expect("input array");
-    let messages: Vec<(String, String)> = input
-        .iter()
-        .filter_map(|item| {
-            let role = item.get("role")?.as_str()?;
-            let text = item
-                .get("content")?
-                .as_array()?
-                .first()?
-                .get("text")?
-                .as_str()?;
-            Some((role.to_string(), text.to_string()))
-        })
-        .collect();
+    let mut messages: Vec<(String, String)> = Vec::new();
+    for item in input {
+        let Some(role) = item.get("role").and_then(|role| role.as_str()) else {
+            continue;
+        };
+        for text in message_input_texts(item) {
+            messages.push((role.to_string(), text.to_string()));
+        }
+    }
     let pos_prior_user = messages
         .iter()
         .position(|(role, text)| role == "user" && text == "resumed user message")
@@ -352,8 +324,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         .position(|(role, text)| {
             role == "user"
                 && text.contains("be nice")
-                && (text.starts_with("# AGENTS.md instructions for ")
-                    || text.starts_with("<user_instructions>"))
+                && (text.starts_with("# AGENTS.md instructions for "))
         })
         .expect("user instructions");
     let pos_environment = messages
@@ -583,6 +554,11 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         auth_manager,
         SessionSource::Exec,
         config.model_catalog.clone(),
+        CollaborationModesConfig {
+            default_mode_request_user_input: config
+                .features
+                .enabled(Feature::DefaultModeRequestUserInput),
+        },
     );
     let NewThread { thread: codex, .. } = thread_manager
         .start_thread(config)
@@ -657,16 +633,27 @@ async fn includes_user_instructions_message_in_request() {
     );
 
     assert_message_role(&request_body["input"][1], "user");
-    assert_message_starts_with(&request_body["input"][1], "# AGENTS.md instructions for ");
-    assert_message_ends_with(&request_body["input"][1], "</INSTRUCTIONS>");
-    let ui_text = request_body["input"][1]["content"][0]["text"]
-        .as_str()
+    let user_context_texts = message_input_texts(&request_body["input"][1]);
+    assert!(
+        user_context_texts
+            .iter()
+            .any(|text| text.starts_with("# AGENTS.md instructions for ")),
+        "expected AGENTS text in contextual user message, got {user_context_texts:?}"
+    );
+    let ui_text = user_context_texts
+        .iter()
+        .copied()
+        .find(|text| text.contains("<INSTRUCTIONS>"))
         .expect("invalid message content");
     assert!(ui_text.contains("<INSTRUCTIONS>"));
     assert!(ui_text.contains("be nice"));
-    assert_message_role(&request_body["input"][2], "user");
-    assert_message_starts_with(&request_body["input"][2], "<environment_context>");
-    assert_message_ends_with(&request_body["input"][2], "</environment_context>");
+    assert!(
+        user_context_texts
+            .iter()
+            .any(|text| text.starts_with("<environment_context>")
+                && text.ends_with("</environment_context>")),
+        "expected environment context in contextual user message, got {user_context_texts:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -720,10 +707,14 @@ async fn includes_apps_guidance_as_developer_message_when_enabled() {
             && item
                 .get("content")
                 .and_then(|value| value.as_array())
-                .and_then(|value| value.first())
-                .and_then(|value| value.get("text"))
-                .and_then(|value| value.as_str())
-                .is_some_and(|text| text.contains(apps_snippet))
+                .is_some_and(|content| {
+                    content.iter().any(|entry| {
+                        entry
+                            .get("text")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|text| text.contains(apps_snippet))
+                    })
+                })
     });
     assert!(
         has_developer_apps_guidance,
@@ -735,10 +726,14 @@ async fn includes_apps_guidance_as_developer_message_when_enabled() {
             && item
                 .get("content")
                 .and_then(|value| value.as_array())
-                .and_then(|value| value.first())
-                .and_then(|value| value.get("text"))
-                .and_then(|value| value.as_str())
-                .is_some_and(|text| text.contains(apps_snippet))
+                .is_some_and(|content| {
+                    content.iter().any(|entry| {
+                        entry
+                            .get("text")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|text| text.contains(apps_snippet))
+                    })
+                })
     });
     assert!(
         !has_user_apps_guidance,
@@ -1276,19 +1271,42 @@ async fn includes_developer_instructions_message_in_request() {
         "expected permissions message to mention sandbox_mode, got {permissions_text:?}"
     );
 
-    assert_message_role(&request_body["input"][1], "developer");
-    assert_message_equals(&request_body["input"][1], "be useful");
-    assert_message_role(&request_body["input"][2], "user");
-    assert_message_starts_with(&request_body["input"][2], "# AGENTS.md instructions for ");
-    assert_message_ends_with(&request_body["input"][2], "</INSTRUCTIONS>");
-    let ui_text = request_body["input"][2]["content"][0]["text"]
-        .as_str()
+    let developer_messages: Vec<&serde_json::Value> = request_body["input"]
+        .as_array()
+        .expect("input array")
+        .iter()
+        .filter(|item| item.get("role").and_then(|role| role.as_str()) == Some("developer"))
+        .collect();
+    assert!(
+        developer_messages
+            .iter()
+            .any(|item| message_input_texts(item).contains(&"be useful")),
+        "expected developer instructions in a developer message, got {:?}",
+        request_body["input"]
+    );
+
+    assert_message_role(&request_body["input"][1], "user");
+    let user_context_texts = message_input_texts(&request_body["input"][1]);
+    assert!(
+        user_context_texts
+            .iter()
+            .any(|text| text.starts_with("# AGENTS.md instructions for ")),
+        "expected AGENTS text in contextual user message, got {user_context_texts:?}"
+    );
+    let ui_text = user_context_texts
+        .iter()
+        .copied()
+        .find(|text| text.contains("<INSTRUCTIONS>"))
         .expect("invalid message content");
     assert!(ui_text.contains("<INSTRUCTIONS>"));
     assert!(ui_text.contains("be nice"));
-    assert_message_role(&request_body["input"][3], "user");
-    assert_message_starts_with(&request_body["input"][3], "<environment_context>");
-    assert_message_ends_with(&request_body["input"][3], "</environment_context>");
+    assert!(
+        user_context_texts
+            .iter()
+            .any(|text| text.starts_with("<environment_context>")
+                && text.ends_with("</environment_context>")),
+        "expected environment context in contextual user message, got {user_context_texts:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1353,8 +1371,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         provider.clone(),
         SessionSource::Exec,
         config.model_verbosity,
-        false,
-        false,
+        None::<ResponsesWebsocketVersion>,
         false,
         false,
         None,

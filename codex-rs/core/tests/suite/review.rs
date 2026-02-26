@@ -1,21 +1,21 @@
 use codex_core::CodexThread;
-use codex_core::ContentItem;
 use codex_core::REVIEW_PROMPT;
-use codex_core::ResponseItem;
 use codex_core::config::Config;
-use codex_core::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::ExitedReviewModeEvent;
-use codex_core::protocol::Op;
-use codex_core::protocol::ReviewCodeLocation;
-use codex_core::protocol::ReviewFinding;
-use codex_core::protocol::ReviewLineRange;
-use codex_core::protocol::ReviewOutputEvent;
-use codex_core::protocol::ReviewRequest;
-use codex_core::protocol::ReviewTarget;
-use codex_core::protocol::RolloutItem;
-use codex_core::protocol::RolloutLine;
 use codex_core::review_format::render_review_output_text;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExitedReviewModeEvent;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewCodeLocation;
+use codex_protocol::protocol::ReviewFinding;
+use codex_protocol::protocol::ReviewLineRange;
+use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::ReviewRequest;
+use codex_protocol::protocol::ReviewTarget;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_sse_fixture_with_id_from_str;
 use core_test_support::responses::ResponseMock;
@@ -605,7 +605,9 @@ async fn review_input_isolated_from_parent_history() {
 
     let env_text = input
         .iter()
-        .filter_map(|msg| msg["content"][0]["text"].as_str())
+        .filter_map(|msg| msg.get("content").and_then(|content| content.as_array()))
+        .flat_map(|content| content.iter())
+        .filter_map(|entry| entry.get("text").and_then(|text| text.as_str()))
         .find(|text| text.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG))
         .expect("env text");
     assert!(
@@ -615,7 +617,9 @@ async fn review_input_isolated_from_parent_history() {
 
     let review_text = input
         .iter()
-        .filter_map(|msg| msg["content"][0]["text"].as_str())
+        .filter_map(|msg| msg.get("content").and_then(|content| content.as_array()))
+        .flat_map(|content| content.iter())
+        .filter_map(|entry| entry.get("text").and_then(|text| text.as_str()))
         .find(|text| *text == review_prompt)
         .expect("review prompt text");
     assert_eq!(

@@ -31,8 +31,8 @@
 //!
 //! # Submission and Prompt Expansion
 //!
-//! When steer is enabled, `Enter` submits immediately. `Tab` requests queuing while a task is
-//! running; if no task is running, `Tab` submits just like Enter so input is never dropped.
+//! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
+//! running, `Tab` submits just like Enter so input is never dropped.
 //! `Tab` does not submit when entering a `!` shell command.
 //!
 //! On submit/queue paths, the composer:
@@ -109,11 +109,22 @@
 //! edits and renders a placeholder prompt instead of the editable textarea. This is part of the
 //! overall state machine, since it affects which transitions are even possible from a given UI
 //! state.
+//!
+//! # Voice Hold-To-Talk Without Key Release
+//!
+//! On terminals that do not report `KeyEventKind::Release`, space hold-to-talk uses repeated
+//! space key events as "still held" evidence:
+//!
+//! - For pending holds (non-empty composer), if timeout elapses without any repeated space event,
+//!   we treat the key as a normal typed space.
+//! - If repeated space events are seen before timeout, we proceed with hold-to-talk.
+//! - While recording, repeated space events keep the recording alive; if they stop for a short
+//!   window, we stop and transcribe.
 use crate::bottom_pane::footer::mode_indicator_line;
-use crate::bottom_pane::selection_popup_common::truncate_line_with_ellipsis_if_overflow;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::has_ctrl_or_alt;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -178,6 +189,7 @@ use codex_protocol::custom_prompts::CustomPrompt;
 use codex_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::user_input::ByteRange;
+use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::TextElement;
 use codex_utils_fuzzy_match::fuzzy_match;
 
@@ -191,6 +203,7 @@ use crate::bottom_pane::textarea::TextAreaState;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
 use crate::history_cell;
+use crate::tui::FrameRequester;
 use crate::ui_consts::LIVE_PREFIX_COLS;
 use codex_chatgpt::connectors;
 use codex_chatgpt::connectors::AppInfo;
@@ -202,12 +215,26 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
+#[cfg(not(target_os = "linux"))]
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "linux"))]
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-
+#[cfg(not(target_os = "linux"))]
+use tokio::runtime::Handle;
 /// If the pasted content exceeds this number of characters, replace it with a
 /// placeholder in the UI.
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
+
+fn user_input_too_large_message(actual_chars: usize) -> String {
+    format!(
+        "Message exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters ({actual_chars} provided)."
+    )
+}
 
 /// Result returned when the user interacts with the text area.
 #[derive(Debug, PartialEq)]
@@ -284,6 +311,35 @@ impl ChatComposerConfig {
         }
     }
 }
+
+#[derive(Default)]
+struct VoiceState {
+    transcription_enabled: bool,
+    // Spacebar hold-to-talk state.
+    space_hold_started_at: Option<Instant>,
+    space_hold_element_id: Option<String>,
+    space_hold_trigger: Option<Arc<AtomicBool>>,
+    key_release_supported: bool,
+    space_hold_repeat_seen: bool,
+    #[cfg(not(target_os = "linux"))]
+    voice: Option<crate::voice::VoiceCapture>,
+    #[cfg(not(target_os = "linux"))]
+    recording_placeholder_id: Option<String>,
+    #[cfg(not(target_os = "linux"))]
+    space_recording_started_at: Option<Instant>,
+    #[cfg(not(target_os = "linux"))]
+    space_recording_last_repeat_at: Option<Instant>,
+}
+
+impl VoiceState {
+    fn new(key_release_supported: bool) -> Self {
+        Self {
+            key_release_supported,
+            ..Default::default()
+        }
+    }
+}
+
 pub(crate) struct ChatComposer {
     textarea: TextArea,
     textarea_state: RefCell<TextAreaState>,
@@ -299,10 +355,14 @@ pub(crate) struct ChatComposer {
     pending_pastes: Vec<(String, String)>,
     large_paste_counters: HashMap<usize, usize>,
     has_focus: bool,
+    frame_requester: Option<FrameRequester>,
     /// Invariant: attached images are labeled in vec order as
     /// `[Image #M+1]..[Image #N]`, where `M` is the number of remote images.
     attached_images: Vec<AttachedImage>,
     placeholder_text: String,
+    voice_state: VoiceState,
+    // Spinner control flags keyed by placeholder id; set to true to stop.
+    spinner_stop_flags: HashMap<String, Arc<AtomicBool>>,
     is_task_running: bool,
     /// When false, the composer is temporarily read-only (e.g. during sandbox setup).
     input_enabled: bool,
@@ -320,19 +380,21 @@ pub(crate) struct ChatComposer {
     selected_remote_image_index: Option<usize>,
     footer_flash: Option<FooterFlash>,
     context_window_percent: Option<i64>,
+    // Monotonically increasing identifier for textarea elements we insert.
+    #[cfg(not(target_os = "linux"))]
+    next_element_id: u64,
     context_window_used_tokens: Option<i64>,
     skills: Option<Vec<SkillMetadata>>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
     dismissed_mention_popup_token: Option<String>,
     mention_bindings: HashMap<u64, ComposerMentionBinding>,
     recent_submission_mention_bindings: Vec<MentionBinding>,
-    /// When enabled, `Enter` submits immediately and `Tab` requests queuing behavior.
-    steer_enabled: bool,
     collaboration_modes_enabled: bool,
     config: ChatComposerConfig,
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     connectors_enabled: bool,
     personality_command_enabled: bool,
+    realtime_conversation_enabled: bool,
     windows_degraded_sandbox_active: bool,
     status_line_value: Option<Line<'static>>,
     status_line_enabled: bool,
@@ -407,8 +469,11 @@ impl ChatComposer {
             pending_pastes: Vec::new(),
             large_paste_counters: HashMap::new(),
             has_focus: has_input_focus,
+            frame_requester: None,
             attached_images: Vec::new(),
             placeholder_text,
+            voice_state: VoiceState::new(enhanced_keys_supported),
+            spinner_stop_flags: HashMap::new(),
             is_task_running: false,
             input_enabled: true,
             input_disabled_placeholder: None,
@@ -421,18 +486,20 @@ impl ChatComposer {
             selected_remote_image_index: None,
             footer_flash: None,
             context_window_percent: None,
+            #[cfg(not(target_os = "linux"))]
+            next_element_id: 0,
             context_window_used_tokens: None,
             skills: None,
             connectors_snapshot: None,
             dismissed_mention_popup_token: None,
             mention_bindings: HashMap::new(),
             recent_submission_mention_bindings: Vec::new(),
-            steer_enabled: false,
             collaboration_modes_enabled: false,
             config,
             collaboration_mode_indicator: None,
             connectors_enabled: false,
             personality_command_enabled: false,
+            realtime_conversation_enabled: false,
             windows_degraded_sandbox_active: false,
             status_line_value: None,
             status_line_enabled: false,
@@ -440,6 +507,17 @@ impl ChatComposer {
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
         this
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn next_id(&mut self) -> String {
+        let id = self.next_element_id;
+        self.next_element_id = self.next_element_id.wrapping_add(1);
+        id.to_string()
+    }
+
+    pub(crate) fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
+        self.frame_requester = Some(frame_requester);
     }
 
     pub fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
@@ -476,17 +554,6 @@ impl ChatComposer {
         ordered
     }
 
-    /// Enables or disables "Steer" behavior for submission keys.
-    ///
-    /// When steer is enabled, `Enter` produces [`InputResult::Submitted`] (send immediately) and
-    /// `Tab` produces [`InputResult::Queued`] when a task is running; otherwise it submits
-    /// immediately. `Tab` does not submit when the input is a `!` shell command.
-    /// When steer is disabled, `Enter` produces [`InputResult::Queued`], preserving the default
-    /// "queue while a task is running" behavior.
-    pub fn set_steer_enabled(&mut self, enabled: bool) {
-        self.steer_enabled = enabled;
-    }
-
     pub fn set_collaboration_modes_enabled(&mut self, enabled: bool) {
         self.collaboration_modes_enabled = enabled;
     }
@@ -504,6 +571,31 @@ impl ChatComposer {
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
         self.personality_command_enabled = enabled;
+    }
+
+    pub fn set_realtime_conversation_enabled(&mut self, enabled: bool) {
+        self.realtime_conversation_enabled = enabled;
+    }
+
+    /// Compatibility shim for tests that still toggle the removed steer mode flag.
+    #[cfg(test)]
+    pub fn set_steer_enabled(&mut self, _enabled: bool) {}
+
+    pub fn set_voice_transcription_enabled(&mut self, enabled: bool) {
+        self.voice_state.transcription_enabled = enabled;
+        if !enabled {
+            self.voice_state.space_hold_started_at = None;
+            if let Some(id) = self.voice_state.space_hold_element_id.take() {
+                let _ = self.textarea.replace_element_by_id(&id, " ");
+            }
+            self.voice_state.space_hold_trigger = None;
+            self.voice_state.space_hold_repeat_seen = false;
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn voice_transcription_enabled(&self) -> bool {
+        self.voice_state.transcription_enabled && cfg!(not(target_os = "linux"))
     }
     /// Centralized feature gating keeps config checks out of call sites.
     fn popups_enabled(&self) -> bool {
@@ -568,6 +660,20 @@ impl ChatComposer {
         }
     }
 
+    pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        if !self.input_enabled {
+            return None;
+        }
+
+        // Hide the cursor while recording voice input.
+        #[cfg(not(target_os = "linux"))]
+        if self.voice_state.voice.is_some() {
+            return None;
+        }
+        let [_, _, textarea_rect, _] = self.layout_areas(area);
+        let state = *self.textarea_state.borrow();
+        self.textarea.cursor_pos_with_state(textarea_rect, state)
+    }
     /// Returns true if the composer currently contains no user-entered input.
     pub(crate) fn is_empty(&self) -> bool {
         self.textarea.is_empty()
@@ -621,6 +727,10 @@ impl ChatComposer {
     /// In all cases, clears any paste-burst Enter suppression state so a real paste cannot affect
     /// the next user Enter key, then syncs popup state.
     pub fn handle_paste(&mut self, pasted: String) -> bool {
+        #[cfg(not(target_os = "linux"))]
+        if self.voice_state.voice.is_some() {
+            return false;
+        }
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let char_count = pasted.chars().count();
         if char_count > LARGE_PASTE_CHAR_THRESHOLD {
@@ -633,9 +743,8 @@ impl ChatComposer {
         {
             self.textarea.insert_str(" ");
         } else {
-            self.textarea.insert_str(&pasted);
+            self.insert_str(&pasted);
         }
-        // Explicit paste events should not trigger Enter suppression.
         self.paste_burst.clear_after_explicit_paste();
         self.sync_popups();
         true
@@ -866,6 +975,9 @@ impl ChatComposer {
         local_image_paths: Vec<PathBuf>,
         mention_bindings: Vec<MentionBinding>,
     ) {
+        #[cfg(not(target_os = "linux"))]
+        self.stop_all_transcription_spinners();
+
         // Clear any existing content, placeholders, and attachments first.
         self.textarea.set_text_clearing_elements("");
         self.pending_pastes.clear();
@@ -1124,8 +1236,46 @@ impl ChatComposer {
 
     /// Handle a key event coming from the main UI.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
+        if matches!(key_event.kind, KeyEventKind::Release) {
+            self.voice_state.key_release_supported = true;
+        }
+
+        // Timer-based conversion is handled in the pre-draw tick.
+        // If recording, stop on Space release when supported. On terminals without key-release
+        // events, Space repeat events are handled as "still held" and stop is driven by timeout
+        // in `process_space_hold_trigger`.
+        if let Some(result) = self.handle_key_event_while_recording(key_event) {
+            return result;
+        }
+
         if !self.input_enabled {
             return (InputResult::None, false);
+        }
+
+        // Outside of recording, ignore all key releases globally except for Space,
+        // which is handled explicitly for hold-to-talk behavior below.
+        if matches!(key_event.kind, KeyEventKind::Release)
+            && !matches!(key_event.code, KeyCode::Char(' '))
+        {
+            return (InputResult::None, false);
+        }
+
+        // If a space hold is pending and another non-space key is pressed, cancel the hold
+        // and convert the element into a plain space.
+        if self.voice_state.space_hold_started_at.is_some()
+            && !matches!(key_event.code, KeyCode::Char(' '))
+        {
+            self.voice_state.space_hold_started_at = None;
+            if let Some(id) = self.voice_state.space_hold_element_id.take() {
+                let _ = self.textarea.replace_element_by_id(&id, " ");
+            }
+            self.voice_state.space_hold_trigger = None;
+            self.voice_state.space_hold_repeat_seen = false;
+            // fall through to normal handling of this other key
+        }
+
+        if let Some(result) = self.handle_voice_space_key_event(&key_event) {
+            return result;
         }
 
         let result = match &mut self.active_popup {
@@ -1134,10 +1284,8 @@ impl ChatComposer {
             ActivePopup::Skill(_) => self.handle_key_event_with_skill_popup(key_event),
             ActivePopup::None => self.handle_key_event_without_popup(key_event),
         };
-
         // Update (or hide/show) popup after processing the key.
         self.sync_popups();
-
         result
     }
 
@@ -1496,7 +1644,11 @@ impl ChatComposer {
             } => {
                 let Some(sel) = popup.selected_match() else {
                     self.active_popup = ActivePopup::None;
-                    return (InputResult::None, true);
+                    return if key_event.code == KeyCode::Enter {
+                        self.handle_key_event_without_popup(key_event)
+                    } else {
+                        (InputResult::None, true)
+                    };
                 };
 
                 let sel_path = sel.to_string_lossy().to_string();
@@ -1547,7 +1699,6 @@ impl ChatComposer {
                     // Non-image: inserting file path.
                     self.insert_selected_path(&sel_path);
                 }
-                // No selection: treat Enter as closing the popup/session.
                 self.active_popup = ActivePopup::None;
                 (InputResult::None, true)
             }
@@ -1767,6 +1918,10 @@ impl ChatComposer {
     /// - The cursor may be anywhere *inside* the token (including on the
     ///   leading prefix). It does **not** need to be at the end of the line.
     /// - A token is delimited by ASCII whitespace (space, tab, newline).
+    /// - If the cursor is on `prefix` inside an existing token (for example the
+    ///   second `@` in `@scope/pkg@latest`), keep treating the surrounding
+    ///   whitespace-delimited token as the active token rather than starting a
+    ///   new token at that nested prefix.
     /// - If the token under the cursor starts with `prefix`, that token is
     ///   returned without the leading prefix. When `allow_empty` is true, a
     ///   lone prefix character yields `Some(String::new())` to surface hints.
@@ -1860,7 +2015,15 @@ impl ChatComposer {
             return left_prefixed;
         }
         if after_cursor.starts_with(prefix) {
-            return right_prefixed.or(left_prefixed);
+            let prefix_starts_token = before_cursor
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace);
+            return if prefix_starts_token {
+                right_prefixed.or(left_prefixed)
+            } else {
+                left_prefixed
+            };
         }
         left_prefixed.or(right_prefixed)
     }
@@ -2100,6 +2263,7 @@ impl ChatComposer {
                     self.collaboration_modes_enabled,
                     self.connectors_enabled,
                     self.personality_command_enabled,
+                    self.realtime_conversation_enabled,
                     self.windows_degraded_sandbox_active,
                 )
                 .is_some();
@@ -2155,6 +2319,22 @@ impl ChatComposer {
                 text = expanded.text;
                 text_elements = expanded.text_elements;
             }
+        }
+        let actual_chars = text.chars().count();
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+            let message = user_input_too_large_message(actual_chars);
+            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::new_error_event(message),
+            )));
+            self.set_text_content_with_mention_bindings(
+                original_input.clone(),
+                original_text_elements,
+                original_local_image_paths,
+                original_mention_bindings,
+            );
+            self.pending_pastes.clone_from(&original_pending_pastes);
+            self.textarea.set_cursor(original_input.len());
+            return None;
         }
         // Custom prompt expansion can remove or rewrite image placeholders, so prune any
         // attachments that no longer have a corresponding placeholder in the expanded text.
@@ -2299,6 +2479,7 @@ impl ChatComposer {
                 self.collaboration_modes_enabled,
                 self.connectors_enabled,
                 self.personality_command_enabled,
+                self.realtime_conversation_enabled,
                 self.windows_degraded_sandbox_active,
             )
         {
@@ -2333,6 +2514,7 @@ impl ChatComposer {
             self.collaboration_modes_enabled,
             self.connectors_enabled,
             self.personality_command_enabled,
+            self.realtime_conversation_enabled,
             self.windows_degraded_sandbox_active,
         )?;
 
@@ -2535,6 +2717,7 @@ impl ChatComposer {
             // -------------------------------------------------------------
             KeyEvent {
                 code: KeyCode::Up | KeyCode::Down,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
             }
             | KeyEvent {
@@ -2565,27 +2748,144 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
                 ..
-            } if self.steer_enabled && !self.is_bang_shell_command() => {
-                self.handle_submission(self.is_task_running)
-            }
-            KeyEvent {
-                code: KeyCode::Tab,
-                modifiers: KeyModifiers::NONE,
-                kind: KeyEventKind::Press,
-                ..
-            } if self.is_task_running && !self.is_bang_shell_command() => {
-                self.handle_submission(true)
-            }
+            } if !self.is_bang_shell_command() => self.handle_submission(self.is_task_running),
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } => {
-                let should_queue = !self.steer_enabled;
-                self.handle_submission(should_queue)
-            }
+            } => self.handle_submission(false),
             input => self.handle_input_basic(input),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn handle_voice_space_key_event(
+        &mut self,
+        _key_event: &KeyEvent,
+    ) -> Option<(InputResult, bool)> {
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn handle_voice_space_key_event(
+        &mut self,
+        key_event: &KeyEvent,
+    ) -> Option<(InputResult, bool)> {
+        if !self.voice_transcription_enabled() || !matches!(key_event.code, KeyCode::Char(' ')) {
+            return None;
+        }
+        match key_event.kind {
+            KeyEventKind::Press => {
+                if self.paste_burst.is_active() {
+                    return None;
+                }
+
+                // If textarea is empty, start recording immediately without inserting a space.
+                if self.textarea.text().is_empty() {
+                    if self.start_recording_with_placeholder() {
+                        return Some((InputResult::None, true));
+                    }
+                    return None;
+                }
+
+                // If a hold is already pending, swallow further press events to
+                // avoid inserting multiple spaces and resetting the timer on key repeat.
+                if self.voice_state.space_hold_started_at.is_some() {
+                    if !self.voice_state.key_release_supported {
+                        self.voice_state.space_hold_repeat_seen = true;
+                    }
+                    return Some((InputResult::None, false));
+                }
+
+                // Insert a named element that renders as a space so we can later
+                // remove it on timeout or convert it to a plain space on release.
+                let elem_id = self.next_id();
+                self.textarea.insert_named_element(" ", elem_id.clone());
+
+                // Record pending hold metadata.
+                self.voice_state.space_hold_started_at = Some(Instant::now());
+                self.voice_state.space_hold_element_id = Some(elem_id);
+                self.voice_state.space_hold_repeat_seen = false;
+
+                // Spawn a delayed task to flip an atomic flag; we check it on next key event.
+                let flag = Arc::new(AtomicBool::new(false));
+                let frame = self.frame_requester.clone();
+                Self::schedule_space_hold_timer(flag.clone(), frame);
+                self.voice_state.space_hold_trigger = Some(flag);
+
+                Some((InputResult::None, true))
+            }
+            // If we see a repeat before release, handling occurs in the top-level pending block.
+            KeyEventKind::Repeat => {
+                // Swallow repeats while a hold is pending to avoid extra spaces.
+                if self.voice_state.space_hold_started_at.is_some() {
+                    if !self.voice_state.key_release_supported {
+                        self.voice_state.space_hold_repeat_seen = true;
+                    }
+                    return Some((InputResult::None, false));
+                }
+                // Fallback: if no pending hold, treat as normal input.
+                None
+            }
+            // Space release without pending (fallback): treat as normal input.
+            KeyEventKind::Release => {
+                // If a hold is pending, convert the element to a plain space and clear state.
+                self.voice_state.space_hold_started_at = None;
+                if let Some(id) = self.voice_state.space_hold_element_id.take() {
+                    let _ = self.textarea.replace_element_by_id(&id, " ");
+                }
+                self.voice_state.space_hold_trigger = None;
+                self.voice_state.space_hold_repeat_seen = false;
+                Some((InputResult::None, true))
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn handle_key_event_while_recording(
+        &mut self,
+        _key_event: KeyEvent,
+    ) -> Option<(InputResult, bool)> {
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn handle_key_event_while_recording(
+        &mut self,
+        key_event: KeyEvent,
+    ) -> Option<(InputResult, bool)> {
+        if self.voice_state.voice.is_some() {
+            let should_stop = if self.voice_state.key_release_supported {
+                match key_event.kind {
+                    KeyEventKind::Release => matches!(key_event.code, KeyCode::Char(' ')),
+                    KeyEventKind::Press | KeyEventKind::Repeat => {
+                        !matches!(key_event.code, KeyCode::Char(' '))
+                    }
+                }
+            } else {
+                match key_event.kind {
+                    KeyEventKind::Release => matches!(key_event.code, KeyCode::Char(' ')),
+                    KeyEventKind::Press | KeyEventKind::Repeat => {
+                        if matches!(key_event.code, KeyCode::Char(' ')) {
+                            self.voice_state.space_recording_last_repeat_at = Some(Instant::now());
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                }
+            };
+
+            if should_stop {
+                let needs_redraw = self.stop_recording_and_start_transcription();
+                return Some((InputResult::None, needs_redraw));
+            }
+
+            // Swallow non-stopping keys while recording.
+            return Some((InputResult::None, false));
+        }
+
+        None
     }
 
     fn is_bang_shell_command(&self) -> bool {
@@ -2607,8 +2907,6 @@ impl ChatComposer {
                 true
             }
             FlushResult::Typed(ch) => {
-                // Mirror insert_str() behavior so popups stay in sync when a
-                // pending fast char flushes as normal typed input.
                 self.textarea.insert_str(ch.to_string().as_str());
                 self.sync_popups();
                 true
@@ -2632,6 +2930,12 @@ impl ChatComposer {
     ///   otherwise `clear_window_after_non_char()` can leave buffered text waiting without a
     ///   timestamp to time out against.
     fn handle_input_basic(&mut self, input: KeyEvent) -> (InputResult, bool) {
+        // Ignore key releases here to avoid treating them as additional input
+        // (e.g., appending the same character twice via paste-burst logic).
+        if !matches!(input.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return (InputResult::None, false);
+        }
+
         self.handle_input_basic_with_time(input, Instant::now())
     }
 
@@ -2849,7 +3153,6 @@ impl ChatComposer {
             use_shift_enter_hint: self.use_shift_enter_hint,
             is_task_running: self.is_task_running,
             quit_shortcut_key: self.quit_shortcut_key,
-            steer_enabled: self.steer_enabled,
             collaboration_modes_enabled: self.collaboration_modes_enabled,
             is_wsl,
             context_window_percent: self.context_window_percent,
@@ -2897,7 +3200,7 @@ impl ChatComposer {
             .map(|items| if items.is_empty() { 0 } else { 1 })
     }
 
-    fn sync_popups(&mut self) {
+    pub(crate) fn sync_popups(&mut self) {
         self.sync_slash_command_elements();
         if !self.popups_enabled() {
             self.active_popup = ActivePopup::None;
@@ -3030,6 +3333,7 @@ impl ChatComposer {
             self.collaboration_modes_enabled,
             self.connectors_enabled,
             self.personality_command_enabled,
+            self.realtime_conversation_enabled,
             self.windows_degraded_sandbox_active,
         )
         .is_some();
@@ -3091,6 +3395,7 @@ impl ChatComposer {
             self.collaboration_modes_enabled,
             self.connectors_enabled,
             self.personality_command_enabled,
+            self.realtime_conversation_enabled,
             self.windows_degraded_sandbox_active,
         ) {
             return true;
@@ -3144,12 +3449,14 @@ impl ChatComposer {
                     let collaboration_modes_enabled = self.collaboration_modes_enabled;
                     let connectors_enabled = self.connectors_enabled;
                     let personality_command_enabled = self.personality_command_enabled;
+                    let realtime_conversation_enabled = self.realtime_conversation_enabled;
                     let mut command_popup = CommandPopup::new(
                         self.custom_prompts.clone(),
                         CommandPopupFlags {
                             collaboration_modes_enabled,
                             connectors_enabled,
                             personality_command_enabled,
+                            realtime_conversation_enabled,
                             windows_degraded_sandbox_active: self.windows_degraded_sandbox_active,
                         },
                     );
@@ -3251,8 +3558,8 @@ impl ChatComposer {
                     description,
                     insert_text: format!("${skill_name}"),
                     search_terms,
-                    path: Some(skill.path.to_string_lossy().into_owned()),
-                    category_tag: (skill.scope == codex_core::protocol::SkillScope::Repo)
+                    path: Some(skill.path_to_skills_md.to_string_lossy().into_owned()),
+                    category_tag: (skill.scope == codex_protocol::protocol::SkillScope::Repo)
                         .then(|| "[Repo]".to_string()),
                 });
             }
@@ -3311,6 +3618,11 @@ impl ChatComposer {
         self.has_focus = has_focus;
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn is_recording(&self) -> bool {
+        self.voice_state.voice.is_some()
+    }
+
     #[allow(dead_code)]
     pub(crate) fn set_input_enabled(&mut self, enabled: bool, placeholder: Option<String>) {
         self.input_enabled = enabled;
@@ -3344,6 +3656,32 @@ impl ChatComposer {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn schedule_space_hold_timer(flag: Arc<AtomicBool>, frame: Option<FrameRequester>) {
+        const HOLD_DELAY_MILLIS: u64 = 500;
+        if let Ok(handle) = Handle::try_current() {
+            let flag_clone = flag;
+            let frame_clone = frame;
+            handle.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(HOLD_DELAY_MILLIS)).await;
+                Self::complete_space_hold_timer(flag_clone, frame_clone);
+            });
+        } else {
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(HOLD_DELAY_MILLIS));
+                Self::complete_space_hold_timer(flag, frame);
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn complete_space_hold_timer(flag: Arc<AtomicBool>, frame: Option<FrameRequester>) {
+        flag.store(true, Ordering::Relaxed);
+        if let Some(frame) = frame {
+            frame.schedule_frame();
+        }
+    }
+
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) -> bool {
         if self.status_line_value == status_line {
             return false;
@@ -3358,6 +3696,287 @@ impl ChatComposer {
         }
         self.status_line_enabled = enabled;
         true
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ChatComposer {
+    pub(crate) fn process_space_hold_trigger(&mut self) {
+        if self.voice_transcription_enabled()
+            && let Some(flag) = self.voice_state.space_hold_trigger.as_ref()
+            && flag.load(Ordering::Relaxed)
+            && self.voice_state.space_hold_started_at.is_some()
+            && self.voice_state.voice.is_none()
+        {
+            let _ = self.on_space_hold_timeout();
+        }
+
+        const SPACE_REPEAT_INITIAL_GRACE_MILLIS: u64 = 700;
+        const SPACE_REPEAT_IDLE_TIMEOUT_MILLIS: u64 = 250;
+        if !self.voice_state.key_release_supported && self.voice_state.voice.is_some() {
+            let now = Instant::now();
+            let initial_grace = Duration::from_millis(SPACE_REPEAT_INITIAL_GRACE_MILLIS);
+            let repeat_idle_timeout = Duration::from_millis(SPACE_REPEAT_IDLE_TIMEOUT_MILLIS);
+            if let Some(started_at) = self.voice_state.space_recording_started_at
+                && now.saturating_duration_since(started_at) >= initial_grace
+            {
+                let should_stop = match self.voice_state.space_recording_last_repeat_at {
+                    Some(last_repeat_at) => {
+                        now.saturating_duration_since(last_repeat_at) >= repeat_idle_timeout
+                    }
+                    None => true,
+                };
+                if should_stop {
+                    let _ = self.stop_recording_and_start_transcription();
+                }
+            }
+        }
+    }
+
+    /// Called when the 500ms space hold timeout elapses.
+    ///
+    /// On terminals without key-release reporting, this only transitions into voice capture if we
+    /// observed repeated Space events while pending; otherwise the keypress is treated as a typed
+    /// space.
+    pub(crate) fn on_space_hold_timeout(&mut self) -> bool {
+        if !self.voice_transcription_enabled() {
+            return false;
+        }
+        if self.voice_state.voice.is_some() {
+            return false;
+        }
+        if self.voice_state.space_hold_started_at.is_some() {
+            if !self.voice_state.key_release_supported && !self.voice_state.space_hold_repeat_seen {
+                if let Some(id) = self.voice_state.space_hold_element_id.take() {
+                    let _ = self.textarea.replace_element_by_id(&id, " ");
+                }
+                self.voice_state.space_hold_started_at = None;
+                self.voice_state.space_hold_trigger = None;
+                self.voice_state.space_hold_repeat_seen = false;
+                return true;
+            }
+
+            // Preserve the typed space when transitioning into voice capture, but
+            // avoid duplicating an existing trailing space. In either case,
+            // convert/remove the temporary named element before inserting the
+            // recording/transcribing placeholder.
+            if let Some(id) = self.voice_state.space_hold_element_id.take() {
+                let replacement = if self
+                    .textarea
+                    .named_element_range(&id)
+                    .and_then(|range| self.textarea.text()[..range.start].chars().next_back())
+                    .is_some_and(|ch| ch == ' ')
+                {
+                    ""
+                } else {
+                    " "
+                };
+                let _ = self.textarea.replace_element_by_id(&id, replacement);
+            }
+            // Clear pending state before starting capture
+            self.voice_state.space_hold_started_at = None;
+            self.voice_state.space_hold_trigger = None;
+            self.voice_state.space_hold_repeat_seen = false;
+
+            // Start voice capture
+            self.start_recording_with_placeholder()
+        } else {
+            false
+        }
+    }
+
+    /// Stop recording if active, update the placeholder, and spawn background transcription.
+    /// Returns true if the UI should redraw.
+    fn stop_recording_and_start_transcription(&mut self) -> bool {
+        let Some(vc) = self.voice_state.voice.take() else {
+            return false;
+        };
+        self.voice_state.space_recording_started_at = None;
+        self.voice_state.space_recording_last_repeat_at = None;
+        match vc.stop() {
+            Ok(audio) => {
+                // If the recording is too short, remove the placeholder immediately
+                // and skip the transcribing state entirely.
+                let total_samples = audio.data.len() as f32;
+                let samples_per_second = (audio.sample_rate as f32) * (audio.channels as f32);
+                let duration_seconds = if samples_per_second > 0.0 {
+                    total_samples / samples_per_second
+                } else {
+                    0.0
+                };
+                const MIN_DURATION_SECONDS: f32 = 1.0;
+                if duration_seconds < MIN_DURATION_SECONDS {
+                    if let Some(id) = self.voice_state.recording_placeholder_id.take() {
+                        let _ = self.textarea.replace_element_by_id(&id, "");
+                    }
+                    return true;
+                }
+
+                // Otherwise, update the placeholder to show a spinner and proceed.
+                let id = match self.voice_state.recording_placeholder_id.take() {
+                    Some(id) => id,
+                    None => self.next_id(),
+                };
+
+                let placeholder_range = self.textarea.named_element_range(&id);
+                let prompt_source = if let Some(range) = &placeholder_range {
+                    self.textarea.text()[..range.start].to_string()
+                } else {
+                    self.textarea.text().to_string()
+                };
+
+                // Initialize with first spinner frame immediately.
+                let _ = self.textarea.update_named_element_by_id(&id, "⠋");
+                // Spawn animated braille spinner until transcription finishes (or times out).
+                self.spawn_transcribing_spinner(id.clone());
+                let tx = self.app_event_tx.clone();
+                crate::voice::transcribe_async(id, audio, Some(prompt_source), tx);
+                true
+            }
+            Err(e) => {
+                tracing::error!("failed to stop voice capture: {e}");
+                true
+            }
+        }
+    }
+
+    /// Start voice capture and insert a placeholder element for the live meter.
+    /// Returns true if recording began and UI should redraw; false on failure.
+    fn start_recording_with_placeholder(&mut self) -> bool {
+        match crate::voice::VoiceCapture::start() {
+            Ok(vc) => {
+                self.voice_state.voice = Some(vc);
+                if self.voice_state.key_release_supported {
+                    self.voice_state.space_recording_started_at = None;
+                } else {
+                    self.voice_state.space_recording_started_at = Some(Instant::now());
+                }
+                self.voice_state.space_recording_last_repeat_at = None;
+                // Insert visible placeholder for the meter (no label)
+                let id = self.next_id();
+                self.textarea.insert_named_element("", id.clone());
+                self.voice_state.recording_placeholder_id = Some(id);
+                // Spawn metering animation
+                if let Some(v) = &self.voice_state.voice {
+                    let data = v.data_arc();
+                    let stop = v.stopped_flag();
+                    let sr = v.sample_rate();
+                    let ch = v.channels();
+                    let peak = v.last_peak_arc();
+                    if let Some(idref) = &self.voice_state.recording_placeholder_id {
+                        self.spawn_recording_meter(idref.clone(), sr, ch, data, peak, stop);
+                    }
+                }
+                true
+            }
+            Err(e) => {
+                self.voice_state.space_recording_started_at = None;
+                self.voice_state.space_recording_last_repeat_at = None;
+                tracing::error!("failed to start voice capture: {e}");
+                false
+            }
+        }
+    }
+
+    fn spawn_recording_meter(
+        &self,
+        id: String,
+        _sample_rate: u32,
+        _channels: u16,
+        _data: Arc<Mutex<Vec<i16>>>,
+        last_peak: Arc<std::sync::atomic::AtomicU16>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let tx = self.app_event_tx.clone();
+        let task = move || {
+            use std::time::Duration;
+            let mut meter = crate::voice::RecordingMeterState::new();
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let text = meter.next_text(last_peak.load(Ordering::Relaxed));
+                tx.send(crate::app_event::AppEvent::UpdateRecordingMeter {
+                    id: id.clone(),
+                    text,
+                });
+
+                thread::sleep(Duration::from_millis(100));
+            }
+        };
+
+        if let Ok(handle) = Handle::try_current() {
+            handle.spawn_blocking(task);
+        } else {
+            thread::spawn(task);
+        }
+    }
+
+    fn spawn_transcribing_spinner(&mut self, id: String) {
+        self.stop_transcription_spinner(&id);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.spinner_stop_flags
+            .insert(id.clone(), Arc::clone(&stop));
+
+        let tx = self.app_event_tx.clone();
+        let task = move || {
+            use std::time::Duration;
+            let frames: Vec<&'static str> = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i: usize = 0;
+            // Safety stop after ~60s to avoid a runaway task if events are lost.
+            let max_ticks = 600usize; // 600 * 100ms = 60s
+            for _ in 0..max_ticks {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let text = frames[i % frames.len()].to_string();
+                tx.send(crate::app_event::AppEvent::UpdateRecordingMeter {
+                    id: id.clone(),
+                    text,
+                });
+                i = i.wrapping_add(1);
+                thread::sleep(Duration::from_millis(100));
+            }
+        };
+
+        if let Ok(handle) = Handle::try_current() {
+            handle.spawn_blocking(task);
+        } else {
+            thread::spawn(task);
+        }
+    }
+
+    fn stop_transcription_spinner(&mut self, id: &str) {
+        if let Some(flag) = self.spinner_stop_flags.remove(id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn stop_all_transcription_spinners(&mut self) {
+        for (_id, flag) in self.spinner_stop_flags.drain() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn replace_transcription(&mut self, id: &str, text: &str) {
+        self.stop_transcription_spinner(id);
+        let _ = self.textarea.replace_element_by_id(id, text);
+    }
+
+    pub fn update_transcription_in_place(&mut self, id: &str, text: &str) -> bool {
+        self.textarea.update_named_element_by_id(id, text)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn insert_transcription_placeholder(&mut self, text: &str) -> String {
+        let id = self.next_id();
+        self.textarea.insert_named_element(text, id.clone());
+        id
+    }
+
+    pub fn remove_transcription_placeholder(&mut self, id: &str) {
+        self.stop_transcription_spinner(id);
+        let _ = self.textarea.replace_element_by_id(id, "");
     }
 }
 
@@ -3489,9 +4108,7 @@ impl ChatComposer {
                     | FooterMode::ComposerHasDraft => false,
                 };
                 let show_queue_hint = match footer_props.mode {
-                    FooterMode::ComposerHasDraft => {
-                        footer_props.is_task_running && footer_props.steer_enabled
-                    }
+                    FooterMode::ComposerHasDraft => footer_props.is_task_running,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ComposerEmpty
                     | FooterMode::ShortcutOverlay
@@ -3783,6 +4400,15 @@ fn prompt_selection_action(
                 // By now we know this custom prompt has no args, so no text elements to preserve.
                 text_elements: Vec::new(),
             }
+        }
+    }
+}
+
+impl Drop for ChatComposer {
+    fn drop(&mut self) {
+        // Stop any running spinner tasks.
+        for (_id, flag) in self.spinner_stop_flags.drain() {
+            flag.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -4106,10 +4732,9 @@ mod tests {
             },
         );
 
-        // Textarea has content, agent running, steer enabled: queue hint is shown.
+        // Textarea has content, agent running: queue hint is shown.
         snapshot_composer_state_with_width("footer_collapse_queue_full", 120, true, |composer| {
             setup_collab_footer(composer, 98, None);
-            composer.set_steer_enabled(true);
             composer.set_task_running(true);
             composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
         });
@@ -4119,7 +4744,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, None);
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4130,7 +4754,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, None);
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4141,7 +4764,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, None);
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4152,20 +4774,18 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, None);
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
         );
 
-        // Textarea has content, plan mode active, agent running, steer enabled: queue hint + mode.
+        // Textarea has content, plan mode active, agent running: queue hint + mode.
         snapshot_composer_state_with_width(
             "footer_collapse_plan_queue_full",
             120,
             true,
             |composer| {
                 setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4176,7 +4796,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4187,7 +4806,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4198,7 +4816,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4209,7 +4826,6 @@ mod tests {
             true,
             |composer| {
                 setup_collab_footer(composer, 98, Some(CollaborationModeIndicator::Plan));
-                composer.set_steer_enabled(true);
                 composer.set_task_running(true);
                 composer.set_text_content("Test".to_string(), Vec::new(), Vec::new());
             },
@@ -4281,11 +4897,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         composer.set_text_content("draft text".to_string(), Vec::new(), Vec::new());
         assert_eq!(composer.clear_for_ctrl_c(), Some("draft text".to_string()));
@@ -4349,7 +4960,6 @@ mod tests {
         assert_eq!(composer.pending_pastes, vec![(placeholder.clone(), large)]);
         assert_eq!(composer.textarea.element_payloads(), vec![placeholder]);
 
-        composer.set_steer_enabled(true);
         let (result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
@@ -4503,13 +5113,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let (result, needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
@@ -4552,10 +5155,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         // Force an active paste burst so this test doesn't depend on tight timing.
         composer
@@ -4663,10 +5262,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         assert_eq!(composer.footer_mode, FooterMode::ShortcutOverlay);
@@ -4826,6 +5421,114 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_current_at_token_tracks_tokens_with_second_at() {
+        let input = "npx -y @kaeawc/auto-mobile@latest";
+        let token_start = input.find("@kaeawc").expect("scoped npm package present");
+        let version_at = input
+            .rfind("@latest")
+            .expect("version suffix present in scoped npm package");
+        let test_cases = vec![
+            (token_start, "Cursor at leading @"),
+            (token_start + 8, "Cursor inside scoped package name"),
+            (version_at, "Cursor at version @"),
+            (input.len(), "Cursor at end of token"),
+        ];
+
+        for (cursor_pos, description) in test_cases {
+            let mut textarea = TextArea::new();
+            textarea.insert_str(input);
+            textarea.set_cursor(cursor_pos);
+
+            let result = ChatComposer::current_at_token(&textarea);
+            assert_eq!(
+                result,
+                Some("kaeawc/auto-mobile@latest".to_string()),
+                "Failed for case: {description} - input: '{input}', cursor: {cursor_pos}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_at_token_allows_file_queries_with_second_at() {
+        let input = "@icons/icon@2x.png";
+        let version_at = input
+            .rfind("@2x")
+            .expect("second @ in file token should be present");
+        let test_cases = vec![
+            (0, "Cursor at leading @"),
+            (8, "Cursor before second @"),
+            (version_at, "Cursor at second @"),
+            (input.len(), "Cursor at end of token"),
+        ];
+
+        for (cursor_pos, description) in test_cases {
+            let mut textarea = TextArea::new();
+            textarea.insert_str(input);
+            textarea.set_cursor(cursor_pos);
+
+            let result = ChatComposer::current_at_token(&textarea);
+            assert!(
+                result.is_some(),
+                "Failed for case: {description} - input: '{input}', cursor: {cursor_pos}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_at_token_ignores_mid_word_at() {
+        let input = "foo@bar";
+        let at_pos = input.find('@').expect("@ present");
+        let test_cases = vec![
+            (at_pos, "Cursor at mid-word @"),
+            (input.len(), "Cursor at end of word containing @"),
+        ];
+
+        for (cursor_pos, description) in test_cases {
+            let mut textarea = TextArea::new();
+            textarea.insert_str(input);
+            textarea.set_cursor(cursor_pos);
+
+            let result = ChatComposer::current_at_token(&textarea);
+            assert_eq!(
+                result, None,
+                "Failed for case: {description} - input: '{input}', cursor: {cursor_pos}"
+            );
+        }
+    }
+
+    #[test]
+    fn enter_submits_when_file_popup_has_no_selection() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let input = "npx -y @kaeawc/auto-mobile@latest";
+        composer.textarea.insert_str(input);
+        composer.textarea.set_cursor(input.len());
+        composer.sync_popups();
+
+        assert!(matches!(composer.active_popup, ActivePopup::File(_)));
+
+        let (result, consumed) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(consumed);
+        match result {
+            InputResult::Submitted { text, .. } => assert_eq!(text, input),
+            _ => panic!("expected Submitted"),
+        }
+    }
+
     /// Behavior: if the ASCII path has a pending first char (flicker suppression) and a non-ASCII
     /// char arrives next, the pending ASCII char should still be preserved and the overall input
     /// should submit normally (i.e. we should not misclassify this as a paste burst).
@@ -4844,10 +5547,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
         assert!(composer.is_in_paste_burst());
@@ -4879,10 +5578,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('あ'), KeyModifiers::NONE));
 
@@ -5025,9 +5720,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let mut now = Instant::now();
         let step = Duration::from_millis(1);
@@ -5043,7 +5735,7 @@ mod tests {
         );
         now += step;
 
-        let (result, _) = composer.handle_submission_with_time(!composer.steer_enabled, now);
+        let (result, _) = composer.handle_submission_with_time(false, now);
         assert!(
             matches!(result, InputResult::None),
             "Enter during a burst should insert newline, not submit"
@@ -5179,9 +5871,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         let needs_redraw = composer.handle_paste("hello".to_string());
         assert!(needs_redraw);
@@ -5211,9 +5900,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
-        composer.set_steer_enabled(true);
 
         // Ensure composer is empty and press Enter.
         assert!(composer.textarea.text().is_empty());
@@ -5243,7 +5929,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 10);
         let needs_redraw = composer.handle_paste(large.clone());
@@ -5261,6 +5946,118 @@ mod tests {
             _ => panic!("expected Submitted"),
         }
         assert!(composer.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn submit_at_character_limit_succeeds() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(true);
+        let input = "x".repeat(MAX_USER_INPUT_TEXT_CHARS);
+        composer.textarea.set_text_clearing_elements(&input);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(
+            result,
+            InputResult::Submitted { text, .. } if text == input
+        ));
+    }
+
+    #[test]
+    fn oversized_submit_reports_error_and_restores_draft() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(true);
+        let input = "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1);
+        composer.textarea.set_text_clearing_elements(&input);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(InputResult::None, result);
+        assert_eq!(composer.textarea.text(), input);
+
+        let mut found_error = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let message = cell
+                    .display_lines(80)
+                    .into_iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(message.contains(&user_input_too_large_message(input.chars().count())));
+                found_error = true;
+                break;
+            }
+        }
+        assert!(found_error, "expected oversized-input error history cell");
+    }
+
+    #[test]
+    fn oversized_queued_submission_reports_error_and_restores_draft() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(false);
+        let input = "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1);
+        composer.textarea.set_text_clearing_elements(&input);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(InputResult::None, result);
+        assert_eq!(composer.textarea.text(), input);
+
+        let mut found_error = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let message = cell
+                    .display_lines(80)
+                    .into_iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(message.contains(&user_input_too_large_message(input.chars().count())));
+                found_error = true;
+                break;
+            }
+        }
+        assert!(found_error, "expected oversized-input error history cell");
     }
 
     /// Behavior: editing that removes a paste placeholder should also clear the associated
@@ -5281,7 +6078,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.handle_paste(large);
         assert_eq!(composer.pending_pastes.len(), 1);
@@ -5415,7 +6211,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         // Type "/mo" humanlike so paste-burst doesn’t interfere.
         type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
@@ -5444,7 +6239,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
         type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
 
         match &composer.active_popup {
@@ -5476,7 +6270,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         // Type "/res" humanlike so paste-burst doesn’t interfere.
         type_chars_humanlike(&mut composer, &['/', 'r', 'e', 's']);
@@ -5527,11 +6320,19 @@ mod tests {
     fn type_chars_humanlike(composer: &mut ChatComposer, chars: &[char]) {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
+        use crossterm::event::KeyEventKind;
         use crossterm::event::KeyModifiers;
         for &ch in chars {
             let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             std::thread::sleep(ChatComposer::recommended_paste_flush_delay());
             let _ = composer.flush_paste_burst_if_due();
+            if ch == ' ' {
+                let _ = composer.handle_key_event(KeyEvent::new_with_kind(
+                    KeyCode::Char(' '),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                ));
+            }
         }
     }
 
@@ -5619,6 +6420,195 @@ mod tests {
             }
         }
         assert!(found_error, "expected error history cell to be sent");
+    }
+
+    #[test]
+    fn voice_transcription_disabled_treats_space_as_normal_input() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyEventKind;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            true,
+        );
+        composer.set_text_content("x".to_string(), Vec::new(), Vec::new());
+        composer.move_cursor_to_end();
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let _ = composer.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+
+        assert_eq!("x ", composer.textarea.text());
+        assert!(composer.voice_state.space_hold_started_at.is_none());
+        assert!(composer.voice_state.space_hold_element_id.is_none());
+        assert!(composer.voice_state.space_hold_trigger.is_none());
+        assert!(!composer.voice_state.space_hold_repeat_seen);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn space_hold_timeout_without_release_or_repeat_keeps_typed_space() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_voice_transcription_enabled(true);
+
+        composer.set_text_content("x".to_string(), Vec::new(), Vec::new());
+        composer.move_cursor_to_end();
+        let elem_id = "space-hold".to_string();
+        composer.textarea.insert_named_element(" ", elem_id.clone());
+        composer.voice_state.space_hold_started_at = Some(Instant::now());
+        composer.voice_state.space_hold_element_id = Some(elem_id);
+        composer.voice_state.space_hold_trigger = Some(Arc::new(AtomicBool::new(true)));
+        composer.voice_state.key_release_supported = false;
+        composer.voice_state.space_hold_repeat_seen = false;
+        assert_eq!("x ", composer.textarea.text());
+
+        composer.process_space_hold_trigger();
+
+        assert_eq!("x ", composer.textarea.text());
+        assert!(composer.voice_state.space_hold_started_at.is_none());
+        assert!(!composer.voice_state.space_hold_repeat_seen);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn space_hold_timeout_with_repeat_uses_hold_path_without_release() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_voice_transcription_enabled(true);
+
+        composer.set_text_content("x".to_string(), Vec::new(), Vec::new());
+        composer.move_cursor_to_end();
+        let elem_id = "space-hold".to_string();
+        composer.textarea.insert_named_element(" ", elem_id.clone());
+        composer.voice_state.space_hold_started_at = Some(Instant::now());
+        composer.voice_state.space_hold_element_id = Some(elem_id);
+        composer.voice_state.space_hold_trigger = Some(Arc::new(AtomicBool::new(true)));
+        composer.voice_state.key_release_supported = false;
+        composer.voice_state.space_hold_repeat_seen = true;
+
+        composer.process_space_hold_trigger();
+
+        assert_eq!("x ", composer.textarea.text());
+        assert!(composer.voice_state.space_hold_started_at.is_none());
+        assert!(!composer.voice_state.space_hold_repeat_seen);
+        if composer.is_recording() {
+            let _ = composer.stop_recording_and_start_transcription();
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn space_hold_timeout_with_repeat_does_not_duplicate_existing_space() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_voice_transcription_enabled(true);
+
+        composer.set_text_content("x ".to_string(), Vec::new(), Vec::new());
+        composer.move_cursor_to_end();
+        let elem_id = "space-hold".to_string();
+        composer.textarea.insert_named_element(" ", elem_id.clone());
+        composer.voice_state.space_hold_started_at = Some(Instant::now());
+        composer.voice_state.space_hold_element_id = Some(elem_id);
+        composer.voice_state.space_hold_trigger = Some(Arc::new(AtomicBool::new(true)));
+        composer.voice_state.key_release_supported = false;
+        composer.voice_state.space_hold_repeat_seen = true;
+
+        composer.process_space_hold_trigger();
+
+        assert_eq!("x ", composer.textarea.text());
+        assert!(composer.voice_state.space_hold_started_at.is_none());
+        assert!(!composer.voice_state.space_hold_repeat_seen);
+        if composer.is_recording() {
+            let _ = composer.stop_recording_and_start_transcription();
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn replace_transcription_stops_spinner_for_placeholder() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let id = "voice-placeholder".to_string();
+        composer.textarea.insert_named_element("", id.clone());
+        let flag = Arc::new(AtomicBool::new(false));
+        composer
+            .spinner_stop_flags
+            .insert(id.clone(), Arc::clone(&flag));
+
+        composer.replace_transcription(&id, "transcribed text");
+
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(!composer.spinner_stop_flags.contains_key(&id));
+        assert_eq!(composer.textarea.text(), "transcribed text");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn set_text_content_stops_all_transcription_spinners() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let flag_one = Arc::new(AtomicBool::new(false));
+        let flag_two = Arc::new(AtomicBool::new(false));
+        composer
+            .spinner_stop_flags
+            .insert("voice-1".to_string(), Arc::clone(&flag_one));
+        composer
+            .spinner_stop_flags
+            .insert("voice-2".to_string(), Arc::clone(&flag_two));
+
+        composer.set_text_content("draft".to_string(), Vec::new(), Vec::new());
+
+        assert!(flag_one.load(Ordering::Relaxed));
+        assert!(flag_two.load(Ordering::Relaxed));
+        assert!(composer.spinner_stop_flags.is_empty());
     }
 
     #[test]
@@ -5794,7 +6784,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_submits_when_no_task_running_in_steer_mode() {
+    fn tab_submits_when_no_task_running() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5808,7 +6798,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         type_chars_humanlike(&mut composer, &['h', 'i']);
 
@@ -5823,7 +6812,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_does_not_submit_for_bang_shell_command_in_steer_mode() {
+    fn tab_does_not_submit_for_bang_shell_command() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -5837,7 +6826,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
         composer.set_task_running(false);
 
         type_chars_humanlike(&mut composer, &['!', 'l', 's']);
@@ -5948,7 +6936,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         // Define test cases: (paste content, is_large)
         let test_cases = [
@@ -6229,7 +7216,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
         let path = PathBuf::from("/tmp/image1.png");
         composer.attach_image(path.clone());
         composer.handle_paste(" hi".into());
@@ -6268,7 +7254,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         let mention_bindings = vec![MentionBinding {
             mention: "figma".to_string(),
@@ -6302,7 +7287,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
         let remote_image_url = "https://example.com/remote.png".to_string();
         composer.set_remote_image_urls(vec![remote_image_url.clone()]);
         let path = PathBuf::from("/tmp/image1.png");
@@ -6369,7 +7353,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         type_chars_humanlike(&mut composer, &['f', 'i', 'r', 's', 't']);
         let (result, _needs_redraw) =
@@ -6435,7 +7418,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         let large_content = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
         composer.handle_paste(large_content.clone());
@@ -6479,7 +7461,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         let large_content = format!("  {}", "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5));
         composer.handle_paste(large_content.clone());
@@ -6523,7 +7504,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         let pasted = "line1\r\nline2\r\n".to_string();
         composer.handle_paste(pasted);
@@ -6567,7 +7547,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.textarea.set_text_clearing_elements("/unknown ");
         composer.textarea.set_cursor("/unknown ".len());
@@ -6614,7 +7593,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
         let path = PathBuf::from("/tmp/image2.png");
         composer.attach_image(path.clone());
         let (result, _) =
@@ -6926,7 +7904,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         // Inject prompts as if received via event.
         composer.set_custom_prompts(vec![CustomPrompt {
@@ -6966,7 +7943,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7002,7 +7978,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7042,7 +8017,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7098,7 +8072,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7155,7 +8128,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7204,7 +8176,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         // Create a custom prompt with positional args (no named args like $USER)
         composer.set_custom_prompts(vec![CustomPrompt {
@@ -7269,7 +8240,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7328,7 +8298,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer
             .textarea
@@ -7365,7 +8334,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer
             .textarea
@@ -7503,7 +8471,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7542,7 +8509,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7581,7 +8547,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7625,7 +8590,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7666,7 +8630,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(false);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "my-prompt".to_string(),
@@ -7681,9 +8644,10 @@ mod tests {
             .set_text_clearing_elements("/prompts:my-prompt foo ");
         composer.textarea.set_cursor(composer.textarea.text().len());
         composer.attach_image(PathBuf::from("/tmp/unused.png"));
+        composer.set_task_running(true);
 
         let (result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
         assert!(matches!(
             result,
@@ -7694,6 +8658,57 @@ mod tests {
                 .take_recent_submission_images_with_placeholders()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn prompt_expansion_over_character_limit_reports_error_and_restores_draft() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(true);
+
+        composer.set_custom_prompts(vec![CustomPrompt {
+            name: "my-prompt".to_string(),
+            path: "/tmp/my-prompt.md".to_string().into(),
+            content: "Echo: $1".to_string(),
+            description: None,
+            argument_hint: None,
+        }]);
+
+        let oversized_arg = "x".repeat(MAX_USER_INPUT_TEXT_CHARS);
+        let original_input = format!("/prompts:my-prompt {oversized_arg}");
+        composer
+            .textarea
+            .set_text_clearing_elements(&original_input);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(InputResult::None, result);
+        assert_eq!(composer.textarea.text(), original_input);
+
+        let actual_chars = format!("Echo: {oversized_arg}").chars().count();
+        let mut found_error = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                let message = cell
+                    .display_lines(80)
+                    .into_iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(message.contains(&user_input_too_large_message(actual_chars)));
+                found_error = true;
+                break;
+            }
+        }
+        assert!(found_error, "expected oversized-input error history cell");
     }
 
     #[test]
@@ -7739,7 +8754,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "elegant".to_string(),
@@ -7812,7 +8826,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "price".to_string(),
@@ -7851,7 +8864,6 @@ mod tests {
             "Ask Codex to do anything".to_string(),
             false,
         );
-        composer.set_steer_enabled(true);
 
         composer.set_custom_prompts(vec![CustomPrompt {
             name: "repeat".to_string(),
