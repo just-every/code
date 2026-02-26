@@ -21887,6 +21887,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 args_read_only: args_ro.clone(),
                 args_write: args_wr.clone(),
                 instructions: instr.clone(),
+                http_endpoint: None,
+                http_model: None,
+                http_bearer_token: None,
             })
         } else {
             AgentConfig {
@@ -21900,6 +21903,9 @@ Have we met every part of this goal and is there no further work to do?"#
                 args_read_only: args_ro.clone(),
                 args_write: args_wr.clone(),
                 instructions: instr.clone(),
+                http_endpoint: None,
+                http_model: None,
+                http_bearer_token: None,
             }
         };
 
@@ -29835,6 +29841,9 @@ async fn run_background_review(
             args_read_only: None,
             args_write: None,
             instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
         };
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.

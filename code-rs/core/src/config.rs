@@ -2963,6 +2963,9 @@ model_verbosity = "high"
             args_read_only: None,
             args_write: None,
             instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
         }];
 
         let overrides = ConfigOverrides {
@@ -3095,6 +3098,9 @@ mod agent_merge_tests {
             args_read_only: None,
             args_write: None,
             instructions: None,
+            http_endpoint: None,
+            http_model: None,
+            http_bearer_token: None,
         }
     }
 
