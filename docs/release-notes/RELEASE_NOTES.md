@@ -1,17 +1,23 @@
-## @just-every/code v0.6.70
+## @just-every/code v0.6.71
 
-This release improves search persistence, Auto Drive routing control, and sandbox GPU access.
+This release improves realtime reliability, tightens approvals, and upgrades core TUI and JS REPL workflows.
 
 ### Changes
-- Core/Search: persist and restore tool selection after search.
-- Core/Search: warn when falling back to default metadata and keep selection.
-- Auto Drive: add configurable CLI routing entries.
-- Linux Sandbox: allow GPU device paths in landlock.
+
+- Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions.
+- TUI: add `/copy`, improve clear controls (`/clear` and Ctrl-L), and expand multi-agent progress and picker UX.
+- Security/Approvals: persist network approval policy and tighten zsh-fork approval and sandbox enforcement paths.
+- JS REPL: lower Node minimum requirement, gate incompatible runtimes at startup, and improve error recovery in nested tool calls.
 
 ### Install
+
 ```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.69...v0.6.70
+### Thanks
+
+Thanks to @rupurt, @dchimento, @JaviSoto, @owenlin0, and @felipecoury for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.70...v0.6.71
