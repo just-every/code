@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.71] - 2026-02-26
+
+- Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions. (7e53c578, d5909f3b, 4fedef88, 9d7013ea)
+- TUI: add `/copy`, improve clear controls (`/clear` and Ctrl-L), and expand multi-agent progress and picker UX. (ee1520e7, ca556fa3, a606e858, dcab4012, 5a30cd3f)
+- Security/Approvals: persist network approval policy and tighten zsh-fork approval and sandbox enforcement paths. (c3048ff9, 14116ade, a6a5976c, 648a420c, 59398125)
+- JS REPL: lower Node minimum requirement, gate incompatible runtimes at startup, and improve error recovery in nested tool calls. (7326c097, 40ab71a9, 125fbec3, 63c2ac96)
+
 ## [0.6.70] - 2026-02-16
 
 - Core/Search: persist and restore tool selection after search. (02abd9a8)
