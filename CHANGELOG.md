@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.72] - 2026-02-27
+
+- Agents/App Server: add external agent config migration API with import depth guards to safely bring configs forward. (1a8bd1ac)
+- TUI/Auto Review: dispatch idle review findings back to the model so automated review cycles continue reliably. (e57a1e0f)
+
 ## [0.6.71] - 2026-02-26
 
 - Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions. (7e53c578, d5909f3b, 4fedef88, 9d7013ea)
