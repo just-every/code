@@ -30342,7 +30342,10 @@ use code_core::protocol::OrderMeta;
                     .any(|span| span.content.contains("[developer] Background auto-review"))
             })
         });
-        assert!(developer_seen, "developer note should be rendered as a background notice");
+        assert!(
+            !developer_seen,
+            "auto review should rely on the Auto Review notice instead of a [developer] history message"
+        );
     }
 
     #[test]
@@ -30402,11 +30405,11 @@ use code_core::protocol::OrderMeta;
         }
 
         assert!(
-            transcript.contains("Background auto-review completed and reported 1 issue(s)"),
-            "auto review findings should be present when auto drive resumes"
+            transcript.contains("Auto Review: 1 issue(s) found"),
+            "auto review notice should be present when auto drive resumes"
         );
         assert!(
-            transcript.contains("Summary: needs work"),
+            transcript.contains("needs work"),
             "auto review summary should be forwarded to the coordinator"
         );
     }
@@ -30495,7 +30498,10 @@ use code_core::protocol::OrderMeta;
                 })
             })
         });
-        assert!(developer_seen, "developer merge-hint note should be visible even while busy");
+        assert!(
+            !developer_seen,
+            "busy path should not render a [developer] merge-hint message"
+        );
     }
 
     #[test]
@@ -30555,7 +30561,10 @@ use code_core::protocol::OrderMeta;
                 })
             })
         });
-        assert!(developer_seen, "developer merge-hint note should be visible when idle");
+        assert!(
+            !developer_seen,
+            "idle path should not render a [developer] merge-hint message"
+        );
     }
 
     #[test]
@@ -30611,7 +30620,10 @@ use code_core::protocol::OrderMeta;
                 })
             })
         });
-        assert!(developer_seen, "developer merge-hint note should be visible when busy");
+        assert!(
+            !developer_seen,
+            "busy observe path should not render a [developer] merge-hint message"
+        );
     }
 
     #[test]
@@ -35836,16 +35848,8 @@ impl ChatWidget<'_> {
             return;
         }
 
-        self.history_push_plain_paragraphs(PlainMessageKind::Notice, [trimmed.to_string()]);
-
-        if let Err(err) = self
-            .code_op_tx
-            .send(Op::AddToHistory {
-                text: trimmed.to_string(),
-            })
-        {
-            tracing::error!("failed to persist background review note: {err}");
-        }
+        // The Auto Review notice cell is now the user-facing UI. Keep this
+        // note out of history and only use it as hidden coordinator context.
 
         // Outside Auto Drive, immediately hand the note back to the model so
         // the main agent can act on review findings without manual copy/paste.
