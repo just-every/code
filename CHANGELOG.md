@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.73] - 2026-02-27
+
+- TUI/Auto Review: parse embedded JSON review results from mixed runner output so summaries stay focused on findings. (8cc2ba18)
+- TUI/Auto Review: truncate plain-text fallback summaries to prevent raw log dumps in chat history. (8cc2ba18)
+
 ## [0.6.72] - 2026-02-27
 
 - Agents/App Server: add external agent config migration API with import depth guards to safely bring configs forward. (1a8bd1ac)
