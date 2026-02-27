@@ -30374,6 +30374,40 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn background_review_idle_dispatches_developer_followup_turn() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            1,
+            Some("needs work".to_string()),
+            None,
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "auto review developer note should be dispatched to the model when idle"
+        );
+    }
+
+    #[test]
     fn background_review_busy_path_enqueues_developer_note_with_merge_hint() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -35525,6 +35559,8 @@ impl ChatWidget<'_> {
             has_findings = false;
         }
 
+        let was_task_running = self.is_task_running();
+
         let inflight_base = self
             .background_review
             .as_ref()
@@ -35599,7 +35635,7 @@ impl ChatWidget<'_> {
         }
 
         if let Some(note) = developer_note {
-            self.record_background_review_note(note);
+            self.record_background_review_note(note, !was_task_running);
         }
 
         // Auto review completion should never leave the composer spinner active.
@@ -35624,7 +35660,7 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    fn record_background_review_note(&mut self, note: String) {
+    fn record_background_review_note(&mut self, note: String, allow_immediate_dispatch: bool) {
         let trimmed = note.trim();
         if trimmed.is_empty() {
             return;
@@ -35639,6 +35675,20 @@ impl ChatWidget<'_> {
             })
         {
             tracing::error!("failed to persist background review note: {err}");
+        }
+
+        // Outside Auto Drive, immediately hand the note back to the model so
+        // the main agent can act on review findings without manual copy/paste.
+        if allow_immediate_dispatch
+            && !self.auto_state.is_active()
+            && !self.wait_running()
+            && self.queued_user_messages.is_empty()
+        {
+            self.submit_hidden_text_message_with_preface_and_notice(
+                trimmed.to_string(),
+                String::new(),
+                false,
+            );
         }
     }
 
