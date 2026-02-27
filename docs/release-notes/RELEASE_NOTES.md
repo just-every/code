@@ -1,11 +1,11 @@
-## @just-every/code v0.6.72
+## @just-every/code v0.6.73
 
-This release improves agent config migration safety and keeps TUI auto-review feedback loops responsive.
+This release improves Auto Review output handling in the TUI for clearer, less noisy summaries.
 
 ### Changes
 
-- Agents/App Server: add external agent config migration API with import depth guards to safely bring configs forward.
-- TUI/Auto Review: dispatch idle review findings back to the model so automated review cycles continue reliably.
+- TUI/Auto Review: parse embedded JSON review results from mixed runner output so summaries stay focused on findings.
+- TUI/Auto Review: truncate plain-text fallback summaries to prevent raw log dumps in chat history.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.71...v0.6.72
+Compare: https://github.com/just-every/code/compare/v0.6.72...v0.6.73
