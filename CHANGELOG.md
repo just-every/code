@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.74] - 2026-02-27
+
+- TUI/Auto Review: stop duplicating background review notes as `[developer]` history messages to keep transcript noise down. (114e4003)
+- TUI/Auto Review: keep review findings routed through the dedicated Auto Review notice while still forwarding hidden context to the coordinator. (114e4003)
+
 ## [0.6.73] - 2026-02-27
 
 - TUI/Auto Review: parse embedded JSON review results from mixed runner output so summaries stay focused on findings. (8cc2ba18)
