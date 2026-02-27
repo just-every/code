@@ -30502,7 +30502,12 @@ use code_core::protocol::OrderMeta;
         chat.observe_auto_review_status(&[agent]);
 
         assert!(chat.pending_agent_notes.is_empty());
-        assert!(chat.pending_dispatched_user_messages.is_empty());
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "idle auto-review findings should be dispatched back to the model"
+        );
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -30607,10 +30612,15 @@ use code_core::protocol::OrderMeta;
         );
 
         let pending_after_review = chat.pending_dispatched_user_messages.len();
-        assert_eq!(
-            pending_after_review,
-            pending_before_review,
-            "background review completion must not inject hidden foreground turns"
+        assert!(
+            pending_after_review > pending_before_review,
+            "idle background review completion should dispatch findings to the model"
+        );
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "the dispatched message should include the auto-review findings summary"
         );
         assert!(!chat.is_task_running(), "background review should not hold task-running state");
 
@@ -30729,10 +30739,15 @@ use code_core::protocol::OrderMeta;
             Some("agent-auto-review".to_string()),
             Some("ghost-long".to_string()),
         );
-        assert_eq!(
-            chat.pending_dispatched_user_messages.len(),
-            pending_before_review,
-            "background review completion must stay out-of-band"
+        assert!(
+            chat.pending_dispatched_user_messages.len() > pending_before_review,
+            "idle background review completion should inject a follow-up developer turn"
+        );
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "churn path should still forward auto-review findings"
         );
 
         chat.submit_text_message("typing after churn".to_string());
