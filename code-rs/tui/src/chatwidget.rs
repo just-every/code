@@ -1319,6 +1319,10 @@ const MAX_AGENT_RUNTIME_ENTRIES: usize = 768;
 const MAX_HISTORY_CELLS_HARD_LIMIT: usize = 2400;
 const HISTORY_CELLS_TRIM_TARGET: usize = 1800;
 const MAX_PENDING_DISPATCHED_USER_MESSAGES: usize = 256;
+const MAX_PENDING_AUTO_REVIEW_NOTES: usize = 32;
+const MAX_PENDING_AUTO_REVIEW_NOTE_CHARS: usize = 2400;
+const MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS: usize = 1200;
+const MAX_AUTO_REVIEW_ERROR_SUMMARY_CHARS: usize = 320;
 
 fn auto_review_repo_dir(git_root: &Path) -> Result<PathBuf, String> {
     let repo_name = git_root
@@ -1795,6 +1799,7 @@ pub(crate) struct ChatWidget<'a> {
     // before the next user turn. Each entry is sent in order ahead of the
     // user's visible prompt.
     pending_agent_notes: Vec<String>,
+    pending_auto_review_notes: VecDeque<String>,
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
@@ -6199,6 +6204,7 @@ impl ChatWidget<'_> {
     /// animating the output.
     pub(crate) fn on_commit_tick(&mut self) {
         streaming::on_commit_tick(self);
+        self.maybe_enforce_queue_unblock();
     }
     fn is_write_cycle_active(&self) -> bool {
         streaming::is_write_cycle_active(self)
@@ -6384,6 +6390,7 @@ impl ChatWidget<'_> {
             self.queued_user_messages.clear();
             self.bottom_pane.update_status_text(String::new());
             self.pending_dispatched_user_messages.clear();
+            self.pending_auto_review_notes.clear();
             self.refresh_queued_user_messages(false);
         }
         self.maybe_hide_spinner();
@@ -6691,6 +6698,7 @@ impl ChatWidget<'_> {
             scroll_history_hint_shown: false,
             access_status_idx: None,
             pending_agent_notes: Vec::new(),
+            pending_auto_review_notes: VecDeque::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             ui_background_seq_counters: HashMap::new(),
@@ -7075,6 +7083,7 @@ impl ChatWidget<'_> {
             access_status_idx: None,
             standard_terminal_mode: !config.tui.alternate_screen,
             pending_agent_notes: Vec::new(),
+            pending_auto_review_notes: VecDeque::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             ui_background_seq_counters: HashMap::new(),
@@ -11749,11 +11758,13 @@ impl ChatWidget<'_> {
         }
 
         let wait_only_active = self.wait_only_activity();
+        let auto_review_only_active = self.auto_review_only_activity();
         let turn_active = (self.is_task_running()
             || !self.active_task_ids.is_empty()
             || self.stream.is_write_cycle_active()
             || !self.queued_user_messages.is_empty())
-            && !wait_only_active;
+            && !wait_only_active
+            && !auto_review_only_active;
 
         if turn_active {
             tracing::info!(
@@ -11787,6 +11798,11 @@ impl ChatWidget<'_> {
             self.bottom_pane.set_task_running(false);
             self.bottom_pane
                 .update_status_text("Waiting in background".to_string());
+        } else if auto_review_only_active {
+            // Auto Review runs independently; keep input responsive while it continues.
+            self.bottom_pane.set_task_running(false);
+            self.bottom_pane
+                .update_status_text("Auto Review running in background".to_string());
         }
 
         tracing::info!(
@@ -11929,6 +11945,11 @@ impl ChatWidget<'_> {
             combined_items.extend(message.ordered_items.clone());
         }
 
+        let pending_review_notes = self.drain_pending_auto_review_notes();
+        if let Some(note_item) = Self::pending_auto_review_note_item(&pending_review_notes) {
+            combined_items.insert(0, note_item);
+        }
+
         let total_items = combined_items.len();
         let ephemeral_count = combined_items
             .iter()
@@ -11952,7 +11973,10 @@ impl ChatWidget<'_> {
                 })
             {
                 tracing::error!("failed to send Op::UserInput: {e}");
+                self.restore_pending_auto_review_notes_front(pending_review_notes);
             }
+        } else {
+            self.restore_pending_auto_review_notes_front(pending_review_notes);
         }
 
         for message in messages {
@@ -11962,7 +11986,11 @@ impl ChatWidget<'_> {
 
     fn dispatch_queued_user_message_now(&mut self, message: UserMessage) {
         let message = self.take_queued_user_message(&message).unwrap_or(message);
-        let items = message.ordered_items.clone();
+        let pending_review_notes = self.drain_pending_auto_review_notes();
+        let mut items = message.ordered_items.clone();
+        if let Some(note_item) = Self::pending_auto_review_note_item(&pending_review_notes) {
+            items.insert(0, note_item);
+        }
         tracing::info!(
             "[queue] Dispatching single queued message via coordinator (queue_remaining={})",
             self.queued_user_messages.len()
@@ -11973,6 +12001,7 @@ impl ChatWidget<'_> {
             }
             Err(err) => {
                 tracing::error!("failed to send QueueUserInput op: {err}");
+                self.restore_pending_auto_review_notes_front(pending_review_notes);
                 self.queued_user_messages.push_front(message);
                 self.refresh_queued_user_messages(true);
             }
@@ -11983,6 +12012,11 @@ impl ChatWidget<'_> {
         if batch.is_empty() {
             return;
         }
+
+        let pending_review_notes = self.drain_pending_auto_review_notes();
+        let mut note_item = Self::pending_auto_review_note_item(&pending_review_notes);
+        let mut note_was_attached = false;
+        let mut should_restore_notes = false;
 
         tracing::info!(
             "[queue] Draining batch via coordinator path (batch_size={}, auto_active={})",
@@ -11996,18 +12030,29 @@ impl ChatWidget<'_> {
                 continue;
             };
 
-            let items = message.ordered_items.clone();
+            let mut items = message.ordered_items.clone();
+            if let Some(item) = note_item.take() {
+                items.insert(0, item);
+                note_was_attached = true;
+            }
             match self.code_op_tx.send(Op::QueueUserInput { items }) {
                 Ok(()) => {
                     self.finalize_sent_user_message(message);
                 }
                 Err(err) => {
                     tracing::error!("[queue] Failed to send QueueUserInput op: {err}");
+                    if note_was_attached {
+                        should_restore_notes = true;
+                    }
                     self.queued_user_messages.push_front(message);
                     self.refresh_queued_user_messages(true);
                     break;
                 }
             }
+        }
+
+        if should_restore_notes || !note_was_attached {
+            self.restore_pending_auto_review_notes_front(pending_review_notes);
         }
     }
 
@@ -13100,6 +13145,7 @@ impl ChatWidget<'_> {
         self.pending_dispatched_user_messages.clear();
         self.pending_user_prompts_for_next_turn = 0;
         self.queued_user_messages.clear();
+        self.pending_auto_review_notes.clear();
         self.refresh_queued_user_messages(false);
         self.bottom_pane.clear_composer();
         self.bottom_pane.clear_ctrl_c_quit_hint();
@@ -13117,6 +13163,57 @@ impl ChatWidget<'_> {
                 tracing::error!("failed to send AddToHistory op: {e}");
             }
         }
+    }
+
+    fn queue_pending_auto_review_note(&mut self, note: String) {
+        let trimmed = note.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let bounded_note = Self::truncate_with_ellipsis(trimmed, MAX_PENDING_AUTO_REVIEW_NOTE_CHARS);
+
+        self.pending_auto_review_notes.push_back(bounded_note.clone());
+        while self.pending_auto_review_notes.len() > MAX_PENDING_AUTO_REVIEW_NOTES {
+            self.pending_auto_review_notes.pop_front();
+        }
+
+        let cleaned = Self::strip_context_sections(&bounded_note);
+        if !cleaned.trim().is_empty() {
+            self.last_developer_message =
+                Some(Self::truncate_with_ellipsis(&cleaned, MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS));
+        }
+    }
+
+    fn drain_pending_auto_review_notes(&mut self) -> Vec<String> {
+        self.pending_auto_review_notes.drain(..).collect()
+    }
+
+    fn restore_pending_auto_review_notes_front(&mut self, notes: Vec<String>) {
+        if notes.is_empty() {
+            return;
+        }
+        for note in notes.into_iter().rev() {
+            self.pending_auto_review_notes.push_front(note);
+        }
+    }
+
+    fn pending_auto_review_note_item(notes: &[String]) -> Option<InputItem> {
+        if notes.is_empty() {
+            return None;
+        }
+
+        let combined = notes
+            .iter()
+            .map(|note| note.trim())
+            .filter(|note| !note.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if combined.is_empty() {
+            return None;
+        }
+
+        Some(InputItem::Text { text: combined })
     }
 
     fn finalize_sent_user_message(&mut self, message: UserMessage) {
@@ -20197,12 +20294,9 @@ Have we met every part of this goal and is there no further work to do?"#
         self.auto_state.thinking_prefix_stripped = false;
 
         let auto_resolve_blocking = self.auto_resolve_should_block_auto_resume();
-        let review_pending = self.is_review_flow_active()
-            || (self.auto_state.review_enabled
-                && self
-                    .pending_auto_turn_config
-                    .as_ref()
-                    .is_some_and(|cfg| !cfg.read_only));
+        // Background Auto Review is non-blocking for Auto Drive. We only wait
+        // when an explicit foreground review flow is active.
+        let review_pending = self.is_review_flow_active();
 
         if review_pending || auto_resolve_blocking {
             self.auto_state.on_begin_review(false);
@@ -25454,6 +25548,39 @@ Have we met every part of this goal and is there no further work to do?"#
             && self.active_task_ids.is_empty()
     }
 
+    /// True when the only active work is background Auto Review agents.
+    ///
+    /// In this mode, user input should continue immediately instead of taking
+    /// the `QueueUserInput` path, because queueing behind review-only work can
+    /// silently defer messages until review completion.
+    fn auto_review_only_activity(&self) -> bool {
+        let has_running_auto_review = self.active_agents.iter().any(|agent| {
+            matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                && matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+        });
+
+        let has_running_non_auto_review = self.active_agents.iter().any(|agent| {
+            matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                && !matches!(agent.source_kind, Some(AgentSourceKind::AutoReview))
+        });
+
+        if has_running_non_auto_review {
+            return false;
+        }
+
+        if !(has_running_auto_review || self.background_review.is_some()) {
+            return false;
+        }
+
+        !self.terminal_is_running()
+            && self.exec.running_commands.is_empty()
+            && self.tools_state.running_custom_tools.is_empty()
+            && self.tools_state.web_search_sessions.is_empty()
+            && !self.wait_running()
+            && !self.stream.is_write_cycle_active()
+            && self.active_task_ids.is_empty()
+    }
+
     /// If queued user messages have been blocked longer than the SLA while only a wait/kill
     /// tool is running, unlock the composer and dispatch the queue.
     fn maybe_enforce_queue_unblock(&mut self) {
@@ -30415,6 +30542,36 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn auto_drive_does_not_wait_for_background_auto_review() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        chat.auto_state.goal = Some("keep going".to_string());
+        chat.auto_state.started_at = Some(Instant::now());
+        chat.auto_state.on_prompt_submitted();
+        chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.review_enabled = true;
+
+        chat.pending_auto_turn_config = Some(TurnConfig {
+            read_only: false,
+            complexity: Some(TurnComplexity::Low),
+            text_format_override: None,
+        });
+
+        chat.auto_on_assistant_final();
+
+        assert!(
+            !chat.auto_state.awaiting_review(),
+            "background auto review should never block Auto Drive"
+        );
+        assert!(
+            !chat.auto_state.is_waiting_for_response(),
+            "Auto Drive should keep progressing after assistant final"
+        );
+    }
+
+    #[test]
     fn background_review_idle_dispatches_developer_followup_turn() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
@@ -30440,11 +30597,86 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
+        assert_eq!(
+            chat.pending_auto_review_notes.len(),
+            1,
+            "idle auto-review findings should queue a hidden follow-up note"
+        );
+        assert!(
+            chat.pending_dispatched_user_messages.is_empty(),
+            "auto review notes should not start a synthetic background turn"
+        );
+
+        chat.submit_text_message("follow up".to_string());
+
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
                 .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "auto review developer note should be dispatched to the model when idle"
+            "queued auto review note should be injected on the next user turn"
+        );
+    }
+
+    #[test]
+    fn background_review_failure_note_is_sanitized_and_bounded() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let noisy_error = [
+            "[2026-02-28T11:27:12] ERROR: Model hit context-window limit; running /compact and retrying…",
+            "[2026-02-28T11:27:13] codex",
+            "Compact task completed",
+            "[2026-02-28T11:27:50] ERROR: remote compact failed: unexpected status 429 Too Many Requests",
+            "[2026-02-28T11:28:02] Command guard: Leading cd ...",
+            "original_script: cd /tmp && git show",
+            "resend_exact_argv: [\"bash\",\"-lc\",\"git show\"]",
+            "[2026-02-28T11:38:27] ERROR: stream disconnected before completion: Your input exceeds the context window of this model.",
+        ]
+        .join("\n");
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(noisy_error),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = chat
+            .pending_auto_review_notes
+            .front()
+            .expect("sanitized failure note should be queued");
+
+        assert!(note.contains("Background auto-review failed."));
+        assert!(
+            note.contains("Model hit the context window repeatedly and then exhausted usage while compacting."),
+            "error should be summarized instead of dumping raw logs"
+        );
+        assert!(!note.contains("tokens used:"));
+        assert!(!note.contains("original_script:"));
+        assert!(!note.contains("resend_exact_argv:"));
+        assert!(
+            note.chars().count() <= MAX_PENDING_AUTO_REVIEW_NOTE_CHARS,
+            "queued note should stay bounded"
+        );
+        assert!(
+            chat
+                .last_developer_message
+                .as_ref()
+                .is_some_and(|msg| msg.chars().count() <= MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS),
+            "cached context should stay bounded"
         );
     }
 
@@ -30545,12 +30777,14 @@ use code_core::protocol::OrderMeta;
 
         chat.observe_auto_review_status(&[agent]);
 
-        assert!(chat.pending_agent_notes.is_empty());
+        assert_eq!(
+            chat.pending_auto_review_notes.len(),
+            1,
+            "idle observe path should queue a hidden follow-up note"
+        );
         assert!(
-            chat.pending_dispatched_user_messages
-                .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "idle auto-review findings should be dispatched back to the model"
+            chat.pending_dispatched_user_messages.is_empty(),
+            "idle observe path should not auto-start a hidden follow-up turn"
         );
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
@@ -30564,6 +30798,14 @@ use code_core::protocol::OrderMeta;
         assert!(
             !developer_seen,
             "idle path should not render a [developer] merge-hint message"
+        );
+
+        chat.submit_text_message("continue".to_string());
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "queued auto-review note should be injected on the next user message"
         );
     }
 
@@ -30662,19 +30904,27 @@ use code_core::protocol::OrderMeta;
         );
 
         let pending_after_review = chat.pending_dispatched_user_messages.len();
-        assert!(
-            pending_after_review > pending_before_review,
-            "idle background review completion should dispatch findings to the model"
+        assert_eq!(
+            pending_after_review,
+            pending_before_review,
+            "background review completion should queue notes without starting a hidden turn"
         );
+        assert_eq!(chat.pending_auto_review_notes.len(), 1);
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "the dispatched message should include the auto-review findings summary"
+                .all(|msg| !msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "the auto-review findings should remain queued until the next user turn"
         );
         assert!(!chat.is_task_running(), "background review should not hold task-running state");
 
         chat.submit_text_message("after esc".to_string());
+        assert!(
+            chat.pending_dispatched_user_messages
+                .iter()
+                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
+            "queued auto-review findings should be injected on the next user turn"
+        );
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
@@ -30790,17 +31040,18 @@ use code_core::protocol::OrderMeta;
             Some("ghost-long".to_string()),
         );
         assert!(
-            chat.pending_dispatched_user_messages.len() > pending_before_review,
-            "idle background review completion should inject a follow-up developer turn"
+            chat.pending_dispatched_user_messages.len() == pending_before_review,
+            "idle review completion should queue notes without creating a synthetic turn"
         );
+        assert_eq!(chat.pending_auto_review_notes.len(), 1);
+
+        chat.submit_text_message("typing after churn".to_string());
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
                 .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "churn path should still forward auto-review findings"
+            "churn path should still forward queued auto-review findings"
         );
-
-        chat.submit_text_message("typing after churn".to_string());
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
@@ -32511,7 +32762,10 @@ use code_core::protocol::OrderMeta;
         });
 
         chat.auto_on_assistant_final();
-        assert!(chat.auto_state.awaiting_review(), "post-turn review should be pending");
+        assert!(
+            !chat.auto_state.awaiting_review(),
+            "background auto review should not block post-turn progress"
+        );
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
         chat.auto_handle_post_turn_review(turn_config.clone(), descriptor_snapshot.as_ref());
@@ -33123,7 +33377,10 @@ use code_core::protocol::OrderMeta;
         });
 
         chat.auto_on_assistant_final();
-        assert!(chat.auto_state.awaiting_review());
+        assert!(
+            !chat.auto_state.awaiting_review(),
+            "background auto review should not set an awaiting-review gate"
+        );
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
         chat.auto_handle_post_turn_review(turn_config.clone(), descriptor_snapshot.as_ref());
@@ -35388,6 +35645,62 @@ impl ChatWidget<'_> {
         format!("{truncated}…")
     }
 
+    fn summarize_auto_review_error(error: &str) -> String {
+        let trimmed = error.trim();
+        if trimmed.is_empty() {
+            return "Auto review failed before producing findings.".to_string();
+        }
+
+        let lowered = trimmed.to_ascii_lowercase();
+        let hit_context_window = lowered.contains("context-window limit")
+            || lowered.contains("context window")
+            || lowered.contains("input exceeds the context window");
+        let hit_usage_limit = lowered.contains("usage_limit_reached")
+            || lowered.contains("429 too many requests")
+            || lowered.contains("usage limit has been reached");
+
+        let mut summary = if hit_context_window && hit_usage_limit {
+            "Model hit the context window repeatedly and then exhausted usage while compacting."
+                .to_string()
+        } else if hit_context_window {
+            "Model hit the context window while running auto review.".to_string()
+        } else if hit_usage_limit {
+            "Auto review hit account usage limits before finishing.".to_string()
+        } else {
+            "Auto review failed before producing findings.".to_string()
+        };
+
+        let detail = trimmed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .find(|line| {
+                let lower = line.to_ascii_lowercase();
+                !(lower.starts_with('[')
+                    || lower.starts_with("exec ")
+                    || lower.starts_with("bash -lc")
+                    || lower.starts_with("git ")
+                    || lower.starts_with("tokens used:")
+                    || lower.starts_with("compact task completed")
+                    || lower.starts_with("command guard:")
+                    || lower.starts_with("original_script:")
+                    || lower.starts_with("resend_exact_argv:")
+                    || lower.starts_with("review finished")
+                    || lower.starts_with("worktree:"))
+            });
+
+        if let Some(detail) = detail {
+            let compact_detail = Self::truncate_with_ellipsis(detail, MAX_AUTO_REVIEW_ERROR_SUMMARY_CHARS);
+            if !compact_detail.eq_ignore_ascii_case(&summary) {
+                summary.push(' ');
+                summary.push_str("Detail: ");
+                summary.push_str(&compact_detail);
+            }
+        }
+
+        summary
+    }
+
     fn review_result_from_runs(outputs: &[ReviewOutputEvent]) -> (bool, usize, Option<String>) {
         if outputs.is_empty() {
             return (false, 0, None);
@@ -35714,6 +36027,7 @@ impl ChatWidget<'_> {
                 AutoReviewPhase::Reviewing,
             );
         }
+
         // Ensure the main status spinner is cleared once the foreground turn ends;
         // background auto review should not keep the composer in a "running" state.
         self.bottom_pane.set_task_running(false);
@@ -35780,9 +36094,11 @@ impl ChatWidget<'_> {
             .map(|s| format!("Summary: {s}"));
         let errored = error.is_some();
         let indicator_status = if let Some(err) = error {
+            let summarized_error = Self::summarize_auto_review_error(&err);
             developer_note = Some(format!(
                 "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{branch}'\nWorktree path: {}\n{snapshot_note}\n{agent_note}\nError: {err}",
                 worktree_path.display(),
+                err = summarized_error,
             ));
             AutoReviewIndicatorStatus::Failed
         } else if has_findings {
@@ -35842,7 +36158,7 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    fn record_background_review_note(&mut self, note: String, allow_immediate_dispatch: bool) {
+    fn record_background_review_note(&mut self, note: String, _allow_immediate_dispatch: bool) {
         let trimmed = note.trim();
         if trimmed.is_empty() {
             return;
@@ -35850,20 +36166,14 @@ impl ChatWidget<'_> {
 
         // The Auto Review notice cell is now the user-facing UI. Keep this
         // note out of history and only use it as hidden coordinator context.
-
-        // Outside Auto Drive, immediately hand the note back to the model so
-        // the main agent can act on review findings without manual copy/paste.
-        if allow_immediate_dispatch
-            && !self.auto_state.is_active()
-            && !self.wait_running()
-            && self.queued_user_messages.is_empty()
-        {
-            self.submit_hidden_text_message_with_preface_and_notice(
-                trimmed.to_string(),
-                String::new(),
-                false,
-            );
-        }
+        //
+        // Do not auto-dispatch a synthetic hidden turn here: that can start a
+        // fresh task while the user is actively typing and causes the next
+        // user message to be silently queued behind background work.
+        //
+        // Queue the note for delivery on the next real user/model turn so the
+        // findings are eventually integrated without blocking progress.
+        self.queue_pending_auto_review_note(trimmed.to_string());
     }
 
     fn handle_auto_review_completion_state(
