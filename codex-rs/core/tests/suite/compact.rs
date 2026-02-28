@@ -5,7 +5,6 @@ use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::items::TurnItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
@@ -363,7 +362,7 @@ async fn summarize_context_three_requests_and_instructions() {
     codex.submit(Op::Shutdown).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
-    // Verify rollout contains regular sampling TurnContext entries and a Compacted entry.
+    // Verify rollout contains user-turn TurnContext entries and a Compacted entry.
     println!("rollout path: {}", rollout_path.display());
     let text = std::fs::read_to_string(&rollout_path).unwrap_or_else(|e| {
         panic!(
@@ -394,9 +393,9 @@ async fn summarize_context_three_requests_and_instructions() {
         }
     }
 
-    assert!(
-        regular_turn_context_count == 2,
-        "expected two regular sampling TurnContext entries in rollout"
+    assert_eq!(
+        regular_turn_context_count, 2,
+        "rollout should contain one TurnContext entry per real user turn"
     );
     assert!(
         saw_compacted_summary,
@@ -1659,7 +1658,7 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: resumed.session_configured.model.clone(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1748,7 +1747,7 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1771,7 +1770,7 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1880,7 +1879,7 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1927,7 +1926,7 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2081,9 +2080,9 @@ async fn auto_compact_persists_rollout_entries() {
         }
     }
 
-    assert!(
-        turn_context_count >= 2,
-        "expected at least two turn context entries, got {turn_context_count}"
+    assert_eq!(
+        turn_context_count, 3,
+        "rollout should contain one TurnContext entry per real user turn"
     );
 }
 
@@ -3128,7 +3127,7 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -3151,7 +3150,7 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
             collaboration_mode: None,
             personality: None,
         })

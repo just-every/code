@@ -395,6 +395,7 @@ pub(crate) struct ChatComposer {
     connectors_enabled: bool,
     personality_command_enabled: bool,
     realtime_conversation_enabled: bool,
+    audio_device_selection_enabled: bool,
     windows_degraded_sandbox_active: bool,
     status_line_value: Option<Line<'static>>,
     status_line_enabled: bool,
@@ -500,6 +501,7 @@ impl ChatComposer {
             connectors_enabled: false,
             personality_command_enabled: false,
             realtime_conversation_enabled: false,
+            audio_device_selection_enabled: false,
             windows_degraded_sandbox_active: false,
             status_line_value: None,
             status_line_enabled: false,
@@ -577,10 +579,13 @@ impl ChatComposer {
         self.realtime_conversation_enabled = enabled;
     }
 
+    pub fn set_audio_device_selection_enabled(&mut self, enabled: bool) {
+        self.audio_device_selection_enabled = enabled;
+    }
+
     /// Compatibility shim for tests that still toggle the removed steer mode flag.
     #[cfg(test)]
     pub fn set_steer_enabled(&mut self, _enabled: bool) {}
-
     pub fn set_voice_transcription_enabled(&mut self, enabled: bool) {
         self.voice_state.transcription_enabled = enabled;
         if !enabled {
@@ -2080,16 +2085,10 @@ impl ChatComposer {
             path.to_string()
         };
 
-        // Replace the slice `[start_idx, end_idx)` with the chosen path and a trailing space.
-        let mut new_text =
-            String::with_capacity(text.len() - (end_idx - start_idx) + inserted.len() + 1);
-        new_text.push_str(&text[..start_idx]);
-        new_text.push_str(&inserted);
-        new_text.push(' ');
-        new_text.push_str(&text[end_idx..]);
-
-        // Path replacement is plain text; rebuild without carrying elements.
-        self.textarea.set_text_clearing_elements(&new_text);
+        // Replace just the active `@token` so unrelated text elements, such as
+        // large-paste placeholders, remain atomic and can still expand on submit.
+        self.textarea
+            .replace_range(start_idx..end_idx, &format!("{inserted} "));
         let new_cursor = start_idx.saturating_add(inserted.len()).saturating_add(1);
         self.textarea.set_cursor(new_cursor);
     }
@@ -2264,6 +2263,7 @@ impl ChatComposer {
                     self.connectors_enabled,
                     self.personality_command_enabled,
                     self.realtime_conversation_enabled,
+                    self.audio_device_selection_enabled,
                     self.windows_degraded_sandbox_active,
                 )
                 .is_some();
@@ -2480,6 +2480,7 @@ impl ChatComposer {
                 self.connectors_enabled,
                 self.personality_command_enabled,
                 self.realtime_conversation_enabled,
+                self.audio_device_selection_enabled,
                 self.windows_degraded_sandbox_active,
             )
         {
@@ -2515,6 +2516,7 @@ impl ChatComposer {
             self.connectors_enabled,
             self.personality_command_enabled,
             self.realtime_conversation_enabled,
+            self.audio_device_selection_enabled,
             self.windows_degraded_sandbox_active,
         )?;
 
@@ -3334,6 +3336,7 @@ impl ChatComposer {
             self.connectors_enabled,
             self.personality_command_enabled,
             self.realtime_conversation_enabled,
+            self.audio_device_selection_enabled,
             self.windows_degraded_sandbox_active,
         )
         .is_some();
@@ -3396,6 +3399,7 @@ impl ChatComposer {
             self.connectors_enabled,
             self.personality_command_enabled,
             self.realtime_conversation_enabled,
+            self.audio_device_selection_enabled,
             self.windows_degraded_sandbox_active,
         ) {
             return true;
@@ -3450,6 +3454,7 @@ impl ChatComposer {
                     let connectors_enabled = self.connectors_enabled;
                     let personality_command_enabled = self.personality_command_enabled;
                     let realtime_conversation_enabled = self.realtime_conversation_enabled;
+                    let audio_device_selection_enabled = self.audio_device_selection_enabled;
                     let mut command_popup = CommandPopup::new(
                         self.custom_prompts.clone(),
                         CommandPopupFlags {
@@ -3457,6 +3462,7 @@ impl ChatComposer {
                             connectors_enabled,
                             personality_command_enabled,
                             realtime_conversation_enabled,
+                            audio_device_selection_enabled,
                             windows_degraded_sandbox_active: self.windows_degraded_sandbox_active,
                         },
                     );
@@ -6916,6 +6922,61 @@ mod tests {
                 );
             }
             _ => panic!("expected CommandWithArgs for /plan with args"),
+        }
+    }
+
+    #[test]
+    fn file_completion_preserves_large_paste_placeholder_elements() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+        let placeholder = format!("[Pasted Content {} chars]", large.chars().count());
+
+        composer.handle_paste(large.clone());
+        composer.insert_str(" @ma");
+        composer.on_file_search_result(
+            "ma".to_string(),
+            vec![FileMatch {
+                score: 1,
+                path: PathBuf::from("src/main.rs"),
+                root: PathBuf::from("/tmp"),
+                indices: None,
+            }],
+        );
+
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        let text = composer.textarea.text().to_string();
+        assert_eq!(text, format!("{placeholder} src/main.rs "));
+        let elements = composer.textarea.text_elements();
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].placeholder(&text), Some(placeholder.as_str()));
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Submitted {
+                text,
+                text_elements,
+            } => {
+                assert_eq!(text, format!("{large} src/main.rs"));
+                assert!(text_elements.is_empty());
+            }
+            _ => panic!("expected Submitted"),
         }
     }
 

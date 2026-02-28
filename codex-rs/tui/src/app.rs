@@ -1,6 +1,7 @@
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
+use crate::app_event::RealtimeAudioDeviceKind;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -45,6 +46,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
+use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::Feature;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
@@ -60,6 +62,7 @@ use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::TurnItem;
+use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -450,12 +453,77 @@ fn target_preset_for_upgrade<'a>(
         .find(|preset| preset.model == target_model && preset.show_in_picker)
 }
 
+const MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT: u32 = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartupTooltipOverride {
+    model_slug: String,
+    message: String,
+}
+
+fn select_model_availability_nux(
+    available_models: &[ModelPreset],
+    nux_config: &ModelAvailabilityNuxConfig,
+) -> Option<StartupTooltipOverride> {
+    available_models.iter().find_map(|preset| {
+        let ModelAvailabilityNux { message } = preset.availability_nux.as_ref()?;
+        let shown_count = nux_config
+            .shown_count
+            .get(&preset.model)
+            .copied()
+            .unwrap_or_default();
+        (shown_count < MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT).then(|| StartupTooltipOverride {
+            model_slug: preset.model.clone(),
+            message: message.clone(),
+        })
+    })
+}
+
+async fn prepare_startup_tooltip_override(
+    config: &mut Config,
+    available_models: &[ModelPreset],
+    is_first_run: bool,
+) -> Option<String> {
+    if is_first_run || !config.show_tooltips {
+        return None;
+    }
+
+    let tooltip_override =
+        select_model_availability_nux(available_models, &config.model_availability_nux)?;
+
+    let shown_count = config
+        .model_availability_nux
+        .shown_count
+        .get(&tooltip_override.model_slug)
+        .copied()
+        .unwrap_or_default();
+    let next_count = shown_count.saturating_add(1);
+    let mut updated_shown_count = config.model_availability_nux.shown_count.clone();
+    updated_shown_count.insert(tooltip_override.model_slug.clone(), next_count);
+
+    if let Err(err) = ConfigEditsBuilder::new(&config.codex_home)
+        .set_model_availability_nux_count(&updated_shown_count)
+        .apply()
+        .await
+    {
+        tracing::error!(
+            error = %err,
+            model = %tooltip_override.model_slug,
+            "failed to persist model availability nux count"
+        );
+        return Some(tooltip_override.message);
+    }
+
+    config.model_availability_nux.shown_count = updated_shown_count;
+    Some(tooltip_override.message)
+}
+
 async fn handle_model_migration_prompt_if_needed(
     tui: &mut tui::Tui,
     config: &mut Config,
     model: &str,
     app_event_tx: &AppEventSender,
-    available_models: Vec<ModelPreset>,
+    available_models: &[ModelPreset],
 ) -> Option<AppExitInfo> {
     let upgrade = available_models
         .iter()
@@ -480,13 +548,13 @@ async fn handle_model_migration_prompt_if_needed(
             model,
             &target_model,
             &config.notices.model_migrations,
-            &available_models,
+            available_models,
         ) {
             return None;
         }
 
         let current_preset = available_models.iter().find(|preset| preset.model == model);
-        let target_preset = target_preset_for_upgrade(&available_models, &target_model);
+        let target_preset = target_preset_for_upgrade(available_models, &target_model);
         let target_preset = target_preset?;
         let target_display_name = target_preset.display_name.clone();
         let heading_label = if target_display_name == model {
@@ -667,6 +735,7 @@ impl App {
             is_first_run: false,
             feedback_audience: self.feedback_audience,
             model: Some(self.chat_widget.current_model().to_string()),
+            startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             otel_manager: self.otel_manager.clone(),
         }
@@ -1193,6 +1262,7 @@ impl App {
             is_first_run: false,
             feedback_audience: self.feedback_audience,
             model: Some(model),
+            startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             otel_manager: self.otel_manager.clone(),
         };
@@ -1339,7 +1409,7 @@ impl App {
             &mut config,
             model.as_str(),
             &app_event_tx,
-            available_models,
+            &available_models,
         )
         .await;
         if let Some(exit_info) = exit_info {
@@ -1348,7 +1418,6 @@ impl App {
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
         }
-
         let auth = auth_manager.auth().await;
         let auth_ref = auth.as_ref();
         // Determine who should see internal Slack routing. We treat
@@ -1392,6 +1461,9 @@ impl App {
             Self::should_wait_for_initial_session(&session_selection);
         let mut chat_widget = match session_selection {
             SessionSelection::StartFresh | SessionSelection::Exit => {
+                let startup_tooltip_override =
+                    prepare_startup_tooltip_override(&mut config, &available_models, is_first_run)
+                        .await;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -1409,17 +1481,22 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: Some(model.clone()),
+                    startup_tooltip_override,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
                 ChatWidget::new(init, thread_manager.clone())
             }
-            SessionSelection::Resume(path) => {
+            SessionSelection::Resume(target_session) => {
                 let resumed = thread_manager
-                    .resume_thread_from_rollout(config.clone(), path.clone(), auth_manager.clone())
+                    .resume_thread_from_rollout(
+                        config.clone(),
+                        target_session.path.clone(),
+                        auth_manager.clone(),
+                    )
                     .await
                     .wrap_err_with(|| {
-                        let path_display = path.display();
+                        let path_display = target_session.path.display();
                         format!("Failed to resume session from {path_display}")
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -1439,18 +1516,24 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: config.model.clone(),
+                    startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
                 ChatWidget::new_from_existing(init, resumed.thread, resumed.session_configured)
             }
-            SessionSelection::Fork(path) => {
+            SessionSelection::Fork(target_session) => {
                 otel_manager.counter("codex.thread.fork", 1, &[("source", "cli_subcommand")]);
                 let forked = thread_manager
-                    .fork_thread(usize::MAX, config.clone(), path.clone(), false)
+                    .fork_thread(
+                        usize::MAX,
+                        config.clone(),
+                        target_session.path.clone(),
+                        false,
+                    )
                     .await
                     .wrap_err_with(|| {
-                        let path_display = path.display();
+                        let path_display = target_session.path.display();
                         format!("Failed to fork session from {path_display}")
                     })?;
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -1470,6 +1553,7 @@ impl App {
                     is_first_run,
                     feedback_audience,
                     model: config.model.clone(),
+                    startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
@@ -1713,12 +1797,14 @@ impl App {
             }
             AppEvent::OpenResumePicker => {
                 match crate::resume_picker::run_resume_picker(tui, &self.config, false).await? {
-                    SessionSelection::Resume(path) => {
+                    SessionSelection::Resume(target_session) => {
                         let current_cwd = self.config.cwd.clone();
                         let resume_cwd = match crate::resolve_cwd_for_resume_or_fork(
                             tui,
+                            &self.config,
                             &current_cwd,
-                            &path,
+                            target_session.thread_id,
+                            &target_session.path,
                             CwdPromptAction::Resume,
                             true,
                         )
@@ -1754,7 +1840,7 @@ impl App {
                             .server
                             .resume_thread_from_rollout(
                                 resume_config.clone(),
-                                path.clone(),
+                                target_session.path.clone(),
                                 self.auth_manager.clone(),
                             )
                             .await
@@ -1788,7 +1874,7 @@ impl App {
                                 }
                             }
                             Err(err) => {
-                                let path_display = path.display();
+                                let path_display = target_session.path.display();
                                 self.chat_widget.add_error_message(format!(
                                     "Failed to resume session from {path_display}: {err}"
                                 ));
@@ -1925,19 +2011,9 @@ impl App {
             AppEvent::CodexEvent(event) => {
                 self.enqueue_primary_event(event).await?;
             }
-            AppEvent::Exit(mode) => match mode {
-                ExitMode::ShutdownFirst => {
-                    // Mark the thread we are explicitly shutting down for exit so
-                    // its shutdown completion does not trigger agent failover.
-                    self.pending_shutdown_exit_thread_id =
-                        self.active_thread_id.or(self.chat_widget.thread_id());
-                    self.chat_widget.submit_op(Op::Shutdown);
-                }
-                ExitMode::Immediate => {
-                    self.pending_shutdown_exit_thread_id = None;
-                    return Ok(AppRunControl::Exit(ExitReason::UserRequested));
-                }
-            },
+            AppEvent::Exit(mode) => {
+                return Ok(self.handle_exit_mode(mode));
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
@@ -2018,6 +2094,9 @@ impl App {
             }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
+            }
+            AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
+                self.chat_widget.open_realtime_audio_device_selection(kind);
             }
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
@@ -2443,6 +2522,56 @@ impl App {
                         }
                     }
                 }
+            }
+            AppEvent::PersistRealtimeAudioDeviceSelection { kind, name } => {
+                let builder = match kind {
+                    RealtimeAudioDeviceKind::Microphone => {
+                        ConfigEditsBuilder::new(&self.config.codex_home)
+                            .set_realtime_microphone(name.as_deref())
+                    }
+                    RealtimeAudioDeviceKind::Speaker => {
+                        ConfigEditsBuilder::new(&self.config.codex_home)
+                            .set_realtime_speaker(name.as_deref())
+                    }
+                };
+
+                match builder.apply().await {
+                    Ok(()) => {
+                        match kind {
+                            RealtimeAudioDeviceKind::Microphone => {
+                                self.config.realtime_audio.microphone = name.clone();
+                            }
+                            RealtimeAudioDeviceKind::Speaker => {
+                                self.config.realtime_audio.speaker = name.clone();
+                            }
+                        }
+                        self.chat_widget
+                            .set_realtime_audio_device(kind, name.clone());
+
+                        if self.chat_widget.realtime_conversation_is_live() {
+                            self.chat_widget.open_realtime_audio_restart_prompt(kind);
+                        } else {
+                            let selection = name.unwrap_or_else(|| "System default".to_string());
+                            self.chat_widget.add_info_message(
+                                format!("Realtime {} set to {selection}", kind.noun()),
+                                None,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist realtime audio selection"
+                        );
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save realtime {}: {err}",
+                            kind.noun()
+                        ));
+                    }
+                }
+            }
+            AppEvent::RestartRealtimeAudioDevice { kind } => {
+                self.chat_widget.restart_realtime_audio_device(kind);
             }
             AppEvent::UpdateAskForApprovalPolicy(policy) => {
                 self.runtime_approval_policy_override = Some(policy);
@@ -2914,6 +3043,27 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
+    fn handle_exit_mode(&mut self, mode: ExitMode) -> AppRunControl {
+        match mode {
+            ExitMode::ShutdownFirst => {
+                // Mark the thread we are explicitly shutting down for exit so
+                // its shutdown completion does not trigger agent failover.
+                self.pending_shutdown_exit_thread_id =
+                    self.active_thread_id.or(self.chat_widget.thread_id());
+                if self.chat_widget.submit_op(Op::Shutdown) {
+                    AppRunControl::Continue
+                } else {
+                    self.pending_shutdown_exit_thread_id = None;
+                    AppRunControl::Exit(ExitReason::UserRequested)
+                }
+            }
+            ExitMode::Immediate => {
+                self.pending_shutdown_exit_thread_id = None;
+                AppRunControl::Exit(ExitReason::UserRequested)
+            }
+        }
+    }
+
     fn handle_codex_event_now(&mut self, event: Event) {
         let needs_refresh = matches!(
             event.msg,
@@ -3337,8 +3487,10 @@ mod tests {
     use codex_core::CodexAuth;
     use codex_core::config::ConfigBuilder;
     use codex_core::config::ConfigOverrides;
+    use codex_core::config::types::ModelAvailabilityNuxConfig;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
+    use codex_protocol::openai_models::ModelAvailabilityNux;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
@@ -3389,15 +3541,21 @@ mod tests {
             true
         );
         assert_eq!(
-            App::should_wait_for_initial_session(&SessionSelection::Resume(PathBuf::from(
-                "/tmp/restore"
-            ))),
+            App::should_wait_for_initial_session(&SessionSelection::Resume(
+                crate::resume_picker::SessionTarget {
+                    path: PathBuf::from("/tmp/restore"),
+                    thread_id: ThreadId::new(),
+                }
+            )),
             false
         );
         assert_eq!(
-            App::should_wait_for_initial_session(&SessionSelection::Fork(PathBuf::from(
-                "/tmp/fork"
-            ))),
+            App::should_wait_for_initial_session(&SessionSelection::Fork(
+                crate::resume_picker::SessionTarget {
+                    path: PathBuf::from("/tmp/fork"),
+                    thread_id: ThreadId::new(),
+                }
+            )),
             false
         );
     }
@@ -3433,14 +3591,20 @@ mod tests {
     #[test]
     fn startup_waiting_gate_not_applied_for_resume_or_fork_session_selection() {
         let wait_for_resume = App::should_wait_for_initial_session(&SessionSelection::Resume(
-            PathBuf::from("/tmp/restore"),
+            crate::resume_picker::SessionTarget {
+                path: PathBuf::from("/tmp/restore"),
+                thread_id: ThreadId::new(),
+            },
         ));
         assert_eq!(
             App::should_handle_active_thread_events(wait_for_resume, true),
             true
         );
         let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
-            PathBuf::from("/tmp/fork"),
+            crate::resume_picker::SessionTarget {
+                path: PathBuf::from("/tmp/fork"),
+                thread_id: ThreadId::new(),
+            },
         ));
         assert_eq!(
             App::should_handle_active_thread_events(wait_for_fork, true),
@@ -3778,6 +3942,7 @@ mod tests {
                 event,
                 is_first,
                 None,
+                None,
             )) as Arc<dyn HistoryCell>
         };
 
@@ -3980,6 +4145,15 @@ mod tests {
         codex_core::test_support::all_model_presets().clone()
     }
 
+    fn model_availability_nux_config(shown_count: &[(&str, u32)]) -> ModelAvailabilityNuxConfig {
+        ModelAvailabilityNuxConfig {
+            shown_count: shown_count
+                .iter()
+                .map(|(model, count)| ((*model).to_string(), *count))
+                .collect(),
+        }
+    }
+
     fn model_migration_copy_to_plain_text(
         copy: &crate::model_migration::ModelMigrationCopy,
     ) -> String {
@@ -4034,6 +4208,120 @@ mod tests {
             &seen,
             &all_model_presets()
         ));
+    }
+
+    #[test]
+    fn select_model_availability_nux_picks_only_eligible_model() {
+        let mut presets = all_model_presets();
+        presets.iter_mut().for_each(|preset| {
+            preset.availability_nux = None;
+        });
+        let target = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5")
+            .expect("target preset present");
+        target.availability_nux = Some(ModelAvailabilityNux {
+            message: "gpt-5 is available".to_string(),
+        });
+
+        let selected = select_model_availability_nux(&presets, &model_availability_nux_config(&[]));
+
+        assert_eq!(
+            selected,
+            Some(StartupTooltipOverride {
+                model_slug: "gpt-5".to_string(),
+                message: "gpt-5 is available".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn select_model_availability_nux_skips_missing_and_exhausted_models() {
+        let mut presets = all_model_presets();
+        presets.iter_mut().for_each(|preset| {
+            preset.availability_nux = None;
+        });
+        let gpt_5 = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5")
+            .expect("gpt-5 preset present");
+        gpt_5.availability_nux = Some(ModelAvailabilityNux {
+            message: "gpt-5 is available".to_string(),
+        });
+        let gpt_5_2 = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5.2")
+            .expect("gpt-5.2 preset present");
+        gpt_5_2.availability_nux = Some(ModelAvailabilityNux {
+            message: "gpt-5.2 is available".to_string(),
+        });
+
+        let selected = select_model_availability_nux(
+            &presets,
+            &model_availability_nux_config(&[("gpt-5", MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT)]),
+        );
+
+        assert_eq!(
+            selected,
+            Some(StartupTooltipOverride {
+                model_slug: "gpt-5.2".to_string(),
+                message: "gpt-5.2 is available".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn select_model_availability_nux_uses_existing_model_order_as_priority() {
+        let mut presets = all_model_presets();
+        presets.iter_mut().for_each(|preset| {
+            preset.availability_nux = None;
+        });
+        let first = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5")
+            .expect("gpt-5 preset present");
+        first.availability_nux = Some(ModelAvailabilityNux {
+            message: "first".to_string(),
+        });
+        let second = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5.2")
+            .expect("gpt-5.2 preset present");
+        second.availability_nux = Some(ModelAvailabilityNux {
+            message: "second".to_string(),
+        });
+
+        let selected = select_model_availability_nux(&presets, &model_availability_nux_config(&[]));
+
+        assert_eq!(
+            selected,
+            Some(StartupTooltipOverride {
+                model_slug: "gpt-5.2".to_string(),
+                message: "second".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn select_model_availability_nux_returns_none_when_all_models_are_exhausted() {
+        let mut presets = all_model_presets();
+        presets.iter_mut().for_each(|preset| {
+            preset.availability_nux = None;
+        });
+        let target = presets
+            .iter_mut()
+            .find(|preset| preset.model == "gpt-5")
+            .expect("target preset present");
+        target.availability_nux = Some(ModelAvailabilityNux {
+            message: "gpt-5 is available".to_string(),
+        });
+
+        let selected = select_model_availability_nux(
+            &presets,
+            &model_availability_nux_config(&[("gpt-5", MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT)]),
+        );
+
+        assert_eq!(selected, None);
     }
 
     #[tokio::test]
@@ -4274,6 +4562,7 @@ mod tests {
                 app.chat_widget.current_model(),
                 event,
                 is_first,
+                None,
                 None,
             )) as Arc<dyn HistoryCell>
         };
@@ -4701,6 +4990,34 @@ mod tests {
             Ok(other) => panic!("expected Op::Shutdown, got {other:?}"),
             Err(_) => panic!("expected shutdown op to be sent"),
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_returns_immediate_exit_when_shutdown_submit_fails() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+
+        let control = app.handle_exit_mode(ExitMode::ShutdownFirst);
+
+        assert_eq!(app.pending_shutdown_exit_thread_id, None);
+        assert!(matches!(
+            control,
+            AppRunControl::Exit(ExitReason::UserRequested)
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_first_exit_waits_for_shutdown_when_submit_succeeds() {
+        let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+
+        let control = app.handle_exit_mode(ExitMode::ShutdownFirst);
+
+        assert_eq!(app.pending_shutdown_exit_thread_id, Some(thread_id));
+        assert!(matches!(control, AppRunControl::Continue));
+        assert_eq!(op_rx.try_recv(), Ok(Op::Shutdown));
     }
 
     #[tokio::test]
