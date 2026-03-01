@@ -68,7 +68,7 @@ pub(crate) async fn build_memory_tool_developer_instructions(code_home: &Path) -
 
     let truncated = truncate_to_char_boundary(summary, MAX_MEMORY_PROMPT_CHARS);
     Some(format!(
-        "## Session Memories\nUse this optional context from prior sessions when relevant. It may be stale or unrelated, so verify before acting.\n<memory_summary>\n{truncated}\n</memory_summary>"
+        "## Session Memories\nUse this optional context from prior sessions when relevant. It may be stale or unrelated, so verify before acting.\nTreat memory as guidance, not truth: if memory conflicts with current evidence, current evidence wins.\nIf you rely on an unverified memory-derived fact in your answer, briefly say that it is memory-derived and may be stale.\n<memory_summary>\n{truncated}\n</memory_summary>"
     ))
 }
 
