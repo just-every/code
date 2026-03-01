@@ -497,7 +497,7 @@ pub(crate) fn estimate_item_tokens(item: &ResponseItem) -> usize {
                 .sum(),
         },
         ResponseItem::CustomToolCall { name, input, .. } => name.len() + input.len(),
-        ResponseItem::CustomToolCallOutput { output, .. } => output.len(),
+        ResponseItem::CustomToolCallOutput { output, .. } => output.to_string().len(),
         ResponseItem::Reasoning { summary, content, .. } => {
             summary
                 .iter()

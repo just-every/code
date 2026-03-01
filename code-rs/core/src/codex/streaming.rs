@@ -28,6 +28,7 @@ use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 use code_protocol::models::FunctionCallOutputContentItem;
+use code_protocol::models::FunctionCallOutputPayload;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -722,6 +723,7 @@ pub(super) async fn submission_loop(
                     inner.self_handle = weak_handle;
                 }
                 sess = Some(new_session);
+                crate::memories::maybe_spawn_memory_summary_refresh(config.code_home.clone());
                 if let Some(sess_arc) = &sess {
                     if !config.always_allow_commands.is_empty() {
                         let mut st = sess_arc.state.lock().unwrap();
@@ -2187,6 +2189,11 @@ async fn run_turn(
         if should_inject_html_sanitizer_guardrails(&attempt_input) {
             prepend_developer_messages.push(HTML_SANITIZER_GUARDRAILS_MESSAGE.to_string());
         }
+        if let Some(memory_prompt) =
+            crate::memories::build_memory_tool_developer_instructions(tc.client.code_home()).await
+        {
+            prepend_developer_messages.push(memory_prompt);
+        }
 
         let mut prompt = Prompt {
             input: attempt_input.clone(),
@@ -3183,7 +3190,7 @@ async fn try_run_turn(
             })
             .map(|call_id| ResponseItem::CustomToolCallOutput {
                 call_id: call_id.clone(),
-                output: "aborted".to_string(),
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             })
             .collect::<Vec<_>>()
     };

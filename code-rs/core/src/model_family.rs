@@ -1,5 +1,6 @@
 use crate::config_types::Personality;
 use crate::config_types::ReasoningEffort;
+use crate::config_types::ReasoningSummary;
 use crate::tool_apply_patch::ApplyPatchToolType;
 use code_protocol::protocol::TruncationPolicy;
 
@@ -64,6 +65,9 @@ pub struct ModelFamily {
     /// The reasoning effort to use for this model family when none is explicitly chosen.
     pub default_reasoning_effort: Option<ReasoningEffort>,
 
+    /// The reasoning summary setting to use when requests don't override it.
+    pub default_reasoning_summary: ReasoningSummary,
+
     /// Whether this model supports parallel tool calls when using the
     /// Responses API.
     pub supports_parallel_tool_calls: bool,
@@ -124,6 +128,7 @@ macro_rules! model_family {
             auto_compact_token_limit: None,
             supports_reasoning_summaries: false,
             default_reasoning_effort: None,
+            default_reasoning_summary: ReasoningSummary::Auto,
             supports_parallel_tool_calls: false,
             prefer_websockets: false,
             uses_local_shell_tool: false,
@@ -352,6 +357,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         auto_compact_token_limit: None,
         supports_reasoning_summaries: false,
         default_reasoning_effort: None,
+        default_reasoning_summary: ReasoningSummary::Auto,
         supports_parallel_tool_calls: false,
         prefer_websockets: false,
         uses_local_shell_tool: false,

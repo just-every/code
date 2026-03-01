@@ -130,6 +130,7 @@ fn build_mcp_transport_for_add(
             return Ok(McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token: Some(bearer_token),
+                oauth_resource: None,
             });
         }
         return Ok(McpServerTransportConfig::Stdio {
@@ -238,9 +239,14 @@ mod tests {
         .expect("transport");
 
         match transport {
-            McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token,
+                oauth_resource,
+            } => {
                 assert_eq!(url, "https://mcp.example.com/mcp");
                 assert_eq!(bearer_token.as_deref(), Some("token"));
+                assert_eq!(oauth_resource, None);
             }
             _ => panic!("expected streamable http transport"),
         }
@@ -293,11 +299,16 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                         "args": args,
                         "env": env,
                     }),
-                    McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+                    McpServerTransportConfig::StreamableHttp {
+                        url,
+                        bearer_token,
+                        oauth_resource,
+                    } => {
                         serde_json::json!({
                             "type": "streamable_http",
                             "url": url,
                             "bearer_token": bearer_token,
+                            "oauth_resource": oauth_resource,
                         })
                     }
                 };
@@ -346,7 +357,11 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                 };
                 stdio_rows.push([name.clone(), command.clone(), args_display, env_display]);
             }
-            McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token,
+                oauth_resource: _,
+            } => {
                 let has_bearer = if bearer_token.is_some() {
                     "True"
                 } else {
@@ -447,10 +462,15 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
                 "args": args,
                 "env": env,
             }),
-            McpServerTransportConfig::StreamableHttp { url, bearer_token } => serde_json::json!({
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token,
+                oauth_resource,
+            } => serde_json::json!({
                 "type": "streamable_http",
                 "url": url,
                 "bearer_token": bearer_token,
+                "oauth_resource": oauth_resource,
             }),
         };
         let output = serde_json::to_string_pretty(&serde_json::json!({
@@ -489,7 +509,11 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
             };
             println!("  env: {env_display}");
         }
-        McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            bearer_token,
+            oauth_resource,
+        } => {
             println!("  transport: streamable_http");
             println!("  url: {url}");
             let token_display = bearer_token
@@ -497,6 +521,10 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
                 .map(|_| "<redacted>".to_string())
                 .unwrap_or_else(|| "-".to_string());
             println!("  bearer_token: {token_display}");
+            let resource_display = oauth_resource
+                .clone()
+                .unwrap_or_else(|| "-".to_string());
+            println!("  oauth_resource: {resource_display}");
         }
     }
     if let Some(timeout) = server.startup_timeout_sec {

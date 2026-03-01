@@ -305,7 +305,11 @@ impl McpConnectionManager {
                             }
                         })
                     }
-                    McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+                    McpServerTransportConfig::StreamableHttp {
+                        url,
+                        bearer_token,
+                        oauth_resource: _,
+                    } => {
                         McpClientAdapter::new_streamable_http_client(
                             url,
                             bearer_token,

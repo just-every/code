@@ -686,7 +686,8 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                 })
             }
             ResponseItem::CustomToolCallOutput { call_id, output } => {
-                let output = truncate_for_compact(output, COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                let output = truncate_for_compact(output.to_string(), COMPACT_TOOL_OUTPUT_MAX_BYTES);
+                let output = FunctionCallOutputPayload::from_text(output);
                 Some(ResponseItem::CustomToolCallOutput { call_id, output })
             }
             ResponseItem::Reasoning { id, summary, .. } => Some(ResponseItem::Reasoning {

@@ -97,6 +97,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
             url: Option<String>,
             bearer_token: Option<String>,
+            oauth_resource: Option<String>,
 
             #[serde(default)]
             startup_timeout_sec: Option<f64>,
@@ -136,10 +137,12 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 env,
                 url,
                 bearer_token,
+                oauth_resource,
                 ..
             } => {
                 throw_if_set("stdio", "url", url.as_ref())?;
                 throw_if_set("stdio", "bearer_token", bearer_token.as_ref())?;
+                throw_if_set("stdio", "oauth_resource", oauth_resource.as_ref())?;
                 McpServerTransportConfig::Stdio {
                     command,
                     args: args.unwrap_or_default(),
@@ -149,6 +152,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             RawMcpServerConfig {
                 url: Some(url),
                 bearer_token,
+                oauth_resource,
                 command,
                 args,
                 env,
@@ -157,7 +161,11 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 throw_if_set("streamable_http", "command", command.as_ref())?;
                 throw_if_set("streamable_http", "args", args.as_ref())?;
                 throw_if_set("streamable_http", "env", env.as_ref())?;
-                McpServerTransportConfig::StreamableHttp { url, bearer_token }
+                McpServerTransportConfig::StreamableHttp {
+                    url,
+                    bearer_token,
+                    oauth_resource,
+                }
             }
             _ => return Err(SerdeError::custom("invalid transport")),
         };
@@ -189,6 +197,9 @@ pub enum McpServerTransportConfig {
         /// This should be used with caution because it lives on disk in clear text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bearer_token: Option<String>,
+        /// Optional OAuth resource parameter (RFC 8707) for providers that require it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth_resource: Option<String>,
     },
 }
 
@@ -1620,7 +1631,8 @@ mod tests {
             cfg.transport,
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
-                bearer_token: None
+                bearer_token: None,
+                oauth_resource: None
             }
         );
     }
@@ -1639,7 +1651,28 @@ mod tests {
             cfg.transport,
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
-                bearer_token: Some("secret".to_string())
+                bearer_token: Some("secret".to_string()),
+                oauth_resource: None
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_streamable_http_server_config_with_oauth_resource() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect("should deserialize http config with oauth_resource");
+
+        assert_eq!(
+            cfg.transport,
+            McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token: None,
+                oauth_resource: Some("https://api.example.com".to_string())
             }
         );
     }
@@ -1675,5 +1708,22 @@ mod tests {
         "#,
         )
         .expect_err("should reject bearer token for stdio transport");
+    }
+
+    #[test]
+    fn deserialize_rejects_oauth_resource_for_stdio_transport() {
+        let err = toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect_err("should reject oauth_resource for stdio transport");
+
+        assert!(
+            err.to_string()
+                .contains("oauth_resource is not supported for stdio"),
+            "unexpected error: {err}"
+        );
     }
 }

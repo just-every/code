@@ -133,7 +133,7 @@ pub enum ResponseInputItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutputPayload,
     },
 }
 
@@ -235,7 +235,7 @@ pub enum ResponseItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: FunctionCallOutputPayload,
     },
     // Emitted by the Responses API when the agent triggers a web search.
     // Example payload (from SSE `response.output_item.done`):
@@ -1485,6 +1485,26 @@ mod tests {
         let item = ResponseInputItem::FunctionCallOutput {
             call_id: "call1".into(),
             output: payload,
+        };
+
+        let json = serde_json::to_string(&item)?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
+
+        let output = v.get("output").expect("output field");
+        assert!(output.is_array(), "expected array output");
+
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_custom_tool_image_outputs_as_array() -> Result<()> {
+        let item = ResponseInputItem::CustomToolCallOutput {
+            call_id: "call1".into(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,BASE64".into(),
+                },
+            ]),
         };
 
         let json = serde_json::to_string(&item)?;

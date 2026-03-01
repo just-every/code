@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use code_app_server_protocol::AuthMode;
+use code_protocol::config_types::ReasoningSummary as ProtocolReasoningSummary;
 use code_protocol::config_types::Personality as ProtocolPersonality;
 use code_protocol::openai_models::ApplyPatchToolType as ProtocolApplyPatchToolType;
 use code_protocol::openai_models::ModelInfo;
@@ -17,6 +18,7 @@ use tokio::sync::RwLock;
 
 use crate::auth::AuthManager;
 use crate::config_types::Personality as ConfigPersonality;
+use crate::config_types::ReasoningSummary as ConfigReasoningSummary;
 use crate::model_family::{derive_default_model_family, find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::tool_apply_patch::ApplyPatchToolType;
@@ -397,6 +399,7 @@ fn apply_model_info_overrides_with_personality(
     if let Some(effort) = info.default_reasoning_level {
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
     }
+    family.default_reasoning_summary = map_reasoning_summary(info.default_reasoning_summary);
     family
 }
 
@@ -425,6 +428,15 @@ fn map_reasoning_effort(effort: ProtocolReasoningEffort) -> crate::config_types:
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
         ProtocolReasoningEffort::XHigh => LocalEffort::XHigh,
+    }
+}
+
+fn map_reasoning_summary(summary: ProtocolReasoningSummary) -> ConfigReasoningSummary {
+    match summary {
+        ProtocolReasoningSummary::Auto => ConfigReasoningSummary::Auto,
+        ProtocolReasoningSummary::Concise => ConfigReasoningSummary::Concise,
+        ProtocolReasoningSummary::Detailed => ConfigReasoningSummary::Detailed,
+        ProtocolReasoningSummary::None => ConfigReasoningSummary::None,
     }
 }
 

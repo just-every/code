@@ -495,6 +495,11 @@ pub(crate) fn create_reasoning_param_for_request(
         return None;
     }
 
+    let summary = match summary {
+        ReasoningSummaryConfig::Auto => model_family.default_reasoning_summary,
+        other => other,
+    };
+
     let summary = if summary == ReasoningSummaryConfig::None {
         None
     } else {

@@ -111,10 +111,17 @@ pub fn write_global_mcp_servers(
                         entry["env"] = TomlItem::Table(env_table);
                     }
                 }
-                McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+                McpServerTransportConfig::StreamableHttp {
+                    url,
+                    bearer_token,
+                    oauth_resource,
+                } => {
                     entry["url"] = toml_edit::value(url.clone());
                     if let Some(token) = bearer_token {
                         entry["bearer_token"] = toml_edit::value(token.clone());
+                    }
+                    if let Some(resource) = oauth_resource {
+                        entry["oauth_resource"] = toml_edit::value(resource.clone());
                     }
                 }
             }
@@ -1284,10 +1291,15 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         .get("bearer_token")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let oauth_resource = t
+                        .get("oauth_resource")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     McpServerTransportConfig::StreamableHttp {
                         url: url.to_string(),
                         bearer_token,
+                        oauth_resource,
                     }
                 } else {
                     continue;
@@ -1405,10 +1417,17 @@ pub fn add_mcp_server(
                 server_tbl.insert("env", TomlItem::Value(toml_edit::Value::InlineTable(it)));
             }
         }
-        McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            bearer_token,
+            oauth_resource,
+        } => {
             server_tbl.insert("url", toml_edit::value(url));
             if let Some(token) = bearer_token {
                 server_tbl.insert("bearer_token", toml_edit::value(token));
+            }
+            if let Some(resource) = oauth_resource {
+                server_tbl.insert("oauth_resource", toml_edit::value(resource));
             }
         }
     }
