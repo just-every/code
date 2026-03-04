@@ -11,12 +11,12 @@ use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::config::Config;
 use codex_core::features::Feature;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::Op;
-use codex_core::protocol::SandboxPolicy;
-use codex_core::protocol::SessionConfiguredEvent;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::user_input::UserInput;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -170,7 +170,7 @@ impl TestCodexBuilder {
         resume_from: Option<PathBuf>,
     ) -> anyhow::Result<TestCodex> {
         let auth = self.auth.clone();
-        let thread_manager = ThreadManager::with_models_provider_and_home(
+        let thread_manager = codex_core::test_support::thread_manager_with_models_provider_and_home(
             auth.clone(),
             config.model_provider.clone(),
             config.codex_home.clone(),
@@ -179,7 +179,7 @@ impl TestCodexBuilder {
 
         let new_conversation = match resume_from {
             Some(path) => {
-                let auth_manager = codex_core::AuthManager::from_auth_for_testing(auth);
+                let auth_manager = codex_core::test_support::auth_manager_from_auth(auth);
                 thread_manager
                     .resume_thread_from_rollout(config.clone(), path, auth_manager)
                     .await?
@@ -214,6 +214,14 @@ impl TestCodexBuilder {
             hook(home.path());
         }
         if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
+            config.codex_linux_sandbox_exe = Some(path);
+        } else if let Ok(exe) = std::env::current_exe()
+            && let Some(path) = exe
+                .parent()
+                .and_then(|parent| parent.parent())
+                .map(|parent| parent.join("codex"))
+            && path.is_file()
+        {
             config.codex_linux_sandbox_exe = Some(path);
         }
 

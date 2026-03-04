@@ -281,6 +281,16 @@ impl RemoteModelsManager {
         self.apply_remote_overrides(model, base).await
     }
 
+    pub async fn has_model_slug(&self, model: &str) -> bool {
+        self.ensure_loaded_from_disk().await;
+        self.state
+            .read()
+            .await
+            .models
+            .iter()
+            .any(|info| info.slug.eq_ignore_ascii_case(model))
+    }
+
     async fn ensure_loaded_from_disk(&self) {
         let loaded = { self.state.read().await.loaded_from_disk };
         if loaded {
@@ -383,6 +393,7 @@ fn apply_model_info_overrides_with_personality(
 
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
+    family.prefer_websockets = info.prefer_websockets;
     if let Some(effort) = info.default_reasoning_level {
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
     }

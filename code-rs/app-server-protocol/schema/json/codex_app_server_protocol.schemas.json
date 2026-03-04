@@ -35,6 +35,97 @@
       "title": "AddConversationSubscriptionResponse",
       "type": "object"
     },
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "read": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalMacOsPermissions": {
+      "properties": {
+        "accessibility": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "automations": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MacOsAutomationValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendar": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "preferences": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MacOsPreferencesValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalPermissionProfile": {
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "macos": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalMacOsPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "AgentMessageContent": {
       "oneOf": [
         {
@@ -208,7 +299,7 @@
           "type": "string"
         },
         {
-          "description": "*All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox.",
+          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
           "enum": [
             "on-failure"
           ],
@@ -220,6 +311,20 @@
             "on-request"
           ],
           "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fine-grained rejection controls for approval prompts.\n\nWhen a field is `true`, prompts of that category are automatically rejected instead of shown to the user.",
+          "properties": {
+            "reject": {
+              "$ref": "#/definitions/RejectConfig"
+            }
+          },
+          "required": [
+            "reject"
+          ],
+          "title": "RejectAskForApproval",
+          "type": "object"
         },
         {
           "description": "Never ask the user to approve commands. Failures are immediately returned to the model, and never escalated to the user for approval.",
@@ -1233,6 +1338,54 @@
             },
             "method": {
               "enum": [
+                "externalAgentConfig/detect"
+              ],
+              "title": "ExternalAgentConfig/detectRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigDetectParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ExternalAgentConfig/detectRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "externalAgentConfig/import"
+              ],
+              "title": "ExternalAgentConfig/importRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ExternalAgentConfig/importRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "config/value/write"
               ],
               "title": "Config/value/writeRequestMethod",
@@ -2079,6 +2232,13 @@
     "CommandExecutionRequestApprovalParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "approvalId": {
+          "description": "Identifier for this specific approval callback.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "command": {
           "description": "The command to be executed.",
           "type": [
@@ -2105,6 +2265,17 @@
         },
         "itemId": {
           "type": "string"
+        },
+        "networkApprovalContext": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkApprovalContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional context for a managed-network approval prompt."
         },
         "proposedExecpolicyAmendment": {
           "description": "Optional proposed execpolicy amendment to allow similar commands without prompting.",
@@ -3436,8 +3607,15 @@
         },
         {
           "properties": {
+            "approval_id": {
+              "description": "Identifier for this specific approval callback.\n\nWhen absent, the approval is for the command item itself (`call_id`). This is present for subcommand approvals (via execve intercept).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
-              "description": "Identifier for the associated exec call, if available.",
+              "description": "Identifier for the associated command execution item.",
               "type": "string"
             },
             "command": {
@@ -3450,6 +3628,17 @@
             "cwd": {
               "description": "The command's working directory.",
               "type": "string"
+            },
+            "network_approval_context": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NetworkApprovalContext"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional network context for a blocked request that can be approved."
             },
             "parsed_cmd": {
               "items": {
@@ -4930,6 +5119,13 @@
     "ExecCommandApprovalParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "approvalId": {
+          "description": "Identifier for this specific approval callback.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "callId": {
           "description": "Use to correlate this with [codex_core::protocol::ExecCommandBeginEvent] and [codex_core::protocol::ExecCommandEndEvent].",
           "type": "string"
@@ -6079,6 +6275,29 @@
       "title": "LogoutChatGptResponse",
       "type": "object"
     },
+    "MacOsAutomationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "MacOsPreferencesValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
     "McpAuthStatus": {
       "enum": [
         "unsupported",
@@ -6244,6 +6463,30 @@
       "enum": [
         "restricted",
         "enabled"
+      ],
+      "type": "string"
+    },
+    "NetworkApprovalContext": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/definitions/NetworkApprovalProtocol"
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "NetworkApprovalProtocol": {
+      "enum": [
+        "http",
+        "https",
+        "socks5_tcp",
+        "socks5_udp"
       ],
       "type": "string"
     },
@@ -6594,6 +6837,20 @@
             }
           ]
         },
+        "limit_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_type": {
           "anyOf": [
             {
@@ -6765,6 +7022,28 @@
           "type": "string"
         }
       ]
+    },
+    "RejectConfig": {
+      "properties": {
+        "mcp_elicitations": {
+          "description": "Reject MCP elicitation prompts.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Reject prompts triggered by execpolicy `prompt` rules.",
+          "type": "boolean"
+        },
+        "sandbox_approval": {
+          "description": "Reject approval prompts related to sandbox escalation.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mcp_elicitations",
+        "rules",
+        "sandbox_approval"
+      ],
+      "type": "object"
     },
     "RemoteSkillSummary": {
       "properties": {
@@ -9061,7 +9340,8 @@
         {
           "enum": [
             "review",
-            "compact"
+            "compact",
+            "memory_consolidation"
           ],
           "type": "string"
         },
@@ -10148,6 +10428,11 @@
             "default": false,
             "type": "boolean"
           },
+          "isEnabled": {
+            "default": true,
+            "description": "Whether this app is enabled in config.toml. Example: ```toml [apps.bad_app] enabled = false ```",
+            "type": "boolean"
+          },
           "logoUrl": {
             "type": [
               "string",
@@ -10250,13 +10535,46 @@
         "type": "object"
       },
       "AskForApproval": {
-        "enum": [
-          "untrusted",
-          "on-failure",
-          "on-request",
-          "never"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "untrusted",
+              "on-failure",
+              "on-request",
+              "never"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reject": {
+                "properties": {
+                  "mcp_elicitations": {
+                    "type": "boolean"
+                  },
+                  "rules": {
+                    "type": "boolean"
+                  },
+                  "sandbox_approval": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "mcp_elicitations",
+                  "rules",
+                  "sandbox_approval"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "reject"
+            ],
+            "title": "RejectAskForApproval",
+            "type": "object"
+          }
+        ]
       },
       "AuthMode": {
         "description": "Authentication mode for OpenAI-backed providers.",
@@ -11748,6 +12066,95 @@
           }
         ]
       },
+      "ExternalAgentConfigDetectParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cwds": {
+            "description": "Zero or more working directories to include for repo-scoped detection.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "includeHome": {
+            "description": "If true, include detection under the user's home (~/.claude, ~/.codex, etc.).",
+            "type": "boolean"
+          }
+        },
+        "title": "ExternalAgentConfigDetectParams",
+        "type": "object"
+      },
+      "ExternalAgentConfigDetectResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigMigrationItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ExternalAgentConfigDetectResponse",
+        "type": "object"
+      },
+      "ExternalAgentConfigImportParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "migrationItems": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigMigrationItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "migrationItems"
+        ],
+        "title": "ExternalAgentConfigImportParams",
+        "type": "object"
+      },
+      "ExternalAgentConfigImportResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ExternalAgentConfigImportResponse",
+        "type": "object"
+      },
+      "ExternalAgentConfigMigrationItem": {
+        "properties": {
+          "cwd": {
+            "description": "Null or empty means home-scoped migration; non-empty means repo-scoped migration.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "itemType": {
+            "$ref": "#/definitions/v2/ExternalAgentConfigMigrationItemType"
+          }
+        },
+        "required": [
+          "description",
+          "itemType"
+        ],
+        "type": "object"
+      },
+      "ExternalAgentConfigMigrationItemType": {
+        "enum": [
+          "AGENTS_MD",
+          "CONFIG",
+          "SKILLS",
+          "MCP_SERVER_CONFIG"
+        ],
+        "type": "string"
+      },
       "FeedbackUploadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -11933,7 +12340,22 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
           "rateLimits": {
-            "$ref": "#/definitions/v2/RateLimitSnapshot"
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/RateLimitSnapshot"
+              }
+            ],
+            "description": "Backward-compatible single-bucket view."
+          },
+          "rateLimitsByLimitId": {
+            "additionalProperties": {
+              "$ref": "#/definitions/v2/RateLimitSnapshot"
+            },
+            "description": "Multi-bucket view keyed by metered `limit_id`.",
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -12538,6 +12960,9 @@
           "displayName": {
             "type": "string"
           },
+          "hidden": {
+            "type": "boolean"
+          },
           "id": {
             "type": "string"
           },
@@ -12578,6 +13003,7 @@
           "defaultReasoningEffort",
           "description",
           "displayName",
+          "hidden",
           "id",
           "isDefault",
           "model",
@@ -12592,6 +13018,13 @@
             "description": "Opaque pagination cursor returned by a previous call.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "includeHidden": {
+            "description": "When true, include models that are hidden from the default picker list.",
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -12932,6 +13365,18 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "limitId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limitName": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "planType": {
@@ -14362,7 +14807,8 @@
           {
             "enum": [
               "review",
-              "compact"
+              "compact",
+              "memory_consolidation"
             ],
             "type": "string"
           },
@@ -15211,6 +15657,13 @@
           },
           "cursor": {
             "description": "Opaque pagination cursor returned by a previous call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "description": "Optional cwd filter; when set, only threads whose session cwd exactly matches this path are returned.",
             "type": [
               "string",
               "null"

@@ -87,6 +87,17 @@ pub fn originator() -> Originator {
 }
 
 pub fn get_code_user_agent(originator_override: Option<&str>) -> String {
+    let suffix = USER_AGENT_SUFFIX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    get_code_user_agent_with_suffix(originator_override, suffix.as_deref())
+}
+
+pub fn get_code_user_agent_with_suffix(
+    originator_override: Option<&str>,
+    user_agent_suffix: Option<&str>,
+) -> String {
     let build_version = code_version::wire_compatible_version();
     let os_info = os_info::get();
     let originator_value = originator_override
@@ -99,11 +110,7 @@ pub fn get_code_user_agent(originator_override: Option<&str>) -> String {
         os_info.architecture().unwrap_or("unknown"),
         crate::terminal::user_agent()
     );
-    let suffix = USER_AGENT_SUFFIX
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .as_deref()
+    let suffix = user_agent_suffix
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map_or_else(String::new, |v| format!(" ({v})"));

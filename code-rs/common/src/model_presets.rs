@@ -37,6 +37,7 @@ pub struct ModelPreset {
     pub supported_text_verbosity: &'static [TextVerbosityConfig],
     pub is_default: bool,
     pub upgrade: Option<ModelUpgrade>,
+    pub pro_only: bool,
     pub show_in_picker: bool,
 }
 
@@ -75,6 +76,38 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: false,
             upgrade: None,
+            pro_only: false,
+            show_in_picker: true,
+        },
+        ModelPreset {
+            id: "gpt-5.3-codex-spark".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
+            display_name: "gpt-5.3-codex-spark".to_string(),
+            description: "Fast codex variant tuned for responsive coding loops and smaller edits."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Maximizes reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supported_text_verbosity: &[TextVerbosityConfig::Medium],
+            is_default: false,
+            upgrade: None,
+            pro_only: true,
             show_in_picker: true,
         },
         ModelPreset {
@@ -103,7 +136,12 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             ],
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: true,
-            upgrade: None,
+            upgrade: Some(ModelUpgrade {
+                id: "gpt-5.3-codex".to_string(),
+                reasoning_effort_mapping: None,
+                migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
+            }),
+            pro_only: false,
             show_in_picker: true,
         },
         ModelPreset {
@@ -140,10 +178,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: true,
         },
         ModelPreset {
@@ -173,6 +212,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: false,
             upgrade: None,
+            pro_only: false,
             show_in_picker: false,
         },
         ModelPreset {
@@ -207,6 +247,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: None,
+            pro_only: false,
             show_in_picker: false,
         },
         ModelPreset {
@@ -236,10 +277,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: true,
         },
         ModelPreset {
@@ -266,10 +308,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: false,
         },
         ModelPreset {
@@ -292,10 +335,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: true,
         },
         ModelPreset {
@@ -325,10 +369,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: false,
         },
         // Deprecated GPT-5 variants kept for migrations / config compatibility.
@@ -355,10 +400,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: false,
         },
         ModelPreset {
@@ -380,10 +426,11 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: false,
         },
         ModelPreset {
@@ -417,21 +464,42 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
             is_default: false,
             upgrade: Some(ModelUpgrade {
-                id: "gpt-5.2-codex".to_string(),
+                id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
+            pro_only: false,
             show_in_picker: false,
         },
     ]
 });
 
-pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+pub fn model_preset_available_for_auth(
+    preset: &ModelPreset,
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> bool {
+    let is_chatgpt_auth = auth_mode.is_some_and(AuthMode::is_chatgpt);
+    if preset.pro_only && !(is_chatgpt_auth && supports_pro_only_models) {
+        return false;
+    }
+
+    match auth_mode {
+        Some(AuthMode::ApiKey) => {
+            preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex"
+        }
+        _ => true,
+    }
+}
+
+pub fn builtin_model_presets(
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> Vec<ModelPreset> {
     PRESETS
         .iter()
-        .filter(|preset| match auth_mode {
-            Some(AuthMode::ApiKey) => preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex",
-            _ => true,
+        .filter(|preset| {
+            model_preset_available_for_auth(preset, auth_mode, supports_pro_only_models)
         })
         .filter(|preset| preset.show_in_picker)
         .cloned()
@@ -510,10 +578,32 @@ mod tests {
 
     #[test]
     fn gpt_5_codex_hidden_for_api_key_auth() {
-        let presets = builtin_model_presets(Some(AuthMode::ApiKey));
-        assert!(presets
-            .iter()
-            .all(|preset| preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex"));
+        let presets = builtin_model_presets(Some(AuthMode::ApiKey), false);
+        assert!(presets.iter().all(|preset| {
+            preset.id != "gpt-5.2-codex"
+                && preset.id != "gpt-5.3-codex"
+                && preset.id != "gpt-5.3-codex-spark"
+        }));
+    }
+
+    #[test]
+    fn spark_hidden_for_non_pro_chatgpt_auth() {
+        let presets = builtin_model_presets(Some(AuthMode::Chatgpt), false);
+        assert!(
+            !presets
+                .iter()
+                .any(|preset| preset.id == "gpt-5.3-codex-spark")
+        );
+    }
+
+    #[test]
+    fn spark_available_for_pro_chatgpt_auth() {
+        let presets = builtin_model_presets(Some(AuthMode::Chatgpt), true);
+        assert!(
+            presets
+                .iter()
+                .any(|preset| preset.id == "gpt-5.3-codex-spark")
+        );
     }
 
     #[test]

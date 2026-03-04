@@ -1,15 +1,23 @@
-## @just-every/code v0.6.61
+## @just-every/code v0.6.71
 
-This release improves authentication handling, sandbox networking, and skills policy support.
+This release improves realtime reliability, tightens approvals, and upgrades core TUI and JS REPL workflows.
 
 ### Changes
-- Core: align auth token schema and websocket errors.
-- Sandbox: enforce proxy-aware network routing in sandbox.
-- Skills: add SkillPolicy metadata with allow_implicit_invocation support.
-- App Server: use chatgpt_account_id/chatgpt_plan_type for external auth.
+
+- Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions.
+- TUI: add `/copy`, improve clear controls (`/clear` and Ctrl-L), and expand multi-agent progress and picker UX.
+- Security/Approvals: persist network approval policy and tighten zsh-fork approval and sandbox enforcement paths.
+- JS REPL: lower Node minimum requirement, gate incompatible runtimes at startup, and improve error recovery in nested tool calls.
 
 ### Install
-```
+
+```bash
 npm install -g @just-every/code@latest
 code
 ```
+
+### Thanks
+
+Thanks to @rupurt, @dchimento, @JaviSoto, @owenlin0, and @felipecoury for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.70...v0.6.71

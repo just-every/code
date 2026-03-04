@@ -1,8 +1,10 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod admin;
+mod certs;
 mod config;
 mod http_proxy;
+mod mitm;
 mod network_policy;
 mod policy;
 mod proxy;
@@ -15,11 +17,15 @@ mod upstream;
 
 pub use config::NetworkMode;
 pub use config::NetworkProxyConfig;
+pub use config::host_and_port_from_network_addr;
 pub use network_policy::NetworkDecision;
+pub use network_policy::NetworkDecisionSource;
 pub use network_policy::NetworkPolicyDecider;
+pub use network_policy::NetworkPolicyDecision;
 pub use network_policy::NetworkPolicyRequest;
 pub use network_policy::NetworkPolicyRequestArgs;
 pub use network_policy::NetworkProtocol;
+pub use policy::normalize_host;
 pub use proxy::ALL_PROXY_ENV_KEYS;
 pub use proxy::ALLOW_LOCAL_BINDING_ENV_KEY;
 pub use proxy::Args;
@@ -31,9 +37,13 @@ pub use proxy::NetworkProxyHandle;
 pub use proxy::PROXY_URL_ENV_KEYS;
 pub use proxy::has_proxy_url_env_vars;
 pub use proxy::proxy_url_env_value;
+pub use runtime::BlockedRequest;
+pub use runtime::BlockedRequestArgs;
+pub use runtime::BlockedRequestObserver;
 pub use runtime::ConfigReloader;
 pub use runtime::ConfigState;
 pub use runtime::NetworkProxyState;
+pub use state::NetworkProxyAuditMetadata;
 pub use state::NetworkProxyConstraintError;
 pub use state::NetworkProxyConstraints;
 pub use state::PartialNetworkConfig;

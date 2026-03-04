@@ -1,6 +1,97 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "read": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalMacOsPermissions": {
+      "properties": {
+        "accessibility": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "automations": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MacOsAutomationValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendar": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "preferences": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MacOsPreferencesValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalPermissionProfile": {
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "macos": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalMacOsPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ApplyPatchApprovalParams": {
       "properties": {
         "callId": {
@@ -199,6 +290,13 @@
     },
     "CommandExecutionRequestApprovalParams": {
       "properties": {
+        "approvalId": {
+          "description": "Identifier for this specific approval callback.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "command": {
           "description": "The command to be executed.",
           "type": [
@@ -225,6 +323,17 @@
         },
         "itemId": {
           "type": "string"
+        },
+        "networkApprovalContext": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkApprovalContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional context for a managed-network approval prompt."
         },
         "proposedExecpolicyAmendment": {
           "description": "Optional proposed execpolicy amendment to allow similar commands without prompting.",
@@ -284,6 +393,13 @@
     },
     "ExecCommandApprovalParams": {
       "properties": {
+        "approvalId": {
+          "description": "Identifier for this specific approval callback.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "callId": {
           "description": "Use to correlate this with [codex_core::protocol::ExecCommandBeginEvent] and [codex_core::protocol::ExecCommandEndEvent].",
           "type": "string"
@@ -424,6 +540,53 @@
         "turnId"
       ],
       "type": "object"
+    },
+    "MacOsAutomationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "MacOsPreferencesValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "NetworkApprovalContext": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/definitions/NetworkApprovalProtocol"
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "NetworkApprovalProtocol": {
+      "enum": [
+        "http",
+        "https",
+        "socks5Tcp",
+        "socks5Udp"
+      ],
+      "type": "string"
     },
     "ParsedCommand": {
       "oneOf": [

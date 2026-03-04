@@ -1,9 +1,9 @@
 use crate::codex::TurnContext;
+use crate::contextual_user_message::ENVIRONMENT_CONTEXT_FRAGMENT;
 use crate::shell::Shell;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
-use codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
+use codex_protocol::protocol::TurnContextItem;
+use codex_protocol::protocol::TurnContextNetworkItem;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -38,14 +38,17 @@ impl EnvironmentContext {
         let EnvironmentContext {
             cwd,
             network,
-            // should compare all fields except shell
             shell: _,
         } = other;
         self.cwd == *cwd && self.network == *network
     }
 
-    pub fn diff(before: &TurnContext, after: &TurnContext, shell: &Shell) -> Self {
-        let before_network = Self::network_from_turn_context(before);
+    pub fn diff_from_turn_context_item(
+        before: &TurnContextItem,
+        after: &TurnContext,
+        shell: &Shell,
+    ) -> Self {
+        let before_network = Self::network_from_turn_context_item(before);
         let after_network = Self::network_from_turn_context(after);
         let cwd = if before.cwd != after.cwd {
             Some(after.cwd.clone())
@@ -68,6 +71,14 @@ impl EnvironmentContext {
         )
     }
 
+    pub fn from_turn_context_item(turn_context_item: &TurnContextItem, shell: &Shell) -> Self {
+        Self::new(
+            Some(turn_context_item.cwd.clone()),
+            shell.clone(),
+            Self::network_from_turn_context_item(turn_context_item),
+        )
+    }
+
     fn network_from_turn_context(turn_context: &TurnContext) -> Option<NetworkContext> {
         let network = turn_context
             .config
@@ -79,6 +90,19 @@ impl EnvironmentContext {
         Some(NetworkContext {
             allowed_domains: network.allowed_domains.clone().unwrap_or_default(),
             denied_domains: network.denied_domains.clone().unwrap_or_default(),
+        })
+    }
+
+    fn network_from_turn_context_item(
+        turn_context_item: &TurnContextItem,
+    ) -> Option<NetworkContext> {
+        let TurnContextNetworkItem {
+            allowed_domains,
+            denied_domains,
+        } = turn_context_item.network.as_ref()?;
+        Some(NetworkContext {
+            allowed_domains: allowed_domains.clone(),
+            denied_domains: denied_domains.clone(),
         })
     }
 }
@@ -95,7 +119,7 @@ impl EnvironmentContext {
     /// </environment_context>
     /// ```
     pub fn serialize_to_xml(self) -> String {
-        let mut lines = vec![ENVIRONMENT_CONTEXT_OPEN_TAG.to_string()];
+        let mut lines = Vec::new();
         if let Some(cwd) = self.cwd {
             lines.push(format!("  <cwd>{}</cwd>", cwd.to_string_lossy()));
         }
@@ -118,22 +142,13 @@ impl EnvironmentContext {
                 // lines.push("  <network enabled=\"false\" />".to_string());
             }
         }
-        lines.push(ENVIRONMENT_CONTEXT_CLOSE_TAG.to_string());
-        lines.join("\n")
+        ENVIRONMENT_CONTEXT_FRAGMENT.wrap(lines.join("\n"))
     }
 }
 
 impl From<EnvironmentContext> for ResponseItem {
     fn from(ec: EnvironmentContext) -> Self {
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: ec.serialize_to_xml(),
-            }],
-            end_turn: None,
-            phase: None,
-        }
+        ENVIRONMENT_CONTEXT_FRAGMENT.into_message(ec.serialize_to_xml())
     }
 }
 

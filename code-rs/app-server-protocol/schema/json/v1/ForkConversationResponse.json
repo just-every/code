@@ -104,7 +104,7 @@
           "type": "string"
         },
         {
-          "description": "*All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox.",
+          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
           "enum": [
             "on-failure"
           ],
@@ -116,6 +116,20 @@
             "on-request"
           ],
           "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fine-grained rejection controls for approval prompts.\n\nWhen a field is `true`, prompts of that category are automatically rejected instead of shown to the user.",
+          "properties": {
+            "reject": {
+              "$ref": "#/definitions/RejectConfig"
+            }
+          },
+          "required": [
+            "reject"
+          ],
+          "title": "RejectAskForApproval",
+          "type": "object"
         },
         {
           "description": "Never ask the user to approve commands. Failures are immediately returned to the model, and never escalated to the user for approval.",
@@ -1423,8 +1437,15 @@
         },
         {
           "properties": {
+            "approval_id": {
+              "description": "Identifier for this specific approval callback.\n\nWhen absent, the approval is for the command item itself (`call_id`). This is present for subcommand approvals (via execve intercept).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
-              "description": "Identifier for the associated exec call, if available.",
+              "description": "Identifier for the associated command execution item.",
               "type": "string"
             },
             "command": {
@@ -1437,6 +1458,17 @@
             "cwd": {
               "description": "The command's working directory.",
               "type": "string"
+            },
+            "network_approval_context": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NetworkApprovalContext"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional network context for a blocked request that can be approved."
             },
             "parsed_cmd": {
               "items": {
@@ -3346,6 +3378,30 @@
       ],
       "type": "string"
     },
+    "NetworkApprovalContext": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/definitions/NetworkApprovalProtocol"
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "NetworkApprovalProtocol": {
+      "enum": [
+        "http",
+        "https",
+        "socks5_tcp",
+        "socks5_udp"
+      ],
+      "type": "string"
+    },
     "ParsedCommand": {
       "oneOf": [
         {
@@ -3519,6 +3575,20 @@
             }
           ]
         },
+        "limit_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit_name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_type": {
           "anyOf": [
             {
@@ -3670,6 +3740,28 @@
           "type": "object"
         }
       ]
+    },
+    "RejectConfig": {
+      "properties": {
+        "mcp_elicitations": {
+          "description": "Reject MCP elicitation prompts.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Reject prompts triggered by execpolicy `prompt` rules.",
+          "type": "boolean"
+        },
+        "sandbox_approval": {
+          "description": "Reject approval prompts related to sandbox escalation.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mcp_elicitations",
+        "rules",
+        "sandbox_approval"
+      ],
+      "type": "object"
     },
     "RemoteSkillSummary": {
       "properties": {

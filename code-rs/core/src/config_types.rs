@@ -365,6 +365,11 @@ pub struct SubagentCommandConfig {
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct SubagentsToml {
+    /// Maximum nesting depth for agent-spawned agent runs.
+    /// `1` allows root sessions to spawn agents, but blocks further nesting.
+    #[serde(default)]
+    pub max_depth: Option<i32>,
+
     #[serde(default)]
     pub commands: Vec<SubagentCommandConfig>,
 }
@@ -782,6 +787,41 @@ impl<'de> Deserialize<'de> for AutoResolveAttemptLimit {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AutoDriveModelRoutingEntry {
+    pub model: String,
+
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    #[serde(default = "default_auto_drive_model_routing_reasoning_levels")]
+    pub reasoning_levels: Vec<ReasoningEffort>,
+
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_auto_drive_model_routing_reasoning_levels() -> Vec<ReasoningEffort> {
+    vec![ReasoningEffort::High]
+}
+
+pub fn default_auto_drive_model_routing_entries() -> Vec<AutoDriveModelRoutingEntry> {
+    vec![
+        AutoDriveModelRoutingEntry {
+            model: "gpt-5.3-codex".to_string(),
+            enabled: true,
+            reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
+            description: "Hard planning and complex problem solving".to_string(),
+        },
+        AutoDriveModelRoutingEntry {
+            model: "gpt-5.3-codex-spark".to_string(),
+            enabled: true,
+            reasoning_levels: vec![ReasoningEffort::High],
+            description: "Fast implementation loops and failing-test iteration".to_string(),
+        },
+    ]
+}
+
 /// Auto Drive behavioral defaults persisted via `config.toml`.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct AutoDriveSettings {
@@ -803,6 +843,14 @@ pub struct AutoDriveSettings {
     /// Enable coordinator routing of user prompts during Auto Drive turns.
     #[serde(default = "default_true")]
     pub coordinator_routing: bool,
+
+    /// Allow the coordinator to select the CLI model and reasoning effort per turn.
+    #[serde(default = "default_true")]
+    pub model_routing_enabled: bool,
+
+    /// Per-model routing entries used by coordinator-driven CLI model routing.
+    #[serde(default = "default_auto_drive_model_routing_entries")]
+    pub model_routing_entries: Vec<AutoDriveModelRoutingEntry>,
 
     #[serde(default)]
     pub continue_mode: AutoDriveContinueMode,
@@ -835,6 +883,8 @@ impl Default for AutoDriveSettings {
             cross_check_enabled: true,
             observer_enabled: true,
             coordinator_routing: true,
+            model_routing_enabled: true,
+            model_routing_entries: default_auto_drive_model_routing_entries(),
             continue_mode: AutoDriveContinueMode::TenSeconds,
             model: default_auto_drive_model(),
             model_reasoning_effort: default_auto_drive_reasoning_effort(),

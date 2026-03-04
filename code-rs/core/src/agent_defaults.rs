@@ -5,6 +5,7 @@
 //! (to surface the available sub-agent options).
 
 use crate::config_types::AgentConfig;
+use code_app_server_protocol::AuthMode;
 use std::collections::{HashMap, HashSet};
 
 const CLAUDE_ALLOWED_TOOLS: &str = "Bash(ls:*), Bash(cat:*), Bash(grep:*), Bash(git status:*), Bash(git log:*), Bash(find:*), Read, Grep, Glob, LS, WebFetch, TodoRead, TodoWrite, WebSearch";
@@ -35,7 +36,8 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.2",
-    "code-gpt-5.2-codex",
+    "code-gpt-5.3-codex",
+    "code-gpt-5.3-codex-spark",
     "claude-opus-4.6",
     "gemini-3-pro",
     // Straightforward / cost-aware
@@ -61,6 +63,7 @@ pub struct AgentModelSpec {
     pub aliases: &'static [&'static str],
     pub gating_env: Option<&'static str>,
     pub is_frontline: bool,
+    pub pro_only: bool,
 }
 
 impl AgentModelSpec {
@@ -105,20 +108,23 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         ],
         gating_env: None,
         is_frontline: true,
+        pro_only: false,
     },
     AgentModelSpec {
-        slug: "code-gpt-5.2-codex",
+        slug: "code-gpt-5.3-codex",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
-        model_args: &["--model", "gpt-5.2-codex"],
+        model_args: &["--model", "gpt-5.3-codex"],
         description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
         enabled_by_default: true,
         aliases: &[
+            "code-gpt-5.2-codex",
             "code-gpt-5.1-codex-max",
             "code-gpt-5.1-codex",
             "code-gpt-5-codex",
+            "gpt-5.3-codex",
             "gpt-5.2-codex",
             "gpt-5.1-codex-max",
             "gpt-5.1-codex",
@@ -129,6 +135,21 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         ],
         gating_env: None,
         is_frontline: true,
+        pro_only: false,
+    },
+    AgentModelSpec {
+        slug: "code-gpt-5.3-codex-spark",
+        family: "code",
+        cli: "coder",
+        read_only_args: CODE_GPT5_CODEX_READ_ONLY,
+        write_args: CODE_GPT5_CODEX_WRITE,
+        model_args: &["--model", "gpt-5.3-codex-spark"],
+        description: "Fast codex variant tuned for responsive coding loops and smaller edits.",
+        enabled_by_default: true,
+        aliases: &["gpt-5.3-codex-spark", "code-gpt-5.3-spark", "codex-spark"],
+        gating_env: None,
+        is_frontline: false,
+        pro_only: true,
     },
     AgentModelSpec {
         slug: "code-gpt-5.1-codex-mini",
@@ -148,6 +169,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         ],
         gating_env: None,
         is_frontline: false,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "claude-opus-4.6",
@@ -161,6 +183,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["claude-opus", "claude-opus-4.1", "claude-opus-4.5"],
         gating_env: None,
         is_frontline: true,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "claude-sonnet-4.5",
@@ -174,6 +197,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["claude", "claude-sonnet"],
         gating_env: None,
         is_frontline: false,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "claude-haiku-4.5",
@@ -187,6 +211,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["claude-haiku"],
         gating_env: None,
         is_frontline: false,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "gemini-3-pro",
@@ -206,6 +231,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         ],
         gating_env: None,
         is_frontline: true,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "gemini-3-flash",
@@ -219,6 +245,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["gemini", "gemini-flash", "gemini-2.5-flash"],
         gating_env: None,
         is_frontline: false,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "qwen-3-coder",
@@ -232,6 +259,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["qwen", "qwen3"],
         gating_env: None,
         is_frontline: false,
+        pro_only: false,
     },
     AgentModelSpec {
         slug: "cloud-gpt-5.1-codex-max",
@@ -245,6 +273,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         aliases: &["cloud-gpt-5.1-codex", "cloud-gpt-5-codex", "cloud"],
         gating_env: Some(CLOUD_MODEL_ENV_FLAG),
         is_frontline: false,
+        pro_only: false,
     },
 ];
 
@@ -256,6 +285,42 @@ pub fn enabled_agent_model_specs() -> Vec<&'static AgentModelSpec> {
     AGENT_MODEL_SPECS
         .iter()
         .filter(|spec| spec.is_enabled())
+        .collect()
+}
+
+pub fn agent_model_available_for_auth(
+    spec: &AgentModelSpec,
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> bool {
+    let is_chatgpt_auth = auth_mode.is_some_and(AuthMode::is_chatgpt);
+    !spec.pro_only || (is_chatgpt_auth && supports_pro_only_models)
+}
+
+pub fn enabled_agent_model_specs_for_auth(
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> Vec<&'static AgentModelSpec> {
+    AGENT_MODEL_SPECS
+        .iter()
+        .filter(|spec| spec.is_enabled())
+        .filter(|spec| agent_model_available_for_auth(spec, auth_mode, supports_pro_only_models))
+        .collect()
+}
+
+pub fn filter_agent_model_names_for_auth(
+    model_names: Vec<String>,
+    auth_mode: Option<AuthMode>,
+    supports_pro_only_models: bool,
+) -> Vec<String> {
+    model_names
+        .into_iter()
+        .filter(|name| {
+            if let Some(spec) = agent_model_spec(name) {
+                return agent_model_available_for_auth(spec, auth_mode, supports_pro_only_models);
+            }
+            true
+        })
         .collect()
 }
 
@@ -444,10 +509,21 @@ mod tests {
     #[test]
     fn gpt_codex_aliases_resolve() {
         let codex = agent_model_spec("gpt-5.1-codex").expect("alias for codex present");
-        assert_eq!(codex.slug, "code-gpt-5.2-codex");
+        assert_eq!(codex.slug, "code-gpt-5.3-codex");
 
         let codex_direct = agent_model_spec("gpt-5.1-codex-max").expect("codex present");
-        assert_eq!(codex_direct.slug, "code-gpt-5.2-codex");
+        assert_eq!(codex_direct.slug, "code-gpt-5.3-codex");
+
+        let codex_upgrade = agent_model_spec("gpt-5.2-codex").expect("upgrade alias present");
+        assert_eq!(codex_upgrade.slug, "code-gpt-5.3-codex");
+
+        let codex_slug_upgrade =
+            agent_model_spec("code-gpt-5.2-codex").expect("slug upgrade alias present");
+        assert_eq!(codex_slug_upgrade.slug, "code-gpt-5.3-codex");
+
+        let spark =
+            agent_model_spec("gpt-5.3-codex-spark").expect("spark alias for codex present");
+        assert_eq!(spark.slug, "code-gpt-5.3-codex-spark");
 
         let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
         assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");
@@ -460,5 +536,46 @@ mod tests {
     fn qwen_uses_dashscope_model_id() {
         let qwen = agent_model_spec("qwen-3-coder").expect("qwen spec present");
         assert_eq!(qwen.model_args, &["-m", "qwen3-coder-plus"]);
+    }
+
+    #[test]
+    fn spark_agent_model_requires_pro_chatgpt_auth() {
+        let pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), true);
+        assert!(
+            pro_specs
+                .iter()
+                .any(|spec| spec.slug == "code-gpt-5.3-codex-spark")
+        );
+
+        let non_pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), false);
+        assert!(
+            non_pro_specs
+                .iter()
+                .all(|spec| spec.slug != "code-gpt-5.3-codex-spark")
+        );
+
+        let api_key_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::ApiKey), false);
+        assert!(
+            api_key_specs
+                .iter()
+                .all(|spec| spec.slug != "code-gpt-5.3-codex-spark")
+        );
+    }
+
+    #[test]
+    fn filter_agent_model_names_removes_spark_for_non_pro_auth() {
+        let filtered = filter_agent_model_names_for_auth(
+            vec![
+                "code-gpt-5.3-codex".to_string(),
+                "code-gpt-5.3-codex-spark".to_string(),
+                "gpt-5.3-codex-spark".to_string(),
+            ],
+            Some(AuthMode::ApiKey),
+            false,
+        );
+
+        assert!(filtered.contains(&"code-gpt-5.3-codex".to_string()));
+        assert!(!filtered.contains(&"code-gpt-5.3-codex-spark".to_string()));
+        assert!(!filtered.contains(&"gpt-5.3-codex-spark".to_string()));
     }
 }

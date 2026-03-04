@@ -7,6 +7,73 @@
 
 - (none)
 
+## [0.6.71] - 2026-02-26
+
+- Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions. (7e53c578, d5909f3b, 4fedef88, 9d7013ea)
+- TUI: add `/copy`, improve clear controls (`/clear` and Ctrl-L), and expand multi-agent progress and picker UX. (ee1520e7, ca556fa3, a606e858, dcab4012, 5a30cd3f)
+- Security/Approvals: persist network approval policy and tighten zsh-fork approval and sandbox enforcement paths. (c3048ff9, 14116ade, a6a5976c, 648a420c, 59398125)
+- JS REPL: lower Node minimum requirement, gate incompatible runtimes at startup, and improve error recovery in nested tool calls. (7326c097, 40ab71a9, 125fbec3, 63c2ac96)
+
+## [0.6.70] - 2026-02-16
+
+- Core/Search: persist and restore tool selection after search. (02abd9a8)
+- Core/Search: warn when falling back to default metadata and keep selection. (81a2a7eb, 060a320e)
+- Auto Drive: add configurable CLI routing entries. (2be7be99)
+- Linux Sandbox: allow GPU device paths in landlock. (d827c2d8)
+
+## [0.6.69] - 2026-02-15
+
+- TUI/Approvals: show structured network approval prompts with host/protocol context. (31646701, b527ee28, 2bced810)
+- Models: gate gpt-5.3-codex-spark behind pro-only auth capabilities. (d165389f)
+- Core/Auto Drive: add fallback routing when spark hits overflow or usage limits. (7973a790, 2a4c39fd)
+- TUI: preserve remote image attachments across resume and backtrack flows. (26a7cd21)
+
+## [0.6.68] - 2026-02-14
+
+- Auto Drive: add per-turn model routing and rename decision schema. (fb17527)
+- Auto Drive: enforce finish evidence with paste fallback. (46d537e)
+- Auto Drive: require strict decision fields without allOf and align coordinator schema. (e4559ac4, 873604d6)
+- Auto Drive: decouple auto review and cap long-session growth. (60727b0)
+
+## [0.6.67] - 2026-02-13
+
+- Skills: discover .agents and admin roots and remove deep-scan caps. (eff5ad73, 4b1faf08)
+- TUI: improve /model navigation and /resume popup visibility. (3248c705, adc2240d, 33b521b7, 99425efe)
+- App Server: surface JSON-RPC errors to avoid masked auth failures. (8d97b5c2)
+- Sandbox: add slash command to grant read access to inaccessible directories. (5c3ca739)
+
+## [0.6.66] - 2026-02-12
+
+- App Server: add websocket transport and protocol updates. (3ebd8b72)
+- Core/Websocket: bound ingress buffering and unblock spark exec/close readers. (6b6fab16, 1458e477)
+- TUI/Model: surface gpt-5.3-codex-spark in /model. (7d6b5915)
+- Core/JS REPL: add host helpers and exec end events. (466be55a)
+
+## [0.6.65] - 2026-02-11
+
+- CLI/Env: stop traversing parent .env files at startup. (04c45da1)
+- CLI/Env: exclude more provider keys from project dotenv. (3127a576)
+
+## [0.6.64] - 2026-02-11
+
+- TUI: normalize agent alias slugs in summary counts. (b8449aeb)
+- Core: default Codex to gpt-5.3 and align CLI checks. (9807d30d)
+
+## [0.6.63] - 2026-02-11
+
+- Core: support multiple rate limits. (fdd0cd1d)
+- Core/Protocol: add websocket preference and rate-limit metadata; serialize rate-limit ids as nullable. (c6cf7ff9, 807615dc)
+- Core/Websocket: avoid resending output items and tighten incrementality checks. (44731479, 0639c338)
+- TUI: queue rollback trims in app-event order and keep history recall cursor at line end. (8b46c0ce, e704f488)
+- Exec Policy: reject empty command lists and honor never-prompt approval policy. (cc8c2933, 693bac18)
+
+## [0.6.62] - 2026-02-11
+
+- App Server: add app-server support for client connections. (b86fcd5d)
+- App Server: wire the Linux sandbox executable into config. (6032603f)
+- Model Routing: surface reroute warnings and status models. (6dc748e8)
+- Core/Agents: resolve Claude from home fallback paths. (c560d6ac)
+
 ## [0.6.61] - 2026-02-10
 
 - Core: align auth token schema and websocket errors. (12612630)

@@ -459,9 +459,13 @@ fn smoke_order_meta_round_trip() {
 fn smoke_exec_approval_event_structure() {
     let approval = ExecApprovalRequestEvent {
         call_id: "call-1".into(),
+        approval_id: None,
+        turn_id: "turn-1".into(),
         command: vec!["echo".into(), "hi".into()],
         cwd: PathBuf::from("/tmp"),
         reason: Some("verify".into()),
+        network_approval_context: None,
+        additional_permissions: None,
     };
 
     let encoded = serde_json::to_string(&approval).expect("serialize exec approval");

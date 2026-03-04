@@ -10,6 +10,7 @@ use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use crate::user_instructions::UserInstructions;
 use code_protocol::models::ContentItem;
+use code_protocol::models::FunctionCallOutputContentItem;
 use code_protocol::models::ResponseItem;
 use futures::Stream;
 use once_cell::sync::Lazy;
@@ -424,6 +425,43 @@ fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
     );
 }
 
+const SPARK_IMAGE_PLACEHOLDER: &str =
+    "[image omitted: selected -spark model does not support image inputs]";
+
+/// Replace `input_image` payloads with text placeholders for models that are
+/// known not to accept image inputs.
+pub(crate) fn replace_image_payloads_for_model(input: &mut Vec<ResponseItem>, model_slug: &str) {
+    if !model_slug.to_ascii_lowercase().contains("-spark") {
+        return;
+    }
+
+    for item in input.iter_mut() {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                for content_item in content.iter_mut() {
+                    if matches!(content_item, ContentItem::InputImage { .. }) {
+                        *content_item = ContentItem::InputText {
+                            text: SPARK_IMAGE_PLACEHOLDER.to_string(),
+                        };
+                    }
+                }
+            }
+            ResponseItem::FunctionCallOutput { output, .. } => {
+                if let Some(content_items) = output.content_items_mut() {
+                    for output_item in content_items.iter_mut() {
+                        if matches!(output_item, FunctionCallOutputContentItem::InputImage { .. }) {
+                            *output_item = FunctionCallOutputContentItem::InputText {
+                                text: SPARK_IMAGE_PLACEHOLDER.to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Request object that is serialized as JSON and POST'ed when using the
 /// Responses API.
 #[derive(Debug, Serialize)]
@@ -487,6 +525,76 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn replace_image_payloads_for_spark_model_rewrites_images() {
+        let mut input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![
+                    ContentItem::InputText {
+                        text: "Please inspect this".to_string(),
+                    },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                    },
+                ],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call_1".to_string(),
+                output: code_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,BBB".to_string(),
+                    },
+                ]),
+            },
+        ];
+
+        replace_image_payloads_for_model(&mut input, "gpt-5.3-codex-spark");
+
+        assert!(matches!(
+            &input[0],
+            ResponseItem::Message { content, .. }
+                if matches!(
+                    content.get(1),
+                    Some(ContentItem::InputText { text }) if text == SPARK_IMAGE_PLACEHOLDER
+                )
+        ));
+
+        assert!(matches!(
+            &input[1],
+            ResponseItem::FunctionCallOutput { output, .. }
+                if matches!(
+                    output.content_items().and_then(|items| items.first()),
+                    Some(FunctionCallOutputContentItem::InputText { text })
+                        if text == SPARK_IMAGE_PLACEHOLDER
+                )
+        ));
+    }
+
+    #[test]
+    fn replace_image_payloads_for_non_spark_model_keeps_images() {
+        let mut input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        }];
+
+        replace_image_payloads_for_model(&mut input, "gpt-5.3-codex");
+
+        assert!(matches!(
+            &input[0],
+            ResponseItem::Message { content, .. }
+                if matches!(content.first(), Some(ContentItem::InputImage { .. }))
+        ));
+    }
 
     struct InstructionsTestCase {
         pub slug: &'static str,

@@ -19,8 +19,18 @@ Skills are behind the experimental `skills` feature flag and are enabled by defa
 
 ## Where skills live
 
-- Location (v1): `~/.codex/skills/**/SKILL.md` (recursive). Hidden entries and symlinks are skipped. Only files named exactly `SKILL.md` count.
-- Sorting: rendered by name, then path for stability.
+- Discovery roots (highest precedence first):
+  - Repo: `.agents/skills/**/SKILL.md` from the current working directory up to the repo root.
+  - Repo (legacy): `.codex/skills/**/SKILL.md` from the current working directory up to the repo root.
+  - User: `$HOME/.agents/skills/**/SKILL.md`.
+  - User (legacy): `$CODEX_HOME/skills/**/SKILL.md` (usually `~/.code/skills`; legacy `~/.codex/skills` is still read for compatibility).
+  - System: bundled skills under `$CODEX_HOME/skills/.system/**/SKILL.md`.
+  - Admin (optional): `/etc/codex/skills/**/SKILL.md`.
+- Discovery is recursive and only files named exactly `SKILL.md` count.
+- Hidden entries are skipped.
+- Symlinked directories are followed for repo, user, and admin roots. Symlinked files are ignored.
+- Duplicate skill names are resolved by root precedence above (first match wins).
+- Skills are rendered by name, then path for stability.
 
 ## File format
 

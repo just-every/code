@@ -4,6 +4,7 @@ use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use std::collections::HashMap;
 use crate::config_types::AutoDriveSettings;
+use crate::config_types::AutoDriveModelRoutingEntry;
 use crate::config_types::AllowedCommand;
 use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
@@ -17,6 +18,7 @@ use crate::config_types::Notifications;
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
 use crate::config_types::OtelExporterKind;
+use crate::config_types::default_auto_drive_model_routing_entries;
 use crate::config_types::ProjectCommandConfig;
 use crate::config_types::ProjectHookConfig;
 use crate::config_types::SandboxWorkspaceWrite;
@@ -103,9 +105,10 @@ pub use crate::config_constraint::ConstraintResult;
 pub(crate) use defaults::merge_with_default_agents;
 pub(crate) use validation::upgrade_legacy_model_slugs;
 
-pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.2-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.2-codex";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.2-codex";
+pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.3-codex";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.3-codex";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.3-codex";
+pub(crate) const DEFAULT_SUBAGENT_MAX_DEPTH: i32 = 1;
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -114,6 +117,60 @@ pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "code_cli_rs";
+
+fn normalize_auto_drive_routing_reasoning_levels(
+    levels: &[ReasoningEffort],
+) -> Vec<ReasoningEffort> {
+    let mut normalized = Vec::new();
+    for level in [
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ] {
+        if levels.contains(&level) {
+            normalized.push(level);
+        }
+    }
+    normalized
+}
+
+fn normalize_auto_drive_routing_model(model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if !normalized.starts_with("gpt-") {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn sanitize_auto_drive_routing_entries(entries: &mut Vec<AutoDriveModelRoutingEntry>) {
+    let mut normalized_entries = Vec::new();
+    for entry in entries.drain(..) {
+        let Some(model) = normalize_auto_drive_routing_model(&entry.model) else {
+            continue;
+        };
+
+        let reasoning_levels = normalize_auto_drive_routing_reasoning_levels(&entry.reasoning_levels);
+        if reasoning_levels.is_empty() {
+            continue;
+        }
+
+        normalized_entries.push(AutoDriveModelRoutingEntry {
+            model,
+            enabled: entry.enabled,
+            reasoning_levels,
+            description: entry.description.trim().to_string(),
+        });
+    }
+    *entries = normalized_entries;
+}
 
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +422,10 @@ pub struct Config {
     pub include_apply_patch_tool: bool,
     /// Enable the native Responses web_search tool.
     pub tools_web_search_request: bool,
+    /// Controls `external_web_access` for the web_search tool payload.
+    pub tools_web_search_external: bool,
+    /// Enable MCP tool discovery helper (`search_tool_bm25`).
+    pub tools_search_tool: bool,
     /// Optional allow-list of domains for web_search filters.allowed_domains
     pub tools_web_search_allowed_domains: Option<Vec<String>>,
     /// Experimental: enable streamable shell tool selection (off by default).
@@ -405,6 +466,11 @@ pub struct Config {
     /// If a command with name `plan|solve|code` exists here, it overrides
     /// the built-in defaults for that slash command.
     pub subagent_commands: Vec<crate::config_types::SubagentCommandConfig>,
+
+    /// Maximum allowed nesting depth for agent-spawned agent runs.
+    /// `1` allows root sessions to spawn agents, and blocks deeper nesting.
+    pub subagent_max_depth: i32,
+
     /// Experimental: path to a rollout file to resume a prior session from.
     /// When set, the core will send this path in the initial ConfigureSession
     /// so the backend can attempt to resume.
@@ -445,6 +511,26 @@ impl Config {
             .with_overrides(overrides)
             .load()
     }
+
+    /// Load configuration from defaults only, then apply generic `-c key=value`
+    /// overrides and typed [`ConfigOverrides`].
+    ///
+    /// This intentionally ignores on-disk config files, which is useful as a
+    /// fallback when those files fail to parse.
+    pub fn load_default_with_cli_overrides(
+        cli_overrides: Vec<(String, TomlValue)>,
+        overrides: ConfigOverrides,
+    ) -> std::io::Result<Self> {
+        let code_home = find_code_home()?;
+        let mut root_value = TomlValue::Table(Default::default());
+        let cli_paths: Vec<String> = cli_overrides.iter().map(|(path, _)| path.clone()).collect();
+        for (path, value) in cli_overrides {
+            validation::apply_toml_override(&mut root_value, &path, value);
+        }
+
+        let cfg = validation::deserialize_config_toml_with_cli_warnings(&root_value, &cli_paths)?;
+        Config::load_from_base_config_with_overrides(cfg, overrides, code_home)
+    }
 }
 
 pub fn load_config_as_toml_with_cli_overrides(
@@ -455,6 +541,33 @@ pub fn load_config_as_toml_with_cli_overrides(
         .with_code_home(code_home.to_path_buf())
         .with_cli_overrides(cli_overrides)
         .load_toml()
+}
+
+pub fn load_allowed_approval_policies(
+    code_home: &Path,
+) -> std::io::Result<Option<Vec<AskForApproval>>> {
+    let requirements = crate::config_loader::load_config_requirements_blocking(
+        code_home,
+        crate::config_loader::LoaderOverrides::default(),
+    )?;
+
+    let mut allowed = Vec::new();
+    for candidate in [
+        AskForApproval::UnlessTrusted,
+        AskForApproval::OnFailure,
+        AskForApproval::OnRequest,
+        AskForApproval::Never,
+    ] {
+        if requirements.approval_policy.can_set(&candidate).is_ok() {
+            allowed.push(candidate);
+        }
+    }
+
+    if allowed.len() == 4 {
+        Ok(None)
+    } else {
+        Ok(Some(allowed))
+    }
 }
 
 /// Base config deserialized from ~/.code/config.toml (legacy ~/.codex/config.toml is still read).
@@ -732,6 +845,15 @@ pub struct ProjectConfig {
 pub struct ToolsToml {
     #[serde(default, alias = "web_search_request")]
     pub web_search: Option<bool>,
+
+    /// Controls `external_web_access` for the web_search tool payload.
+    /// Defaults to true when omitted.
+    #[serde(default)]
+    pub web_search_external: Option<bool>,
+
+    /// Enable MCP tool discovery helper (`search_tool_bm25`).
+    #[serde(default)]
+    pub search_tool: Option<bool>,
 
     /// Optional allow-list of domains used by the Responses API web_search tool.
     /// Example:
@@ -1052,6 +1174,16 @@ impl Config {
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
             .unwrap_or(false);
+        let tools_web_search_external = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.web_search_external)
+            .unwrap_or(true);
+        let tools_search_tool = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.search_tool)
+            .unwrap_or(false);
         let tools_web_search_allowed_domains = cfg
             .tools
             .as_ref()
@@ -1161,7 +1293,7 @@ impl Config {
                 || agent.name.eq_ignore_ascii_case("cloud")
             {
                 tracing::warn!(
-                    "legacy agent name '{}' detected; update config to use model slugs (e.g., code-gpt-5.2-codex)",
+                    "legacy agent name '{}' detected; update config to use model slugs (e.g., code-gpt-5.3-codex)",
                     agent.name
                 );
             }
@@ -1333,6 +1465,33 @@ impl Config {
                 }
                 defaults
             });
+        sanitize_auto_drive_routing_entries(&mut auto_drive.model_routing_entries);
+        if auto_drive.model_routing_entries.is_empty() {
+            auto_drive.model_routing_entries = default_auto_drive_model_routing_entries();
+        }
+
+        let subagent_max_depth = cfg
+            .subagents
+            .as_ref()
+            .and_then(|subagents| subagents.max_depth)
+            .unwrap_or(DEFAULT_SUBAGENT_MAX_DEPTH);
+        if subagent_max_depth < 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "subagents.max-depth must be at least 1",
+            ));
+        }
+
+        if auto_drive.model_routing_enabled
+            && !auto_drive
+                .model_routing_entries
+                .iter()
+                .any(|entry| entry.enabled)
+        {
+            if let Some(first_entry) = auto_drive.model_routing_entries.first_mut() {
+                first_entry.enabled = true;
+            }
+        }
         if auto_drive_use_chat_model {
             auto_drive.model = model.clone();
             auto_drive.model_reasoning_effort = chat_reasoning_effort;
@@ -1442,6 +1601,8 @@ impl Config {
             include_plan_tool: include_plan_tool.unwrap_or(false),
             include_apply_patch_tool: include_apply_patch_tool.unwrap_or(false),
             tools_web_search_request,
+            tools_web_search_external,
+            tools_search_tool,
             tools_web_search_allowed_domains,
             // Honor upstream opt-in switch name for our experimental streamable shell tool.
             use_experimental_streamable_shell_tool: cfg
@@ -1463,6 +1624,7 @@ impl Config {
                 .subagents
                 .map(|s| s.commands)
                 .unwrap_or_default(),
+            subagent_max_depth,
             experimental_resume: cfg.experimental_resume,
             max_run_seconds: None,
             max_run_deadline: None,
@@ -1700,6 +1862,26 @@ persistence = "none"
             code_home.path().to_path_buf(),
         )?;
         assert_eq!(overridden.tool_output_max_bytes, 65_536);
+        Ok(())
+    }
+
+    #[test]
+    fn load_default_with_cli_overrides_applies_cli_model_override() -> std::io::Result<()> {
+        let _code_home_guard = EnvVarGuard::new("CODE_HOME");
+        let temp_code_home = TempDir::new()?;
+        unsafe {
+            std::env::set_var("CODE_HOME", temp_code_home.path());
+        }
+
+        let config = Config::load_default_with_cli_overrides(
+            vec![(
+                "model".to_string(),
+                TomlValue::String("gpt-5.1-codex-max".to_string()),
+            )],
+            ConfigOverrides::default(),
+        )?;
+
+        assert_eq!(config.model, "gpt-5.1-codex-max");
         Ok(())
     }
 
@@ -2508,6 +2690,178 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn auto_drive_model_routing_defaults_are_present_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(config.auto_drive.model_routing_entries.len(), 2);
+        assert_eq!(
+            config.auto_drive.model_routing_entries[0].model,
+            "gpt-5.3-codex"
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[0].reasoning_levels,
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[1].model,
+            "gpt-5.3-codex-spark"
+        );
+        assert_eq!(
+            config.auto_drive.model_routing_entries[1].reasoning_levels,
+            vec![ReasoningEffort::High]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_model_routing_entries_are_sanitized_on_load() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        let mut auto_drive = AutoDriveSettings::default();
+        auto_drive.model_routing_entries = vec![
+            AutoDriveModelRoutingEntry {
+                model: " custom-not-gpt ".to_string(),
+                enabled: true,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: "invalid model should be dropped".to_string(),
+            },
+            AutoDriveModelRoutingEntry {
+                model: " GPT-5.3-CODEX ".to_string(),
+                enabled: true,
+                reasoning_levels: vec![
+                    ReasoningEffort::XHigh,
+                    ReasoningEffort::High,
+                    ReasoningEffort::High,
+                ],
+                description: "  keep me trimmed  ".to_string(),
+            },
+        ];
+        cfg.auto_drive = Some(auto_drive);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert_eq!(config.auto_drive.model_routing_entries.len(), 1);
+        let entry = &config.auto_drive.model_routing_entries[0];
+        assert_eq!(entry.model, "gpt-5.3-codex");
+        assert_eq!(
+            entry.reasoning_levels,
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert_eq!(entry.description, "keep me trimmed");
+        Ok(())
+    }
+
+    #[test]
+    fn auto_drive_model_routing_enforces_at_least_one_enabled_entry() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+        let mut cfg = fixture.cfg.clone();
+        let mut auto_drive = AutoDriveSettings::default();
+        auto_drive.model_routing_enabled = true;
+        auto_drive.model_routing_entries = vec![
+            AutoDriveModelRoutingEntry {
+                model: "gpt-5.3-codex".to_string(),
+                enabled: false,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            },
+            AutoDriveModelRoutingEntry {
+                model: "gpt-5.3-codex-spark".to_string(),
+                enabled: false,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            },
+        ];
+        cfg.auto_drive = Some(auto_drive);
+
+        let overrides = ConfigOverrides {
+            cwd: Some(fixture.cwd()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            fixture.code_home(),
+        )?;
+
+        assert!(
+            config
+                .auto_drive
+                .model_routing_entries
+                .iter()
+                .any(|entry| entry.enabled),
+            "at least one routing entry should be enabled when routing is enabled"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_auto_drive_settings_persists_model_routing_entries() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let mut settings = AutoDriveSettings::default();
+        settings.model_routing_entries = vec![AutoDriveModelRoutingEntry {
+            model: " GPT-5.3-CODEX-EXPERIMENTAL ".to_string(),
+            enabled: false,
+            reasoning_levels: vec![ReasoningEffort::XHigh, ReasoningEffort::High],
+            description: "  planning-heavy tasks  ".to_string(),
+        }];
+
+        set_auto_drive_settings(code_home.path(), &settings, false)?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        assert!(
+            written.contains("model_routing_entries"),
+            "written config missing routing entries: {written}"
+        );
+        assert!(written.contains("model = \"GPT-5.3-CODEX-EXPERIMENTAL\""));
+        assert!(written.contains("enabled = false"));
+        assert!(written.contains("reasoning_levels = [\"xhigh\", \"high\"]"));
+        assert!(written.contains("description = \"planning-heavy tasks\""));
+        Ok(())
+    }
+
+    #[test]
+    fn set_auto_drive_settings_removes_model_routing_entries_when_empty() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let mut settings = AutoDriveSettings::default();
+        settings.model_routing_entries = Vec::new();
+
+        set_auto_drive_settings(code_home.path(), &settings, false)?;
+
+        let written = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let parsed: toml::Value = toml::from_str(&written)?;
+        let auto_drive = parsed
+            .get("auto_drive")
+            .and_then(toml::Value::as_table)
+            .expect("auto_drive table should exist");
+        assert!(
+            !auto_drive.contains_key("model_routing_entries"),
+            "model_routing_entries should be removed when entries are empty"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn review_follow_chat_model_applies_reasoning_on_load() -> std::io::Result<()> {
         let fixture = create_test_fixture()?;
         let mut cfg = fixture.cfg.clone();
@@ -2618,7 +2972,7 @@ model_verbosity = "high"
 
         let mut cfg = fixture.cfg.clone();
         cfg.agents = vec![AgentConfig {
-            name: "code-gpt-5.2-codex".to_string(),
+            name: "code-gpt-5.3-codex".to_string(),
             command: String::new(),
             args: Vec::new(),
             read_only: false,
@@ -2648,7 +3002,7 @@ model_verbosity = "high"
             .map(|agent| agent.name.to_ascii_lowercase())
             .collect();
 
-        assert!(enabled_names.contains("code-gpt-5.2-codex"));
+        assert!(enabled_names.contains("code-gpt-5.3-codex"));
         assert!(enabled_names.contains("code-gpt-5.2"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
         assert!(enabled_names.contains("gemini-3-pro"));

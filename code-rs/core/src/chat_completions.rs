@@ -24,6 +24,7 @@ use crate::ModelProviderInfo;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::client_common::replace_image_payloads_for_model;
 use crate::debug_logger::DebugLogger;
 use crate::error::CodexErr;
 use crate::error::Result;
@@ -61,7 +62,8 @@ pub(crate) async fn stream_chat_completions(
     let full_instructions = prompt.get_full_instructions(model_family);
     messages.push(json!({"role": "system", "content": full_instructions}));
 
-    let input = prompt.get_formatted_input();
+    let mut input = prompt.get_formatted_input();
+    replace_image_payloads_for_model(&mut input, model_slug);
 
     // Pre-scan: map Reasoning blocks to the adjacent assistant anchor after the last user.
     // - If the last emitted message is a user message, drop all reasoning.

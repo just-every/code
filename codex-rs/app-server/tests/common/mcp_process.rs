@@ -57,13 +57,21 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
+use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
+use codex_app_server_protocol::ThreadRealtimeStartParams;
+use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadRollbackParams;
+use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadUnarchiveParams;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::WindowsSandboxSetupStartParams;
 use codex_core::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use tokio::process::Command;
 
@@ -74,7 +82,7 @@ pub struct McpProcess {
     /// not a guarantee. See the `kill_on_drop` documentation for details.
     #[allow(dead_code)]
     process: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     pending_messages: VecDeque<JSONRPCMessage>,
 }
@@ -102,6 +110,7 @@ impl McpProcess {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.current_dir(codex_home);
         cmd.env("CODEX_HOME", codex_home);
         cmd.env("RUST_LOG", "debug");
         cmd.env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
@@ -144,7 +153,7 @@ impl McpProcess {
         Ok(Self {
             next_request_id: AtomicI64::new(0),
             process,
-            stdin,
+            stdin: Some(stdin),
             stdout,
             pending_messages: VecDeque::new(),
         })
@@ -174,6 +183,7 @@ impl McpProcess {
             client_info,
             Some(InitializeCapabilities {
                 experimental_api: true,
+                ..Default::default()
             }),
         )
         .await
@@ -415,6 +425,24 @@ impl McpProcess {
         self.send_request("thread/archive", params).await
     }
 
+    /// Send a `thread/name/set` JSON-RPC request.
+    pub async fn send_thread_set_name_request(
+        &mut self,
+        params: ThreadSetNameParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/name/set", params).await
+    }
+
+    /// Send a `thread/unsubscribe` JSON-RPC request.
+    pub async fn send_thread_unsubscribe_request(
+        &mut self,
+        params: ThreadUnsubscribeParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/unsubscribe", params).await
+    }
+
     /// Send a `thread/unarchive` JSON-RPC request.
     pub async fn send_thread_unarchive_request(
         &mut self,
@@ -570,6 +598,101 @@ impl McpProcess {
         self.send_request("turn/interrupt", params).await
     }
 
+    /// Send a `thread/realtime/start` JSON-RPC request (v2).
+    pub async fn send_thread_realtime_start_request(
+        &mut self,
+        params: ThreadRealtimeStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/realtime/start", params).await
+    }
+
+    /// Send a `thread/realtime/appendAudio` JSON-RPC request (v2).
+    pub async fn send_thread_realtime_append_audio_request(
+        &mut self,
+        params: ThreadRealtimeAppendAudioParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/realtime/appendAudio", params)
+            .await
+    }
+
+    /// Send a `thread/realtime/appendText` JSON-RPC request (v2).
+    pub async fn send_thread_realtime_append_text_request(
+        &mut self,
+        params: ThreadRealtimeAppendTextParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/realtime/appendText", params)
+            .await
+    }
+
+    /// Send a `thread/realtime/stop` JSON-RPC request (v2).
+    pub async fn send_thread_realtime_stop_request(
+        &mut self,
+        params: ThreadRealtimeStopParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/realtime/stop", params).await
+    }
+
+    /// Deterministically clean up an intentionally in-flight turn.
+    ///
+    /// Some tests assert behavior while a turn is still running. Returning from those tests
+    /// without an explicit interrupt + `codex/event/turn_aborted` wait can leave in-flight work
+    /// racing teardown and intermittently show up as `LEAK` in nextest.
+    ///
+    /// In rare races, the turn can also fail or complete on its own after we send
+    /// `turn/interrupt` but before the server emits the interrupt response. The helper treats a
+    /// buffered matching `turn/completed` notification as sufficient terminal cleanup in that
+    /// case so teardown does not flap on timing.
+    pub async fn interrupt_turn_and_wait_for_aborted(
+        &mut self,
+        thread_id: String,
+        turn_id: String,
+        read_timeout: std::time::Duration,
+    ) -> anyhow::Result<()> {
+        let interrupt_request_id = self
+            .send_turn_interrupt_request(TurnInterruptParams {
+                thread_id: thread_id.clone(),
+                turn_id: turn_id.clone(),
+            })
+            .await?;
+        match tokio::time::timeout(
+            read_timeout,
+            self.read_stream_until_response_message(RequestId::Integer(interrupt_request_id)),
+        )
+        .await
+        {
+            Ok(result) => {
+                result.with_context(|| "failed while waiting for turn interrupt response")?;
+            }
+            Err(err) => {
+                if self.pending_turn_completed_notification(&thread_id, &turn_id) {
+                    return Ok(());
+                }
+                return Err(err).with_context(|| "timed out waiting for turn interrupt response");
+            }
+        }
+        match tokio::time::timeout(
+            read_timeout,
+            self.read_stream_until_notification_message("codex/event/turn_aborted"),
+        )
+        .await
+        {
+            Ok(result) => {
+                result.with_context(|| "failed while waiting for turn aborted notification")?;
+            }
+            Err(err) => {
+                if self.pending_turn_completed_notification(&thread_id, &turn_id) {
+                    return Ok(());
+                }
+                return Err(err).with_context(|| "timed out waiting for turn aborted notification");
+            }
+        }
+        Ok(())
+    }
+
     /// Send a `turn/steer` JSON-RPC request (v2).
     pub async fn send_turn_steer_request(
         &mut self,
@@ -586,6 +709,14 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("review/start", params).await
+    }
+
+    pub async fn send_windows_sandbox_setup_start_request(
+        &mut self,
+        params: WindowsSandboxSetupStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("windowsSandbox/setupStart", params).await
     }
 
     /// Send a `cancelLoginChatGpt` JSON-RPC request.
@@ -677,6 +808,78 @@ impl McpProcess {
         self.send_request("fuzzyFileSearch", Some(params)).await
     }
 
+    pub async fn send_fuzzy_file_search_session_start_request(
+        &mut self,
+        session_id: &str,
+        roots: Vec<String>,
+    ) -> anyhow::Result<i64> {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "roots": roots,
+        });
+        self.send_request("fuzzyFileSearch/sessionStart", Some(params))
+            .await
+    }
+
+    pub async fn start_fuzzy_file_search_session(
+        &mut self,
+        session_id: &str,
+        roots: Vec<String>,
+    ) -> anyhow::Result<JSONRPCResponse> {
+        let request_id = self
+            .send_fuzzy_file_search_session_start_request(session_id, roots)
+            .await?;
+        self.read_stream_until_response_message(RequestId::Integer(request_id))
+            .await
+    }
+
+    pub async fn send_fuzzy_file_search_session_update_request(
+        &mut self,
+        session_id: &str,
+        query: &str,
+    ) -> anyhow::Result<i64> {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "query": query,
+        });
+        self.send_request("fuzzyFileSearch/sessionUpdate", Some(params))
+            .await
+    }
+
+    pub async fn update_fuzzy_file_search_session(
+        &mut self,
+        session_id: &str,
+        query: &str,
+    ) -> anyhow::Result<JSONRPCResponse> {
+        let request_id = self
+            .send_fuzzy_file_search_session_update_request(session_id, query)
+            .await?;
+        self.read_stream_until_response_message(RequestId::Integer(request_id))
+            .await
+    }
+
+    pub async fn send_fuzzy_file_search_session_stop_request(
+        &mut self,
+        session_id: &str,
+    ) -> anyhow::Result<i64> {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+        });
+        self.send_request("fuzzyFileSearch/sessionStop", Some(params))
+            .await
+    }
+
+    pub async fn stop_fuzzy_file_search_session(
+        &mut self,
+        session_id: &str,
+    ) -> anyhow::Result<JSONRPCResponse> {
+        let request_id = self
+            .send_fuzzy_file_search_session_stop_request(session_id)
+            .await?;
+        self.read_stream_until_response_message(RequestId::Integer(request_id))
+            .await
+    }
+
     async fn send_request(
         &mut self,
         method: &str,
@@ -729,10 +932,13 @@ impl McpProcess {
 
     async fn send_jsonrpc_message(&mut self, message: JSONRPCMessage) -> anyhow::Result<()> {
         eprintln!("writing message to stdin: {message:?}");
+        let Some(stdin) = self.stdin.as_mut() else {
+            anyhow::bail!("mcp stdin closed");
+        };
         let payload = serde_json::to_string(&message)?;
-        self.stdin.write_all(payload.as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
+        stdin.write_all(payload.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
         Ok(())
     }
 
@@ -855,6 +1061,25 @@ impl McpProcess {
         None
     }
 
+    fn pending_turn_completed_notification(&self, thread_id: &str, turn_id: &str) -> bool {
+        self.pending_messages.iter().any(|message| {
+            let JSONRPCMessage::Notification(notification) = message else {
+                return false;
+            };
+            if notification.method != "turn/completed" {
+                return false;
+            }
+            let Some(params) = notification.params.as_ref() else {
+                return false;
+            };
+            let Ok(payload) = serde_json::from_value::<TurnCompletedNotification>(params.clone())
+            else {
+                return false;
+            };
+            payload.thread_id == thread_id && payload.turn.id == turn_id
+        })
+    }
+
     fn message_request_id(message: &JSONRPCMessage) -> Option<&RequestId> {
         match message {
             JSONRPCMessage::Request(request) => Some(&request.id),
@@ -879,8 +1104,22 @@ impl Drop for McpProcess {
         //
         // Drop can't be async, so we do a bounded synchronous cleanup:
         //
-        // 1. Request termination with `start_kill()`.
-        // 2. Poll `try_wait()` until the OS reports the child exited, with a short timeout.
+        // 1. Close stdin to request a graceful shutdown via EOF.
+        // 2. Poll briefly for graceful exit.
+        // 3. If still alive, request termination with `start_kill()`.
+        // 4. Poll `try_wait()` until the OS reports the child exited, with a short timeout.
+        drop(self.stdin.take());
+
+        let graceful_start = std::time::Instant::now();
+        let graceful_timeout = std::time::Duration::from_millis(200);
+        while graceful_start.elapsed() < graceful_timeout {
+            match self.process.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                Err(_) => return,
+            }
+        }
+
         let _ = self.process.start_kill();
 
         let start = std::time::Instant::now();

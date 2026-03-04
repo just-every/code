@@ -53,6 +53,8 @@ pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecPolicyAmendment;
+pub use crate::approvals::NetworkApprovalContext;
+pub use crate::approvals::NetworkApprovalProtocol;
 pub use crate::mcp_protocol::InputItem;
 pub use crate::request_user_input::RequestUserInputEvent;
 
@@ -203,6 +205,9 @@ pub enum Op {
     ExecApproval {
         /// The id of the submission we are approving
         id: String,
+        /// Turn id associated with the approval event, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         /// The user's decision in response to the request.
         decision: ReviewDecision,
     },
@@ -351,19 +356,51 @@ pub enum AskForApproval {
     #[strum(serialize = "untrusted")]
     UnlessTrusted,
 
-    /// *All* commands are auto‑approved, but they are expected to run inside a
-    /// sandbox where network access is disabled and writes are confined to a
-    /// specific set of paths. If the command fails, it will be escalated to
-    /// the user to approve execution without a sandbox.
+    /// DEPRECATED: *All* commands are auto‑approved, but they are expected to
+    /// run inside a sandbox where network access is disabled and writes are
+    /// confined to a specific set of paths. If the command fails, it will be
+    /// escalated to the user to approve execution without a sandbox.
+    /// Prefer `OnRequest` for interactive runs or `Never` for non-interactive
+    /// runs.
     OnFailure,
 
     /// The model decides when to ask the user for approval.
     #[default]
     OnRequest,
 
+    /// Fine-grained rejection controls for approval prompts.
+    ///
+    /// When a field is `true`, prompts of that category are automatically
+    /// rejected instead of shown to the user.
+    Reject(RejectConfig),
+
     /// Never ask the user to approve commands. Failures are immediately returned
     /// to the model, and never escalated to the user for approval.
     Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RejectConfig {
+    /// Reject approval prompts related to sandbox escalation.
+    pub sandbox_approval: bool,
+    /// Reject prompts triggered by execpolicy `prompt` rules.
+    pub rules: bool,
+    /// Reject MCP elicitation prompts.
+    pub mcp_elicitations: bool,
+}
+
+impl RejectConfig {
+    pub const fn rejects_sandbox_approval(self) -> bool {
+        self.sandbox_approval
+    }
+
+    pub const fn rejects_rules_approval(self) -> bool {
+        self.rules
+    }
+
+    pub const fn rejects_mcp_elicitations(self) -> bool {
+        self.mcp_elicitations
+    }
 }
 
 /// Represents whether outbound network access is available to the agent.
@@ -1270,6 +1307,12 @@ pub struct TokenCountEvent {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
 pub struct RateLimitSnapshot {
+    #[ts(type = "string | null")]
+    #[serde(default)]
+    pub limit_id: Option<String>,
+    #[ts(type = "string | null")]
+    #[serde(default)]
+    pub limit_name: Option<String>,
     pub primary: Option<RateLimitWindow>,
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
@@ -1694,6 +1737,7 @@ pub enum SubAgentSource {
         parent_thread_id: ThreadId,
         depth: i32,
     },
+    MemoryConsolidation,
     Other(String),
 }
 
@@ -1715,6 +1759,7 @@ impl fmt::Display for SubAgentSource {
         match self {
             SubAgentSource::Review => f.write_str("review"),
             SubAgentSource::Compact => f.write_str("compact"),
+            SubAgentSource::MemoryConsolidation => f.write_str("memory_consolidation"),
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,

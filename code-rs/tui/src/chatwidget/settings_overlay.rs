@@ -496,6 +496,10 @@ impl SettingsContent for AutoDriveSettingsContent {
     fn is_complete(&self) -> bool {
         self.view.is_view_complete()
     }
+
+    fn handle_paste(&mut self, text: String) -> bool {
+        self.view.handle_paste(text)
+    }
 }
 
 pub(crate) struct McpSettingsContent {

@@ -40,12 +40,23 @@ pub fn assess_patch_safety(
             AskForApproval::Never => SafetyCheck::Reject {
                 reason: "write operations require approval but approval policy is set to never".to_string(),
             },
+            AskForApproval::Reject(config)
+                if config.rejects_sandbox_approval() || config.rejects_rules_approval() =>
+            {
+                SafetyCheck::Reject {
+                    reason: "write operations require approval but approval policy is set to reject"
+                        .to_string(),
+                }
+            }
             _ => SafetyCheck::AskUser,
         };
     }
 
     match policy {
-        AskForApproval::OnFailure | AskForApproval::Never | AskForApproval::OnRequest => {
+        AskForApproval::OnFailure
+        | AskForApproval::Never
+        | AskForApproval::OnRequest
+        | AskForApproval::Reject(_) => {
             // Continue to see if this can be auto-approved.
         }
         // TODO(ragona): I'm not sure this is actually correct? I believe in this case
@@ -148,10 +159,28 @@ pub(crate) fn assess_safety_for_untrusted_command(
         }
         (OnFailure, DangerFullAccess)
         | (Never, DangerFullAccess)
-        | (OnRequest, DangerFullAccess) => SafetyCheck::AutoApprove {
+        | (OnRequest, DangerFullAccess)
+        | (Reject(_), DangerFullAccess) => SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
             user_explicitly_approved: false,
         },
+        (Reject(config), ReadOnly) | (Reject(config), WorkspaceWrite { .. }) => {
+            if config.rejects_sandbox_approval() || config.rejects_rules_approval() {
+                SafetyCheck::Reject {
+                    reason: "auto-rejected by approval policy".to_string(),
+                }
+            } else if with_escalated_permissions {
+                SafetyCheck::AskUser
+            } else {
+                match get_platform_sandbox() {
+                    Some(sandbox_type) => SafetyCheck::AutoApprove {
+                        sandbox_type,
+                        user_explicitly_approved: false,
+                    },
+                    None => SafetyCheck::AskUser,
+                }
+            }
+        }
         (OnRequest, ReadOnly) | (OnRequest, WorkspaceWrite { .. }) => {
             if with_escalated_permissions {
                 SafetyCheck::AskUser

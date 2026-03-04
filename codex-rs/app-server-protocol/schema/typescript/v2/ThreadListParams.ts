@@ -31,4 +31,13 @@ sourceKinds?: Array<ThreadSourceKind> | null,
  * Optional archived filter; when set to true, only archived threads are returned.
  * If false or null, only non-archived threads are returned.
  */
-archived?: boolean | null, };
+archived?: boolean | null, 
+/**
+ * Optional cwd filter; when set, only threads whose session cwd exactly
+ * matches this path are returned.
+ */
+cwd?: string | null, 
+/**
+ * Optional substring filter for the extracted thread title.
+ */
+searchTerm?: string | null, };

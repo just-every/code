@@ -5,8 +5,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use clap::ArgGroup;
-use codex_common::CliConfigOverrides;
-use codex_common::format_env_display::format_env_display;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
@@ -16,9 +14,11 @@ use codex_core::config::types::McpServerTransportConfig;
 use codex_core::mcp::auth::McpOAuthLoginSupport;
 use codex_core::mcp::auth::compute_auth_statuses;
 use codex_core::mcp::auth::oauth_login_support;
-use codex_core::protocol::McpAuthStatus;
+use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_login;
+use codex_utils_cli::CliConfigOverrides;
+use codex_utils_cli::format_env_display::format_env_display;
 
 /// Subcommands:
 /// - `list`   — list configured servers (with `--json`)
@@ -273,6 +273,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
                 oauth_config.env_http_headers,
                 &Vec::new(),
                 config.mcp_oauth_callback_port,
+                config.mcp_oauth_callback_url.as_deref(),
             )
             .await?;
             println!("Successfully logged in.");
@@ -356,6 +357,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
         env_http_headers,
         &scopes,
         config.mcp_oauth_callback_port,
+        config.mcp_oauth_callback_url.as_deref(),
     )
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");

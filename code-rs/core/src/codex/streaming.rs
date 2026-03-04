@@ -15,13 +15,20 @@ use super::session::{
     is_connectivity_error,
     spawn_usage_task,
 };
+use super::session::{
+    MAX_AGENT_COMPLETION_WAKE_BATCHES,
+    MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+    MAX_WAIT_TRACKED_BATCHES,
+};
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
+use crate::agent_tool::current_agent_spawn_depth;
 use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 use code_protocol::models::FunctionCallOutputContentItem;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AgentTaskKind {
@@ -29,6 +36,11 @@ enum AgentTaskKind {
     Review,
     Compact,
 }
+
+const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
+    include_str!("../../templates/search_tool/developer_instructions.md");
+const SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
+const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -598,6 +610,20 @@ pub(super) async fn submission_loop(
                 );
                 tools_config.web_search_allowed_domains =
                     config.tools_web_search_allowed_domains.clone();
+                tools_config.web_search_external = config.tools_web_search_external;
+                tools_config.search_tool = config.tools_search_tool;
+
+                let auth_mode = auth_manager
+                    .as_ref()
+                    .and_then(|manager| manager.auth().map(|auth| auth.mode))
+                    .or(Some(if config.using_chatgpt_auth {
+                        AppAuthMode::Chatgpt
+                    } else {
+                        AppAuthMode::ApiKey
+                    }));
+                let supports_pro_only_models = auth_manager
+                    .as_ref()
+                    .is_some_and(|manager| manager.supports_pro_only_models());
 
                 let mut agent_models: Vec<String> = if config.agents.is_empty() {
                     default_agent_configs()
@@ -608,8 +634,14 @@ pub(super) async fn submission_loop(
                 } else {
                     get_enabled_agents(&config.agents)
                 };
+                agent_models = filter_agent_model_names_for_auth(
+                    agent_models,
+                    auth_mode,
+                    supports_pro_only_models,
+                );
                 if agent_models.is_empty() {
-                    agent_models = enabled_agent_model_specs()
+                    agent_models =
+                        enabled_agent_model_specs_for_auth(auth_mode, supports_pro_only_models)
                         .into_iter()
                         .map(|spec| spec.slug.to_string())
                         .collect();
@@ -652,6 +684,7 @@ pub(super) async fn submission_loop(
                     client_tools: config.experimental_client_tools.clone(),
                     session_manager: crate::exec_command::ExecSessionManager::default(),
                     agents: config.agents.clone(),
+                    subagent_max_depth: config.subagent_max_depth,
                     model_reasoning_effort: config.model_reasoning_effort,
                     notify,
                     state: Mutex::new(state),
@@ -710,6 +743,13 @@ pub(super) async fn submission_loop(
                             st.history = ConversationHistory::new();
                             st.history.record_items(reconstructed.iter());
                         }
+                        if let Some(selected_tools) =
+                            extract_mcp_tool_selection_from_history(&reconstructed)
+                        {
+                            sess_arc.set_mcp_tool_selection(selected_tools);
+                        } else {
+                            sess_arc.clear_mcp_tool_selection();
+                        }
                         replay_history_items = Some(reconstructed);
                     }
                 }
@@ -737,6 +777,19 @@ pub(super) async fn submission_loop(
                         error!("failed to send event: {e:?}");
                     }
                 }
+
+                if config.approval_policy == AskForApproval::OnFailure {
+                    let warning_event = sess_arc.make_event(
+                        &sub.id,
+                        EventMsg::Warning(crate::protocol::WarningEvent {
+                            message: "`on-failure` approval policy is deprecated and will be removed in a future release. Use `on-request` for interactive approvals or `never` for non-interactive runs.".to_string(),
+                        }),
+                    );
+                    if let Err(e) = tx_event.send(warning_event).await {
+                        warn!("failed to send deprecated approval policy warning: {e}");
+                    }
+                }
+
                 // If we resumed from a rollout, replay the prior transcript into the UI.
                 if replay_history_items.is_some()
                     || restored_history_snapshot.is_some()
@@ -786,13 +839,10 @@ pub(super) async fn submission_loop(
                     let tx_event_clone = tx_event.clone();
                     tokio::spawn(async move {
                         while let Some(payload) = agent_rx.recv().await {
-                            let wake_messages = {
-                                let mut state = sess_for_agents.state.lock().unwrap();
-                                agent_completion_wake_messages(
-                                    &payload,
-                                    &mut state.agent_completion_wake_batches,
-                                )
-                            };
+                    let wake_messages = {
+                        let mut state = sess_for_agents.state.lock().unwrap();
+                        agent_completion_wake_messages(&payload, &mut state)
+                    };
                             if !wake_messages.is_empty() {
                                 enqueue_agent_completion_wake(&sess_for_agents, wake_messages)
                                     .await;
@@ -864,7 +914,11 @@ pub(super) async fn submission_loop(
                     sess.set_task(agent);
                 }
             }
-            Op::ExecApproval { id, decision } => {
+            Op::ExecApproval {
+                id,
+                turn_id: _,
+                decision,
+            } => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
                     None => {
@@ -1122,6 +1176,9 @@ pub(super) async fn submission_loop(
                             }
                             crate::skills::model::SkillScope::System => {
                                 code_protocol::protocol::SkillScope::System
+                            }
+                            crate::skills::model::SkillScope::Admin => {
+                                code_protocol::protocol::SkillScope::Admin
                             }
                         },
                         enabled: true,
@@ -1466,6 +1523,115 @@ async fn capture_review_snapshot(session: &Session) -> Option<ReviewSnapshotInfo
         worktree_path: Some(cwd),
         repo_root,
     })
+}
+
+fn is_context_overflow_stream_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("exceeds the context window")
+        || lower.contains("exceed the context window")
+        || lower.contains("context length exceeded")
+        || lower.contains("maximum context length")
+        || (lower.contains("context window")
+            && (lower.contains("exceed")
+                || lower.contains("exceeded")
+                || lower.contains("full")
+                || lower.contains("too long")))
+}
+
+fn is_usage_limit_stream_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("usage limit")
+        || lower.contains("usage_limit_reached")
+        || lower.contains("usage_not_included")
+}
+
+fn spark_fallback_model(model: &str) -> Option<String> {
+    if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
+        Some("gpt-5.3-codex".to_string())
+    } else if model.eq_ignore_ascii_case("code-gpt-5.3-codex-spark") {
+        Some("code-gpt-5.3-codex".to_string())
+    } else {
+        None
+    }
+}
+
+fn context_window_for_model(model: &str) -> Option<u64> {
+    find_family_for_model(model)
+        .or_else(|| Some(derive_default_model_family(model)))
+        .and_then(|family| family.context_window)
+}
+
+#[derive(Debug, Clone)]
+struct ContextFallbackCandidate {
+    model: String,
+    context_window: Option<u64>,
+    priority: i32,
+}
+
+fn is_deprecated_context_fallback_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower == "gpt-4.1" || lower.starts_with("gpt-4.1-")
+}
+
+fn choose_larger_context_model_from_candidates(
+    current_model: &str,
+    candidates: Vec<ContextFallbackCandidate>,
+) -> Option<String> {
+    let current_window = context_window_for_model(current_model).unwrap_or(0);
+    let mut best: Option<(u64, i32, String)> = None;
+
+    for candidate in candidates {
+        let model = candidate.model;
+        if model.eq_ignore_ascii_case(current_model) {
+            continue;
+        }
+        if is_deprecated_context_fallback_model(&model) {
+            continue;
+        }
+        let Some(window) = candidate
+            .context_window
+            .or_else(|| context_window_for_model(&model))
+        else {
+            continue;
+        };
+        if window <= current_window {
+            continue;
+        }
+
+        match best {
+            Some((best_window, _, _)) if window < best_window => {}
+            Some((best_window, best_priority, _))
+                if window == best_window && candidate.priority < best_priority => {}
+            _ => {
+                best = Some((window, candidate.priority, model));
+            }
+        }
+    }
+
+    best.map(|(_, _, model)| model)
+}
+
+async fn choose_larger_context_model(sess: &Arc<Session>, current_model: &str) -> Option<String> {
+    let mut candidates: Vec<ContextFallbackCandidate> = Vec::new();
+
+    if let Some(remote) = sess.remote_models_manager.as_ref() {
+        for model in remote.remote_models_snapshot().await {
+            let context_window = model.context_window.and_then(|window| {
+                if window <= 0 {
+                    None
+                } else {
+                    u64::try_from(window).ok()
+                }
+            });
+            candidates.push(ContextFallbackCandidate {
+                model: model.slug,
+                context_window,
+                priority: model.priority,
+            });
+        }
+    }
+
+    choose_larger_context_model_from_candidates(current_model, candidates)
 }
 
 fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
@@ -1996,6 +2162,10 @@ async fn run_turn(
     let mut rate_limit_switch_state = RateLimitSwitchState::default();
     // Ensure we only auto-compact once per turn to avoid loops
     let mut did_auto_compact = false;
+    let mut did_context_model_fallback = false;
+    let mut did_usage_limit_model_fallback = false;
+    let mut forced_model_override: Option<String> = None;
+    let mut fallback_metadata_warning_sent = false;
     // Attempt input starts as the provided input, and may be augmented with
     // items from a previous dropped stream attempt so we don't lose progress.
     let mut attempt_input: Vec<ResponseItem> = input.clone();
@@ -2042,7 +2212,46 @@ async fn run_turn(
             model_descriptions: sess.model_descriptions.clone(),
         };
 
-        sess.apply_remote_model_overrides(&mut prompt).await;
+        let used_fallback_model_metadata = sess.apply_remote_model_overrides(&mut prompt).await;
+
+        if let Some(override_model) = forced_model_override.clone() {
+            let override_family = if let Some(remote) = sess.remote_models_manager.as_ref() {
+                let base_family = find_family_for_model(&override_model)
+                    .unwrap_or_else(|| derive_default_model_family(&override_model));
+                remote
+                    .apply_remote_overrides_with_personality(
+                        &override_model,
+                        base_family,
+                        tc.client.model_personality(),
+                    )
+                    .await
+            } else {
+                find_family_for_model(&override_model)
+                    .unwrap_or_else(|| derive_default_model_family(&override_model))
+            };
+            prompt.model_override = Some(override_model);
+            prompt.model_family_override = Some(override_family);
+        }
+
+        if used_fallback_model_metadata
+            && forced_model_override.is_none()
+            && !fallback_metadata_warning_sent
+        {
+            let resolved_model_slug = prompt
+                .model_override
+                .clone()
+                .unwrap_or_else(|| sess.client.get_model());
+            sess.send_event(sess.make_event(
+                &sub_id,
+                EventMsg::Warning(crate::protocol::WarningEvent {
+                    message: format!(
+                        "Model metadata for `{resolved_model_slug}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+                    ),
+                }),
+            ))
+            .await;
+            fallback_metadata_warning_sent = true;
+        }
 
         let effective_family = prompt
             .model_family_override
@@ -2052,9 +2261,25 @@ async fn run_turn(
             tc.sandbox_policy.clone(),
             effective_family,
         );
+        let mcp_tools = select_mcp_tools_for_turn(
+            sess.mcp_connection_manager.list_all_tools(),
+            sess.get_mcp_tool_selection(),
+            tools_config.search_tool,
+        );
+
+        if tools_config.search_tool
+            && !prompt
+                .prepend_developer_messages
+                .iter()
+                .any(|message| message == SEARCH_TOOL_DEVELOPER_INSTRUCTIONS)
+        {
+            prompt
+                .prepend_developer_messages
+                .push(SEARCH_TOOL_DEVELOPER_INSTRUCTIONS.to_string());
+        }
         prompt.tools = get_openai_tools(
             &tools_config,
-            Some(sess.mcp_connection_manager.list_all_tools()),
+            Some(mcp_tools),
             browser_enabled,
             agents_active,
             sess.dynamic_tools.as_slice(),
@@ -2174,6 +2399,29 @@ async fn run_turn(
                     continue;
                 }
 
+                if !did_usage_limit_model_fallback {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
+
                 let now = Utc::now();
                 let retry_after = limit_err
                     .retry_after(now)
@@ -2189,77 +2437,143 @@ async fn run_turn(
                 retries = 0;
                 continue;
             }
-            Err(CodexErr::UsageNotIncluded) => return Err(CodexErr::UsageNotIncluded),
+            Err(CodexErr::UsageNotIncluded) => {
+                if !did_usage_limit_model_fallback {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
+
+                return Err(CodexErr::UsageNotIncluded);
+            }
             Err(CodexErr::QuotaExceeded) => return Err(CodexErr::QuotaExceeded),
             Err(e) => {
-                // Detect context-window overflow and auto-run a compact summarization once
-                if !did_auto_compact {
-                    if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e {
-                        let lower = msg.to_ascii_lowercase();
-                        let looks_like_context_overflow =
-                            lower.contains("exceeds the context window")
-                                || lower.contains("exceed the context window")
-                                || lower.contains("context length exceeded")
-                                || lower.contains("maximum context length")
-                                || (lower.contains("context window")
-                                    && (lower.contains("exceed")
-                                        || lower.contains("exceeded")
-                                        || lower.contains("full")
-                                        || lower.contains("too long")));
+                if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e
+                    && is_usage_limit_stream_error(msg)
+                    && !did_usage_limit_model_fallback
+                {
+                    let active_model = prompt
+                        .model_override
+                        .clone()
+                        .unwrap_or_else(|| tc.client.get_model());
+                    if let Some(fallback_model) = spark_fallback_model(&active_model) {
+                        did_usage_limit_model_fallback = true;
+                        forced_model_override = Some(fallback_model.clone());
+                        retries = 0;
+                        sess.clear_scratchpad();
+                        attempt_input = input.clone();
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                format!(
+                                    "Usage limit reached for {active_model}; retrying with {fallback_model}…"
+                                ),
+                            )
+                            .await;
+                        continue;
+                    }
+                }
 
-                        if looks_like_context_overflow {
-                            did_auto_compact = true;
+                if let CodexErr::Stream(msg, _maybe_delay, _req_id) = &e
+                    && is_context_overflow_stream_error(msg)
+                {
+                    if !did_auto_compact {
+                        did_auto_compact = true;
+                        sess
+                            .notify_stream_error(
+                                &sub_id,
+                                "Model hit context-window limit; running /compact and retrying…"
+                                    .to_string(),
+                            )
+                            .await;
+
+                        let previous_input_snapshot = input.clone();
+                        let compacted_history = if compact::should_use_remote_compact_task(sess).await {
+                            run_inline_remote_auto_compact_task(
+                                Arc::clone(&sess),
+                                Arc::clone(&turn_context),
+                                Vec::new(),
+                            )
+                            .await
+                        } else {
+                            compact::run_inline_auto_compact_task(
+                                Arc::clone(&sess),
+                                Arc::clone(&turn_context),
+                            )
+                            .await
+                        };
+
+                        // Reset any partial attempt state and rebuild the request payload using the
+                        // newly compacted history plus the current user turn items.
+                        sess.clear_scratchpad();
+
+                        if compacted_history.is_empty() {
+                            attempt_input = input.clone();
+                        } else {
+                            let mut rebuilt = compacted_history;
+                            if let Some(initial_item) = initial_user_item.clone() {
+                                rebuilt.push(initial_item);
+                            }
+                            if !pending_input_tail.is_empty() {
+                                let (missing_calls, filtered_outputs) =
+                                    reconcile_pending_tool_outputs(&pending_input_tail, &rebuilt, &previous_input_snapshot);
+                                if !missing_calls.is_empty() {
+                                    rebuilt.extend(missing_calls);
+                                }
+                                if !filtered_outputs.is_empty() {
+                                    rebuilt.extend(filtered_outputs);
+                                }
+                            }
+                            input = rebuilt.clone();
+                            attempt_input = rebuilt;
+                        }
+                        continue;
+                    }
+
+                    if !did_context_model_fallback {
+                        let active_model = prompt
+                            .model_override
+                            .clone()
+                            .unwrap_or_else(|| tc.client.get_model());
+                        if let Some(fallback_model) =
+                            choose_larger_context_model(sess, &active_model).await
+                        {
+                            did_context_model_fallback = true;
+                            did_auto_compact = false;
+                            forced_model_override = Some(fallback_model.clone());
+                            retries = 0;
+                            sess.clear_scratchpad();
+                            attempt_input = input.clone();
                             sess
                                 .notify_stream_error(
                                     &sub_id,
-                                    "Model hit context-window limit; running /compact and retrying…"
-                                        .to_string(),
+                                    format!(
+                                        "History still exceeds {active_model}; retrying with larger-context model {fallback_model}…"
+                                    ),
                                 )
                                 .await;
-
-                            let previous_input_snapshot = input.clone();
-                            let compacted_history = if compact::should_use_remote_compact_task(sess).await {
-                                run_inline_remote_auto_compact_task(
-                                    Arc::clone(&sess),
-                                    Arc::clone(&turn_context),
-                                    Vec::new(),
-                                )
-                                .await
-                            } else {
-                                compact::run_inline_auto_compact_task(
-                                    Arc::clone(&sess),
-                                    Arc::clone(&turn_context),
-                                )
-                                .await
-                            };
-
-                            // Reset any partial attempt state and rebuild the request payload using the
-                            // newly compacted history plus the current user turn items.
-                            sess.clear_scratchpad();
-
-                            if compacted_history.is_empty() {
-                                attempt_input = input.clone();
-                            } else {
-                                let mut rebuilt = compacted_history;
-                                if let Some(initial_item) = initial_user_item.clone() {
-                                    rebuilt.push(initial_item);
-                                }
-                                if !pending_input_tail.is_empty() {
-                                    let (missing_calls, filtered_outputs) =
-                                        reconcile_pending_tool_outputs(&pending_input_tail, &rebuilt, &previous_input_snapshot);
-                                    if !missing_calls.is_empty() {
-                                        rebuilt.extend(missing_calls);
-                                    }
-                                    if !filtered_outputs.is_empty() {
-                                        rebuilt.extend(filtered_outputs);
-                                    }
-                                }
-                                input = rebuilt.clone();
-                                attempt_input = rebuilt;
-                            }
                             continue;
                         }
                     }
+
+                    return Err(e);
                 }
 
                 // Use the configured provider-specific stream retry budget.
@@ -2405,6 +2719,239 @@ async fn run_turn(
                 }
             }
         }
+    }
+}
+
+fn select_mcp_tools_for_turn(
+    mcp_tools: HashMap<String, mcp_types::Tool>,
+    selected_tools: Option<Vec<String>>,
+    search_tool_enabled: bool,
+) -> HashMap<String, mcp_types::Tool> {
+    if !search_tool_enabled {
+        return mcp_tools;
+    }
+
+    let selected: std::collections::HashSet<String> = selected_tools
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    mcp_tools
+        .into_iter()
+        .filter(|(name, _tool)| {
+            if !name.starts_with(CODEX_APPS_TOOL_PREFIX) {
+                return true;
+            }
+            selected.contains(name)
+        })
+        .collect()
+}
+
+fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<Vec<String>> {
+    let mut search_call_ids = HashSet::new();
+    let mut active_selected_tools: Option<Vec<String>> = None;
+
+    for item in history {
+        match item {
+            ResponseItem::FunctionCall { name, call_id, .. } => {
+                if name == SEARCH_TOOL_BM25_TOOL_NAME {
+                    search_call_ids.insert(call_id.clone());
+                }
+            }
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                if !search_call_ids.contains(call_id) {
+                    continue;
+                }
+                let Some(content) = output.body.to_text() else {
+                    continue;
+                };
+                let Ok(payload) = serde_json::from_str::<serde_json::Value>(&content) else {
+                    continue;
+                };
+                let Some(selected_tools) = payload
+                    .get("active_selected_tools")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                let Some(selected_tools) = selected_tools
+                    .iter()
+                    .map(|value| value.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                active_selected_tools = Some(selected_tools);
+            }
+            _ => {}
+        }
+    }
+
+    active_selected_tools
+}
+
+#[cfg(test)]
+mod mcp_tool_selection_tests {
+    use super::extract_mcp_tool_selection_from_history;
+    use super::select_mcp_tools_for_turn;
+    use code_protocol::models::FunctionCallOutputPayload;
+    use code_protocol::models::ResponseItem;
+    use mcp_types::Tool;
+    use mcp_types::ToolInputSchema;
+    use std::collections::HashMap;
+
+    fn test_tool(name: &str) -> Tool {
+        Tool {
+            name: name.to_string(),
+            title: None,
+            description: Some(format!("{name} description")),
+            input_schema: ToolInputSchema {
+                properties: Some(serde_json::json!({})),
+                required: None,
+                r#type: "object".to_string(),
+            },
+            output_schema: None,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn search_tool_enabled_hides_apps_tools_without_selection() {
+        let mcp_tools = HashMap::from([
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                test_tool("calendar_create_event"),
+            ),
+            ("mcp__two__b".to_string(), test_tool("b")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(mcp_tools, None, true);
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains_key("mcp__two__b"));
+    }
+
+    #[test]
+    fn search_tool_enabled_includes_selected_apps_plus_non_apps() {
+        let mcp_tools = HashMap::from([
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                test_tool("calendar_create_event"),
+            ),
+            (
+                "mcp__codex_apps__calendar_list_events".to_string(),
+                test_tool("calendar_list_events"),
+            ),
+            ("mcp__rmcp__echo".to_string(), test_tool("echo")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(
+            mcp_tools,
+            Some(vec!["mcp__codex_apps__calendar_list_events".to_string()]),
+            true,
+        );
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains_key("mcp__rmcp__echo"));
+        assert!(selected.contains_key("mcp__codex_apps__calendar_list_events"));
+        assert!(!selected.contains_key("mcp__codex_apps__calendar_create_event"));
+    }
+
+    #[test]
+    fn search_tool_disabled_returns_all_mcp_tools() {
+        let mcp_tools = HashMap::from([
+            ("mcp__one__a".to_string(), test_tool("a")),
+            ("mcp__two__b".to_string(), test_tool("b")),
+        ]);
+
+        let selected = select_mcp_tools_for_turn(mcp_tools, None, false);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains_key("mcp__one__a"));
+        assert!(selected.contains_key("mcp__two__b"));
+    }
+
+    #[test]
+    fn restore_selection_reads_latest_valid_search_output() {
+        let history = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-shell".to_string(),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search-1".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search-1".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": ["mcp__codex_apps__calendar_create_event"]
+                    })
+                    .to_string(),
+                ),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search-2".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search-2".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": [
+                            "mcp__codex_apps__calendar_list_events",
+                            "mcp__codex_apps__calendar_delete_event"
+                        ]
+                    })
+                    .to_string(),
+                ),
+            },
+        ];
+
+        let selected = extract_mcp_tool_selection_from_history(&history);
+        assert_eq!(
+            selected,
+            Some(vec![
+                "mcp__codex_apps__calendar_list_events".to_string(),
+                "mcp__codex_apps__calendar_delete_event".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn restore_selection_ignores_non_search_and_invalid_payloads() {
+        let history = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-shell".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-shell".to_string(),
+                output: FunctionCallOutputPayload::from_text(
+                    serde_json::json!({
+                        "active_selected_tools": ["mcp__codex_apps__ignored"]
+                    })
+                    .to_string(),
+                ),
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-search".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-search".to_string(),
+                output: FunctionCallOutputPayload::from_text("not-json".to_string()),
+            },
+        ];
+
+        assert!(extract_mcp_tool_selection_from_history(&history).is_none());
     }
 }
 
@@ -3025,6 +3572,7 @@ async fn handle_response_item(
                 timeout_ms: action.timeout_ms,
                 sandbox_permissions: None,
                 prefix_rule: None,
+                additional_permissions: None,
                 justification: None,
             };
             let effective_call_id = match (call_id, id) {
@@ -3241,6 +3789,7 @@ async fn handle_function_call(
         "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
+        SEARCH_TOOL_BM25_TOOL_NAME => handle_search_tool_bm25(sess, &ctx, arguments).await,
         _ => {
             if sess.is_dynamic_tool(&name) {
                 return handle_dynamic_tool_call(sess, &ctx, name, arguments).await;
@@ -3434,6 +3983,239 @@ async fn handle_dynamic_tool_call(
             let mut payload = FunctionCallOutputPayload::from_content_items(content_items);
             payload.success = Some(response.success);
             payload
+        },
+    }
+}
+
+const SEARCH_TOOL_BM25_DEFAULT_LIMIT: usize = 8;
+
+fn search_tool_bm25_default_limit() -> usize {
+    SEARCH_TOOL_BM25_DEFAULT_LIMIT
+}
+
+#[derive(Deserialize)]
+struct SearchToolBm25Args {
+    query: String,
+    #[serde(default = "search_tool_bm25_default_limit")]
+    limit: usize,
+}
+
+#[derive(Clone)]
+struct SearchToolCandidate {
+    name: String,
+    server_name: String,
+    description: Option<String>,
+    input_keys: Vec<String>,
+    search_text: String,
+}
+
+impl SearchToolCandidate {
+    fn from_mcp_tool(name: String, server_name: String, tool: mcp_types::Tool) -> Self {
+        let description = tool.description.map(|value| value.to_string());
+        let input_keys = tool
+            .input_schema
+            .properties
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .map_or_else(Vec::new, |map| map.keys().cloned().collect());
+
+        let mut search_parts = vec![name.clone(), server_name.clone()];
+        if let Some(desc) = description.as_ref()
+            && !desc.trim().is_empty()
+        {
+            search_parts.push(desc.clone());
+        }
+        if !input_keys.is_empty() {
+            search_parts.extend(input_keys.iter().cloned());
+        }
+
+        let search_text = search_parts.join(" ").to_ascii_lowercase();
+        Self {
+            name,
+            server_name,
+            description,
+            input_keys,
+            search_text,
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_tool_candidate_tests {
+    use super::SearchToolCandidate;
+
+    #[test]
+    fn preserves_server_name_with_delimiter() {
+        let tool = mcp_types::Tool {
+            name: "run".to_string(),
+            title: None,
+            description: Some("desc".to_string()),
+            input_schema: mcp_types::ToolInputSchema {
+                properties: Some(serde_json::json!({"query": {"type": "string"}})),
+                required: None,
+                r#type: "object".to_string(),
+            },
+            output_schema: None,
+            annotations: None,
+        };
+
+        let candidate = SearchToolCandidate::from_mcp_tool(
+            "alpha__beta__run".to_string(),
+            "alpha__beta".to_string(),
+            tool,
+        );
+
+        assert_eq!(candidate.server_name, "alpha__beta");
+    }
+}
+
+fn tokenize_search_query(query: &str) -> Vec<String> {
+    query
+        .split(|char: char| !char.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn score_search_candidate(
+    normalized_query: &str,
+    query_tokens: &[String],
+    candidate: &SearchToolCandidate,
+) -> f64 {
+    let mut score = 0.0;
+    if candidate.search_text.contains(normalized_query) {
+        score += 8.0;
+    }
+
+    for token in query_tokens {
+        if token.len() <= 1 {
+            continue;
+        }
+        if candidate.search_text.contains(token) {
+            score += 2.0;
+        }
+    }
+
+    score
+}
+
+async fn handle_search_tool_bm25(
+    sess: &Session,
+    ctx: &ToolCallCtx,
+    arguments: String,
+) -> ResponseInputItem {
+    let args = match serde_json::from_str::<SearchToolBm25Args>(&arguments) {
+        Ok(args) => args,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id: ctx.call_id.clone(),
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "invalid {SEARCH_TOOL_BM25_TOOL_NAME} arguments: {err}"
+                    )),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    let query = args.query.trim();
+    if query.is_empty() {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                body: code_protocol::models::FunctionCallOutputBody::Text(
+                    "query must not be empty".to_string(),
+                ),
+                success: Some(false),
+            },
+        };
+    }
+
+    if args.limit == 0 {
+        return ResponseInputItem::FunctionCallOutput {
+            call_id: ctx.call_id.clone(),
+            output: FunctionCallOutputPayload {
+                body: code_protocol::models::FunctionCallOutputBody::Text(
+                    "limit must be greater than zero".to_string(),
+                ),
+                success: Some(false),
+            },
+        };
+    }
+
+    let all_mcp_tools = sess.mcp_connection_manager.list_all_tools_with_server_names();
+    let total_tools = all_mcp_tools.len();
+
+    let mut candidates: Vec<SearchToolCandidate> = all_mcp_tools
+        .into_iter()
+        .map(|(name, server_name, tool)| SearchToolCandidate::from_mcp_tool(name, server_name, tool))
+        .collect();
+    candidates.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let normalized_query = query.to_ascii_lowercase();
+    let query_tokens = tokenize_search_query(&normalized_query);
+
+    let mut ranked: Vec<(f64, SearchToolCandidate)> = candidates
+        .into_iter()
+        .map(|candidate| {
+            (
+                score_search_candidate(&normalized_query, &query_tokens, &candidate),
+                candidate,
+            )
+        })
+        .collect();
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .partial_cmp(left_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut selected_tools: Vec<String> = ranked
+        .iter()
+        .filter(|(score, _candidate)| *score > 0.0)
+        .take(args.limit)
+        .map(|(_score, candidate)| candidate.name.clone())
+        .collect();
+
+    if selected_tools.is_empty() {
+        selected_tools = ranked
+            .iter()
+            .take(args.limit)
+            .map(|(_score, candidate)| candidate.name.clone())
+            .collect();
+    }
+
+    let active_selected_tools = sess.merge_mcp_tool_selection(selected_tools.clone());
+
+    let mut tools_payload = Vec::new();
+    for (score, candidate) in ranked
+        .into_iter()
+        .filter(|(_score, candidate)| selected_tools.iter().any(|name| name == &candidate.name))
+    {
+        tools_payload.push(serde_json::json!({
+            "name": candidate.name,
+            "server": candidate.server_name,
+            "description": candidate.description,
+            "input_keys": candidate.input_keys,
+            "score": score,
+        }));
+    }
+
+    let content = serde_json::json!({
+        "query": query,
+        "total_tools": total_tools,
+        "active_selected_tools": active_selected_tools,
+        "tools": tools_payload,
+    })
+    .to_string();
+
+    ResponseInputItem::FunctionCallOutput {
+        call_id: ctx.call_id.clone(),
+        output: FunctionCallOutputPayload {
+            body: code_protocol::models::FunctionCallOutputBody::Text(content),
+            success: Some(true),
         },
     }
 }
@@ -6059,7 +6841,8 @@ fn parse_container_exec_arguments(
 ) -> Result<ExecParams, Box<ResponseInputItem>> {
     // Parse command.
     //
-    // Newer prompts use `sandbox_permissions` ("use_default" | "require_escalated");
+    // Newer prompts use `sandbox_permissions` ("use_default" |
+    // "with_additional_permissions" | "require_escalated");
     // older ones used `with_escalated_permissions: bool`. Accept both.
     let parsed: std::result::Result<serde_json::Value, serde_json::Error> =
         serde_json::from_str(&arguments);
@@ -6543,6 +7326,36 @@ pub(crate) async fn handle_run_agent(
                     output: FunctionCallOutputPayload {
                         body: code_protocol::models::FunctionCallOutputBody::Text(response.to_string()),
                         success: Some(false)},
+                };
+            }
+
+            let current_depth = current_agent_spawn_depth();
+            if current_depth >= sess.subagent_max_depth {
+                let guidance = format!(
+                    "⚠️ Agent nesting limit reached (current depth: {current_depth}, max depth: {}). Finish current agent runs before spawning additional layers.",
+                    sess.subagent_max_depth,
+                );
+                let req = sess.current_request_ordinal();
+                let order = sess.background_order_for_ctx(ctx, req);
+                sess
+                    .notify_background_event_with_order(&ctx.sub_id, order, guidance.clone())
+                    .await;
+
+                let response = serde_json::json!({
+                    "status": "blocked",
+                    "reason": "max_depth_reached",
+                    "message": guidance,
+                    "current_depth": current_depth,
+                    "max_depth": sess.subagent_max_depth,
+                });
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id: call_id_clone,
+                    output: FunctionCallOutputPayload {
+                        body: code_protocol::models::FunctionCallOutputBody::Text(
+                            response.to_string(),
+                        ),
+                        success: Some(false),
+                    },
                 };
             }
 
@@ -7452,19 +8265,27 @@ async fn handle_wait_for_agent(
                     } else {
                         // Sequential behavior: return the next unseen completed agent if available
                         let mut state = sess.state.lock().unwrap();
-                        let seen = state
-                            .seen_completed_agents_by_batch
-                            .entry(batch_id.clone())
-                            .or_default();
+                        ensure_wait_batch_tracking_capacity(&mut state, &batch_id);
+                        let unseen = {
+                            let seen = state
+                                .seen_completed_agents_by_batch
+                                .entry(batch_id.clone())
+                                .or_default();
+
+                            completed_agents
+                                .iter()
+                                .find(|a| !seen.contains(&a.id))
+                                .cloned()
+                        };
 
                         // Find the first completed agent that we haven't returned yet
-                        if let Some(unseen) = completed_agents
-                            .iter()
-                            .find(|a| !seen.contains(&a.id))
-                            .cloned()
-                        {
+                        if let Some(unseen) = unseen {
                             // Record as seen and return immediately
-                            seen.insert(unseen.id.clone());
+                            track_seen_completed_agent_for_batch(
+                                &mut state,
+                                &batch_id,
+                                unseen.id.as_str(),
+                            );
                             drop(state);
 
                             // Include output/error preview for the unseen completed agent
@@ -7539,7 +8360,11 @@ async fn handle_wait_for_agent(
                         if !any_in_progress && !completed_agents.is_empty() {
                             // Mark all as seen to keep state consistent
                             for a in &completed_agents {
-                                seen.insert(a.id.clone());
+                                track_seen_completed_agent_for_batch(
+                                    &mut state,
+                                    &batch_id,
+                                    a.id.as_str(),
+                                );
                             }
                             drop(state);
 
@@ -8544,9 +9369,12 @@ async fn handle_container_exec_with_params(
                 .request_command_approval(
                     sub_id.clone(),
                     call_id.clone(),
+                    None,
                     params.command.clone(),
                     params.cwd.clone(),
                     params.justification.clone(),
+                    None,
+                    None,
                 )
                 .await;
 
@@ -8945,7 +9773,7 @@ async fn handle_sandbox_error(
     // Early out if either the user never wants to be asked for approval, or
     // we're letting the model manage escalation requests. Otherwise, continue
     match sess.approval_policy {
-        AskForApproval::Never | AskForApproval::OnRequest => {
+        AskForApproval::Never | AskForApproval::OnRequest | AskForApproval::Reject(_) => {
             // Clarify when Read Only mode is the reason a command cannot proceed.
             let content = if matches!(sess.sandbox_policy, SandboxPolicy::ReadOnly) {
                 format!("command blocked by Read Only mode: {error}")
@@ -8995,9 +9823,12 @@ async fn handle_sandbox_error(
         .request_command_approval(
             sub_id.clone(),
             call_id.clone(),
+            None,
             params.command.clone(),
             cwd.clone(),
             Some("command failed; retry without sandbox?".to_string()),
+            None,
+            None,
         )
         .await;
 
@@ -9364,9 +10195,62 @@ fn build_agent_completion_wake_message(batch_id: &str) -> ResponseInputItem {
     }
 }
 
+fn ensure_wait_batch_tracking_capacity(state: &mut State, batch_id: &str) {
+    if !state.seen_completed_agents_by_batch.contains_key(batch_id) {
+        state
+            .seen_completed_batch_order
+            .push_back(batch_id.to_string());
+    }
+
+    while state.seen_completed_agents_by_batch.len() > MAX_WAIT_TRACKED_BATCHES {
+        let Some(oldest_batch) = state.seen_completed_batch_order.pop_front() else {
+            break;
+        };
+        if state
+            .seen_completed_agents_by_batch
+            .remove(&oldest_batch)
+            .is_some()
+        {
+            warn!(
+                cap = MAX_WAIT_TRACKED_BATCHES,
+                dropped_batch = oldest_batch,
+                retained = state.seen_completed_agents_by_batch.len(),
+                "trimmed wait-for-agent seen batch tracking"
+            );
+        }
+    }
+}
+
+fn track_seen_completed_agent_for_batch(state: &mut State, batch_id: &str, agent_id: &str) {
+    ensure_wait_batch_tracking_capacity(state, batch_id);
+    {
+        let seen = state
+            .seen_completed_agents_by_batch
+            .entry(batch_id.to_string())
+            .or_default();
+        seen.insert(agent_id.to_string());
+
+        while seen.len() > MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH {
+            let Some(evicted) = seen.iter().next().cloned() else {
+                break;
+            };
+            seen.remove(&evicted);
+            warn!(
+                cap = MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+                batch_id,
+                dropped_agent_id = evicted,
+                retained = seen.len(),
+                "trimmed wait-for-agent seen-id tracking for batch"
+            );
+        }
+    }
+
+    ensure_wait_batch_tracking_capacity(state, batch_id);
+}
+
 fn agent_completion_wake_messages(
     payload: &AgentStatusUpdatePayload,
-    seen_batches: &mut HashSet<String>,
+    state: &mut State,
 ) -> Vec<ResponseInputItem> {
     let mut batches: HashMap<String, AgentBatchCompletionStatus> = HashMap::new();
 
@@ -9395,8 +10279,21 @@ fn agent_completion_wake_messages(
         if !status.has_terminal || status.has_non_terminal {
             continue;
         }
-        if !seen_batches.insert(batch_id.clone()) {
+        if !state.agent_completion_wake_batches.insert(batch_id.clone()) {
             continue;
+        }
+        state.agent_completion_wake_order.push_back(batch_id.clone());
+        while state.agent_completion_wake_batches.len() > MAX_AGENT_COMPLETION_WAKE_BATCHES {
+            let Some(oldest) = state.agent_completion_wake_order.pop_front() else {
+                break;
+            };
+            state.agent_completion_wake_batches.remove(&oldest);
+            warn!(
+                cap = MAX_AGENT_COMPLETION_WAKE_BATCHES,
+                dropped_batch = oldest,
+                retained = state.agent_completion_wake_batches.len(),
+                "trimmed agent completion wake dedupe state"
+            );
         }
         messages.push(build_agent_completion_wake_message(batch_id.as_str()));
     }
@@ -9433,10 +10330,15 @@ async fn enqueue_agent_completion_wake(
 
 #[cfg(test)]
 mod agent_completion_wake_tests {
-    use std::collections::HashSet;
-
     use super::agent_completion_wake_messages;
+    use super::track_seen_completed_agent_for_batch;
+    use super::State;
     use super::AgentSourceKind;
+    use crate::codex::session::{
+        MAX_AGENT_COMPLETION_WAKE_BATCHES,
+        MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
+        MAX_WAIT_TRACKED_BATCHES,
+    };
     use crate::agent_tool::AgentStatusUpdatePayload;
     use crate::protocol::AgentInfo;
 
@@ -9465,13 +10367,13 @@ mod agent_completion_wake_tests {
 
     #[test]
     fn agent_completion_wake_messages_dedupes_and_skips_non_terminal() {
-        let mut seen = HashSet::new();
+        let mut state = State::default();
         let running = AgentStatusUpdatePayload {
             agents: vec![agent_info("agent-1", "running", Some("batch-1"), None)],
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&running, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&running, &mut state).is_empty());
 
         let mixed = AgentStatusUpdatePayload {
             agents: vec![
@@ -9481,17 +10383,17 @@ mod agent_completion_wake_tests {
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&mixed, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&mixed, &mut state).is_empty());
 
         let completed = AgentStatusUpdatePayload {
             agents: vec![agent_info("agent-1", "completed", Some("batch-1"), None)],
             context: None,
             task: None,
         };
-        let messages = agent_completion_wake_messages(&completed, &mut seen);
+        let messages = agent_completion_wake_messages(&completed, &mut state);
         assert_eq!(messages.len(), 1);
 
-        let messages_again = agent_completion_wake_messages(&completed, &mut seen);
+        let messages_again = agent_completion_wake_messages(&completed, &mut state);
         assert!(messages_again.is_empty());
 
         let auto_review = AgentStatusUpdatePayload {
@@ -9504,7 +10406,59 @@ mod agent_completion_wake_tests {
             context: None,
             task: None,
         };
-        assert!(agent_completion_wake_messages(&auto_review, &mut seen).is_empty());
+        assert!(agent_completion_wake_messages(&auto_review, &mut state).is_empty());
+    }
+
+    #[test]
+    fn agent_completion_wake_messages_caps_seen_batches() {
+        let mut state = State::default();
+
+        for idx in 0..(MAX_AGENT_COMPLETION_WAKE_BATCHES + 16) {
+            let batch = format!("batch-{idx}");
+            let payload = AgentStatusUpdatePayload {
+                agents: vec![agent_info(
+                    &format!("agent-{idx}"),
+                    "completed",
+                    Some(batch.as_str()),
+                    None,
+                )],
+                context: None,
+                task: None,
+            };
+
+            let messages = agent_completion_wake_messages(&payload, &mut state);
+            assert_eq!(messages.len(), 1, "each fresh batch should emit one wake message");
+        }
+
+        assert!(state.agent_completion_wake_batches.len() <= MAX_AGENT_COMPLETION_WAKE_BATCHES);
+        assert!(state.agent_completion_wake_order.len() <= MAX_AGENT_COMPLETION_WAKE_BATCHES);
+    }
+
+    #[test]
+    fn wait_seen_tracking_caps_batches_and_agent_ids() {
+        let mut state = State::default();
+
+        for idx in 0..(MAX_WAIT_TRACKED_BATCHES + 12) {
+            let batch = format!("batch-{idx}");
+            track_seen_completed_agent_for_batch(&mut state, &batch, "agent-1");
+        }
+
+        assert!(state.seen_completed_agents_by_batch.len() <= MAX_WAIT_TRACKED_BATCHES);
+
+        let hot_batch = "batch-hot";
+        for idx in 0..(MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH + 16) {
+            track_seen_completed_agent_for_batch(
+                &mut state,
+                hot_batch,
+                &format!("agent-{idx}"),
+            );
+        }
+
+        let seen = state
+            .seen_completed_agents_by_batch
+            .get(hot_batch)
+            .expect("hot batch should be tracked");
+        assert!(seen.len() <= MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH);
     }
 }
 
@@ -9512,11 +10466,14 @@ mod agent_completion_wake_tests {
 async fn send_agent_status_update(sess: &Session) {
     let manager = AGENT_MANAGER.read().await;
 
-    // Collect all agents; include completed/failed so HUD can show final messages
+    // Collect active agents plus a bounded tail of terminal agents so the HUD
+    // stays responsive in long-running sessions.
     let now = Utc::now();
     let agents: Vec<crate::protocol::AgentInfo> = manager
-        .get_all_agents()
+        .status_visible_agents()
+        .into_iter()
         .map(|agent| {
+            let status = agent.status.clone();
             let start = agent.started_at.unwrap_or(agent.created_at);
             let end = agent.completed_at.unwrap_or(now);
             let elapsed_ms = match end.signed_duration_since(start).num_milliseconds() {
@@ -9525,26 +10482,26 @@ async fn send_agent_status_update(sess: &Session) {
             };
 
             crate::protocol::AgentInfo {
-                id: agent.id.clone(),
+                id: agent.id,
                 name: agent.model.clone(), // Use model name as the display name
-                status: match agent.status {
+                status: match &status {
                     AgentStatus::Pending => "pending".to_string(),
                     AgentStatus::Running => "running".to_string(),
                     AgentStatus::Completed => "completed".to_string(),
                     AgentStatus::Failed => "failed".to_string(),
                     AgentStatus::Cancelled => "cancelled".to_string(),
                 },
-                batch_id: agent.batch_id.clone(),
+                batch_id: agent.batch_id,
                 model: Some(agent.model.clone()),
                 last_progress: agent.progress.last().cloned(),
-                result: agent.result.clone(),
-                error: agent.error.clone(),
+                result: agent.result,
+                error: agent.error,
                 elapsed_ms,
                 token_count: None,
-                last_activity_at: matches!(agent.status, AgentStatus::Pending | AgentStatus::Running)
+                last_activity_at: matches!(status, AgentStatus::Pending | AgentStatus::Running)
                     .then(|| agent.last_activity.to_rfc3339()),
                 seconds_since_last_activity: matches!(
-                    agent.status,
+                    status,
                     AgentStatus::Pending | AgentStatus::Running
                 )
                 .then(|| {
@@ -9553,7 +10510,7 @@ async fn send_agent_status_update(sess: &Session) {
                         .num_seconds()
                         .max(0) as u64
                 }),
-                source_kind: agent.source_kind.clone(),
+                source_kind: agent.source_kind,
             }
         })
         .collect();
@@ -11899,7 +12856,15 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 
 #[cfg(test)]
 mod tests {
-    use super::{format_exec_output_with_limit, TRUNCATION_MARKER};
+    use super::{
+        choose_larger_context_model_from_candidates,
+        ContextFallbackCandidate,
+        format_exec_output_with_limit,
+        is_context_overflow_stream_error,
+        is_usage_limit_stream_error,
+        spark_fallback_model,
+        TRUNCATION_MARKER,
+    };
     use crate::exec::{ExecToolCallOutput, StreamOutput};
     use serde_json::Value;
     use std::time::Duration;
@@ -11953,5 +12918,76 @@ mod tests {
 
         assert!(!content.contains(TRUNCATION_MARKER));
         assert!(content.contains("line"));
+    }
+
+    #[test]
+    fn context_overflow_detection_matches_provider_errors() {
+        assert!(is_context_overflow_stream_error(
+            "Transport error: Your input exceeds the context window of this model"
+        ));
+        assert!(is_context_overflow_stream_error(
+            "maximum context length reached"
+        ));
+        assert!(!is_context_overflow_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn usage_limit_detection_matches_transport_errors() {
+        assert!(is_usage_limit_stream_error(
+            "[transport] Transport error: You've hit your usage limit. Try again in 5 days 47 minutes."
+        ));
+        assert!(is_usage_limit_stream_error(
+            "response.failed: usage_not_included"
+        ));
+        assert!(!is_usage_limit_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn picks_larger_context_model_from_candidates() {
+        let chosen = choose_larger_context_model_from_candidates(
+            "o3",
+            vec![
+                ContextFallbackCandidate {
+                    model: "gpt-5.3-codex".to_string(),
+                    context_window: Some(272_000),
+                    priority: 10,
+                },
+                ContextFallbackCandidate {
+                    model: "gpt-5.2-codex".to_string(),
+                    context_window: Some(272_000),
+                    priority: 20,
+                },
+            ],
+        );
+        assert_eq!(chosen.as_deref(), Some("gpt-5.2-codex"));
+    }
+
+    #[test]
+    fn larger_context_fallback_skips_gpt_4_1_family() {
+        let chosen = choose_larger_context_model_from_candidates(
+            "gpt-5.3-codex-spark",
+            vec![
+                ContextFallbackCandidate {
+                    model: "gpt-4.1".to_string(),
+                    context_window: Some(1_047_576),
+                    priority: 100,
+                },
+                ContextFallbackCandidate {
+                    model: "gpt-5.2-codex".to_string(),
+                    context_window: Some(400_000),
+                    priority: 10,
+                },
+            ],
+        );
+        assert_eq!(chosen.as_deref(), Some("gpt-5.2-codex"));
+    }
+
+    #[test]
+    fn spark_usage_limit_falls_back_to_non_spark_model() {
+        assert_eq!(
+            spark_fallback_model("gpt-5.3-codex-spark").as_deref(),
+            Some("gpt-5.3-codex")
+        );
+        assert!(spark_fallback_model("gpt-5.3-codex").is_none());
     }
 }

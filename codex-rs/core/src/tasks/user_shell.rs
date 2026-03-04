@@ -21,6 +21,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::ExecCommandSource;
+use crate::protocol::ExecCommandStatus;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::TurnStartedEvent;
 use crate::sandboxing::ExecRequest;
@@ -100,7 +101,12 @@ pub(crate) async fn execute_user_shell_command(
         // Auxiliary mode runs within an existing active turn. That turn already
         // emitted TurnStarted, so emitting another TurnStarted here would create
         // duplicate turn lifecycle events and confuse clients.
+        // TODO(ccunningham): After TurnStarted, emit model-visible turn context diffs for
+        // standalone lifecycle tasks (for example /shell, and review once it emits TurnStarted).
+        // `/compact` is an intentional exception because compaction requests should not include
+        // freshly reinjected context before the summary/replacement history is applied.
         let event = EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_context.sub_id.clone(),
             model_context_window: turn_context.model_context_window(),
             collaboration_mode_kind: turn_context.collaboration_mode.mode,
         });
@@ -117,6 +123,7 @@ pub(crate) async fn execute_user_shell_command(
         &display_command,
         session_shell.as_ref(),
         turn_context.cwd.as_path(),
+        &turn_context.shell_environment_policy.r#set,
     );
 
     let call_id = Uuid::new_v4().to_string();
@@ -140,6 +147,7 @@ pub(crate) async fn execute_user_shell_command(
         )
         .await;
 
+    let sandbox_policy = SandboxPolicy::DangerFullAccess;
     let exec_env = ExecRequest {
         command: exec_command.clone(),
         cwd: cwd.clone(),
@@ -147,13 +155,14 @@ pub(crate) async fn execute_user_shell_command(
             &turn_context.shell_environment_policy,
             Some(session.conversation_id),
         ),
-        network: turn_context.config.network.clone(),
+        network: turn_context.network.clone(),
         // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
         // should use that instead of an "arbitrarily large" timeout here.
         expiration: USER_SHELL_TIMEOUT_MS.into(),
         sandbox: SandboxType::None,
         windows_sandbox_level: turn_context.windows_sandbox_level,
         sandbox_permissions: SandboxPermissions::UseDefault,
+        sandbox_policy: sandbox_policy.clone(),
         justification: None,
         arg0: None,
     };
@@ -164,7 +173,6 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let sandbox_policy = SandboxPolicy::DangerFullAccess;
     let exec_result = execute_exec_env(exec_env, &sandbox_policy, stdout_stream)
         .or_cancel(&cancellation_token)
         .await;
@@ -206,6 +214,7 @@ pub(crate) async fn execute_user_shell_command(
                         exit_code: -1,
                         duration: Duration::ZERO,
                         formatted_output: aborted_message,
+                        status: ExecCommandStatus::Failed,
                     }),
                 )
                 .await;
@@ -232,6 +241,11 @@ pub(crate) async fn execute_user_shell_command(
                             &output,
                             turn_context.truncation_policy,
                         ),
+                        status: if output.exit_code == 0 {
+                            ExecCommandStatus::Completed
+                        } else {
+                            ExecCommandStatus::Failed
+                        },
                     }),
                 )
                 .await;
@@ -271,6 +285,7 @@ pub(crate) async fn execute_user_shell_command(
                             &exec_output,
                             turn_context.truncation_policy,
                         ),
+                        status: ExecCommandStatus::Failed,
                     }),
                 )
                 .await;

@@ -69,13 +69,46 @@
       "type": "object"
     },
     "AskForApproval": {
-      "enum": [
-        "untrusted",
-        "on-failure",
-        "on-request",
-        "never"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "untrusted",
+            "on-failure",
+            "on-request",
+            "never"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reject": {
+              "properties": {
+                "mcp_elicitations": {
+                  "type": "boolean"
+                },
+                "rules": {
+                  "type": "boolean"
+                },
+                "sandbox_approval": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "mcp_elicitations",
+                "rules",
+                "sandbox_approval"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "reject"
+          ],
+          "title": "RejectAskForApproval",
+          "type": "object"
+        }
+      ]
     },
     "AskForApproval2": {
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
@@ -88,7 +121,7 @@
           "type": "string"
         },
         {
-          "description": "*All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox.",
+          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
           "enum": [
             "on-failure"
           ],
@@ -100,6 +133,20 @@
             "on-request"
           ],
           "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fine-grained rejection controls for approval prompts.\n\nWhen a field is `true`, prompts of that category are automatically rejected instead of shown to the user.",
+          "properties": {
+            "reject": {
+              "$ref": "#/definitions/RejectConfig"
+            }
+          },
+          "required": [
+            "reject"
+          ],
+          "title": "RejectAskForApproval2",
+          "type": "object"
         },
         {
           "description": "Never ask the user to approve commands. Failures are immediately returned to the model, and never escalated to the user for approval.",
@@ -454,6 +501,70 @@
         }
       },
       "type": "object"
+    },
+    "ExternalAgentConfigDetectParams": {
+      "properties": {
+        "cwds": {
+          "description": "Zero or more working directories to include for repo-scoped detection.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "includeHome": {
+          "description": "If true, include detection under the user's home (~/.claude, ~/.codex, etc.).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ExternalAgentConfigImportParams": {
+      "properties": {
+        "migrationItems": {
+          "items": {
+            "$ref": "#/definitions/ExternalAgentConfigMigrationItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "migrationItems"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigMigrationItem": {
+      "properties": {
+        "cwd": {
+          "description": "Null or empty means home-scoped migration; non-empty means repo-scoped migration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "itemType": {
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+        }
+      },
+      "required": [
+        "description",
+        "itemType"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigMigrationItemType": {
+      "enum": [
+        "AGENTS_MD",
+        "CONFIG",
+        "SKILLS",
+        "MCP_SERVER_CONFIG"
+      ],
+      "type": "string"
     },
     "FeedbackUploadParams": {
       "properties": {
@@ -1104,6 +1215,13 @@
             "null"
           ]
         },
+        "includeHidden": {
+          "description": "When true, include models that are hidden from the default picker list.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "limit": {
           "description": "Optional page size; defaults to a reasonable server-side value.",
           "format": "uint32",
@@ -1318,6 +1436,28 @@
           "type": "string"
         }
       ]
+    },
+    "RejectConfig": {
+      "properties": {
+        "mcp_elicitations": {
+          "description": "Reject MCP elicitation prompts.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Reject prompts triggered by execpolicy `prompt` rules.",
+          "type": "boolean"
+        },
+        "sandbox_approval": {
+          "description": "Reject approval prompts related to sandbox escalation.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mcp_elicitations",
+        "rules",
+        "sandbox_approval"
+      ],
+      "type": "object"
     },
     "RemoveConversationListenerParams": {
       "properties": {
@@ -2407,6 +2547,13 @@
         },
         "cursor": {
           "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "Optional cwd filter; when set, only threads whose session cwd exactly matches this path are returned.",
           "type": [
             "string",
             "null"
@@ -3901,6 +4048,54 @@
         "params"
       ],
       "title": "Config/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "externalAgentConfig/detect"
+          ],
+          "title": "ExternalAgentConfig/detectRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ExternalAgentConfigDetectParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ExternalAgentConfig/detectRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "externalAgentConfig/import"
+          ],
+          "title": "ExternalAgentConfig/importRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ExternalAgentConfigImportParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ExternalAgentConfig/importRequest",
       "type": "object"
     },
     {

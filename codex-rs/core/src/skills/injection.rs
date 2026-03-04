@@ -3,9 +3,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::analytics_client::AnalyticsEventsClient;
+use crate::analytics_client::InvocationType;
 use crate::analytics_client::SkillInvocation;
 use crate::analytics_client::TrackEventsContext;
 use crate::instructions::SkillInstructions;
+use crate::mentions::build_skill_name_counts;
 use crate::skills::SkillMetadata;
 use codex_otel::OtelManager;
 use codex_protocol::models::ResponseItem;
@@ -35,17 +37,18 @@ pub(crate) async fn build_skill_injections(
     let mut invocations = Vec::new();
 
     for skill in mentioned_skills {
-        match fs::read_to_string(&skill.path).await {
+        match fs::read_to_string(&skill.path_to_skills_md).await {
             Ok(contents) => {
                 emit_skill_injected_metric(otel, skill, "ok");
                 invocations.push(SkillInvocation {
                     skill_name: skill.name.clone(),
                     skill_scope: skill.scope,
-                    skill_path: skill.path.clone(),
+                    skill_path: skill.path_to_skills_md.clone(),
+                    invocation_type: InvocationType::Explicit,
                 });
                 result.items.push(ResponseItem::from(SkillInstructions {
                     name: skill.name.clone(),
-                    path: skill.path.to_string_lossy().into_owned(),
+                    path: skill.path_to_skills_md.to_string_lossy().into_owned(),
                     contents,
                 }));
             }
@@ -54,7 +57,7 @@ pub(crate) async fn build_skill_injections(
                 let message = format!(
                     "Failed to load skill {name} at {path}: {err:#}",
                     name = skill.name,
-                    path = skill.path.display()
+                    path = skill.path_to_skills_md.display()
                 );
                 result.warnings.push(message);
             }
@@ -93,13 +96,14 @@ pub(crate) fn collect_explicit_skill_mentions(
     inputs: &[UserInput],
     skills: &[SkillMetadata],
     disabled_paths: &HashSet<PathBuf>,
-    skill_name_counts: &HashMap<String, usize>,
     connector_slug_counts: &HashMap<String, usize>,
 ) -> Vec<SkillMetadata> {
+    let skill_name_counts = build_skill_name_counts(skills, disabled_paths).0;
+
     let selection_context = SkillSelectionContext {
         skills,
         disabled_paths,
-        skill_name_counts,
+        skill_name_counts: &skill_name_counts,
         connector_slug_counts,
     };
     let mut selected: Vec<SkillMetadata> = Vec::new();
@@ -117,9 +121,9 @@ pub(crate) fn collect_explicit_skill_mentions(
             if let Some(skill) = selection_context
                 .skills
                 .iter()
-                .find(|skill| skill.path.as_path() == path.as_path())
+                .find(|skill| skill.path_to_skills_md.as_path() == path.as_path())
             {
-                seen_paths.insert(skill.path.clone());
+                seen_paths.insert(skill.path_to_skills_md.clone());
                 seen_names.insert(skill.name.clone());
                 selected.push(skill.clone());
             }
@@ -300,23 +304,27 @@ fn select_skills_from_mentions(
         .collect();
 
     for skill in selection_context.skills {
-        if selection_context.disabled_paths.contains(&skill.path)
-            || seen_paths.contains(&skill.path)
+        if selection_context
+            .disabled_paths
+            .contains(&skill.path_to_skills_md)
+            || seen_paths.contains(&skill.path_to_skills_md)
         {
             continue;
         }
 
-        let path_str = skill.path.to_string_lossy();
+        let path_str = skill.path_to_skills_md.to_string_lossy();
         if mention_skill_paths.contains(path_str.as_ref()) {
-            seen_paths.insert(skill.path.clone());
+            seen_paths.insert(skill.path_to_skills_md.clone());
             seen_names.insert(skill.name.clone());
             selected.push(skill.clone());
         }
     }
 
     for skill in selection_context.skills {
-        if selection_context.disabled_paths.contains(&skill.path)
-            || seen_paths.contains(&skill.path)
+        if selection_context
+            .disabled_paths
+            .contains(&skill.path_to_skills_md)
+            || seen_paths.contains(&skill.path_to_skills_md)
         {
             continue;
         }
@@ -343,7 +351,7 @@ fn select_skills_from_mentions(
         }
 
         if seen_names.insert(skill.name.clone()) {
-            seen_paths.insert(skill.path.clone());
+            seen_paths.insert(skill.path_to_skills_md.clone());
             selected.push(skill.clone());
         }
     }
@@ -474,7 +482,9 @@ mod tests {
             interface: None,
             dependencies: None,
             policy: None,
-            path: PathBuf::from(path),
+            permission_profile: None,
+            permissions: None,
+            path_to_skills_md: PathBuf::from(path),
             scope: codex_protocol::protocol::SkillScope::User,
         }
     }
@@ -489,34 +499,13 @@ mod tests {
         assert_eq!(mentions.paths, set(expected_paths));
     }
 
-    fn build_skill_name_counts(
-        skills: &[SkillMetadata],
-        disabled_paths: &HashSet<PathBuf>,
-    ) -> HashMap<String, usize> {
-        let mut counts = HashMap::new();
-        for skill in skills {
-            if disabled_paths.contains(&skill.path) {
-                continue;
-            }
-            *counts.entry(skill.name.clone()).or_insert(0) += 1;
-        }
-        counts
-    }
-
     fn collect_mentions(
         inputs: &[UserInput],
         skills: &[SkillMetadata],
         disabled_paths: &HashSet<PathBuf>,
         connector_slug_counts: &HashMap<String, usize>,
     ) -> Vec<SkillMetadata> {
-        let skill_name_counts = build_skill_name_counts(skills, disabled_paths);
-        collect_explicit_skill_mentions(
-            inputs,
-            skills,
-            disabled_paths,
-            &skill_name_counts,
-            connector_slug_counts,
-        )
+        collect_explicit_skill_mentions(inputs, skills, disabled_paths, connector_slug_counts)
     }
 
     #[test]

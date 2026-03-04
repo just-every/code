@@ -15,6 +15,13 @@ use super::streaming::{
     write_agent_file,
 };
 
+pub(super) const MAX_EVENT_SEQ_SUB_IDS: usize = 1024;
+pub(super) const MAX_BACKGROUND_SEQ_SUB_IDS: usize = 1024;
+pub(super) const MAX_WAIT_TRACKED_BATCHES: usize = 1024;
+pub(super) const MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH: usize = 2048;
+pub(super) const MAX_AGENT_COMPLETION_WAKE_BATCHES: usize = 2048;
+pub(super) const MAX_PENDING_MANUAL_COMPACTS: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ApprovedCommandPattern {
     argv: Vec<String>,
@@ -136,6 +143,7 @@ pub(super) struct State {
     pub(super) pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pub(super) pending_request_user_input: HashMap<String, oneshot::Sender<crate::protocol::RequestUserInputResponse>>,
     pub(super) pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
+    pub(super) selected_mcp_tools: Vec<String>,
     pub(super) pending_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
@@ -144,8 +152,13 @@ pub(super) struct State {
     /// `return_all=false`.
     /// This enables sequential waiting behavior across multiple calls.
     pub(super) seen_completed_agents_by_batch: HashMap<String, HashSet<String>>,
+    /// FIFO order for `seen_completed_agents_by_batch` so old batches can be
+    /// evicted under sustained long-session churn.
+    pub(super) seen_completed_batch_order: VecDeque<String>,
     /// Tracks agent batches that already triggered a wake-up after completion.
     pub(super) agent_completion_wake_batches: HashSet<String>,
+    /// FIFO order for wake-batch dedupe keys.
+    pub(super) agent_completion_wake_order: VecDeque<String>,
     /// Scratchpad that buffers streamed items/deltas for the current HTTP attempt
     /// so we can seed retries without losing progress.
     pub(super) turn_scratchpad: Option<TurnScratchpad>,
@@ -285,14 +298,47 @@ pub(super) fn is_connectivity_error(err: &CodexErr) -> bool {
         CodexErr::Reqwest(e) => e.is_connect() || e.is_timeout() || e.is_request(),
         CodexErr::Stream(msg, _, _) => {
             let lower = msg.to_ascii_lowercase();
-            msg.starts_with("[transport]")
+            (msg.starts_with("[transport]")
+                || lower.contains("transport")
                 || lower.contains("network")
                 || lower.contains("connection")
                 || lower.contains("connectivity")
-                || lower.contains("timeout")
-                || lower.contains("transport")
+                || lower.contains("timeout"))
+                && !lower.contains("context window")
+                && !lower.contains("context length")
+                && !lower.contains("usage limit")
+                && !lower.contains("usage_not_included")
+                && !lower.contains("quota exceeded")
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_connectivity_error;
+    use crate::error::CodexErr;
+
+    #[test]
+    fn context_overflow_transport_stream_is_not_connectivity() {
+        let err = CodexErr::Stream(
+            "[transport] Transport error: stream disconnected before completion: Your input exceeds the context window of this model. Please adjust your input and try again.".to_string(),
+            None,
+            None,
+        );
+
+        assert!(!is_connectivity_error(&err));
+    }
+
+    #[test]
+    fn network_stream_is_connectivity() {
+        let err = CodexErr::Stream(
+            "[transport] network timeout while connecting to api".to_string(),
+            None,
+            None,
+        );
+
+        assert!(is_connectivity_error(&err));
     }
 }
 
@@ -341,6 +387,9 @@ pub(crate) struct Session {
 
     /// Configuration for available agent models
     pub(super) agents: Vec<crate::config_types::AgentConfig>,
+
+    /// Maximum allowed nesting depth for agent-spawned agent runs.
+    pub(super) subagent_max_depth: i32,
 
     /// Default reasoning effort for spawned agents and model calls in this session
     pub(super) model_reasoning_effort: ReasoningEffortConfig,
@@ -431,6 +480,13 @@ impl Session {
 
     fn next_background_sequence(&self, sub_id: &str) -> u64 {
         let mut state = self.state.lock().unwrap();
+        if state.background_seq_by_sub_id.len() > MAX_BACKGROUND_SEQ_SUB_IDS {
+            trim_sub_id_sequence_map(
+                &mut state.background_seq_by_sub_id,
+                MAX_BACKGROUND_SEQ_SUB_IDS,
+                "background_seq_by_sub_id",
+            );
+        }
         let entry = state
             .background_seq_by_sub_id
             .entry(sub_id.to_string())
@@ -469,7 +525,7 @@ impl Session {
         &self.cwd
     }
 
-    pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) {
+    pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) -> bool {
         let configured_model = self.client.get_model();
 
         if prompt.model_override.is_none() {
@@ -500,16 +556,24 @@ impl Session {
             }
         }
 
+        let mut used_fallback_model_metadata = false;
         if prompt.model_family_override.is_none() {
             let model_slug = prompt
                 .model_override
                 .as_deref()
                 .unwrap_or(configured_model.as_str());
-            let base_family = find_family_for_model(model_slug)
-                .unwrap_or_else(|| derive_default_model_family(model_slug));
+            let base_family = if let Some(family) = find_family_for_model(model_slug) {
+                family
+            } else {
+                used_fallback_model_metadata = true;
+                derive_default_model_family(model_slug)
+            };
             let personality = self.client.model_personality();
 
             let family = if let Some(remote) = self.remote_models_manager.as_ref() {
+                if remote.has_model_slug(model_slug).await {
+                    used_fallback_model_metadata = false;
+                }
                 remote
                     .apply_remote_overrides_with_personality(
                         model_slug,
@@ -522,6 +586,7 @@ impl Session {
             };
             prompt.model_family_override = Some(family);
         }
+        used_fallback_model_metadata
     }
 
     pub(crate) async fn record_bridge_event(&self, text: String) {
@@ -840,6 +905,25 @@ impl Session {
         state.turn_scratchpad = None;
     }
 }
+
+fn trim_sub_id_sequence_map(
+    map: &mut HashMap<String, u64>,
+    cap: usize,
+    label: &str,
+) {
+    while map.len() > cap {
+        let Some(key) = map.keys().next().cloned() else {
+            break;
+        };
+        map.remove(&key);
+    }
+    warn!(
+        label,
+        cap,
+        retained = map.len(),
+        "trimmed long-lived sequence map to cap memory growth"
+    );
+}
 impl Session {
     pub(super) fn set_task(&self, agent: AgentTask) {
         let mut state = self.state.lock().unwrap();
@@ -902,6 +986,42 @@ impl Session {
     pub(super) fn wait_interrupt_snapshot(&self) -> (u64, Option<WaitInterruptReason>) {
         let state = self.state.lock().unwrap();
         (state.wait_interrupt_epoch, state.wait_interrupt_reason)
+    }
+
+    pub(super) fn merge_mcp_tool_selection(&self, tool_names: Vec<String>) -> Vec<String> {
+        let mut state = self.state.lock().unwrap();
+        for tool_name in tool_names {
+            if !state.selected_mcp_tools.iter().any(|name| name == &tool_name) {
+                state.selected_mcp_tools.push(tool_name);
+            }
+        }
+        state.selected_mcp_tools.sort();
+        state.selected_mcp_tools.clone()
+    }
+
+    pub(super) fn set_mcp_tool_selection(&self, tool_names: Vec<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.selected_mcp_tools.clear();
+        for tool_name in tool_names {
+            if !state.selected_mcp_tools.iter().any(|name| name == &tool_name) {
+                state.selected_mcp_tools.push(tool_name);
+            }
+        }
+        state.selected_mcp_tools.sort();
+    }
+
+    pub(super) fn get_mcp_tool_selection(&self) -> Option<Vec<String>> {
+        let state = self.state.lock().unwrap();
+        if state.selected_mcp_tools.is_empty() {
+            None
+        } else {
+            Some(state.selected_mcp_tools.clone())
+        }
+    }
+
+    pub(super) fn clear_mcp_tool_selection(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.selected_mcp_tools.clear();
     }
 
     pub(super) fn enforce_user_message_limits(
@@ -1073,26 +1193,34 @@ impl Session {
         &self,
         sub_id: String,
         call_id: String,
+        approval_id: Option<String>,
         command: Vec<String>,
         cwd: PathBuf,
         reason: Option<String>,
+        network_approval_context: Option<crate::protocol::NetworkApprovalContext>,
+        additional_permissions: Option<code_protocol::models::PermissionProfile>,
     ) -> oneshot::Receiver<ReviewDecision> {
         let (tx_approve, rx_approve) = oneshot::channel();
+        let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         let event = self.make_event(
             &sub_id,
             EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
                 call_id: call_id.clone(),
+                approval_id,
+                turn_id: sub_id.clone(),
                 command,
                 cwd,
                 reason,
+                network_approval_context,
+                additional_permissions,
             }),
         );
         let _ = self.tx_event.send(event).await;
         {
             let mut state = self.state.lock().unwrap();
-            // Track pending approval by call_id (unique per request) rather than sub_id
+            // Track pending approval by approval id (or call_id fallback) rather than sub_id
             // so parallel approvals in the same turn do not clobber each other.
-            state.pending_approvals.insert(call_id, tx_approve);
+            state.pending_approvals.insert(effective_approval_id, tx_approve);
         }
         rx_approve
     }
@@ -1837,6 +1965,13 @@ impl Session {
     pub fn enqueue_manual_compact(&self, sub_id: String) -> bool {
         let mut state = self.state.lock().unwrap();
         let was_empty = state.pending_manual_compacts.is_empty();
+        while state.pending_manual_compacts.len() >= MAX_PENDING_MANUAL_COMPACTS {
+            state.pending_manual_compacts.pop_front();
+            warn!(
+                cap = MAX_PENDING_MANUAL_COMPACTS,
+                "dropped oldest pending manual compact request to cap queue growth"
+            );
+        }
         state.pending_manual_compacts.push_back(sub_id);
         was_empty
     }
@@ -2338,6 +2473,7 @@ impl State {
             // do not reset provider ordering mid-session.
             request_ordinal: self.request_ordinal,
             background_seq_by_sub_id: self.background_seq_by_sub_id.clone(),
+            selected_mcp_tools: self.selected_mcp_tools.clone(),
             dry_run_guard: self.dry_run_guard.clone(),
             next_internal_sub_id: self.next_internal_sub_id,
             context_timeline: self.context_timeline.clone(),

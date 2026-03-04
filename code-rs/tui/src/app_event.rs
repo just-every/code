@@ -1,3 +1,4 @@
+use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
@@ -235,6 +236,8 @@ pub(crate) enum AppEvent {
         agents_enabled: bool,
         cross_check_enabled: bool,
         qa_automation_enabled: bool,
+        model_routing_enabled: bool,
+        model_routing_entries: Vec<AutoDriveModelRoutingEntry>,
         continue_mode: AutoContinueMode,
     },
 

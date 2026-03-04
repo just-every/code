@@ -15,8 +15,10 @@ pub enum SlashCommand {
     Model,
     Approvals,
     Permissions,
-    #[strum(serialize = "setup-elevated-sandbox")]
+    #[strum(serialize = "setup-default-sandbox")]
     ElevateSandbox,
+    #[strum(serialize = "sandbox-add-read-dir")]
+    SandboxReadRoot,
     Experimental,
     Skills,
     Review,
@@ -31,10 +33,12 @@ pub enum SlashCommand {
     Agent,
     // Undo,
     Diff,
+    Copy,
     Mention,
     Status,
     DebugConfig,
     Statusline,
+    Theme,
     Mcp,
     Apps,
     Logout,
@@ -44,8 +48,15 @@ pub enum SlashCommand {
     Rollout,
     Ps,
     Clean,
+    Clear,
     Personality,
+    Realtime,
     TestApproval,
+    // Debugging commands.
+    #[strum(serialize = "debug-m-drop")]
+    MemoryDrop,
+    #[strum(serialize = "debug-m-update")]
+    MemoryUpdate,
 }
 
 impl SlashCommand {
@@ -59,25 +70,34 @@ impl SlashCommand {
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
             // SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
+            SlashCommand::Copy => "copy the latest Codex output to your clipboard",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Statusline => "configure which items appear in the status line",
+            SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Clean => "stop all background terminals",
+            SlashCommand::MemoryDrop => "DO NOT USE",
+            SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Personality => "choose a communication style for Codex",
+            SlashCommand::Realtime => "toggle realtime voice mode (experimental)",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (experimental)",
             SlashCommand::Agent => "switch the active agent thread",
             SlashCommand::Approvals => "choose what Codex is allowed to do",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
+            SlashCommand::SandboxReadRoot => {
+                "let sandbox read a directory: /sandbox-add-read-dir <absolute_path>"
+            }
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Apps => "manage apps",
@@ -97,7 +117,10 @@ impl SlashCommand {
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
-            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan
+            SlashCommand::Review
+                | SlashCommand::Rename
+                | SlashCommand::Plan
+                | SlashCommand::SandboxReadRoot
         )
     }
 
@@ -115,11 +138,16 @@ impl SlashCommand {
             | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
+            | SlashCommand::SandboxReadRoot
             | SlashCommand::Experimental
             | SlashCommand::Review
             | SlashCommand::Plan
-            | SlashCommand::Logout => false,
+            | SlashCommand::Clear
+            | SlashCommand::Logout
+            | SlashCommand::MemoryDrop
+            | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
+            | SlashCommand::Copy
             | SlashCommand::Rename
             | SlashCommand::Mention
             | SlashCommand::Skills
@@ -134,14 +162,18 @@ impl SlashCommand {
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
+            SlashCommand::Realtime => true,
             SlashCommand::Collab => true,
             SlashCommand::Agent => true,
             SlashCommand::Statusline => false,
+            SlashCommand::Theme => false,
         }
     }
 
     fn is_visible(self) -> bool {
         match self {
+            SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
+            SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
             _ => true,
         }

@@ -1,4 +1,3 @@
-use codex_common::CliConfigOverrides;
 use codex_core::CodexAuth;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthMode;
@@ -10,6 +9,7 @@ use codex_login::ServerOptions;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
 use codex_protocol::config_types::ForcedLoginMethod;
+use codex_utils_cli::CliConfigOverrides;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ const LOGIN_SUCCESS_MESSAGE: &str = "Successfully logged in";
 
 fn print_login_server_start(actual_port: u16, auth_url: &str) {
     eprintln!(
-        "Starting local login server on http://localhost:{actual_port}.\nIf your browser did not open, navigate to this URL to authenticate:\n\n{auth_url}"
+        "Starting local login server on http://localhost:{actual_port}.\nIf your browser did not open, navigate to this URL to authenticate:\n\n{auth_url}\n\nOn a remote or headless machine? Use `codex login --device-auth` instead."
     );
 }
 

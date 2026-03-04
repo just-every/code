@@ -78,6 +78,9 @@ impl std::fmt::Display for RefreshTokenError {
 
 impl std::error::Error for RefreshTokenError {}
 
+const REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE: &str =
+    "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";
+
 impl PartialEq for CodexAuth {
     fn eq(&self, other: &Self) -> bool {
         self.mode == other.mode
@@ -250,6 +253,13 @@ impl CodexAuth {
             .and_then(|t| t.id_token.chatgpt_plan_type.as_ref().map(|p| p.as_string()))
     }
 
+    pub fn supports_pro_only_models(&self) -> bool {
+        self.mode.is_chatgpt()
+            && self
+                .get_plan_type()
+                .is_some_and(|plan| plan.eq_ignore_ascii_case("pro"))
+    }
+
     fn get_current_auth_json(&self) -> Option<AuthDotJson> {
         #[expect(clippy::unwrap_used)]
         self.auth_dot_json.lock().unwrap().clone()
@@ -385,6 +395,53 @@ pub fn login_with_api_key(code_home: &Path, api_key: &str) -> std::io::Result<()
         None,
         true,
     )?;
+    Ok(())
+}
+
+pub fn login_with_chatgpt_auth_tokens(
+    code_home: &Path,
+    access_token: &str,
+    chatgpt_account_id: &str,
+    chatgpt_plan_type: Option<&str>,
+) -> std::io::Result<()> {
+    let mut id_token = parse_id_token(access_token).map_err(std::io::Error::other)?;
+    if let Some(plan_type) = chatgpt_plan_type {
+        id_token.chatgpt_plan_type = Some(match plan_type.trim().to_ascii_lowercase().as_str() {
+            "free" => PlanType::Known(KnownPlan::Free),
+            "plus" => PlanType::Known(KnownPlan::Plus),
+            "pro" => PlanType::Known(KnownPlan::Pro),
+            "team" => PlanType::Known(KnownPlan::Team),
+            "business" => PlanType::Known(KnownPlan::Business),
+            "enterprise" => PlanType::Known(KnownPlan::Enterprise),
+            "edu" => PlanType::Known(KnownPlan::Edu),
+            _ => PlanType::Unknown(plan_type.to_string()),
+        });
+    }
+
+    let tokens = TokenData {
+        id_token,
+        access_token: access_token.to_string(),
+        refresh_token: String::new(),
+        account_id: Some(chatgpt_account_id.to_string()),
+    };
+    let last_refresh = Utc::now();
+    let auth_dot_json = AuthDotJson {
+        auth_mode: Some(AuthMode::ChatgptAuthTokens),
+        openai_api_key: None,
+        tokens: Some(tokens.clone()),
+        last_refresh: Some(last_refresh),
+    };
+    write_auth_json(&get_auth_file(code_home), &auth_dot_json)?;
+
+    let email_for_store = tokens.id_token.email.clone();
+    let _ = crate::auth_accounts::upsert_chatgpt_account(
+        code_home,
+        tokens,
+        last_refresh,
+        email_for_store,
+        true,
+    )?;
+
     Ok(())
 }
 
@@ -878,6 +935,15 @@ struct CachedAuth {
     auth: Option<CodexAuth>,
 }
 
+enum ReloadOutcome {
+    /// Reload was performed and the cached auth changed.
+    ReloadedChanged,
+    /// Reload was performed and the cached auth remained the same.
+    ReloadedNoChange,
+    /// Reload was skipped (missing or mismatched account id).
+    Skipped,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1363,6 +1429,11 @@ impl AuthManager {
         self.inner.read().ok().and_then(|c| c.auth.clone())
     }
 
+    pub fn supports_pro_only_models(&self) -> bool {
+        self.auth()
+            .is_some_and(|auth| auth.supports_pro_only_models())
+    }
+
     /// Preferred auth method used when (re)loading.
     pub fn preferred_auth_method(&self) -> AuthMode {
         self.inner
@@ -1398,10 +1469,73 @@ impl AuthManager {
         }
     }
 
+    fn reload_if_account_id_matches(&self, expected_account_id: Option<&str>) -> ReloadOutcome {
+        let expected_account_id = match expected_account_id {
+            Some(account_id) => account_id,
+            None => {
+                tracing::info!("Skipping auth reload because no account id is available.");
+                return ReloadOutcome::Skipped;
+            }
+        };
+
+        let preferred = self.preferred_auth_method();
+        let env_auth = if self.enable_code_api_key_env {
+            read_code_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
+        } else {
+            None
+        };
+        let new_auth = env_auth.clone().or_else(|| {
+            CodexAuth::from_code_home(&self.code_home, preferred, &self.originator)
+                .ok()
+                .flatten()
+        });
+
+        let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
+        if new_account_id.as_deref() != Some(expected_account_id) {
+            let found_account_id = new_account_id.as_deref().unwrap_or("unknown");
+            tracing::info!(
+                "Skipping auth reload due to account id mismatch (expected: {expected_account_id}, found: {found_account_id})"
+            );
+            return ReloadOutcome::Skipped;
+        }
+
+        tracing::info!("Reloading auth for account {expected_account_id}");
+        if let Ok(mut guard) = self.inner.write() {
+            let changed = !Self::auths_equal_for_refresh(&guard.auth, &new_auth);
+            guard.auth = new_auth;
+            guard.preferred_auth_mode = env_auth
+                .as_ref()
+                .map(|auth| auth.mode)
+                .unwrap_or(preferred);
+            if changed {
+                ReloadOutcome::ReloadedChanged
+            } else {
+                ReloadOutcome::ReloadedNoChange
+            }
+        } else {
+            ReloadOutcome::Skipped
+        }
+    }
+
     fn auths_equal(a: &Option<CodexAuth>, b: &Option<CodexAuth>) -> bool {
         match (a, b) {
             (None, None) => true,
             (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    fn auths_equal_for_refresh(a: &Option<CodexAuth>, b: &Option<CodexAuth>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => match (a.mode, b.mode) {
+                (AuthMode::ApiKey, AuthMode::ApiKey) => a.api_key == b.api_key,
+                (AuthMode::ChatGPT, AuthMode::ChatGPT)
+                | (AuthMode::ChatgptAuthTokens, AuthMode::ChatgptAuthTokens) => {
+                    a.get_current_auth_json() == b.get_current_auth_json()
+                }
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -1427,10 +1561,34 @@ impl AuthManager {
     /// Attempt to refresh the current auth token (if any). On success, reload
     /// the auth state from disk so other components observe refreshed token.
     pub async fn refresh_token_classified(&self) -> Result<Option<String>, RefreshTokenError> {
-        let auth = match self.auth() {
-            Some(a) => a,
+        let auth_before_reload = match self.auth() {
+            Some(auth) => auth,
             None => return Ok(None),
         };
+
+        let expected_account_id = auth_before_reload.get_account_id();
+        if expected_account_id.is_some() {
+            match self.reload_if_account_id_matches(expected_account_id.as_deref()) {
+                ReloadOutcome::ReloadedChanged => {
+                    let token = self
+                        .auth()
+                        .and_then(|auth| auth.get_current_token_data().map(|data| data.access_token));
+                    return Ok(token);
+                }
+                ReloadOutcome::ReloadedNoChange => {}
+                ReloadOutcome::Skipped => {
+                    return Err(RefreshTokenError::permanent(
+                        REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE,
+                    ));
+                }
+            }
+        }
+
+        let auth = match self.auth() {
+            Some(auth) => auth,
+            None => return Ok(None),
+        };
+
         match auth.refresh_token().await {
             Ok(token) => {
                 // Reload to pick up persisted changes.

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -60,6 +61,7 @@ fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathB
     let abi = ABI::V5;
     let access_rw = AccessFs::from_all(abi);
     let access_ro = AccessFs::from_read(abi);
+    let gpu_device_paths = gpu_device_paths(Path::new("/dev"));
 
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
@@ -68,6 +70,10 @@ fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathB
         .add_rules(landlock::path_beneath_rules(&["/"], access_ro))?
         .add_rules(landlock::path_beneath_rules(&["/dev/null"], access_rw))?
         .set_no_new_privs(true);
+
+    if !gpu_device_paths.is_empty() {
+        ruleset = ruleset.add_rules(landlock::path_beneath_rules(&gpu_device_paths, access_rw))?;
+    }
 
     if !writable_roots.is_empty() {
         ruleset = ruleset.add_rules(landlock::path_beneath_rules(&writable_roots, access_rw))?;
@@ -80,6 +86,36 @@ fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathB
     }
 
     Ok(())
+}
+
+fn gpu_device_paths(dev_root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    let drm_path = dev_root.join("dri");
+    if drm_path.exists() {
+        paths.push(drm_path);
+    }
+
+    let amd_kfd_path = dev_root.join("kfd");
+    if amd_kfd_path.exists() {
+        paths.push(amd_kfd_path);
+    }
+
+    if let Ok(entries) = fs::read_dir(dev_root) {
+        paths.extend(entries.flatten().filter_map(|entry| {
+            let file_name = entry.file_name();
+            let name = file_name.to_str()?;
+            if name.starts_with("nvidia") {
+                Some(entry.path())
+            } else {
+                None
+            }
+        }));
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// Installs a seccomp filter that blocks outbound network access except for
@@ -142,4 +178,48 @@ fn install_network_seccomp_filter_on_current_thread() -> std::result::Result<(),
     apply_filter(&prog)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gpu_device_paths;
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    #[test]
+    fn gpu_device_paths_includes_expected_entries() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let dev_root = tempdir.path();
+
+        fs::create_dir(dev_root.join("dri")).expect("dri directory should be created");
+        fs::write(dev_root.join("kfd"), b"").expect("kfd should be created");
+        fs::write(dev_root.join("nvidia0"), b"").expect("nvidia0 should be created");
+        fs::write(dev_root.join("nvidiactl"), b"").expect("nvidiactl should be created");
+        fs::write(dev_root.join("random"), b"").expect("random file should be created");
+
+        let actual = gpu_device_paths(dev_root)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            dev_root.join("dri"),
+            dev_root.join("kfd"),
+            dev_root.join("nvidia0"),
+            dev_root.join("nvidiactl"),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn gpu_device_paths_is_empty_when_no_gpu_entries_exist() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let dev_root = tempdir.path();
+
+        fs::write(dev_root.join("null"), b"").expect("null should be created");
+        fs::write(dev_root.join("random"), b"").expect("random should be created");
+
+        assert!(gpu_device_paths(dev_root).is_empty());
+    }
 }

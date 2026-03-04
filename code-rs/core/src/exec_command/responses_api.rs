@@ -61,10 +61,14 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
         "sandbox_permissions".to_string(),
         JsonSchema::String {
             description: Some(
-                "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem access (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     .to_string(),
             ),
-            allowed_values: None,
+            allowed_values: Some(vec![
+                "use_default".to_string(),
+                "with_additional_permissions".to_string(),
+                "require_escalated".to_string(),
+            ]),
         },
     );
     properties.insert(
@@ -75,6 +79,48 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
                     .to_string(),
             ),
             allowed_values: None,
+        },
+    );
+    properties.insert(
+        "additional_permissions".to_string(),
+        JsonSchema::Object {
+            properties: BTreeMap::from([(
+                "file_system".to_string(),
+                JsonSchema::Object {
+                    properties: BTreeMap::from([
+                        (
+                            "read".to_string(),
+                            JsonSchema::Array {
+                                items: Box::new(JsonSchema::String {
+                                    description: None,
+                                    allowed_values: None,
+                                }),
+                                description: Some(
+                                    "Additional filesystem paths to grant read access for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                        (
+                            "write".to_string(),
+                            JsonSchema::Array {
+                                items: Box::new(JsonSchema::String {
+                                    description: None,
+                                    allowed_values: None,
+                                }),
+                                description: Some(
+                                    "Additional filesystem paths to grant write access for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                    ]),
+                    required: None,
+                    additional_properties: Some(false.into()),
+                },
+            )]),
+            required: Some(vec!["file_system".to_string()]),
+            additional_properties: Some(false.into()),
         },
     );
 

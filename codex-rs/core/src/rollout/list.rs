@@ -39,7 +39,7 @@ pub struct ThreadsPage {
 }
 
 /// Summary information for a thread rollout file.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct ThreadItem {
     /// Absolute path to the rollout file.
     pub path: PathBuf,
@@ -57,6 +57,10 @@ pub struct ThreadItem {
     pub git_origin_url: Option<String>,
     /// Session source from session metadata.
     pub source: Option<SessionSource>,
+    /// Random unique nickname from session metadata for AgentControl-spawned sub-agents.
+    pub agent_nickname: Option<String>,
+    /// Role (agent_role) from session metadata for AgentControl-spawned sub-agents.
+    pub agent_role: Option<String>,
     /// Model provider from session metadata.
     pub model_provider: Option<String>,
     /// CLI version from session metadata.
@@ -87,6 +91,8 @@ struct HeadTailSummary {
     git_sha: Option<String>,
     git_origin_url: Option<String>,
     source: Option<SessionSource>,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
     model_provider: Option<String>,
     cli_version: Option<String>,
     created_at: Option<String>,
@@ -715,6 +721,8 @@ async fn build_thread_item(
             git_sha,
             git_origin_url,
             source,
+            agent_nickname,
+            agent_role,
             model_provider,
             cli_version,
             created_at,
@@ -733,6 +741,8 @@ async fn build_thread_item(
             git_sha,
             git_origin_url,
             source,
+            agent_nickname,
+            agent_role,
             model_provider,
             cli_version,
             created_at,
@@ -1015,25 +1025,29 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
 
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
-                summary.source = Some(session_meta_line.meta.source.clone());
-                summary.model_provider = session_meta_line.meta.model_provider.clone();
-                summary.thread_id = Some(session_meta_line.meta.id);
-                summary.cwd = Some(session_meta_line.meta.cwd.clone());
-                summary.git_branch = session_meta_line
-                    .git
-                    .as_ref()
-                    .and_then(|git| git.branch.clone());
-                summary.git_sha = session_meta_line
-                    .git
-                    .as_ref()
-                    .and_then(|git| git.commit_hash.clone());
-                summary.git_origin_url = session_meta_line
-                    .git
-                    .as_ref()
-                    .and_then(|git| git.repository_url.clone());
-                summary.cli_version = Some(session_meta_line.meta.cli_version);
-                summary.created_at = Some(session_meta_line.meta.timestamp.clone());
-                summary.saw_session_meta = true;
+                if !summary.saw_session_meta {
+                    summary.source = Some(session_meta_line.meta.source.clone());
+                    summary.agent_nickname = session_meta_line.meta.agent_nickname.clone();
+                    summary.agent_role = session_meta_line.meta.agent_role.clone();
+                    summary.model_provider = session_meta_line.meta.model_provider.clone();
+                    summary.thread_id = Some(session_meta_line.meta.id);
+                    summary.cwd = Some(session_meta_line.meta.cwd.clone());
+                    summary.git_branch = session_meta_line
+                        .git
+                        .as_ref()
+                        .and_then(|git| git.branch.clone());
+                    summary.git_sha = session_meta_line
+                        .git
+                        .as_ref()
+                        .and_then(|git| git.commit_hash.clone());
+                    summary.git_origin_url = session_meta_line
+                        .git
+                        .as_ref()
+                        .and_then(|git| git.repository_url.clone());
+                    summary.cli_version = Some(session_meta_line.meta.cli_version);
+                    summary.created_at = Some(session_meta_line.meta.timestamp.clone());
+                    summary.saw_session_meta = true;
+                }
             }
             RolloutItem::ResponseItem(_) => {
                 summary.created_at = summary
@@ -1212,7 +1226,7 @@ async fn find_thread_path_by_id_str_in_subdir(
 
     let found = results.matches.into_iter().next().map(|m| m.full_path());
     if let Some(found_path) = found.as_ref() {
-        tracing::error!("state db missing rollout path for thread {id_str}");
+        tracing::debug!("state db missing rollout path for thread {id_str}");
         state_db::record_discrepancy("find_thread_path_by_id_str_in_subdir", "falling_back");
         state_db::read_repair_rollout_path(
             state_db_ctx.as_deref(),

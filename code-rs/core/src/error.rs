@@ -141,6 +141,9 @@ pub enum CodexErr {
     #[error("{0}")]
     ServerError(String),
 
+    #[error("server overloaded")]
+    ServerOverloaded,
+
     /// Retry limit exceeded.
     #[error("{0}")]
     RetryLimit(RetryLimitReachedError),

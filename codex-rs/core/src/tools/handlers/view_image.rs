@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::openai_models::InputModality;
 use serde::Deserialize;
 use tokio::fs;
 
@@ -13,10 +15,12 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::local_image_content_items_with_label_number;
 
 pub struct ViewImageHandler;
+
+const VIEW_IMAGE_UNSUPPORTED_MESSAGE: &str =
+    "view_image is not allowed because you do not support image inputs";
 
 #[derive(Deserialize)]
 struct ViewImageArgs {
@@ -30,6 +34,17 @@ impl ToolHandler for ViewImageHandler {
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+        if !invocation
+            .turn
+            .model_info
+            .input_modalities
+            .contains(&InputModality::Image)
+        {
+            return Err(FunctionCallError::RespondToModel(
+                VIEW_IMAGE_UNSUPPORTED_MESSAGE.to_string(),
+            ));
+        }
+
         let ToolInvocation {
             session,
             turn,
@@ -66,21 +81,21 @@ impl ToolHandler for ViewImageHandler {
         }
         let event_path = abs_path.clone();
 
-        let content: Vec<ContentItem> =
-            local_image_content_items_with_label_number(&abs_path, None);
-        let input = ResponseInputItem::Message {
-            role: "user".to_string(),
-            content,
-        };
-
-        session
-            .inject_response_items(vec![input])
-            .await
-            .map_err(|_| {
-                FunctionCallError::RespondToModel(
-                    "unable to attach image (no active task)".to_string(),
-                )
-            })?;
+        let content = local_image_content_items_with_label_number(&abs_path, None);
+        let content = content
+            .into_iter()
+            .map(|item| match item {
+                ContentItem::InputText { text } => {
+                    FunctionCallOutputContentItem::InputText { text }
+                }
+                ContentItem::InputImage { image_url } => {
+                    FunctionCallOutputContentItem::InputImage { image_url }
+                }
+                ContentItem::OutputText { text } => {
+                    FunctionCallOutputContentItem::InputText { text }
+                }
+            })
+            .collect();
 
         session
             .send_event(
@@ -93,7 +108,7 @@ impl ToolHandler for ViewImageHandler {
             .await;
 
         Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text("attached local image path".to_string()),
+            body: FunctionCallOutputBody::ContentItems(content),
             success: Some(true),
         })
     }

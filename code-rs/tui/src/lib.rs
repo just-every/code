@@ -42,6 +42,9 @@ use code_core::review_coord::{
 };
 use std::sync::Once;
 use std::sync::OnceLock;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tracing_appender::non_blocking;
 use tracing_appender::rolling;
 use tracing_subscriber::filter::LevelFilter;
@@ -483,9 +486,23 @@ pub async fn run_main(
     code_core::config::migrate_legacy_log_dirs(&code_home);
 
     let housekeeping_home = code_home.clone();
+    let housekeeping_stop = Arc::new(AtomicBool::new(false));
+    let housekeeping_stop_worker = Arc::clone(&housekeeping_stop);
     let housekeeping_handle = thread_spawner::spawn_lightweight("housekeeping", move || {
-        if let Err(err) = code_core::run_housekeeping_if_due(&housekeeping_home) {
-            tracing::warn!("code home housekeeping failed: {err}");
+        const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(30 * 60);
+        const HOUSEKEEPING_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+        let mut next_run_at = Instant::now();
+        while !housekeeping_stop_worker.load(Ordering::Relaxed) {
+            let now = Instant::now();
+            if now >= next_run_at {
+                if let Err(err) = code_core::run_housekeeping_if_due(&housekeeping_home) {
+                    tracing::warn!("code home housekeeping failed: {err}");
+                }
+                next_run_at = now + HOUSEKEEPING_INTERVAL;
+            }
+
+            std::thread::sleep(HOUSEKEEPING_POLL_INTERVAL);
         }
     });
 
@@ -724,6 +741,7 @@ pub async fn run_main(
         theme_configured_explicitly,
     );
 
+    housekeeping_stop.store(true, Ordering::Relaxed);
     if let Some(handle) = housekeeping_handle {
         if let Err(err) = handle.join() {
             tracing::warn!("code home housekeeping task panicked: {err:?}");

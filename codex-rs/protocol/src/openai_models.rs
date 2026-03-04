@@ -4,7 +4,6 @@
 //! are used to preserve compatibility when older payloads omit newly introduced attributes.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -238,7 +237,8 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
     /// Token threshold for automatic compaction. When omitted, core derives it
-    /// from `context_window` (90%).
+    /// from `context_window` (90%). When provided, core clamps it to 90% of the
+    /// context window when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<i64>,
     /// Percentage of the context window considered usable for inputs, after
@@ -249,14 +249,28 @@ pub struct ModelInfo {
     /// Input modalities accepted by the backend for this model.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    /// When true, this model should use websocket transport even when websocket features are off.
+    #[serde(default)]
+    pub prefer_websockets: bool,
+    /// Internal-only marker set by core when a model slug resolved to fallback metadata.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub used_fallback_model_metadata: bool,
 }
 
 impl ModelInfo {
     pub fn auto_compact_token_limit(&self) -> Option<i64> {
-        self.auto_compact_token_limit.or_else(|| {
-            self.context_window
-                .map(|context_window| (context_window * 9) / 10)
-        })
+        let context_limit = self
+            .context_window
+            .map(|context_window| (context_window * 9) / 10);
+        let config_limit = self.auto_compact_token_limit;
+        if let Some(context_limit) = context_limit {
+            return Some(
+                config_limit.map_or(context_limit, |limit| std::cmp::min(limit, context_limit)),
+            );
+        }
+        config_limit
     }
 
     pub fn supports_personality(&self) -> bool {
@@ -410,32 +424,18 @@ impl ModelPreset {
             .collect()
     }
 
-    /// Merge remote presets with existing presets, preferring remote when slugs match.
+    /// Recompute the single default preset using picker visibility.
     ///
-    /// Remote presets take precedence. Existing presets not in remote are appended with `is_default` set to false.
-    pub fn merge(
-        remote_presets: Vec<ModelPreset>,
-        existing_presets: Vec<ModelPreset>,
-    ) -> Vec<ModelPreset> {
-        if remote_presets.is_empty() {
-            return existing_presets;
-        }
-
-        let remote_slugs: HashSet<&str> = remote_presets
-            .iter()
-            .map(|preset| preset.model.as_str())
-            .collect();
-
-        let mut merged_presets = remote_presets.clone();
-        for mut preset in existing_presets {
-            if remote_slugs.contains(preset.model.as_str()) {
-                continue;
-            }
+    /// The first picker-visible model wins; if none are picker-visible, the first model wins.
+    pub fn mark_default_by_picker_visibility(models: &mut [ModelPreset]) {
+        for preset in models.iter_mut() {
             preset.is_default = false;
-            merged_presets.push(preset);
         }
-
-        merged_presets
+        if let Some(default) = models.iter_mut().find(|preset| preset.show_in_picker) {
+            default.is_default = true;
+        } else if let Some(default) = models.first_mut() {
+            default.is_default = true;
+        }
     }
 }
 
@@ -506,6 +506,8 @@ mod tests {
             effective_context_window_percent: 95,
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
+            prefer_websockets: false,
+            used_fallback_model_metadata: false,
         }
     }
 

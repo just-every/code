@@ -1,3 +1,4 @@
+use crate::shell_detect::detect_shell_type;
 use crate::shell_snapshot::ShellSnapshot;
 use serde::Deserialize;
 use serde::Serialize;
@@ -244,27 +245,6 @@ pub fn get_shell(shell_type: ShellType, path: Option<&PathBuf>) -> Option<Shell>
     }
 }
 
-pub fn detect_shell_type(shell_path: &PathBuf) -> Option<ShellType> {
-    match shell_path.as_os_str().to_str() {
-        Some("zsh") => Some(ShellType::Zsh),
-        Some("sh") => Some(ShellType::Sh),
-        Some("cmd") => Some(ShellType::Cmd),
-        Some("bash") => Some(ShellType::Bash),
-        Some("pwsh") => Some(ShellType::PowerShell),
-        Some("powershell") => Some(ShellType::PowerShell),
-        _ => {
-            let shell_name = shell_path.file_stem();
-            if let Some(shell_name) = shell_name
-                && shell_name != shell_path
-            {
-                detect_shell_type(&PathBuf::from(shell_name))
-            } else {
-                None
-            }
-        }
-    }
-}
-
 pub fn default_user_shell() -> Shell {
     default_user_shell_from_path(get_user_shell_path())
 }
@@ -363,7 +343,6 @@ mod detect_shell_type_tests {
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -374,7 +353,7 @@ mod tests {
 
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, Path::new("/bin/zsh"));
+        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
     }
 
     #[test]
@@ -384,7 +363,7 @@ mod tests {
 
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, Path::new("/bin/zsh"));
+        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
     }
 
     #[test]
@@ -393,9 +372,7 @@ mod tests {
         let shell_path = bash_shell.shell_path;
 
         assert!(
-            shell_path == Path::new("/bin/bash")
-                || shell_path == Path::new("/usr/bin/bash")
-                || shell_path == Path::new("/usr/local/bin/bash"),
+            shell_path.file_name().and_then(|name| name.to_str()) == Some("bash"),
             "shell path: {shell_path:?}",
         );
     }
@@ -405,7 +382,7 @@ mod tests {
         let sh_shell = get_shell(ShellType::Sh, None).unwrap();
         let shell_path = sh_shell.shell_path;
         assert!(
-            shell_path == Path::new("/bin/sh") || shell_path == Path::new("/usr/bin/sh"),
+            shell_path.file_name().and_then(|name| name.to_str()) == Some("sh"),
             "shell path: {shell_path:?}",
         );
     }

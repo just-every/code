@@ -46,12 +46,16 @@ pub struct ClientInfo {
 }
 
 /// Client-declared capabilities negotiated during initialize.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeCapabilities {
     /// Opt into receiving experimental API methods and fields.
     #[serde(default)]
     pub experimental_api: bool,
+    /// Exact notification method names that should be suppressed for this
+    /// connection (for example `codex/event/session_configured`).
+    #[ts(optional = nullable)]
+    pub opt_out_notification_methods: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -230,8 +234,8 @@ pub struct GitDiffToRemoteResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyPatchApprovalParams {
     pub conversation_id: ThreadId,
-    /// Use to correlate this with [codex_core::protocol::PatchApplyBeginEvent]
-    /// and [codex_core::protocol::PatchApplyEndEvent].
+    /// Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent]
+    /// and [codex_protocol::protocol::PatchApplyEndEvent].
     pub call_id: String,
     pub file_changes: HashMap<PathBuf, FileChange>,
     /// Optional explanatory reason (e.g. request for extra write access).
@@ -251,9 +255,11 @@ pub struct ApplyPatchApprovalResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ExecCommandApprovalParams {
     pub conversation_id: ThreadId,
-    /// Use to correlate this with [codex_core::protocol::ExecCommandBeginEvent]
-    /// and [codex_core::protocol::ExecCommandEndEvent].
+    /// Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent]
+    /// and [codex_protocol::protocol::ExecCommandEndEvent].
     pub call_id: String,
+    /// Identifier for this specific approval callback.
+    pub approval_id: Option<String>,
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub reason: Option<String>,
@@ -522,6 +528,15 @@ impl From<CoreTextElement> for V1TextElement {
 impl From<V1TextElement> for CoreTextElement {
     fn from(value: V1TextElement) -> Self {
         Self::new(value.byte_range.into(), value.placeholder)
+    }
+}
+
+impl InputItem {
+    pub fn text_char_count(&self) -> usize {
+        match self {
+            InputItem::Text { text, .. } => text.chars().count(),
+            InputItem::Image { .. } | InputItem::LocalImage { .. } => 0,
+        }
     }
 }
 

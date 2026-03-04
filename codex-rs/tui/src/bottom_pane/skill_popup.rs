@@ -15,7 +15,7 @@ use crate::key_hint;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::text_formatting::truncate_text;
-use codex_common::fuzzy_match::fuzzy_match;
+use codex_utils_fuzzy_match::fuzzy_match;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MentionItem {
@@ -101,6 +101,7 @@ impl SkillPopup {
                 let description = mention.description.clone().unwrap_or_default();
                 GenericDisplayRow {
                     name,
+                    name_prefix_spans: Vec::new(),
                     match_indices: indices,
                     display_shortcut: None,
                     description: Some(description).filter(|desc| !desc.is_empty()),
