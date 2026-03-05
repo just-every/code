@@ -664,6 +664,7 @@ pub(crate) enum AppEvent {
         latest_version: Option<String>,
     },
     SetAutoUpgradeEnabled(bool),
+    SetMemoriesEnabled(bool),
     SetAutoSwitchAccountsOnRateLimit(bool),
     SetApiKeyFallbackOnAllAccountsLimited(bool),
     RequestAgentInstall { name: String, selected_index: usize },

@@ -335,6 +335,8 @@ async fn exec(
         command, cwd, env, ..
     } = params;
 
+    preflight_exec(&command, &cwd, &env)?;
+
     let (program, args) = command.split_first().ok_or_else(|| {
         CodexErr::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -353,6 +355,92 @@ async fn exec(
     )
     .await?;
     consume_truncated_output(child, timeout, stdout_stream).await
+}
+
+fn preflight_exec(command: &[String], cwd: &Path, env: &HashMap<String, String>) -> io::Result<()> {
+    let (program, _args) = command.split_first().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "command args are empty")
+    })?;
+
+    if !cwd.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("exec preflight failed: working directory does not exist: {}", cwd.display()),
+        ));
+    }
+    if !cwd.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("exec preflight failed: working directory is not a directory: {}", cwd.display()),
+        ));
+    }
+
+    if program.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "exec preflight failed: command program is empty",
+        ));
+    }
+
+    if !command_program_resolves(program, cwd, env) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("exec preflight failed: executable not found: {program}"),
+        ));
+    }
+
+    Ok(())
+}
+
+fn command_program_resolves(program: &str, cwd: &Path, env: &HashMap<String, String>) -> bool {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 || program_path.is_absolute() {
+        let resolved_program = if program_path.is_absolute() {
+            program_path.to_path_buf()
+        } else {
+            cwd.join(program_path)
+        };
+        return resolved_program.is_file();
+    }
+
+    resolve_program_in_path(program, env).is_some()
+}
+
+fn resolve_program_in_path(program: &str, env: &HashMap<String, String>) -> Option<PathBuf> {
+    let path_value = env
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())?;
+
+    for dir in std::env::split_paths(&path_value) {
+        let candidate = dir.join(program);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+
+        #[cfg(windows)]
+        {
+            let pathext = env
+                .get("PATHEXT")
+                .cloned()
+                .or_else(|| std::env::var("PATHEXT").ok())
+                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+            for ext in pathext.split(';').filter(|ext| !ext.is_empty()) {
+                let ext = ext.trim();
+                let ext = if ext.starts_with('.') {
+                    ext.to_string()
+                } else {
+                    format!(".{ext}")
+                };
+                let candidate = dir.join(format!("{program}{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Consumes the output of a child process, truncating it so it is suitable for
@@ -761,4 +849,68 @@ fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::windows::process::ExitStatusExt;
     #[expect(clippy::unwrap_used)]
     std::process::ExitStatus::from_raw(code.try_into().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_program_resolves, preflight_exec};
+    use std::collections::HashMap;
+    use std::fs;
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("codex-exec-tests-{name}-{pid}-{nanos}"))
+    }
+
+    #[test]
+    fn preflight_exec_rejects_missing_working_directory() {
+        let missing = std::path::PathBuf::from("/tmp/does-not-exist-codex-preflight");
+        let err = preflight_exec(&["sh".to_string()], &missing, &HashMap::new())
+            .expect_err("expected preflight failure");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            err.to_string().contains("working directory does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn preflight_exec_rejects_missing_executable() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), String::new());
+        let err = preflight_exec(&["definitely-not-a-real-binary".to_string()], &cwd, &env)
+            .expect_err("expected preflight failure");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            err.to_string().contains("executable not found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_program_resolves_absolute_path() {
+        let env = HashMap::new();
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(command_program_resolves("/bin/sh", &cwd, &env));
+    }
+
+    #[test]
+    fn preflight_exec_resolves_relative_program_against_cwd() {
+        let cwd = unique_temp_dir("relative-program");
+        fs::create_dir_all(&cwd).expect("create temp dir");
+        let script = cwd.join("run.sh");
+        fs::write(&script, "#!/bin/sh\necho ok\n").expect("write script");
+
+        let err = preflight_exec(&["./run.sh".to_string()], &cwd, &HashMap::new());
+
+        fs::remove_file(&script).expect("remove script");
+        fs::remove_dir_all(&cwd).expect("remove temp dir");
+
+        assert!(err.is_ok(), "expected relative program to resolve in cwd");
+    }
 }

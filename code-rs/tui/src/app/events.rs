@@ -861,6 +861,12 @@ impl App<'_> {
                         self.config.auto_upgrade_enabled = enabled;
                     }
                 }
+                AppEvent::SetMemoriesEnabled(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_memories_enabled(enabled);
+                    }
+                    self.config.memories_enabled = enabled;
+                }
                 AppEvent::SetAutoSwitchAccountsOnRateLimit(enabled) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.set_auto_switch_accounts_on_rate_limit(enabled);

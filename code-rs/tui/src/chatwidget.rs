@@ -1324,6 +1324,14 @@ const MAX_PENDING_AUTO_REVIEW_NOTE_CHARS: usize = 2400;
 const MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS: usize = 1200;
 const MAX_AUTO_REVIEW_ERROR_SUMMARY_CHARS: usize = 320;
 
+#[derive(Clone, Copy)]
+struct AutoReviewFailureClassification {
+    failure_class: &'static str,
+    phase: &'static str,
+    retryable: bool,
+    remediation_hint: &'static str,
+}
+
 fn auto_review_repo_dir(git_root: &Path) -> Result<PathBuf, String> {
     let repo_name = git_root
         .file_name()
@@ -2532,6 +2540,7 @@ use self::settings_overlay::{
     AccountsSettingsContent,
     AutoDriveSettingsContent,
     AgentsSettingsContent,
+    MemoriesSettingsContent,
     LimitsSettingsContent,
     ChromeSettingsContent,
     McpSettingsContent,
@@ -16934,6 +16943,14 @@ impl ChatWidget<'_> {
         AccountsSettingsContent::new(view)
     }
 
+    fn build_memories_settings_content(&self) -> MemoriesSettingsContent {
+        let view = crate::bottom_pane::MemoriesSettingsView::new(
+            self.app_event_tx.clone(),
+            self.config.memories_enabled,
+        );
+        MemoriesSettingsContent::new(view)
+    }
+
     fn build_validation_settings_content(&mut self) -> ValidationSettingsContent {
         let groups = vec![
             (
@@ -17330,19 +17347,17 @@ impl ChatWidget<'_> {
             );
 
             if is_terminal {
-                let (mut has_findings, findings_count, summary) =
+                let (has_findings, findings_count, summary) =
                     Self::parse_agent_review_result(entry.result.as_deref());
-
-                // Avoid showing a warning when we didn't get an explicit findings list.
-                // Some heuristic parses can claim "issues" but provide a zero count; treat those as clean
-                // to keep the UI consistent with successful, issue-free reviews.
-                if has_findings && findings_count == 0 {
-                    has_findings = false;
-                }
+                let effective_findings = if has_findings {
+                    findings_count.max(1)
+                } else {
+                    findings_count
+                };
 
                 let mut label = if has_findings {
-                    let plural = if findings_count == 1 { "issue" } else { "issues" };
-                    format!("Auto Review: {findings_count} {plural} found")
+                    let plural = if effective_findings == 1 { "issue" } else { "issues" };
+                    format!("Auto Review: {effective_findings} {plural} found")
                 } else if matches!(entry.status, AgentStatus::Completed) {
                     "Auto Review: no issues found".to_string()
                 } else {
@@ -24089,6 +24104,51 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    pub(crate) fn set_memories_enabled(&mut self, enabled: bool) {
+        if self.config.memories_enabled == enabled {
+            return;
+        }
+        self.config.memories_enabled = enabled;
+
+        let code_home = self.config.code_home.clone();
+        let profile = self.config.active_profile.clone();
+        tokio::spawn(async move {
+            if let Err(err) = code_core::config_edit::persist_overrides(
+                &code_home,
+                profile.as_deref(),
+                &[(&["features", "memories"], if enabled { "true" } else { "false" })],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist memories setting: {err}");
+            }
+        });
+
+        let notice = if enabled {
+            "Memories enabled (applies on next session)"
+        } else {
+            "Memories disabled (applies on next session)"
+        };
+        self.bottom_pane.flash_footer_notice(notice.to_string());
+
+        let should_refresh_memories = matches!(
+            self.settings
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.active_section()),
+            Some(SettingsSection::Memories)
+        );
+        if should_refresh_memories {
+            let content = self.build_memories_settings_content();
+            if let Some(overlay) = self.settings.overlay.as_mut() {
+                overlay.set_memories_content(content);
+            }
+        }
+
+        self.refresh_settings_overview_rows();
+        self.request_redraw();
+    }
+
     pub(crate) fn set_api_key_fallback_on_all_accounts_limited(&mut self, enabled: bool) {
         if self.config.api_key_fallback_on_all_accounts_limited == enabled {
             return;
@@ -24168,6 +24228,7 @@ Have we met every part of this goal and is there no further work to do?"#
             overlay.set_updates_content(update_content);
         }
         overlay.set_accounts_content(self.build_accounts_settings_content());
+        overlay.set_memories_content(self.build_memories_settings_content());
         overlay.set_notifications_content(self.build_notifications_settings_content());
         overlay.set_prompts_content(self.build_prompts_settings_content());
         overlay.set_skills_content(self.build_skills_settings_content());
@@ -24518,6 +24579,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     SettingsSection::Updates => self.settings_summary_updates(),
                     SettingsSection::Accounts => self.settings_summary_accounts(),
                     SettingsSection::Agents => self.settings_summary_agents(),
+                    SettingsSection::Memories => self.settings_summary_memories(),
                     SettingsSection::Prompts => self.settings_summary_prompts(),
                     SettingsSection::Skills => self.settings_summary_skills(),
                     SettingsSection::AutoDrive => self.settings_summary_auto_drive(),
@@ -24776,6 +24838,13 @@ Have we met every part of this goal and is there no further work to do?"#
         Some(format!("Skills loaded: {count}"))
     }
 
+    fn settings_summary_memories(&self) -> Option<String> {
+        Some(format!(
+            "Memories: {}",
+            Self::on_off_label(self.config.memories_enabled)
+        ))
+    }
+
     fn refresh_mcp_settings_overlay(&mut self) {
         let content = self.build_mcp_settings_content();
         let Some(content) = content else {
@@ -24936,6 +25005,7 @@ Have we met every part of this goal and is there no further work to do?"#
             | SettingsSection::Notifications
             | SettingsSection::Prompts
             | SettingsSection::Accounts
+            | SettingsSection::Memories
             | SettingsSection::Skills => false,
             SettingsSection::Agents => {
                 self.show_agents_overview_ui();
@@ -30660,6 +30730,8 @@ use code_core::protocol::OrderMeta;
             .expect("sanitized failure note should be queued");
 
         assert!(note.contains("Background auto-review failed."));
+        assert!(note.contains("Failure class: context_budget_exhausted"));
+        assert!(note.contains("Phase: compact"));
         assert!(
             note.contains("Model hit the context window repeatedly and then exhausted usage while compacting."),
             "error should be summarized instead of dumping raw logs"
@@ -30678,6 +30750,153 @@ use code_core::protocol::OrderMeta;
                 .is_some_and(|msg| msg.chars().count() <= MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS),
             "cached context should stay bounded"
         );
+    }
+
+    #[test]
+    fn auto_review_failure_note_classifies_os_error_2_with_path_context_as_missing_path() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "Command failed: 2026-03-01T08:40:52.668950Z ERROR code_core::exec: exec error for worktree /tmp/wt: No such file or directory (os error 2)";
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = chat
+            .pending_auto_review_notes
+            .front()
+            .expect("sanitized failure note should be queued");
+        assert!(note.contains("Failure class: exec_missing_path"));
+        assert!(note.contains("Phase: exec_run"));
+        assert!(note.contains("Retryable: false"));
+        assert!(note.contains("Hint: Verify the auto-review worktree path exists"));
+    }
+
+    #[test]
+    fn auto_review_failure_note_keeps_generic_os_error_2_as_unknown() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "Command failed: 2026-03-01T08:40:52.668950Z ERROR code_core::exec: exec error: No such file or directory (os error 2)";
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = chat
+            .pending_auto_review_notes
+            .front()
+            .expect("sanitized failure note should be queued");
+        assert!(note.contains("Failure class: unknown"));
+        assert!(note.contains("Retryable: true"));
+    }
+
+    #[test]
+    fn auto_review_failure_note_uses_placeholders_for_missing_worktree_context() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::new(),
+            branch: String::new(),
+            agent_id: None,
+            snapshot: None,
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "failed to prepare worktree: Failed to reset reusable worktree: fatal: not a git repository";
+        chat.on_background_review_finished(
+            PathBuf::new(),
+            String::new(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            None,
+            None,
+        );
+
+        let note = chat
+            .pending_auto_review_notes
+            .front()
+            .expect("sanitized failure note should be queued");
+        assert!(note.contains("Failure class: worktree_prepare_failed"));
+        assert!(note.contains("Phase: worktree_prepare"));
+        assert!(note.contains("Worktree: '(unknown)'"));
+        assert!(note.contains("Worktree path: (unavailable)"));
+    }
+
+    #[test]
+    fn auto_review_with_zero_count_findings_still_surfaces_notice() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            0,
+            Some("Findings: missing validation on write path".to_string()),
+            None,
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        assert!(
+            chat
+                .auto_review_status
+                .is_some_and(|state| state.status == AutoReviewIndicatorStatus::Fixed),
+            "zero-count findings should still surface as actionable"
+        );
+        let notice_present = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("Auto Review: 1 issue(s) found"))
+            })
+        });
+        assert!(notice_present, "fallback findings notice should be visible");
     }
 
     #[test]
@@ -35701,6 +35920,87 @@ impl ChatWidget<'_> {
         summary
     }
 
+    fn classify_auto_review_error(error: &str) -> AutoReviewFailureClassification {
+        let lowered = error.to_ascii_lowercase();
+        let worktree_prepare_failed = lowered.contains("failed to prepare worktree")
+            || lowered.contains("failed to reset reusable worktree")
+            || lowered.contains("not a git repository");
+        let hit_context_window = lowered.contains("context-window limit")
+            || lowered.contains("context window")
+            || lowered.contains("input exceeds the context window");
+        let hit_usage_limit = lowered.contains("usage_limit_reached")
+            || lowered.contains("429 too many requests")
+            || lowered.contains("usage limit has been reached");
+
+        let missing_binary = lowered.contains("executable not found")
+            || lowered.contains("command not found")
+            || (lowered.contains("no such file or directory") && lowered.contains("exec preflight"));
+        let os_error_2_with_path_context = lowered.contains("no such file or directory (os error 2)")
+            && (lowered.contains("worktree")
+                || lowered.contains("working directory")
+                || lowered.contains("cwd")
+                || lowered.contains("current_dir")
+                || lowered.contains("exec preflight"));
+        let missing_path = lowered.contains("working directory does not exist")
+            || lowered.contains("working directory is not a directory")
+            || os_error_2_with_path_context;
+
+        if worktree_prepare_failed {
+            return AutoReviewFailureClassification {
+                failure_class: "worktree_prepare_failed",
+                phase: "worktree_prepare",
+                retryable: false,
+                remediation_hint: "Verify the current workspace is inside a valid git repository and retry auto review.",
+            };
+        }
+
+        if hit_context_window {
+            return AutoReviewFailureClassification {
+                failure_class: "context_budget_exhausted",
+                phase: if lowered.contains("compact") {
+                    "compact"
+                } else {
+                    "prompt_build"
+                },
+                retryable: hit_usage_limit,
+                remediation_hint: "Reduce review scope or chunk large diffs so compaction can finish within model limits.",
+            };
+        }
+
+        if missing_binary {
+            return AutoReviewFailureClassification {
+                failure_class: "exec_missing_binary",
+                phase: if lowered.contains("preflight") {
+                    "exec_preflight"
+                } else {
+                    "exec_run"
+                },
+                retryable: false,
+                remediation_hint: "Ensure required binaries (for example git/bash/rg/code) are installed and available on PATH in the auto-review runtime.",
+            };
+        }
+
+        if missing_path {
+            return AutoReviewFailureClassification {
+                failure_class: "exec_missing_path",
+                phase: if lowered.contains("preflight") {
+                    "exec_preflight"
+                } else {
+                    "exec_run"
+                },
+                retryable: false,
+                remediation_hint: "Verify the auto-review worktree path exists and command/file paths are valid before retrying.",
+            };
+        }
+
+        AutoReviewFailureClassification {
+            failure_class: "unknown",
+            phase: "exec_run",
+            retryable: true,
+            remediation_hint: "Re-run auto review once and capture logs if the failure repeats.",
+        }
+    }
+
     fn review_result_from_runs(outputs: &[ReviewOutputEvent]) -> (bool, usize, Option<String>) {
         if outputs.is_empty() {
             return (false, 0, None);
@@ -36047,15 +36347,24 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
-        // Normalize zero-count "issues" so the indicator and developer notes stay
-        // aligned with the overlay: if the parser could not produce a findings list,
-        // treat the run as clean instead of "fixed".
-        let mut has_findings = has_findings;
-        if has_findings && findings == 0 {
-            has_findings = false;
-        }
+        let effective_findings = if has_findings {
+            findings.max(1)
+        } else {
+            findings
+        };
 
         let was_task_running = self.is_task_running();
+
+        let inflight_worktree_path = self
+            .background_review
+            .as_ref()
+            .map(|state| state.worktree_path.clone())
+            .unwrap_or_default();
+        let inflight_branch = self
+            .background_review
+            .as_ref()
+            .map(|state| state.branch.clone())
+            .unwrap_or_default();
 
         let inflight_base = self
             .background_review
@@ -36092,19 +36401,42 @@ impl ChatWidget<'_> {
             .filter(|s| !s.is_empty())
             .map(|s| s.replace('\n', " "))
             .map(|s| format!("Summary: {s}"));
+        let resolved_worktree_path = if worktree_path.as_os_str().is_empty() {
+            inflight_worktree_path
+        } else {
+            worktree_path
+        };
+        let resolved_branch = if branch.trim().is_empty() {
+            inflight_branch
+        } else {
+            branch
+        };
+        let worktree_label = if resolved_branch.trim().is_empty() {
+            "(unknown)".to_string()
+        } else {
+            resolved_branch.clone()
+        };
+        let worktree_path_label = if resolved_worktree_path.as_os_str().is_empty() {
+            "(unavailable)".to_string()
+        } else {
+            resolved_worktree_path.display().to_string()
+        };
         let errored = error.is_some();
         let indicator_status = if let Some(err) = error {
             let summarized_error = Self::summarize_auto_review_error(&err);
+            let classification = Self::classify_auto_review_error(&err);
             developer_note = Some(format!(
-                "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{branch}'\nWorktree path: {}\n{snapshot_note}\n{agent_note}\nError: {err}",
-                worktree_path.display(),
+                "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{worktree_label}'\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}\nFailure class: {}\nPhase: {}\nRetryable: {}\nHint: {}\nError: {err}",
+                classification.failure_class,
+                classification.phase,
+                classification.retryable,
+                classification.remediation_hint,
                 err = summarized_error,
             ));
             AutoReviewIndicatorStatus::Failed
         } else if has_findings {
             let mut note = format!(
-                "[developer] Background auto-review completed and reported {findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{branch}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {}\n{snapshot_note}\n{agent_note}",
-                worktree_path.display(),
+                "[developer] Background auto-review completed and reported {effective_findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{worktree_label}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}",
             );
             if let Some(summary_note) = summary_note {
                 note.push('\n');
@@ -36117,7 +36449,7 @@ impl ChatWidget<'_> {
         };
 
         let findings_for_indicator =
-            matches!(indicator_status, AutoReviewIndicatorStatus::Fixed).then_some(findings.max(1));
+            matches!(indicator_status, AutoReviewIndicatorStatus::Fixed).then_some(effective_findings);
         let phase = self
             .auto_review_status
             .map(|s| s.phase)
@@ -36125,10 +36457,10 @@ impl ChatWidget<'_> {
         self.set_auto_review_indicator(indicator_status, findings_for_indicator, phase);
         if matches!(indicator_status, AutoReviewIndicatorStatus::Fixed) {
             self.insert_auto_review_notice(
-                &branch,
-                &worktree_path,
+                &worktree_label,
+                &resolved_worktree_path,
                 summary.as_deref(),
-                findings.max(1),
+                effective_findings,
             );
         }
 

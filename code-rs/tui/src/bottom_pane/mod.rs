@@ -26,6 +26,7 @@ mod approval_ui;
 mod auto_coordinator_view;
 mod auto_drive_settings_view;
 mod account_switch_settings_view;
+mod memories_settings_view;
 mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
@@ -84,6 +85,7 @@ pub(crate) use auto_coordinator_view::{
 };
 pub(crate) use auto_drive_settings_view::AutoDriveSettingsView;
 pub(crate) use account_switch_settings_view::AccountSwitchSettingsView;
+pub(crate) use memories_settings_view::MemoriesSettingsView;
 pub(crate) use login_accounts_view::{
     LoginAccountsState,
     LoginAccountsView,

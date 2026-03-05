@@ -723,7 +723,9 @@ pub(super) async fn submission_loop(
                     inner.self_handle = weak_handle;
                 }
                 sess = Some(new_session);
-                crate::memories::maybe_spawn_memory_summary_refresh(config.code_home.clone());
+                if config.memories_enabled && config.memories.generate_memories {
+                    crate::memories::maybe_spawn_memory_summary_refresh(config.code_home.clone());
+                }
                 if let Some(sess_arc) = &sess {
                     if !config.always_allow_commands.is_empty() {
                         let mut st = sess_arc.state.lock().unwrap();
@@ -2189,10 +2191,12 @@ async fn run_turn(
         if should_inject_html_sanitizer_guardrails(&attempt_input) {
             prepend_developer_messages.push(HTML_SANITIZER_GUARDRAILS_MESSAGE.to_string());
         }
-        if let Some(memory_prompt) =
-            crate::memories::build_memory_tool_developer_instructions(tc.client.code_home()).await
-        {
-            prepend_developer_messages.push(memory_prompt);
+        if tc.client.memories_enabled() && tc.client.memories_use_enabled() {
+            if let Some(memory_prompt) =
+                crate::memories::build_memory_tool_developer_instructions(tc.client.code_home()).await
+            {
+                prepend_developer_messages.push(memory_prompt);
+            }
         }
 
         let mut prompt = Prompt {

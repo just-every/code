@@ -415,6 +415,18 @@ impl ModelClient {
         self.config.api_key_fallback_on_all_accounts_limited
     }
 
+    pub fn memories_enabled(&self) -> bool {
+        self.config.memories_enabled
+    }
+
+    pub fn memories_generate_enabled(&self) -> bool {
+        self.config.memories.generate_memories
+    }
+
+    pub fn memories_use_enabled(&self) -> bool {
+        self.config.memories.use_memories
+    }
+
     pub fn build_tools_config_with_sandbox(
         &self,
         sandbox_policy: SandboxPolicy,

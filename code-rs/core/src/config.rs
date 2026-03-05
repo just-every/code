@@ -14,6 +14,8 @@ use crate::config_types::History;
 use crate::config_types::GithubConfig;
 use crate::config_types::ValidationConfig;
 use crate::config_types::McpServerConfig;
+use crate::config_types::MemoriesConfig;
+use crate::config_types::MemoriesToml;
 use crate::config_types::Notifications;
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
@@ -435,6 +437,10 @@ pub struct Config {
 
     /// Experimental: enable discovery and injection of skills.
     pub skills_enabled: bool,
+    /// Upstream-aligned memory feature gate.
+    pub memories_enabled: bool,
+    /// Upstream-aligned memories runtime settings.
+    pub memories: MemoriesConfig,
     /// Experimental: enable JSON-based environment context snapshots and deltas (phase gated).
     pub env_ctx_v2: bool,
     /// Retention policy for env_ctx_v2 timeline management (gated by env_ctx_v2).
@@ -779,6 +785,9 @@ pub struct ConfigToml {
     /// Experimental feature toggles.
     pub features: Option<FeaturesToml>,
 
+    /// Memory subsystem configuration.
+    pub memories: Option<MemoriesToml>,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
@@ -874,6 +883,10 @@ pub struct FeaturesToml {
     /// Enable discovery and injection of skills.
     #[serde(default)]
     pub skills: Option<bool>,
+
+    /// Enable upstream-style memories behavior.
+    #[serde(default)]
+    pub memories: Option<bool>,
 }
 
 impl ConfigToml {
@@ -1198,6 +1211,12 @@ impl Config {
             .as_ref()
             .and_then(|features| features.skills)
             .unwrap_or(true);
+        let memories_enabled = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.memories)
+            .unwrap_or(false);
+        let memories = cfg.memories.clone().unwrap_or_default().into();
 
         let env_ctx_v2_flag = *crate::flags::CTX_UI;
 
@@ -1610,6 +1629,8 @@ impl Config {
                 .unwrap_or(false),
             include_view_image_tool: include_view_image_tool_flag,
             skills_enabled,
+            memories_enabled,
+            memories,
             env_ctx_v2: env_ctx_v2_flag,
             retention: crate::config_types::RetentionConfig::default(),
             responses_originator_header,

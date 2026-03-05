@@ -6,6 +6,7 @@ pub(crate) enum SettingsSection {
     Accounts,
     Agents,
     Prompts,
+    Memories,
     Skills,
     AutoDrive,
     Review,
@@ -18,13 +19,14 @@ pub(crate) enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 15] = [
+    pub(crate) const ALL: [SettingsSection; 16] = [
         SettingsSection::Model,
         SettingsSection::Theme,
         SettingsSection::Updates,
         SettingsSection::Accounts,
         SettingsSection::Agents,
         SettingsSection::Prompts,
+        SettingsSection::Memories,
         SettingsSection::Skills,
         SettingsSection::AutoDrive,
         SettingsSection::Review,
@@ -44,6 +46,7 @@ impl SettingsSection {
         SettingsSection::Updates => "Updates",
         SettingsSection::Accounts => "Accounts",
         SettingsSection::Agents => "Agents",
+        SettingsSection::Memories => "Memories",
         SettingsSection::AutoDrive => "Auto Drive",
         SettingsSection::Review => "Review",
             SettingsSection::Validation => "Validation",
@@ -64,6 +67,7 @@ impl SettingsSection {
         SettingsSection::Updates => "Control CLI auto-update cadence and release channels.",
         SettingsSection::Accounts => "Configure account switching behavior under rate and usage limits.",
         SettingsSection::Agents => "Configure linked agents and default task permissions.",
+        SettingsSection::Memories => "Enable upstream-style memory prompt behavior.",
         SettingsSection::AutoDrive => "Manage Auto Drive defaults for review and cadence.",
         SettingsSection::Review => "Adjust Auto Review and Auto Resolve automation for /review.",
             SettingsSection::Validation => "Toggle validation groups and tool availability.",
@@ -84,6 +88,7 @@ impl SettingsSection {
         SettingsSection::Updates => "Upgrade Codex and manage automatic updates.",
         SettingsSection::Accounts => "Account switching settings coming soon.",
         SettingsSection::Agents => "Agents configuration coming soon.",
+        SettingsSection::Memories => "Memories settings coming soon.",
         SettingsSection::AutoDrive => "Auto Drive controls coming soon.",
             SettingsSection::Review => "Adjust Auto Review and Auto Resolve automation for /review.",
             SettingsSection::Validation => "Toggle validation groups and tools.",
@@ -105,6 +110,7 @@ impl SettingsSection {
             "update" | "updates" => Some(SettingsSection::Updates),
             "account" | "accounts" | "auth" => Some(SettingsSection::Accounts),
             "agent" | "agents" => Some(SettingsSection::Agents),
+            "memory" | "memories" => Some(SettingsSection::Memories),
             "auto" | "autodrive" | "drive" => Some(SettingsSection::AutoDrive),
             "review" | "reviews" => Some(SettingsSection::Review),
             "validation" | "validate" => Some(SettingsSection::Validation),

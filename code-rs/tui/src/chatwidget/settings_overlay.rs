@@ -15,6 +15,7 @@ use crate::bottom_pane::{
     AutoDriveSettingsView,
     BottomPaneView,
     ConditionalUpdate,
+    MemoriesSettingsView,
     settings_panel::{render_panel, PanelFrameStyle},
     McpSettingsView,
     ModelSelectionView,
@@ -151,6 +152,7 @@ impl SettingsHelpOverlay {
             SettingsSection::Agents
                 | SettingsSection::Mcp
                 | SettingsSection::Accounts
+                | SettingsSection::Memories
                 | SettingsSection::Skills
         ) {
             lines.push(Line::from(vec![Span::styled(
@@ -326,6 +328,10 @@ pub(crate) struct AccountsSettingsContent {
     view: AccountSwitchSettingsView,
 }
 
+pub(crate) struct MemoriesSettingsContent {
+    view: MemoriesSettingsView,
+}
+
 impl AccountsSettingsContent {
     pub(crate) fn new(view: AccountSwitchSettingsView) -> Self {
         Self { view }
@@ -333,6 +339,27 @@ impl AccountsSettingsContent {
 }
 
 impl SettingsContent for AccountsSettingsContent {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.view.render_without_frame(area, buf);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        self.view.handle_key_event_direct(key);
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        self.view.is_view_complete()
+    }
+}
+
+impl MemoriesSettingsContent {
+    pub(crate) fn new(view: MemoriesSettingsView) -> Self {
+        Self { view }
+    }
+}
+
+impl SettingsContent for MemoriesSettingsContent {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.view.render_without_frame(area, buf);
     }
@@ -1311,6 +1338,7 @@ pub(crate) struct SettingsOverlayView {
     updates_content: Option<UpdatesSettingsContent>,
     notifications_content: Option<NotificationsSettingsContent>,
     accounts_content: Option<AccountsSettingsContent>,
+    memories_content: Option<MemoriesSettingsContent>,
     prompts_content: Option<PromptsSettingsContent>,
     skills_content: Option<SkillsSettingsContent>,
     mcp_content: Option<McpSettingsContent>,
@@ -1336,6 +1364,7 @@ impl SettingsOverlayView {
             updates_content: None,
             notifications_content: None,
             accounts_content: None,
+            memories_content: None,
             prompts_content: None,
             skills_content: None,
             mcp_content: None,
@@ -1423,6 +1452,10 @@ impl SettingsOverlayView {
 
     pub(crate) fn set_accounts_content(&mut self, content: AccountsSettingsContent) {
         self.accounts_content = Some(content);
+    }
+
+    pub(crate) fn set_memories_content(&mut self, content: MemoriesSettingsContent) {
+        self.memories_content = Some(content);
     }
 
     pub(crate) fn set_prompts_content(&mut self, content: PromptsSettingsContent) {
@@ -1928,6 +1961,7 @@ impl SettingsOverlayView {
             SettingsSection::Updates => "Upgrade",
             SettingsSection::Accounts => "Account Switching",
             SettingsSection::Agents => "Agents",
+            SettingsSection::Memories => "Memories",
             SettingsSection::Skills => "Skills",
             SettingsSection::AutoDrive => "Auto Drive Settings",
             SettingsSection::Review => "Review Settings",
@@ -2261,6 +2295,13 @@ impl SettingsOverlayView {
                 }
                 self.render_placeholder(area, buf, SettingsSection::Prompts.placeholder());
             }
+            SettingsSection::Memories => {
+                if let Some(content) = self.memories_content.as_ref() {
+                    content.render(area, buf);
+                    return;
+                }
+                self.render_placeholder(area, buf, SettingsSection::Memories.placeholder());
+            }
             SettingsSection::Skills => {
                 if let Some(content) = self.skills_content.as_ref() {
                     content.render(area, buf);
@@ -2359,6 +2400,10 @@ impl SettingsOverlayView {
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Prompts => self
                 .prompts_content
+                .as_mut()
+                .map(|content| content as &mut dyn SettingsContent),
+            SettingsSection::Memories => self
+                .memories_content
                 .as_mut()
                 .map(|content| content as &mut dyn SettingsContent),
             SettingsSection::Skills => self

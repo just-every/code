@@ -17,6 +17,87 @@ use serde::Serialize;
 use strum_macros::Display;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 16;
+pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
+pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 6;
+pub const DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL: usize = 256;
+pub const DEFAULT_MEMORIES_MAX_UNUSED_DAYS: i64 = 30;
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemoriesToml {
+    pub generate_memories: Option<bool>,
+    pub use_memories: Option<bool>,
+    pub max_raw_memories_for_global: Option<usize>,
+    pub max_unused_days: Option<i64>,
+    pub max_rollout_age_days: Option<i64>,
+    pub max_rollouts_per_startup: Option<usize>,
+    pub min_rollout_idle_hours: Option<i64>,
+    /// Optional override for the model used by stage 1 extraction.
+    pub phase_1_model: Option<String>,
+    /// Optional override for the model used by stage 2 consolidation.
+    pub phase_2_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoriesConfig {
+    pub generate_memories: bool,
+    pub use_memories: bool,
+    pub max_raw_memories_for_global: usize,
+    pub max_unused_days: i64,
+    pub max_rollout_age_days: i64,
+    pub max_rollouts_per_startup: usize,
+    pub min_rollout_idle_hours: i64,
+    pub phase_1_model: Option<String>,
+    pub phase_2_model: Option<String>,
+}
+
+impl Default for MemoriesConfig {
+    fn default() -> Self {
+        Self {
+            generate_memories: true,
+            use_memories: true,
+            max_raw_memories_for_global: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL,
+            max_unused_days: DEFAULT_MEMORIES_MAX_UNUSED_DAYS,
+            max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
+            max_rollouts_per_startup: DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP,
+            min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
+            phase_1_model: None,
+            phase_2_model: None,
+        }
+    }
+}
+
+impl From<MemoriesToml> for MemoriesConfig {
+    fn from(toml: MemoriesToml) -> Self {
+        let defaults = Self::default();
+        Self {
+            generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
+            use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
+            max_raw_memories_for_global: toml
+                .max_raw_memories_for_global
+                .unwrap_or(defaults.max_raw_memories_for_global)
+                .min(4096),
+            max_unused_days: toml
+                .max_unused_days
+                .unwrap_or(defaults.max_unused_days)
+                .clamp(0, 365),
+            max_rollout_age_days: toml
+                .max_rollout_age_days
+                .unwrap_or(defaults.max_rollout_age_days)
+                .clamp(0, 365),
+            max_rollouts_per_startup: toml
+                .max_rollouts_per_startup
+                .unwrap_or(defaults.max_rollouts_per_startup)
+                .clamp(1, 1024),
+            min_rollout_idle_hours: toml
+                .min_rollout_idle_hours
+                .unwrap_or(defaults.min_rollout_idle_hours)
+                .clamp(0, 168),
+            phase_1_model: toml.phase_1_model,
+            phase_2_model: toml.phase_2_model,
+        }
+    }
+}
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]

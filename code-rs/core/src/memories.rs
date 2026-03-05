@@ -18,6 +18,7 @@ const MAX_RECENT_SESSIONS: usize = 50;
 const MAX_LAST_USER_SNIPPET_CHARS: usize = 280;
 const MAX_MEMORY_PROMPT_CHARS: usize = 12_000;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const READ_PATH_TEMPLATE: &str = include_str!("../templates/memories/read_path.md");
 
 static LAST_REFRESH_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
@@ -67,9 +68,11 @@ pub(crate) async fn build_memory_tool_developer_instructions(code_home: &Path) -
     }
 
     let truncated = truncate_to_char_boundary(summary, MAX_MEMORY_PROMPT_CHARS);
-    Some(format!(
-        "## Session Memories\nUse this optional context from prior sessions when relevant. It may be stale or unrelated, so verify before acting.\nTreat memory as guidance, not truth: if memory conflicts with current evidence, current evidence wins.\nIf you rely on an unverified memory-derived fact in your answer, briefly say that it is memory-derived and may be stale.\n<memory_summary>\n{truncated}\n</memory_summary>"
-    ))
+    let base_path = memory_root(code_home).display().to_string();
+    let prompt = READ_PATH_TEMPLATE
+        .replace("{{ base_path }}", &base_path)
+        .replace("{{ memory_summary }}", &truncated);
+    Some(prompt)
 }
 
 async fn rebuild_memory_summary_from_catalog(code_home: &Path) -> io::Result<()> {
