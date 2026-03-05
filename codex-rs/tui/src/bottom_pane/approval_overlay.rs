@@ -280,6 +280,7 @@ impl ApprovalOverlay {
                 server_name: server_name.to_string(),
                 request_id: request_id.clone(),
                 decision,
+                content: None,
             },
         });
     }
@@ -641,6 +642,14 @@ fn format_additional_permissions_rule(
     additional_permissions: &PermissionProfile,
 ) -> Option<String> {
     let mut parts = Vec::new();
+    if additional_permissions
+        .network
+        .as_ref()
+        .and_then(|network| network.enabled)
+        .unwrap_or(false)
+    {
+        parts.push("network".to_string());
+    }
     if let Some(file_system) = additional_permissions.file_system.as_ref() {
         if let Some(read) = file_system.read.as_ref() {
             let reads = read
@@ -718,6 +727,7 @@ mod tests {
     use super::*;
     use crate::app_event::AppEvent;
     use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::NetworkPermissions;
     use codex_protocol::protocol::ExecPolicyAmendment;
     use codex_protocol::protocol::NetworkApprovalProtocol;
     use codex_protocol::protocol::NetworkPolicyAmendment;
@@ -1074,6 +1084,9 @@ mod tests {
             available_decisions: vec![ReviewDecision::Approved, ReviewDecision::Abort],
             network_approval_context: None,
             additional_permissions: Some(PermissionProfile {
+                network: Some(NetworkPermissions {
+                    enabled: Some(true),
+                }),
                 file_system: Some(FileSystemPermissions {
                     read: Some(vec![absolute_path("/tmp/readme.txt")]),
                     write: Some(vec![absolute_path("/tmp/out.txt")]),
@@ -1100,6 +1113,10 @@ mod tests {
                 .any(|line| line.contains("Permission rule:")),
             "expected permission-rule line, got {rendered:?}"
         );
+        assert!(
+            rendered.iter().any(|line| line.contains("network;")),
+            "expected network permission text, got {rendered:?}"
+        );
     }
 
     #[test]
@@ -1115,6 +1132,9 @@ mod tests {
             available_decisions: vec![ReviewDecision::Approved, ReviewDecision::Abort],
             network_approval_context: None,
             additional_permissions: Some(PermissionProfile {
+                network: Some(NetworkPermissions {
+                    enabled: Some(true),
+                }),
                 file_system: Some(FileSystemPermissions {
                     read: Some(vec![absolute_path("/tmp/readme.txt")]),
                     write: Some(vec![absolute_path("/tmp/out.txt")]),

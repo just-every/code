@@ -38,20 +38,25 @@ use codex_core::ExecPolicyError;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config_loader::ConfigLoadError;
 use codex_core::config_loader::TextRange as CoreTextRange;
+use codex_core::features::Feature;
 use codex_feedback::CodexFeedback;
+use codex_state::log_db;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
+use tracing::Level;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod app_server_tracing;
 mod bespoke_event_handling;
 mod codex_message_processor;
 mod config_api;
@@ -119,6 +124,25 @@ enum ShutdownAction {
     Finish,
 }
 
+async fn shutdown_signal() -> IoResult<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::SignalKind;
+        use tokio::signal::unix::signal;
+
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! {
+            ctrl_c_result = tokio::signal::ctrl_c() => ctrl_c_result,
+            _ = term.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
+}
+
 impl ShutdownState {
     fn requested(&self) -> bool {
         self.requested
@@ -128,7 +152,7 @@ impl ShutdownState {
         self.forced
     }
 
-    fn on_ctrl_c(&mut self, connection_count: usize, running_turn_count: usize) {
+    fn on_signal(&mut self, connection_count: usize, running_turn_count: usize) {
         if self.requested {
             self.forced = true;
             return;
@@ -137,7 +161,7 @@ impl ShutdownState {
         self.requested = true;
         self.last_logged_running_turn_count = None;
         info!(
-            "received Ctrl-C; entering graceful restart drain (connections={}, runningAssistantTurns={}, requests still accepted until no assistant turns are running)",
+            "received shutdown signal; entering graceful restart drain (connections={}, runningAssistantTurns={}, requests still accepted until no assistant turns are running)",
             connection_count, running_turn_count,
         );
     }
@@ -150,11 +174,11 @@ impl ShutdownState {
         if self.forced || running_turn_count == 0 {
             if self.forced {
                 info!(
-                    "received second Ctrl-C; forcing restart with {running_turn_count} running assistant turn(s) and {connection_count} connection(s)"
+                    "received second shutdown signal; forcing restart with {running_turn_count} running assistant turn(s) and {connection_count} connection(s)"
                 );
             } else {
                 info!(
-                    "Ctrl-C restart: no assistant turns running; stopping acceptor and disconnecting {connection_count} connection(s)"
+                    "shutdown signal restart: no assistant turns running; stopping acceptor and disconnecting {connection_count} connection(s)"
                 );
             }
             return ShutdownAction::Finish;
@@ -162,7 +186,7 @@ impl ShutdownState {
 
         if self.last_logged_running_turn_count != Some(running_turn_count) {
             info!(
-                "Ctrl-C restart: waiting for {running_turn_count} running assistant turn(s) to finish"
+                "shutdown signal restart: waiting for {running_turn_count} running assistant turn(s) to finish"
             );
             self.last_logged_running_turn_count = Some(running_turn_count);
         }
@@ -354,8 +378,7 @@ pub async fn run_main_with_transport(
     };
     let single_client_mode = matches!(&transport_runtime, TransportRuntime::Stdio);
     let shutdown_when_no_connections = single_client_mode;
-    let graceful_ctrl_c_restart_enabled = !single_client_mode;
-
+    let graceful_signal_restart_enabled = !single_client_mode;
     // Parse CLI overrides once and derive the base Config eagerly so later
     // components do not need to work with raw TOML values.
     let cli_kv_overrides = cli_config_overrides.parse_overrides().map_err(|e| {
@@ -447,7 +470,7 @@ pub async fn run_main_with_transport(
     let otel = codex_core::otel_init::build_provider(
         &config,
         env!("CARGO_PKG_VERSION"),
-        Some("codex_app_server"),
+        Some("codex-app-server"),
         default_analytics_enabled,
     )
     .map_err(|e| {
@@ -476,6 +499,21 @@ pub async fn run_main_with_transport(
 
     let feedback_layer = feedback.logger_layer();
     let feedback_metadata_layer = feedback.metadata_layer();
+    let log_db = if config.features.enabled(Feature::Sqlite) {
+        codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.model_provider_id.clone(),
+            None,
+        )
+        .await
+        .ok()
+        .map(log_db::start)
+    } else {
+        None
+    };
+    let log_db_layer = log_db
+        .clone()
+        .map(|layer| layer.with_filter(Targets::new().with_default(Level::TRACE)));
     let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
     let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
 
@@ -483,6 +521,7 @@ pub async fn run_main_with_transport(
         .with(stderr_fmt)
         .with(feedback_layer)
         .with(feedback_metadata_layer)
+        .with(log_db_layer)
         .with(otel_logger_layer)
         .with(otel_tracing_layer)
         .try_init();
@@ -557,11 +596,11 @@ pub async fn run_main_with_transport(
             outgoing: outgoing_message_sender,
             arg0_paths,
             config: Arc::new(config),
-            single_client_mode,
             cli_overrides,
             loader_overrides,
             cloud_requirements: cloud_requirements.clone(),
             feedback: feedback.clone(),
+            log_db,
             config_warnings,
         });
         let mut thread_created_rx = processor.thread_created_receiver();
@@ -593,14 +632,14 @@ pub async fn run_main_with_transport(
                 }
 
                 tokio::select! {
-                    ctrl_c_result = tokio::signal::ctrl_c(), if graceful_ctrl_c_restart_enabled && !shutdown_state.forced() => {
-                        if let Err(err) = ctrl_c_result {
-                            warn!("failed to listen for Ctrl-C during graceful restart drain: {err}");
+                    shutdown_signal_result = shutdown_signal(), if graceful_signal_restart_enabled && !shutdown_state.forced() => {
+                        if let Err(err) = shutdown_signal_result {
+                            warn!("failed to listen for shutdown signal during graceful restart drain: {err}");
                         }
                         let running_turn_count = *running_turn_count_rx.borrow();
-                        shutdown_state.on_ctrl_c(connections.len(), running_turn_count);
+                        shutdown_state.on_signal(connections.len(), running_turn_count);
                     }
-                    changed = running_turn_count_rx.changed(), if graceful_ctrl_c_restart_enabled && shutdown_state.requested() => {
+                    changed = running_turn_count_rx.changed(), if graceful_signal_restart_enabled && shutdown_state.requested() => {
                         if changed.is_err() {
                             warn!("running-turn watcher closed during graceful restart drain");
                         }
@@ -675,6 +714,7 @@ pub async fn run_main_with_transport(
                                             .process_request(
                                                 connection_id,
                                                 request,
+                                                transport,
                                                 &mut connection_state.session,
                                                 &connection_state.outbound_initialized,
                                             )

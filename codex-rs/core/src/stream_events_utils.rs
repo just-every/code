@@ -58,7 +58,29 @@ pub(crate) async fn record_completed_response_item(
 ) {
     sess.record_conversation_items(turn_context, std::slice::from_ref(item))
         .await;
+    maybe_mark_thread_memory_mode_polluted_from_web_search(sess, turn_context, item).await;
     record_stage1_output_usage_for_completed_item(turn_context, item).await;
+}
+
+async fn maybe_mark_thread_memory_mode_polluted_from_web_search(
+    sess: &Session,
+    turn_context: &TurnContext,
+    item: &ResponseItem,
+) {
+    if !turn_context
+        .config
+        .memories
+        .no_memories_if_mcp_or_web_search
+        || !matches!(item, ResponseItem::WebSearchCall { .. })
+    {
+        return;
+    }
+    state_db::mark_thread_memory_mode_polluted(
+        sess.services.state_db.as_deref(),
+        sess.conversation_id,
+        "record_completed_response_item",
+    )
+    .await;
 }
 
 async fn record_stage1_output_usage_for_completed_item(
@@ -137,8 +159,14 @@ pub(crate) async fn handle_output_item_done(
         Ok(None) => {
             if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode) {
                 if previously_active_item.is_none() {
+                    let mut started_item = turn_item.clone();
+                    if let TurnItem::ImageGeneration(item) = &mut started_item {
+                        item.status = "in_progress".to_string();
+                        item.revised_prompt = None;
+                        item.result.clear();
+                    }
                     ctx.sess
-                        .emit_turn_item_started(&ctx.turn_context, &turn_item)
+                        .emit_turn_item_started(&ctx.turn_context, &started_item)
                         .await;
                 }
 
@@ -221,7 +249,8 @@ pub(crate) fn handle_non_tool_response_item(
     match item {
         ResponseItem::Message { .. }
         | ResponseItem::Reasoning { .. }
-        | ResponseItem::WebSearchCall { .. } => {
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. } => {
             let mut turn_item = parse_turn_item(item)?;
             if let TurnItem::AgentMessage(agent_message) = &mut turn_item {
                 let combined = agent_message
