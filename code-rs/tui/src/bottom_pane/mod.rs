@@ -103,6 +103,7 @@ use approval_modal_view::ApprovalModalView;
 use approval_ui::ApprovalUi;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ContextMode;
 use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
@@ -701,9 +702,14 @@ impl BottomPane<'_> {
         total_token_usage: TokenUsage,
         last_token_usage: TokenUsage,
         model_context_window: Option<u64>,
+        context_mode: Option<ContextMode>,
     ) {
-        self.composer
-            .set_token_usage(total_token_usage, last_token_usage, model_context_window);
+        self.composer.set_token_usage(
+            total_token_usage,
+            last_token_usage,
+            model_context_window,
+            context_mode,
+        );
         self.request_redraw();
     }
 
@@ -742,8 +748,7 @@ impl BottomPane<'_> {
         current_model: String,
         current_effort: ReasoningEffort,
         current_service_tier: Option<ServiceTier>,
-        current_model_context_window: Option<u64>,
-        current_model_auto_compact_token_limit: Option<i64>,
+        current_context_mode: Option<ContextMode>,
         use_chat_model: bool,
         target: ModelSelectionTarget,
     ) {
@@ -752,8 +757,7 @@ impl BottomPane<'_> {
             current_model,
             current_effort,
             current_service_tier,
-            current_model_context_window,
-            current_model_auto_compact_token_limit,
+            current_context_mode,
             use_chat_model,
             target,
             self.app_event_tx.clone(),

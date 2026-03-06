@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::ContextMode as ContextModeConfig;
 use crate::config_types::ServiceTier as ServiceTierConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::message_history::HistoryEntry;
@@ -103,6 +104,7 @@ pub enum Op {
         model_reasoning_summary: ReasoningSummaryConfig,
         model_text_verbosity: TextVerbosityConfig,
         service_tier: Option<ServiceTierConfig>,
+        context_mode: Option<ContextModeConfig>,
         model_context_window: Option<u64>,
         model_auto_compact_token_limit: Option<i64>,
 

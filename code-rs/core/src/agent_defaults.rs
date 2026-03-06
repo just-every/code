@@ -35,7 +35,7 @@ const CLOUD_GPT5_CODEX_WRITE: &[&str] = &[];
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
-    "code-gpt-5.2",
+    "code-gpt-5.4",
     "code-gpt-5.3-codex",
     "code-gpt-5.3-codex-spark",
     "claude-opus-4.6",
@@ -90,15 +90,17 @@ impl AgentModelSpec {
 
 const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
     AgentModelSpec {
-        slug: "code-gpt-5.2",
+        slug: "code-gpt-5.4",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_READ_ONLY,
         write_args: CODE_GPT5_WRITE,
-        model_args: &["--model", "gpt-5.2"],
+        model_args: &["--model", "gpt-5.4"],
         description: "Highest-capacity GPT option for tricky reasoning; use when correctness matters most.",
         enabled_by_default: true,
         aliases: &[
+            "code-gpt-5.2",
+            "gpt-5.4",
             "gpt-5.2",
             "code-gpt-5.1",
             "code-gpt-5",
@@ -349,7 +351,7 @@ fn model_guide_intro(active_agents: &[String]) -> String {
         .collect();
 
     if present_frontline.is_empty() {
-        present_frontline.push("code-gpt-5.2".to_string());
+        present_frontline.push("code-gpt-5.4".to_string());
     }
     let frontline_str = present_frontline.join(", ");
 
@@ -529,7 +531,10 @@ mod tests {
         assert_eq!(mini.slug, "code-gpt-5.1-codex-mini");
 
         let mid = agent_model_spec("gpt-5.1").expect("mid alias present");
-        assert_eq!(mid.slug, "code-gpt-5.2");
+        assert_eq!(mid.slug, "code-gpt-5.4");
+
+        let mid_upgrade = agent_model_spec("code-gpt-5.2").expect("mid upgrade alias present");
+        assert_eq!(mid_upgrade.slug, "code-gpt-5.4");
     }
 
     #[test]

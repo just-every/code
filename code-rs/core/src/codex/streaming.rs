@@ -27,6 +27,8 @@ use crate::agent_tool::current_agent_spawn_depth;
 use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
+use code_protocol::models::ContentItem;
+use code_protocol::models::ResponseItem;
 use code_protocol::models::FunctionCallOutputContentItem;
 use code_protocol::models::ImageDetail;
 use code_protocol::models::FunctionCallOutputPayload;
@@ -43,6 +45,9 @@ const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
     include_str!("../../templates/search_tool/developer_instructions.md");
 const SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
 const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
+const AUTO_CONTEXT_JUDGE_MIN_TOKENS: u64 = 150_000;
+const AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS: u64 = 20_000;
+const AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN: u64 = 4;
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -264,6 +269,7 @@ pub(super) async fn submission_loop(
                 model_reasoning_summary,
                 model_text_verbosity,
                 service_tier,
+                context_mode,
                 model_context_window,
                 model_auto_compact_token_limit,
                 user_instructions: provided_user_instructions,
@@ -313,6 +319,7 @@ pub(super) async fn submission_loop(
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
                 updated_config.service_tier = service_tier;
+                updated_config.context_mode = context_mode;
                 updated_config.model_context_window = model_context_window;
                 updated_config.model_auto_compact_token_limit = model_auto_compact_token_limit;
                 updated_config.user_instructions = provided_user_instructions.clone();
@@ -893,10 +900,13 @@ pub(super) async fn submission_loop(
                 sess.notify_wait_interrupted(WaitInterruptReason::UserMessage);
                 sess.abort();
 
-                // Spawn a new agent for this user input.
-                let turn_context = sess.make_turn_context_with_schema(final_output_json_schema);
-                let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
-                sess.set_task(agent);
+                spawn_user_turn(
+                    Arc::clone(sess),
+                    sub.id.clone(),
+                    items,
+                    final_output_json_schema,
+                )
+                .await;
             }
             Op::QueueUserInput { items } => {
                 let sess = match sess.as_ref() {
@@ -920,9 +930,7 @@ pub(super) async fn submission_loop(
                 } else {
                     // No task running: treat this as immediate user input without aborting.
                     sess.cleanup_old_status_items().await;
-                    let turn_context = sess.make_turn_context();
-                    let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
-                    sess.set_task(agent);
+                    spawn_user_turn(Arc::clone(sess), sub.id.clone(), items, None).await;
                 }
             }
             Op::ExecApproval {
@@ -1566,6 +1574,453 @@ fn spark_fallback_model(model: &str) -> Option<String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AutoContextPressureBand {
+    Medium,
+    High,
+    Critical,
+}
+
+impl AutoContextPressureBand {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AutoContextJudgeDecision {
+    should_compact_now: bool,
+    reason: String,
+    continuation_of_previous_thread: bool,
+    recent_context_still_useful: bool,
+    pressure_band: AutoContextPressureBand,
+}
+
+fn auto_context_force_compact_threshold(limit: Option<u64>) -> u64 {
+    limit
+        .unwrap_or(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M)
+        .saturating_sub(AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS)
+}
+
+fn auto_context_pressure_band(
+    tokens_in_context: u64,
+    force_compact_threshold: u64,
+) -> Option<AutoContextPressureBand> {
+    if tokens_in_context < AUTO_CONTEXT_JUDGE_MIN_TOKENS {
+        None
+    } else if tokens_in_context >= force_compact_threshold.saturating_sub(40_000) {
+        Some(AutoContextPressureBand::Critical)
+    } else if tokens_in_context >= crate::model_family::STANDARD_CONTEXT_WINDOW_272K {
+        Some(AutoContextPressureBand::High)
+    } else {
+        Some(AutoContextPressureBand::Medium)
+    }
+}
+
+fn should_skip_auto_context_judge_for_continuation(
+    pressure_band: AutoContextPressureBand,
+    new_user_message: &str,
+) -> bool {
+    pressure_band == AutoContextPressureBand::Medium
+        && is_obvious_continuation_message(new_user_message)
+}
+
+fn proactive_compact_limit_reached(last_token_usage: Option<&TokenUsage>, limit: i64) -> bool {
+    last_token_usage
+        .and_then(|usage| i64::try_from(usage.tokens_in_context_window()).ok())
+        .is_some_and(|tokens| tokens >= limit)
+}
+
+fn extract_text_from_response_item(item: &ResponseItem) -> Option<String> {
+    let ResponseItem::Message { content, .. } = item else {
+        return None;
+    };
+    let text = crate::content_items_to_text(content)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn summarize_input_items(items: &[InputItem]) -> String {
+    let mut parts = Vec::new();
+    for item in items {
+        match item {
+            InputItem::Text { text } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
+                }
+            }
+            InputItem::Image { .. }
+            | InputItem::LocalImage { .. }
+            | InputItem::EphemeralImage { .. } => parts.push("[image attachment]".to_string()),
+        }
+    }
+    if parts.is_empty() {
+        "(no text input)".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn estimate_text_tokens(text: &str) -> u64 {
+    let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    bytes
+        .saturating_add(AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN - 1)
+        / AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN
+}
+
+fn estimate_response_item_tokens(item: &ResponseItem) -> u64 {
+    match item {
+        ResponseItem::Message { content, .. } => {
+            let mut total: u64 = 6;
+            for entry in content {
+                match entry {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                        total = total.saturating_add(estimate_text_tokens(text));
+                    }
+                    ContentItem::InputImage { .. } => {
+                        total = total.saturating_add(256);
+                    }
+                }
+            }
+            total
+        }
+        ResponseItem::FunctionCall { arguments, name, call_id, .. } => estimate_text_tokens(arguments)
+            .saturating_add(estimate_text_tokens(name))
+            .saturating_add(estimate_text_tokens(call_id))
+            .saturating_add(12),
+        ResponseItem::FunctionCallOutput { call_id, output, .. } => estimate_text_tokens(call_id)
+            .saturating_add(output.body.to_text().as_deref().map(estimate_text_tokens).unwrap_or(0))
+            .saturating_add(12),
+        _ => 0,
+    }
+}
+
+fn estimate_response_items_tokens(items: &[ResponseItem]) -> u64 {
+    items
+        .iter()
+        .map(estimate_response_item_tokens)
+        .sum::<u64>()
+}
+
+fn estimate_next_turn_context_tokens(history: &[ResponseItem], items: &[InputItem]) -> u64 {
+    let mut with_next_turn = history.to_vec();
+    let next_item: ResponseItem = compact::response_input_from_core_items(items.to_vec()).into();
+    with_next_turn.push(next_item);
+    estimate_response_items_tokens(&with_next_turn)
+}
+
+fn is_obvious_continuation_message(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    let continuation_prefixes = [
+        "continue",
+        "keep going",
+        "go on",
+        "carry on",
+        "pick up",
+        "resume",
+        "fix that",
+        "fix this",
+        "do that",
+        "do this",
+        "use that",
+        "use this",
+        "now",
+        "next",
+        "also",
+        "can you also",
+        "let's keep",
+        "lets keep",
+        "update that",
+        "refine that",
+        "finish that",
+    ];
+
+    continuation_prefixes
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn extract_first_json_object(input: &str) -> Option<String> {
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start_idx = start?;
+                    return Some(input[start_idx..=idx].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> CodexResult<String> {
+    use futures::StreamExt;
+
+    let mut stream = sess.client.clone().stream(prompt).await?;
+    let mut out = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ResponseEvent::OutputTextDelta { delta, .. }) => out.push_str(&delta),
+            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
+                if let ResponseItem::Message { content, .. } = item {
+                    for content_item in content {
+                        if let ContentItem::OutputText { text } = content_item {
+                            out.push_str(&text);
+                        }
+                    }
+                }
+            }
+            Ok(ResponseEvent::Completed { .. }) => break,
+            Err(err) => return Err(err),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+async fn maybe_run_auto_context_compaction(
+    sess: &Arc<Session>,
+    items: &[InputItem],
+) {
+    if sess.client.get_context_mode() != Some(crate::config_types::ContextMode::Auto) {
+        return;
+    }
+
+    if sess.client.get_model_context_window() != Some(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M)
+    {
+        return;
+    }
+
+    let history = sess.turn_input_with_history(Vec::new());
+    let tokens_in_context = estimate_next_turn_context_tokens(&history, items);
+    if tokens_in_context < AUTO_CONTEXT_JUDGE_MIN_TOKENS {
+        return;
+    }
+
+    let auto_compact_limit = sess
+        .client
+        .get_auto_compact_token_limit()
+        .and_then(|limit| u64::try_from(limit).ok());
+    let force_compact_threshold = auto_context_force_compact_threshold(auto_compact_limit);
+    let Some(pressure_band) = auto_context_pressure_band(tokens_in_context, force_compact_threshold)
+    else {
+        return;
+    };
+
+    if tokens_in_context >= force_compact_threshold {
+        tracing::info!(
+            tokens_in_context,
+            force_compact_threshold,
+            pressure_band = pressure_band.as_str(),
+            "auto context forcing compaction before next turn"
+        );
+        let turn_context = sess.make_turn_context();
+        let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+        return;
+    }
+
+    let recent_messages: Vec<serde_json::Value> = history
+        .into_iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { ref role, .. }
+                if role == "user" || role == "assistant" =>
+            {
+                extract_text_from_response_item(&item).map(|text| {
+                    serde_json::json!({
+                        "role": role,
+                        "text": text,
+                    })
+                })
+            }
+            _ => None,
+        })
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let new_user_message = summarize_input_items(items);
+
+    if should_skip_auto_context_judge_for_continuation(pressure_band, &new_user_message) {
+        tracing::info!(
+            tokens_in_context,
+            pressure_band = pressure_band.as_str(),
+            "auto context skipped judge for obvious continuation"
+        );
+        return;
+    }
+
+    let developer_message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "You decide whether Code should compact conversation history before the next user turn. Return strict JSON only. Strongly prefer false when the new user message is continuing the same thread, referring to prior work, or is likely to depend on nearby context. Only prefer true when the user is clearly pivoting to a new subtask, restarting with a fresh request, or when the transcript is mostly stale detail. Increase your bias toward compaction as pressure rises toward 1M tokens, but continuation should still receive a strong keep-context bias unless pressure is truly high.".to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    };
+    let user_payload = serde_json::json!({
+        "tokens_in_context": tokens_in_context,
+        "judge_window": {
+            "start_tokens": AUTO_CONTEXT_JUDGE_MIN_TOKENS,
+            "force_compact_at_tokens": force_compact_threshold,
+        },
+        "pressure_band": pressure_band.as_str(),
+        "new_user_message": new_user_message,
+        "recent_messages": recent_messages,
+    });
+    let user_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: serde_json::to_string_pretty(&user_payload)
+                .unwrap_or_else(|_| user_payload.to_string()),
+        }],
+        end_turn: None,
+        phase: None,
+    };
+
+    let mut prompt = Prompt::default();
+    prompt.input = vec![developer_message, user_message];
+    prompt.include_additional_instructions = false;
+    prompt.model_override = Some("gpt-5.3-codex-spark".to_string());
+    prompt.model_family_override = Some(derive_default_model_family("gpt-5.3-codex-spark"));
+    prompt.text_format = Some(TextFormat {
+        r#type: "json_schema".to_string(),
+        name: Some("auto_context_decision".to_string()),
+        strict: Some(true),
+        schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "should_compact_now": { "type": "boolean" },
+                "reason": { "type": "string", "minLength": 1, "maxLength": 240 },
+                "continuation_of_previous_thread": { "type": "boolean" },
+                "recent_context_still_useful": { "type": "boolean" },
+                "pressure_band": {
+                    "type": "string",
+                    "enum": ["medium", "high", "critical"]
+                }
+            },
+            "required": [
+                "should_compact_now",
+                "reason",
+                "continuation_of_previous_thread",
+                "recent_context_still_useful",
+                "pressure_band"
+            ],
+            "additionalProperties": false
+        })),
+    });
+    prompt.set_log_tag("auto_context/judge");
+
+    let raw_decision = match tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        request_auto_context_decision(sess, &prompt),
+    )
+    .await
+    {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(err)) => {
+            tracing::warn!(?err, "auto context judge request failed");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("auto context judge timed out");
+            return;
+        }
+    };
+
+    let parsed = serde_json::from_str::<AutoContextJudgeDecision>(&raw_decision)
+        .or_else(|_| {
+            extract_first_json_object(&raw_decision)
+                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing JSON object")))
+                .and_then(|json| serde_json::from_str::<AutoContextJudgeDecision>(&json))
+        });
+    let decision = match parsed {
+        Ok(decision) => decision,
+        Err(err) => {
+            tracing::warn!(?err, raw_decision, "auto context judge returned invalid JSON");
+            return;
+        }
+    };
+
+    tracing::info!(
+        tokens_in_context,
+        pressure_band = pressure_band.as_str(),
+        decision_pressure_band = decision.pressure_band.as_str(),
+        should_compact_now = decision.should_compact_now,
+        continuation_of_previous_thread = decision.continuation_of_previous_thread,
+        recent_context_still_useful = decision.recent_context_still_useful,
+        reason = decision.reason,
+        "auto context judge completed"
+    );
+
+    if decision.should_compact_now {
+        let turn_context = sess.make_turn_context();
+        let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+    }
+}
+
+async fn spawn_user_turn(
+    sess: Arc<Session>,
+    sub_id: String,
+    items: Vec<InputItem>,
+    final_output_json_schema: Option<serde_json::Value>,
+) {
+    maybe_run_auto_context_compaction(&sess, &items).await;
+    let turn_context = match final_output_json_schema {
+        Some(schema) => sess.make_turn_context_with_schema(Some(schema)),
+        None => sess.make_turn_context(),
+    };
+    let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub_id, items);
+    sess.set_task(agent);
+}
+
 fn context_window_for_model(model: &str) -> Option<u64> {
     find_family_for_model(model)
         .or_else(|| Some(derive_default_model_family(model)))
@@ -1998,18 +2453,13 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     .client
                     .get_auto_compact_token_limit()
                     .unwrap_or(i64::MAX);
-                let most_recent_usage_tokens: Option<i64> = {
+                let token_limit_reached = {
                     let state = sess.state.lock().unwrap();
-                    state.token_usage_info.as_ref().and_then(|info| {
-                        info.last_token_usage.total_tokens.try_into().ok()
-                    })
+                    proactive_compact_limit_reached(
+                        state.token_usage_info.as_ref().map(|info| &info.last_token_usage),
+                        limit,
+                    )
                 };
-                // auto_compact_token_limit is defined relative to a single turn's
-                // token usage (input + output). Using the cumulative total caused
-                // the limit check to stay tripped permanently once crossed, even
-                // after compacting history, which spammed repeated /compact runs.
-                let token_limit_reached = most_recent_usage_tokens
-                    .map_or(false, |tokens| tokens >= limit);
 
                 // If there are responses, add them to pending input for the next iteration
                 if !responses.is_empty() {
@@ -2145,11 +2595,9 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         let sess_clone = Arc::clone(&sess);
         tokio::spawn(async move {
             sess_clone.cleanup_old_status_items().await;
-            let turn_context = sess_clone.make_turn_context();
             let submission_id = queued.submission_id;
             let items = queued.core_items;
-            let agent = AgentTask::spawn(Arc::clone(&sess_clone), turn_context, submission_id, items);
-            sess_clone.set_task(agent);
+            spawn_user_turn(sess_clone, submission_id, items, None).await;
         });
     }
 }
@@ -12541,6 +12989,28 @@ mod cleanup_tests {
             }], end_turn: None, phase: None}
     }
 
+    struct AutoContextHarness {
+        history: Vec<ResponseItem>,
+        next_input: Vec<InputItem>,
+    }
+
+    impl AutoContextHarness {
+        fn new(history: Vec<ResponseItem>, next_input: Vec<InputItem>) -> Self {
+            Self { history, next_input }
+        }
+
+        fn estimated_tokens(&self) -> u64 {
+            estimate_next_turn_context_tokens(&self.history, &self.next_input)
+        }
+
+        fn skip_for_continuation(&self, pressure_band: AutoContextPressureBand) -> bool {
+            should_skip_auto_context_judge_for_continuation(
+                pressure_band,
+                &summarize_input_items(&self.next_input),
+            )
+        }
+    }
+
     #[test]
     fn prune_history_retains_recent_env_items() {
         let baseline1 = make_text_message(&format!(
@@ -12640,6 +13110,88 @@ mod cleanup_tests {
         let (pruned, stats) = prune_history_items(&history);
         assert_eq!(pruned, history);
         assert!(!stats.any_removed());
+    }
+
+    #[test]
+    fn auto_context_pressure_band_respects_thresholds() {
+        let force_threshold = auto_context_force_compact_threshold(Some(
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M,
+        ));
+
+        assert_eq!(auto_context_pressure_band(149_999, force_threshold), None);
+        assert_eq!(
+            auto_context_pressure_band(150_000, force_threshold),
+            Some(AutoContextPressureBand::Medium)
+        );
+        assert_eq!(
+            auto_context_pressure_band(crate::model_family::STANDARD_CONTEXT_WINDOW_272K, force_threshold),
+            Some(AutoContextPressureBand::High)
+        );
+        assert_eq!(
+            auto_context_pressure_band(force_threshold.saturating_sub(10_000), force_threshold),
+            Some(AutoContextPressureBand::Critical)
+        );
+    }
+
+    #[test]
+    fn auto_context_force_compact_threshold_leaves_margin() {
+        assert_eq!(
+            auto_context_force_compact_threshold(Some(1_000_000)),
+            980_000
+        );
+    }
+
+    #[test]
+    fn estimate_next_turn_context_tokens_uses_history_and_new_input() {
+        let harness = AutoContextHarness::new(
+            vec![
+            make_text_message("continue the refactor"),
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "I updated the model picker".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ],
+            vec![InputItem::Text {
+                text: "now fix the auto compact path".to_string(),
+            }],
+        );
+
+        let estimate = harness.estimated_tokens();
+
+        assert!(estimate > 0);
+        assert!(estimate >= estimate_response_items_tokens(&harness.history));
+    }
+
+    #[test]
+    fn continuation_short_circuits_medium_pressure_auto_judge() {
+        let harness = AutoContextHarness::new(
+            vec![make_text_message("continue the picker refactor")],
+            vec![InputItem::Text {
+                text: "continue with the previous fix and keep going".to_string(),
+            }],
+        );
+
+        assert!(harness.skip_for_continuation(AutoContextPressureBand::Medium));
+        assert!(!harness.skip_for_continuation(AutoContextPressureBand::High));
+    }
+
+    #[test]
+    fn proactive_compact_limit_uses_context_window_tokens() {
+        let usage = TokenUsage {
+            input_tokens: 40_000,
+            cached_input_tokens: 0,
+            output_tokens: 260_000,
+            reasoning_output_tokens: 250_000,
+            total_tokens: 300_000,
+        };
+
+        assert!(!proactive_compact_limit_reached(Some(&usage), 100_000));
+        assert!(proactive_compact_limit_reached(Some(&usage), 40_000));
     }
 }
 

@@ -47,6 +47,7 @@ use code_core::spawn::spawn_std_command_with_retry;
 use code_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use code_core::model_family::derive_default_model_family;
 use code_core::model_family::find_family_for_model;
+use code_core::model_family::resolve_context_mode_limits;
 use code_core::account_usage::{
     self,
     RateLimitWarningScope,
@@ -936,10 +937,6 @@ use crate::bottom_pane::CloudTasksView;
 use crate::bottom_pane::validation_settings_view;
 use crate::bottom_pane::validation_settings_view::{GroupStatus, ToolRow};
 use crate::bottom_pane::model_selection_view::ModelSelectionTarget;
-use crate::bottom_pane::model_selection_view::GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT;
-use crate::bottom_pane::model_selection_view::GPT_5_4_EXTENDED_CONTEXT_WINDOW;
-use crate::bottom_pane::model_selection_view::has_extended_context_override;
-use crate::bottom_pane::model_selection_view::model_supports_extended_context;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::{UndoTimelineEntry, UndoTimelineEntryKind, UndoTimelineView};
@@ -14095,6 +14092,7 @@ impl ChatWidget<'_> {
                     self.total_token_usage.clone(),
                     self.last_token_usage.clone(),
                     self.config.model_context_window,
+                    self.config.context_mode,
                 );
                 self.update_stream_token_usage_metadata();
             }
@@ -15948,7 +15946,7 @@ impl ChatWidget<'_> {
         running_preview.id = "demo-running".to_string();
         running_preview.name = "Lint Fixer".to_string();
         running_preview.status = "Running".to_string();
-        running_preview.model = Some("code-gpt-5.2".to_string());
+        running_preview.model = Some("code-gpt-5.4".to_string());
         running_preview.details = vec![history_cell::AgentDetail::Progress(
             "Refining suggested fixes".to_string(),
         )];
@@ -22674,8 +22672,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.model.clone(),
             self.config.model_reasoning_effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             false,
             ModelSelectionTarget::Session,
         );
@@ -22699,8 +22696,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             self.config.review_use_chat_model,
             ModelSelectionTarget::Review,
         );
@@ -22733,8 +22729,7 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             self.config.review_resolve_use_chat_model,
             ModelSelectionTarget::ReviewResolve,
         );
@@ -22767,8 +22762,7 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             self.config.auto_review_use_chat_model,
             ModelSelectionTarget::AutoReview,
         );
@@ -22801,8 +22795,7 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             self.config.auto_review_resolve_use_chat_model,
             ModelSelectionTarget::AutoReviewResolve,
         );
@@ -22833,8 +22826,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 current,
                 effort,
                 self.config.service_tier,
-                self.config.model_context_window,
-                self.config.model_auto_compact_token_limit,
+                self.config.context_mode,
                 self.config.planning_use_chat_model,
                 ModelSelectionTarget::Planning,
             );
@@ -22858,8 +22850,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.auto_drive.model.clone(),
             self.config.auto_drive.model_reasoning_effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             self.config.auto_drive_use_chat_model,
             ModelSelectionTarget::AutoDrive,
         );
@@ -22879,6 +22870,7 @@ Have we met every part of this goal and is there no further work to do?"#
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             service_tier: self.config.service_tier,
+            context_mode: self.config.context_mode,
             model_context_window: self.config.model_context_window,
             model_auto_compact_token_limit: self.config.model_auto_compact_token_limit,
             user_instructions: self.config.user_instructions.clone(),
@@ -22900,40 +22892,16 @@ Have we met every part of this goal and is there no further work to do?"#
             self.total_token_usage.clone(),
             self.last_token_usage.clone(),
             self.config.model_context_window,
+            self.config.context_mode,
         );
     }
 
     fn sync_session_context_selection_for_model(&mut self) -> bool {
-        if matches!(self.config.context_mode, Some(ContextMode::OneM)) {
-            let (next_context_window, next_auto_compact) = if model_supports_extended_context(&self.config.model) {
-                (
-                    Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW),
-                    Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT),
-                )
-            } else {
-                (
-                    self.config.model_family.context_window,
-                    self.config.model_family.auto_compact_token_limit(),
-                )
-            };
-            let changed = self.config.model_context_window != next_context_window
-                || self.config.model_auto_compact_token_limit != next_auto_compact;
-            self.config.model_context_window = next_context_window;
-            self.config.model_auto_compact_token_limit = next_auto_compact;
-            return changed;
-        }
-
-        if !has_extended_context_override(
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
-        ) {
-            return false;
-        }
-
-        let family = find_family_for_model(&self.config.model)
-            .unwrap_or_else(|| derive_default_model_family(&self.config.model));
-        let next_context_window = family.context_window;
-        let next_auto_compact = family.auto_compact_token_limit();
+        let (next_context_window, next_auto_compact) = resolve_context_mode_limits(
+            &self.config.model,
+            self.config.context_mode,
+            &self.config.model_family,
+        );
         let changed = self.config.model_context_window != next_context_window
             || self.config.model_auto_compact_token_limit != next_auto_compact;
         self.config.model_context_window = next_context_window;
@@ -22959,32 +22927,20 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
-    pub(crate) fn apply_session_context_selection(&mut self, enabled: bool) {
-        if !model_supports_extended_context(&self.config.model)
-            && !matches!(self.config.context_mode, Some(ContextMode::OneM))
-        {
+    pub(crate) fn apply_session_context_mode_selection(
+        &mut self,
+        context_mode: Option<ContextMode>,
+    ) {
+        if self.config.context_mode == context_mode && !self.sync_session_context_selection_for_model() {
             return;
         }
 
-        self.config.context_mode = enabled.then_some(ContextMode::OneM);
-
-        let next_context_window = if enabled {
-            Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW)
-        } else {
-            self.config.model_family.context_window
-        };
-        let next_auto_compact = if enabled {
-            Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT)
-        } else {
-            self.config.model_family.auto_compact_token_limit()
-        };
-
-        if self.config.model_context_window == next_context_window
-            && self.config.model_auto_compact_token_limit == next_auto_compact
-        {
-            return;
-        }
-
+        self.config.context_mode = context_mode;
+        let (next_context_window, next_auto_compact) = resolve_context_mode_limits(
+            &self.config.model,
+            self.config.context_mode,
+            &self.config.model_family,
+        );
         self.config.model_context_window = next_context_window;
         self.config.model_auto_compact_token_limit = next_auto_compact;
         self.submit_configure_session_op();
@@ -22992,13 +22948,17 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let code_home = self.config.code_home.clone();
         let profile = self.config.active_profile.clone();
+        let persisted_context_mode = self.config.context_mode;
         tokio::spawn(async move {
             if let Err(err) = code_core::config_edit::persist_overrides_and_clear_if_none(
                 &code_home,
                 profile.as_deref(),
                 &[(
                     &["context_mode"] as &[&str],
-                    enabled.then_some("\"1m\""),
+                    persisted_context_mode.map(|mode| match mode {
+                        ContextMode::OneM => "1m",
+                        ContextMode::Auto => "auto",
+                    }),
                 )],
             )
             .await
@@ -23009,9 +22969,12 @@ Have we met every part of this goal and is there no further work to do?"#
 
         self.refresh_settings_overview_rows();
 
-        let status = if enabled { "enabled" } else { "disabled" };
-        self.bottom_pane
-            .flash_footer_notice(format!("1M context {status}."));
+        let status = match self.config.context_mode {
+            Some(ContextMode::OneM) => "1M context enabled.".to_string(),
+            Some(ContextMode::Auto) => "Auto Context enabled.".to_string(),
+            None => "Context mode disabled.".to_string(),
+        };
+        self.bottom_pane.flash_footer_notice(status);
         self.request_redraw();
     }
 
@@ -23937,8 +23900,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.config.model.clone(),
                 self.config.model_reasoning_effort,
                 self.config.service_tier,
-                self.config.model_context_window,
-                self.config.model_auto_compact_token_limit,
+                self.config.context_mode,
                 false,
                 ModelSelectionTarget::Session,
             );
@@ -24403,8 +24365,7 @@ Have we met every part of this goal and is there no further work to do?"#
             current_model,
             current_effort,
             self.config.service_tier,
-            self.config.model_context_window,
-            self.config.model_auto_compact_token_limit,
+            self.config.context_mode,
             false,
             ModelSelectionTarget::Session,
             self.app_event_tx.clone(),
@@ -29412,6 +29373,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.total_token_usage.clone(),
             self.last_token_usage.clone(),
             self.config.model_context_window,
+            self.config.context_mode,
         );
     }
 
@@ -31505,7 +31467,7 @@ use code_core::protocol::OrderMeta;
 
         let code = rows
             .iter()
-            .find(|row| row.name == "code-gpt-5.2")
+            .find(|row| row.name == "code-gpt-5.4")
             .expect("code row present");
         assert!(code.installed);
         assert!(code.enabled);

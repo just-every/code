@@ -295,7 +295,7 @@ mod tests {
         }
 
         let defaults = get_default_models();
-        assert!(defaults.iter().any(|v| v == "code-gpt-5.2"));
+        assert!(defaults.iter().any(|v| v == "code-gpt-5.4"));
         assert!(defaults.iter().any(|v| v == "code-gpt-5.3-codex"));
         assert!(!defaults.iter().any(|v| v == "qwen-3-coder"));
         assert!(!defaults.iter().any(|v| v == "gemini-3-flash"));
@@ -349,7 +349,7 @@ mod tests {
         let plan_prompt = result.unwrap();
         assert!(plan_prompt.contains("final, comprehensive plan"));
         // Default agents list should include non-Codex providers when no [[agents]] configured
-        assert!(plan_prompt.contains("code-gpt-5.2"));
+        assert!(plan_prompt.contains("code-gpt-5.4"));
         assert!(plan_prompt.contains("code-gpt-5.3-codex"));
         assert!(!plan_prompt.contains("cloud-gpt-5.1-codex-max"));
 
@@ -383,7 +383,7 @@ mod tests {
         // Create test agent configurations
         let agents = vec![
             AgentConfig {
-                name: "code-gpt-5.2".to_string(),
+                name: "code-gpt-5.4".to_string(),
                 command: "code".to_string(),
                 args: vec![],
                 read_only: false,
@@ -412,7 +412,7 @@ mod tests {
         let result = handle_slash_command("/plan test task", Some(&agents));
         assert!(result.is_some());
         let prompt = result.unwrap();
-        assert!(prompt.contains("code-gpt-5.2"));
+        assert!(prompt.contains("code-gpt-5.4"));
         assert!(!prompt.contains("test-gemini"));
     }
 }

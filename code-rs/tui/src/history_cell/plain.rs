@@ -607,20 +607,12 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
         Span::from(" - "),
         Span::from(SlashCommand::Settings.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(
-            " UPDATED",
-            Style::default().fg(crate::colors::primary()),
-        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("/auto", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Auto.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(
-            " UPDATED",
-            Style::default().fg(crate::colors::primary()),
-        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("/chrome", Style::default().fg(crate::colors::primary())),
@@ -641,12 +633,12 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/skills", Style::default().fg(crate::colors::primary())),
+        Span::styled("/model", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Skills.description())
+        Span::from(SlashCommand::Model.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
         Span::styled(
-            " NEW",
+            " NEW fast mode & 1M Auto Context",
             Style::default().fg(crate::colors::primary()),
         ),
     ]));

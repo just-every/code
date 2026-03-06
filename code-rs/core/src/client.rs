@@ -55,6 +55,7 @@ use crate::client_common::rewrite_image_generation_calls_for_input;
 use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::ContextMode;
 use crate::config_types::ServiceTier;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
@@ -530,6 +531,10 @@ impl ModelClient {
         self.config
             .model_auto_compact_token_limit
             .or_else(|| self.config.model_family.auto_compact_token_limit())
+    }
+
+    pub fn get_context_mode(&self) -> Option<ContextMode> {
+        self.config.context_mode
     }
 
     pub fn default_model_slug(&self) -> &str {

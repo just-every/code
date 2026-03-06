@@ -1,4 +1,5 @@
 use crate::config_types::Personality;
+use crate::config_types::ContextMode;
 use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
 use crate::tool_apply_patch::ApplyPatchToolType;
@@ -31,6 +32,9 @@ const CONTEXT_WINDOW_96K: u64 = 96_000;
 const CONTEXT_WINDOW_16K: u64 = 16_385;
 const CONTEXT_WINDOW_1M: u64 = 1_047_576;
 const MAX_OUTPUT_DEFAULT: u64 = 128_000;
+
+pub const STANDARD_CONTEXT_WINDOW_272K: u64 = CONTEXT_WINDOW_272K;
+pub const EXTENDED_CONTEXT_WINDOW_1M: u64 = CONTEXT_WINDOW_1M;
 
 /// A model family is a group of models that share certain characteristics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,5 +412,29 @@ impl ModelFamily {
     const fn default_auto_compact_limit(context_window: u64) -> i64 {
         // Match upstream behaviour: 90% of the context window.
         ((context_window as i64) * 9) / 10
+    }
+}
+
+pub const fn default_auto_compact_limit_for_context_window(context_window: u64) -> i64 {
+    ((context_window as i64) * 9) / 10
+}
+
+pub fn supports_extended_context(model: &str) -> bool {
+    model.eq_ignore_ascii_case("gpt-5.4")
+}
+
+pub fn resolve_context_mode_limits(
+    model: &str,
+    mode: Option<ContextMode>,
+    family: &ModelFamily,
+) -> (Option<u64>, Option<i64>) {
+    match mode {
+        Some(ContextMode::OneM | ContextMode::Auto) if supports_extended_context(model) => (
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(default_auto_compact_limit_for_context_window(
+                EXTENDED_CONTEXT_WINDOW_1M,
+            )),
+        ),
+        _ => (family.context_window, family.auto_compact_token_limit()),
     }
 }

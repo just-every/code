@@ -1138,6 +1138,7 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             model_text_verbosity: config.model_text_verbosity,
             service_tier: config.service_tier,
+            context_mode: config.context_mode,
             model_context_window: config.model_context_window,
             model_auto_compact_token_limit: config.model_auto_compact_token_limit,
             user_instructions,

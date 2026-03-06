@@ -1,5 +1,6 @@
 use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ContextMode;
 use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
@@ -284,9 +285,9 @@ pub(crate) enum AppEvent {
         service_tier: Option<ServiceTier>,
     },
 
-    /// Update the session extended context preset.
-    UpdateSessionContextSelection {
-        enabled: bool,
+    /// Update the session context mode.
+    UpdateSessionContextModeSelection {
+        context_mode: Option<ContextMode>,
     },
 
     /// Update the dedicated review model + reasoning effort

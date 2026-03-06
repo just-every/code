@@ -1450,8 +1450,11 @@ pub enum ServiceTier {
 #[serde(rename_all = "lowercase")]
 pub enum ContextMode {
     #[serde(rename = "1m")]
+    #[serde(alias = "\"1m\"")]
     #[strum(to_string = "1m")]
     OneM,
+    #[serde(alias = "\"auto\"")]
+    Auto,
 }
 
 /// Text verbosity level for OpenAI API responses.

@@ -34,6 +34,7 @@ use crate::config_types::Personality;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
+use crate::model_family::resolve_context_mode_limits;
 use crate::model_family::derive_default_model_family;
 use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
@@ -1286,22 +1287,18 @@ impl Config {
         let chat_reasoning_effort =
             clamp_reasoning_effort_for_model(&model, requested_chat_effort);
 
-        let mut model_context_window = cfg
-            .model_context_window
-            .or(model_family.context_window);
+        let mut model_context_window = cfg.model_context_window;
         let model_max_output_tokens = cfg
             .model_max_output_tokens
             .or(model_family.max_output_tokens);
-        let mut model_auto_compact_token_limit = cfg
-            .model_auto_compact_token_limit
-            .or_else(|| model_family.auto_compact_token_limit());
-        if matches!(context_mode, Some(ContextMode::OneM)) && model.eq_ignore_ascii_case("gpt-5.4") {
-            if cfg.model_context_window.is_none() {
-                model_context_window = Some(1_047_576);
-            }
-            if cfg.model_auto_compact_token_limit.is_none() {
-                model_auto_compact_token_limit = Some(942_818);
-            }
+        let mut model_auto_compact_token_limit = cfg.model_auto_compact_token_limit;
+        let (context_mode_window, context_mode_auto_compact_limit) =
+            resolve_context_mode_limits(&model, context_mode, &model_family);
+        if model_context_window.is_none() {
+            model_context_window = context_mode_window;
+        }
+        if model_auto_compact_token_limit.is_none() {
+            model_auto_compact_token_limit = context_mode_auto_compact_limit;
         }
 
         // Load base instructions override from a file if specified. If the
@@ -3082,7 +3079,7 @@ model_verbosity = "high"
             .collect();
 
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
-        assert!(enabled_names.contains("code-gpt-5.2"));
+        assert!(enabled_names.contains("code-gpt-5.4"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
         assert!(enabled_names.contains("gemini-3-pro"));
         assert!(enabled_names.contains("qwen-3-coder"));
@@ -3417,6 +3414,30 @@ context_mode = "1m"
         assert_eq!(config.context_mode, Some(ContextMode::OneM));
         assert_eq!(config.model_context_window, Some(272_000));
         assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_auto_expands_gpt_5_4_context() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "auto"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Auto));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
         Ok(())
     }
 }
