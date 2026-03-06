@@ -16,6 +16,29 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::cmp::Ordering;
 
+pub(crate) const GPT_5_4_STANDARD_CONTEXT_WINDOW: u64 = 272_000;
+pub(crate) const GPT_5_4_EXTENDED_CONTEXT_WINDOW: u64 = 1_047_576;
+pub(crate) const GPT_5_4_STANDARD_AUTO_COMPACT_TOKEN_LIMIT: i64 =
+    auto_compact_token_limit_for_context_window(GPT_5_4_STANDARD_CONTEXT_WINDOW);
+pub(crate) const GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT: i64 =
+    auto_compact_token_limit_for_context_window(GPT_5_4_EXTENDED_CONTEXT_WINDOW);
+
+const fn auto_compact_token_limit_for_context_window(context_window: u64) -> i64 {
+    ((context_window as i64) * 9) / 10
+}
+
+pub(crate) fn model_supports_extended_context(model: &str) -> bool {
+    model.eq_ignore_ascii_case("gpt-5.4")
+}
+
+pub(crate) fn has_extended_context_override(
+    model_context_window: Option<u64>,
+    model_auto_compact_token_limit: Option<i64>,
+) -> bool {
+    model_context_window == Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW)
+        && model_auto_compact_token_limit == Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT)
+}
+
 /// Flattened preset entry combining a model with a specific reasoning effort.
 #[derive(Clone, Debug)]
 struct FlatPreset {
@@ -141,6 +164,8 @@ pub(crate) struct ModelSelectionView {
     current_model: String,
     current_effort: ReasoningEffort,
     current_service_tier: Option<ServiceTier>,
+    current_model_context_window: Option<u64>,
+    current_model_auto_compact_token_limit: Option<i64>,
     use_chat_model: bool,
     app_event_tx: AppEventSender,
     is_complete: bool,
@@ -150,6 +175,7 @@ pub(crate) struct ModelSelectionView {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum EntryKind {
     FastMode,
+    ExtendedContext,
     FollowChat,
     Preset(usize),
 }
@@ -160,6 +186,8 @@ impl ModelSelectionView {
         current_model: String,
         current_effort: ReasoningEffort,
         current_service_tier: Option<ServiceTier>,
+        current_model_context_window: Option<u64>,
+        current_model_auto_compact_token_limit: Option<i64>,
         use_chat_model: bool,
         target: ModelSelectionTarget,
         app_event_tx: AppEventSender,
@@ -171,6 +199,7 @@ impl ModelSelectionView {
 
         let initial_index = Self::initial_selection(
             target.supports_fast_mode(),
+            target.supports_fast_mode() && model_supports_extended_context(&current_model),
             target.supports_follow_chat(),
             use_chat_model,
             &flat_presets,
@@ -184,6 +213,8 @@ impl ModelSelectionView {
             current_model,
             current_effort,
             current_service_tier,
+            current_model_context_window,
+            current_model_auto_compact_token_limit,
             use_chat_model,
             app_event_tx,
             is_complete: false,
@@ -193,6 +224,7 @@ impl ModelSelectionView {
 
     pub(crate) fn update_presets(&mut self, presets: Vec<ModelPreset>) {
         let include_fast_mode = self.target.supports_fast_mode();
+        let include_extended_context = self.supports_extended_context();
         let include_follow_chat = self.target.supports_follow_chat();
         let previous_entries = self.entries();
         let previous_selected = previous_entries.get(self.selected_index).copied();
@@ -210,9 +242,16 @@ impl ModelSelectionView {
                     next_selected = Some(0);
                 }
             }
+            Some(EntryKind::ExtendedContext) => {
+                if include_extended_context {
+                    next_selected = Some(usize::from(include_fast_mode));
+                }
+            }
             Some(EntryKind::FollowChat) => {
                 if include_follow_chat {
-                    next_selected = Some(if include_fast_mode { 1 } else { 0 });
+                    next_selected = Some(
+                        usize::from(include_fast_mode) + usize::from(include_extended_context),
+                    );
                 }
             }
             Some(EntryKind::Preset(idx)) => {
@@ -226,7 +265,9 @@ impl ModelSelectionView {
                                 && preset.effort == old.effort
                         })
                     {
-                        let prefix = usize::from(include_fast_mode) + usize::from(include_follow_chat);
+                        let prefix = usize::from(include_fast_mode)
+                            + usize::from(include_extended_context)
+                            + usize::from(include_follow_chat);
                         next_selected = Some(new_idx + prefix);
                     }
                 }
@@ -237,6 +278,7 @@ impl ModelSelectionView {
         self.selected_index = next_selected.unwrap_or_else(|| {
             Self::initial_selection(
                 include_fast_mode,
+                include_extended_context,
                 include_follow_chat,
                 self.use_chat_model,
                 &self.flat_presets,
@@ -294,6 +336,7 @@ impl ModelSelectionView {
 
     fn initial_selection(
         include_fast_mode: bool,
+        include_extended_context: bool,
         include_follow_chat: bool,
         use_chat_model: bool,
         flat_presets: &[FlatPreset],
@@ -311,7 +354,9 @@ impl ModelSelectionView {
         if let Some((idx, _)) = flat_presets.iter().enumerate().find(|(_, preset)| {
             preset.model.eq_ignore_ascii_case(current_model) && preset.effort == current_effort
         }) {
-            return idx + usize::from(include_follow_chat);
+            return idx
+                + usize::from(include_extended_context)
+                + usize::from(include_follow_chat);
         }
 
         if let Some((idx, _)) = flat_presets
@@ -319,18 +364,24 @@ impl ModelSelectionView {
             .enumerate()
             .find(|(_, preset)| preset.model.eq_ignore_ascii_case(current_model))
         {
-            return idx + usize::from(include_follow_chat);
+            return idx
+                + usize::from(include_extended_context)
+                + usize::from(include_follow_chat);
         }
 
-        if include_follow_chat {
+        if include_extended_context || include_follow_chat {
             if flat_presets.is_empty() {
                 0
             } else {
-                1
+                usize::from(include_extended_context) + usize::from(include_follow_chat)
             }
         } else {
             0
         }
+    }
+
+    fn supports_extended_context(&self) -> bool {
+        self.target.supports_fast_mode() && model_supports_extended_context(&self.current_model)
     }
 
     fn format_model_header(model: &str) -> String {
@@ -367,6 +418,9 @@ impl ModelSelectionView {
         let mut entries = Vec::new();
         if self.target.supports_fast_mode() {
             entries.push(EntryKind::FastMode);
+        }
+        if self.supports_extended_context() {
+            entries.push(EntryKind::ExtendedContext);
         }
         if self.target.supports_follow_chat() {
             entries.push(EntryKind::FollowChat);
@@ -411,6 +465,26 @@ impl ModelSelectionView {
                     let _ = self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
                         service_tier: next_service_tier,
                     });
+                    return;
+                }
+                EntryKind::ExtendedContext => {
+                    let next_enabled = !has_extended_context_override(
+                        self.current_model_context_window,
+                        self.current_model_auto_compact_token_limit,
+                    );
+                    self.current_model_context_window = Some(if next_enabled {
+                        GPT_5_4_EXTENDED_CONTEXT_WINDOW
+                    } else {
+                        GPT_5_4_STANDARD_CONTEXT_WINDOW
+                    });
+                    self.current_model_auto_compact_token_limit = Some(if next_enabled {
+                        GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT
+                    } else {
+                        GPT_5_4_STANDARD_AUTO_COMPACT_TOKEN_LIMIT
+                    });
+                    let _ = self
+                        .app_event_tx
+                        .send(AppEvent::UpdateSessionContextSelection { enabled: next_enabled });
                     return;
                 }
                 EntryKind::FollowChat => {
@@ -615,8 +689,70 @@ impl ModelSelectionView {
             });
         }
 
+        if self.supports_extended_context() {
+            let is_selected = matches!(
+                self.entries().get(self.selected_index),
+                Some(EntryKind::ExtendedContext)
+            );
+            let is_enabled = has_extended_context_override(
+                self.current_model_context_window,
+                self.current_model_auto_compact_token_limit,
+            );
+            let status = if is_enabled { "enabled" } else { "disabled" };
+
+            let header_style = Style::default()
+                .fg(crate::colors::text_bright())
+                .add_modifier(Modifier::BOLD);
+            let desc_style = Style::default().fg(crate::colors::text_dim());
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled("1M context", header_style)]),
+                is_selected: false,
+            });
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled(
+                    "Experimental for gpt-5.4. Requests above 272K use 2x credits.",
+                    desc_style,
+                )]),
+                is_selected: false,
+            });
+
+            let mut label_style = Style::default().fg(crate::colors::text());
+            if is_selected {
+                label_style = label_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            if is_enabled {
+                label_style = label_style.fg(crate::colors::success());
+            }
+
+            let arrow = if is_selected { "› " } else { "  " };
+            let arrow_style = if is_selected {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(crate::colors::text_dim())
+            };
+
+            lines.push(ModelLine {
+                line: Line::from(vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled(format!("1M context: {status}"), label_style),
+                ]),
+                is_selected,
+            });
+            lines.push(ModelLine {
+                line: Line::from(""),
+                is_selected: false,
+            });
+        }
+
         if self.target.supports_follow_chat() {
-            let is_selected = self.selected_index == 0;
+            let is_selected = matches!(
+                self.entries().get(self.selected_index),
+                Some(EntryKind::FollowChat)
+            );
 
             let header_style = Style::default()
                 .fg(crate::colors::text_bright())
@@ -770,6 +906,9 @@ impl ModelSelectionView {
     fn content_line_count(&self) -> u16 {
         let mut lines: u16 = 3;
         if self.target.supports_fast_mode() {
+            lines = lines.saturating_add(4);
+        }
+        if self.supports_extended_context() {
             lines = lines.saturating_add(4);
         }
         if self.target.supports_follow_chat() {
@@ -1076,6 +1215,8 @@ mod tests {
             "model-00".to_string(),
             ReasoningEffort::Low,
             None,
+            None,
+            None,
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
@@ -1117,6 +1258,8 @@ mod tests {
             presets,
             "gpt-5.3-codex".to_string(),
             ReasoningEffort::Low,
+            None,
+            None,
             None,
             false,
             ModelSelectionTarget::Session,
@@ -1169,6 +1312,8 @@ mod tests {
             "gpt-5.4".to_string(),
             ReasoningEffort::Low,
             Some(ServiceTier::Fast),
+            Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW),
+            Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT),
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
@@ -1201,6 +1346,7 @@ mod tests {
 
         assert!(gpt_5_4_idx < gpt_5_3_idx);
         assert!(lines.iter().any(|line| line.contains("Fast mode: enabled")));
+        assert!(lines.iter().any(|line| line.contains("1M context: enabled")));
     }
 
     #[test]
@@ -1212,6 +1358,8 @@ mod tests {
             "gpt-5.4".to_string(),
             ReasoningEffort::Low,
             None,
+            Some(GPT_5_4_STANDARD_CONTEXT_WINDOW),
+            Some(GPT_5_4_STANDARD_AUTO_COMPACT_TOKEN_LIMIT),
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
@@ -1230,6 +1378,33 @@ mod tests {
     }
 
     #[test]
+    fn selecting_extended_context_toggles_without_closing() {
+        let presets = vec![make_preset("gpt-5.4")];
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let mut view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            None,
+            Some(GPT_5_4_STANDARD_CONTEXT_WINDOW),
+            Some(GPT_5_4_STANDARD_AUTO_COMPACT_TOKEN_LIMIT),
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let event = rx.try_recv().expect("extended context event");
+        assert!(matches!(
+            event,
+            AppEvent::UpdateSessionContextSelection { enabled: true }
+        ));
+        assert!(!view.is_complete());
+    }
+
+    #[test]
     fn model_selection_keeps_first_follow_chat_entry_visible_on_compact_height() {
         let presets = vec![make_preset("gpt-5.3-codex")];
 
@@ -1238,6 +1413,8 @@ mod tests {
             presets,
             "gpt-5.3-codex".to_string(),
             ReasoningEffort::Low,
+            None,
+            None,
             None,
             true,
             ModelSelectionTarget::Review,
@@ -1278,6 +1455,8 @@ mod tests {
             presets,
             "model-00".to_string(),
             ReasoningEffort::Low,
+            None,
+            None,
             None,
             false,
             ModelSelectionTarget::Session,
@@ -1333,6 +1512,8 @@ mod tests {
             presets,
             "model-00".to_string(),
             ReasoningEffort::Low,
+            None,
+            None,
             None,
             false,
             ModelSelectionTarget::Session,

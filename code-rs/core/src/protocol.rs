@@ -103,6 +103,8 @@ pub enum Op {
         model_reasoning_summary: ReasoningSummaryConfig,
         model_text_verbosity: TextVerbosityConfig,
         service_tier: Option<ServiceTierConfig>,
+        model_context_window: Option<u64>,
+        model_auto_compact_token_limit: Option<i64>,
 
         /// Model instructions that are appended to the base instructions.
         user_instructions: Option<String>,

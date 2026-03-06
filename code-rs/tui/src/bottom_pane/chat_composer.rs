@@ -13,6 +13,7 @@ use super::chat_composer_history::ChatComposerHistory;
 use super::command_popup::CommandItem;
 use super::command_popup::CommandPopup;
 use super::file_search_popup::FileSearchPopup;
+use super::model_selection_view::GPT_5_4_EXTENDED_CONTEXT_WINDOW;
 use super::paste_burst::PasteBurst;
 use crate::slash_command::{built_in_slash_commands, SlashCommand};
 use code_protocol::custom_prompts::CustomPrompt;
@@ -126,6 +127,10 @@ fn format_with_thousands(n: u64) -> String {
         count += 1;
     }
     out.chars().rev().collect()
+}
+
+fn context_window_footer_label(context_window: u64) -> Option<&'static str> {
+    (context_window == GPT_5_4_EXTENDED_CONTEXT_WINDOW).then_some("1M Context")
 }
 
 pub(crate) struct ChatComposer {
@@ -2082,7 +2087,14 @@ impl ChatComposer {
                     };
                     spans.push(Span::from(" (").style(label_style));
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
-                    spans.push(Span::from("% left)").style(label_style));
+                    spans.push(Span::from("% left").style(label_style));
+                    if let Some(context_label) = context_window_footer_label(context_window) {
+                        spans.push(Span::from(" • ").style(label_style));
+                        spans.push(
+                            Span::from(context_label).style(label_style.add_modifier(Modifier::BOLD)),
+                        );
+                    }
+                    spans.push(Span::from(")").style(label_style));
                 }
             }
         }
@@ -2102,7 +2114,14 @@ impl ChatComposer {
                     };
                     spans.push(Span::from("(").style(label_style));
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
-                    spans.push(Span::from("% left)").style(label_style));
+                    spans.push(Span::from("% left").style(label_style));
+                    if let Some(context_label) = context_window_footer_label(context_window) {
+                        spans.push(Span::from(" • ").style(label_style));
+                        spans.push(
+                            Span::from(context_label).style(label_style.add_modifier(Modifier::BOLD)),
+                        );
+                    }
+                    spans.push(Span::from(")").style(label_style));
                 }
             }
         }
@@ -3046,5 +3065,41 @@ mod tests {
         let esc_idx = line.find("Esc stop").unwrap_or(line.len());
 
         assert!(auto_idx < esc_idx, "Auto Review status should be left-most");
+    }
+
+    #[test]
+    fn footer_shows_1m_context_suffix_when_extended_context_is_active() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW),
+        );
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(area.x + x, area.y)].symbol().to_string())
+            .collect();
+
+        assert!(line.contains("13,290 tokens"));
+        assert!(line.contains("1M Context"));
     }
 }

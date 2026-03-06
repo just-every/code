@@ -38,6 +38,7 @@ use code_core::git_info::CommitLogEntry;
 use code_core::config_types::AgentConfig;
 use code_core::config_types::AutoDriveContinueMode;
 use code_core::config_types::AutoDriveModelRoutingEntry;
+use code_core::config_types::ContextMode;
 use code_core::config_types::Notifications;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::ServiceTier;
@@ -935,6 +936,10 @@ use crate::bottom_pane::CloudTasksView;
 use crate::bottom_pane::validation_settings_view;
 use crate::bottom_pane::validation_settings_view::{GroupStatus, ToolRow};
 use crate::bottom_pane::model_selection_view::ModelSelectionTarget;
+use crate::bottom_pane::model_selection_view::GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT;
+use crate::bottom_pane::model_selection_view::GPT_5_4_EXTENDED_CONTEXT_WINDOW;
+use crate::bottom_pane::model_selection_view::has_extended_context_override;
+use crate::bottom_pane::model_selection_view::model_supports_extended_context;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::{UndoTimelineEntry, UndoTimelineEntryKind, UndoTimelineView};
@@ -22669,6 +22674,8 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.model.clone(),
             self.config.model_reasoning_effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             false,
             ModelSelectionTarget::Session,
         );
@@ -22692,6 +22699,8 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             self.config.review_use_chat_model,
             ModelSelectionTarget::Review,
         );
@@ -22724,6 +22733,8 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             self.config.review_resolve_use_chat_model,
             ModelSelectionTarget::ReviewResolve,
         );
@@ -22756,6 +22767,8 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             self.config.auto_review_use_chat_model,
             ModelSelectionTarget::AutoReview,
         );
@@ -22788,6 +22801,8 @@ Have we met every part of this goal and is there no further work to do?"#
             current,
             effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             self.config.auto_review_resolve_use_chat_model,
             ModelSelectionTarget::AutoReviewResolve,
         );
@@ -22818,6 +22833,8 @@ Have we met every part of this goal and is there no further work to do?"#
                 current,
                 effort,
                 self.config.service_tier,
+                self.config.model_context_window,
+                self.config.model_auto_compact_token_limit,
                 self.config.planning_use_chat_model,
                 ModelSelectionTarget::Planning,
             );
@@ -22841,6 +22858,8 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.auto_drive.model.clone(),
             self.config.auto_drive.model_reasoning_effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             self.config.auto_drive_use_chat_model,
             ModelSelectionTarget::AutoDrive,
         );
@@ -22850,13 +22869,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.apply_model_selection_inner(model, effort, true, true);
     }
 
-    pub(crate) fn apply_service_tier_selection(&mut self, service_tier: Option<ServiceTier>) {
-        if self.config.service_tier == service_tier {
-            return;
-        }
-
-        self.config.service_tier = service_tier;
-
+    fn submit_configure_session_op(&mut self) {
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
@@ -22866,6 +22879,8 @@ Have we met every part of this goal and is there no further work to do?"#
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
             service_tier: self.config.service_tier,
+            model_context_window: self.config.model_context_window,
+            model_auto_compact_token_limit: self.config.model_auto_compact_token_limit,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),
@@ -22878,6 +22893,61 @@ Have we met every part of this goal and is there no further work to do?"#
             dynamic_tools: Vec::new(),
         };
         self.submit_op(op);
+    }
+
+    fn refresh_bottom_pane_token_usage(&mut self) {
+        self.bottom_pane.set_token_usage(
+            self.total_token_usage.clone(),
+            self.last_token_usage.clone(),
+            self.config.model_context_window,
+        );
+    }
+
+    fn sync_session_context_selection_for_model(&mut self) -> bool {
+        if matches!(self.config.context_mode, Some(ContextMode::OneM)) {
+            let (next_context_window, next_auto_compact) = if model_supports_extended_context(&self.config.model) {
+                (
+                    Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW),
+                    Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT),
+                )
+            } else {
+                (
+                    self.config.model_family.context_window,
+                    self.config.model_family.auto_compact_token_limit(),
+                )
+            };
+            let changed = self.config.model_context_window != next_context_window
+                || self.config.model_auto_compact_token_limit != next_auto_compact;
+            self.config.model_context_window = next_context_window;
+            self.config.model_auto_compact_token_limit = next_auto_compact;
+            return changed;
+        }
+
+        if !has_extended_context_override(
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
+        ) {
+            return false;
+        }
+
+        let family = find_family_for_model(&self.config.model)
+            .unwrap_or_else(|| derive_default_model_family(&self.config.model));
+        let next_context_window = family.context_window;
+        let next_auto_compact = family.auto_compact_token_limit();
+        let changed = self.config.model_context_window != next_context_window
+            || self.config.model_auto_compact_token_limit != next_auto_compact;
+        self.config.model_context_window = next_context_window;
+        self.config.model_auto_compact_token_limit = next_auto_compact;
+        changed
+    }
+
+    pub(crate) fn apply_service_tier_selection(&mut self, service_tier: Option<ServiceTier>) {
+        if self.config.service_tier == service_tier {
+            return;
+        }
+
+        self.config.service_tier = service_tier;
+        self.submit_configure_session_op();
 
         let status = if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
             "enabled"
@@ -22886,6 +22956,62 @@ Have we met every part of this goal and is there no further work to do?"#
         };
         self.bottom_pane
             .flash_footer_notice(format!("Fast mode {status}."));
+        self.request_redraw();
+    }
+
+    pub(crate) fn apply_session_context_selection(&mut self, enabled: bool) {
+        if !model_supports_extended_context(&self.config.model)
+            && !matches!(self.config.context_mode, Some(ContextMode::OneM))
+        {
+            return;
+        }
+
+        self.config.context_mode = enabled.then_some(ContextMode::OneM);
+
+        let next_context_window = if enabled {
+            Some(GPT_5_4_EXTENDED_CONTEXT_WINDOW)
+        } else {
+            self.config.model_family.context_window
+        };
+        let next_auto_compact = if enabled {
+            Some(GPT_5_4_EXTENDED_AUTO_COMPACT_TOKEN_LIMIT)
+        } else {
+            self.config.model_family.auto_compact_token_limit()
+        };
+
+        if self.config.model_context_window == next_context_window
+            && self.config.model_auto_compact_token_limit == next_auto_compact
+        {
+            return;
+        }
+
+        self.config.model_context_window = next_context_window;
+        self.config.model_auto_compact_token_limit = next_auto_compact;
+        self.submit_configure_session_op();
+        self.refresh_bottom_pane_token_usage();
+
+        let code_home = self.config.code_home.clone();
+        let profile = self.config.active_profile.clone();
+        tokio::spawn(async move {
+            if let Err(err) = code_core::config_edit::persist_overrides_and_clear_if_none(
+                &code_home,
+                profile.as_deref(),
+                &[(
+                    &["context_mode"] as &[&str],
+                    enabled.then_some("\"1m\""),
+                )],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist context mode setting: {err}");
+            }
+        });
+
+        self.refresh_settings_overview_rows();
+
+        let status = if enabled { "enabled" } else { "disabled" };
+        self.bottom_pane
+            .flash_footer_notice(format!("1M context {status}."));
         self.request_redraw();
     }
 
@@ -23022,6 +23148,10 @@ Have we met every part of this goal and is there no further work to do?"#
             updated = true;
         }
 
+        if self.sync_session_context_selection_for_model() {
+            updated = true;
+        }
+
         if let Some(explicit) = effort {
             if self.config.preferred_model_reasoning_effort != Some(explicit) {
                 self.config.preferred_model_reasoning_effort = Some(explicit);
@@ -23041,27 +23171,8 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         if updated {
-            let op = Op::ConfigureSession {
-                provider: self.config.model_provider.clone(),
-                model: self.config.model.clone(),
-                model_explicit: self.config.model_explicit,
-                model_reasoning_effort: self.config.model_reasoning_effort,
-                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-                model_reasoning_summary: self.config.model_reasoning_summary,
-                model_text_verbosity: self.config.model_text_verbosity,
-                service_tier: self.config.service_tier,
-                user_instructions: self.config.user_instructions.clone(),
-                base_instructions: self.config.base_instructions.clone(),
-                approval_policy: self.config.approval_policy.clone(),
-                sandbox_policy: self.config.sandbox_policy.clone(),
-                disable_response_storage: self.config.disable_response_storage,
-                notify: self.config.notify.clone(),
-                cwd: self.config.cwd.clone(),
-                resume_path: None,
-                demo_developer_message: self.config.demo_developer_message.clone(),
-                dynamic_tools: Vec::new(),
-            };
-            self.submit_op(op);
+            self.submit_configure_session_op();
+            self.refresh_bottom_pane_token_usage();
 
             self.sync_follow_chat_models();
             self.refresh_settings_overview_rows();
@@ -23673,27 +23784,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.config.model = self.config.planning_model.clone();
         self.config.model_reasoning_effort = self.config.planning_model_reasoning_effort;
 
-        let op = Op::ConfigureSession {
-            provider: self.config.model_provider.clone(),
-            model: self.config.model.clone(),
-            model_explicit: self.config.model_explicit,
-            model_reasoning_effort: self.config.model_reasoning_effort,
-            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-            model_reasoning_summary: self.config.model_reasoning_summary,
-            model_text_verbosity: self.config.model_text_verbosity,
-            service_tier: self.config.service_tier,
-            user_instructions: self.config.user_instructions.clone(),
-            base_instructions: self.config.base_instructions.clone(),
-            approval_policy: self.config.approval_policy.clone(),
-            sandbox_policy: self.config.sandbox_policy.clone(),
-            disable_response_storage: self.config.disable_response_storage,
-            notify: self.config.notify.clone(),
-            cwd: self.config.cwd.clone(),
-            resume_path: None,
-            demo_developer_message: self.config.demo_developer_message.clone(),
-            dynamic_tools: Vec::new(),
-        };
-        self.submit_op(op);
+        self.submit_configure_session_op();
     }
 
     fn restore_planning_session_model(&mut self) {
@@ -23701,27 +23792,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.config.model = model;
             self.config.model_reasoning_effort = effort;
 
-            let op = Op::ConfigureSession {
-                provider: self.config.model_provider.clone(),
-                model: self.config.model.clone(),
-                model_explicit: self.config.model_explicit,
-                model_reasoning_effort: self.config.model_reasoning_effort,
-                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-                model_reasoning_summary: self.config.model_reasoning_summary,
-                model_text_verbosity: self.config.model_text_verbosity,
-                service_tier: self.config.service_tier,
-                user_instructions: self.config.user_instructions.clone(),
-                base_instructions: self.config.base_instructions.clone(),
-                approval_policy: self.config.approval_policy.clone(),
-                sandbox_policy: self.config.sandbox_policy.clone(),
-                disable_response_storage: self.config.disable_response_storage,
-                notify: self.config.notify.clone(),
-                cwd: self.config.cwd.clone(),
-                resume_path: None,
-                demo_developer_message: self.config.demo_developer_message.clone(),
-                dynamic_tools: Vec::new(),
-            };
-            self.submit_op(op);
+            self.submit_configure_session_op();
         }
     }
 
@@ -23866,6 +23937,8 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.config.model.clone(),
                 self.config.model_reasoning_effort,
                 self.config.service_tier,
+                self.config.model_context_window,
+                self.config.model_auto_compact_token_limit,
                 false,
                 ModelSelectionTarget::Session,
             );
@@ -23910,27 +23983,7 @@ Have we met every part of this goal and is there no further work to do?"#
             self.push_background_tail(message);
 
             // Send the update to the backend
-            let op = Op::ConfigureSession {
-                provider: self.config.model_provider.clone(),
-                model: self.config.model.clone(),
-                model_explicit: self.config.model_explicit,
-                model_reasoning_effort: self.config.model_reasoning_effort,
-                preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-                model_reasoning_summary: self.config.model_reasoning_summary,
-                model_text_verbosity: self.config.model_text_verbosity,
-                service_tier: self.config.service_tier,
-                user_instructions: self.config.user_instructions.clone(),
-                base_instructions: self.config.base_instructions.clone(),
-                approval_policy: self.config.approval_policy,
-                sandbox_policy: self.config.sandbox_policy.clone(),
-                disable_response_storage: self.config.disable_response_storage,
-                notify: self.config.notify.clone(),
-                cwd: self.config.cwd.clone(),
-                resume_path: None,
-                demo_developer_message: self.config.demo_developer_message.clone(),
-                dynamic_tools: Vec::new(),
-            };
-            let _ = self.code_op_tx.send(op);
+            self.submit_configure_session_op();
         } else {
             // No parameter specified, show interactive UI
             self.bottom_pane
@@ -24056,28 +24109,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.config.model_reasoning_effort = clamped_effort;
 
         // Send ConfigureSession op to update the backend
-        let op = Op::ConfigureSession {
-            provider: self.config.model_provider.clone(),
-            model: self.config.model.clone(),
-            model_explicit: self.config.model_explicit,
-            model_reasoning_effort: clamped_effort,
-            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-            model_reasoning_summary: self.config.model_reasoning_summary,
-            model_text_verbosity: self.config.model_text_verbosity,
-            service_tier: self.config.service_tier,
-            user_instructions: self.config.user_instructions.clone(),
-            base_instructions: self.config.base_instructions.clone(),
-            approval_policy: self.config.approval_policy.clone(),
-            sandbox_policy: self.config.sandbox_policy.clone(),
-            disable_response_storage: self.config.disable_response_storage,
-            notify: self.config.notify.clone(),
-            cwd: self.config.cwd.clone(),
-            resume_path: None,
-            demo_developer_message: self.config.demo_developer_message.clone(),
-            dynamic_tools: Vec::new(),
-        };
-
-        self.submit_op(op);
+        self.submit_configure_session_op();
 
         // Add status message to history (replaceable system notice)
         let placement = self.ui_placement_for_now();
@@ -24099,28 +24131,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.config.model_text_verbosity = new_verbosity;
 
         // Send ConfigureSession op to update the backend
-        let op = Op::ConfigureSession {
-            provider: self.config.model_provider.clone(),
-            model: self.config.model.clone(),
-            model_explicit: self.config.model_explicit,
-            model_reasoning_effort: self.config.model_reasoning_effort,
-            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-            model_reasoning_summary: self.config.model_reasoning_summary,
-            model_text_verbosity: new_verbosity,
-            service_tier: self.config.service_tier,
-            user_instructions: self.config.user_instructions.clone(),
-            base_instructions: self.config.base_instructions.clone(),
-            approval_policy: self.config.approval_policy.clone(),
-            sandbox_policy: self.config.sandbox_policy.clone(),
-            disable_response_storage: self.config.disable_response_storage,
-            notify: self.config.notify.clone(),
-            cwd: self.config.cwd.clone(),
-            resume_path: None,
-            demo_developer_message: self.config.demo_developer_message.clone(),
-            dynamic_tools: Vec::new(),
-        };
-
-        self.submit_op(op);
+        self.submit_configure_session_op();
 
         // Add status message to history
         let message = format!("Text verbosity set to: {}", new_verbosity);
@@ -24392,6 +24403,8 @@ Have we met every part of this goal and is there no further work to do?"#
             current_model,
             current_effort,
             self.config.service_tier,
+            self.config.model_context_window,
+            self.config.model_auto_compact_token_limit,
             false,
             ModelSelectionTarget::Session,
             self.app_event_tx.clone(),
@@ -25328,27 +25341,7 @@ Have we met every part of this goal and is there no further work to do?"#
         self.config.sandbox_policy = sandbox;
 
         // Send ConfigureSession op to backend
-        let op = Op::ConfigureSession {
-            provider: self.config.model_provider.clone(),
-            model: self.config.model.clone(),
-            model_explicit: self.config.model_explicit,
-            model_reasoning_effort: self.config.model_reasoning_effort,
-            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-            model_reasoning_summary: self.config.model_reasoning_summary,
-            model_text_verbosity: self.config.model_text_verbosity,
-            service_tier: self.config.service_tier,
-            user_instructions: self.config.user_instructions.clone(),
-            base_instructions: self.config.base_instructions.clone(),
-            approval_policy: self.config.approval_policy.clone(),
-            sandbox_policy: self.config.sandbox_policy.clone(),
-            disable_response_storage: self.config.disable_response_storage,
-            notify: self.config.notify.clone(),
-            cwd: self.config.cwd.clone(),
-            resume_path: None,
-            demo_developer_message: self.config.demo_developer_message.clone(),
-            dynamic_tools: Vec::new(),
-        };
-        self.submit_op(op);
+        self.submit_configure_session_op();
 
         // Persist selection into CODEX_HOME/config.toml for this project directory so it sticks.
         let _ = set_project_access_mode(
@@ -38603,27 +38596,7 @@ impl ChatWidget<'_> {
         };
         self.queue_agent_note(branch_note);
 
-        let op = Op::ConfigureSession {
-            provider: self.config.model_provider.clone(),
-            model: self.config.model.clone(),
-            model_explicit: self.config.model_explicit,
-            model_reasoning_effort: self.config.model_reasoning_effort,
-            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
-            model_reasoning_summary: self.config.model_reasoning_summary,
-            model_text_verbosity: self.config.model_text_verbosity,
-            service_tier: self.config.service_tier,
-            user_instructions: self.config.user_instructions.clone(),
-            base_instructions: self.config.base_instructions.clone(),
-            approval_policy: self.config.approval_policy.clone(),
-            sandbox_policy: self.config.sandbox_policy.clone(),
-            disable_response_storage: self.config.disable_response_storage,
-            notify: self.config.notify.clone(),
-            cwd: self.config.cwd.clone(),
-            resume_path: None,
-            demo_developer_message: self.config.demo_developer_message.clone(),
-            dynamic_tools: Vec::new(),
-        };
-        self.submit_op(op);
+        self.submit_configure_session_op();
 
         if let Some(prompt) = initial_prompt {
             if !prompt.is_empty() {

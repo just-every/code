@@ -264,6 +264,8 @@ pub(super) async fn submission_loop(
                 model_reasoning_summary,
                 model_text_verbosity,
                 service_tier,
+                model_context_window,
+                model_auto_compact_token_limit,
                 user_instructions: provided_user_instructions,
                 base_instructions: provided_base_instructions,
                 approval_policy,
@@ -311,6 +313,8 @@ pub(super) async fn submission_loop(
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
                 updated_config.service_tier = service_tier;
+                updated_config.model_context_window = model_context_window;
+                updated_config.model_auto_compact_token_limit = model_auto_compact_token_limit;
                 updated_config.user_instructions = provided_user_instructions.clone();
                 let base_instructions = provided_base_instructions.or_else(|| {
                     crate::model_family::base_instructions_override_for_personality(

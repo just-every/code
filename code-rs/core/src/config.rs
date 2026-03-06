@@ -43,6 +43,7 @@ use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
+use crate::config_types::ContextMode;
 use crate::config_types::ServiceTier;
 use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
 use code_app_server_protocol::AuthMode;
@@ -241,6 +242,9 @@ pub struct Config {
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
+
+    /// Optional named context behavior that can override per-model defaults.
+    pub context_mode: Option<ContextMode>,
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
@@ -748,6 +752,7 @@ pub struct ConfigToml {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
     pub model_personality: Option<Personality>,
+    pub context_mode: Option<ContextMode>,
     pub service_tier: Option<ServiceTier>,
 
     /// Override to force-enable reasoning summaries for the configured model.
@@ -1263,6 +1268,7 @@ impl Config {
             Some(ServiceTier::Standard) => None,
             None => Some(ServiceTier::Fast),
         };
+        let context_mode = config_profile.context_mode.or(cfg.context_mode);
 
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
@@ -1280,15 +1286,23 @@ impl Config {
         let chat_reasoning_effort =
             clamp_reasoning_effort_for_model(&model, requested_chat_effort);
 
-        let model_context_window = cfg
+        let mut model_context_window = cfg
             .model_context_window
             .or(model_family.context_window);
         let model_max_output_tokens = cfg
             .model_max_output_tokens
             .or(model_family.max_output_tokens);
-        let model_auto_compact_token_limit = cfg
+        let mut model_auto_compact_token_limit = cfg
             .model_auto_compact_token_limit
             .or_else(|| model_family.auto_compact_token_limit());
+        if matches!(context_mode, Some(ContextMode::OneM)) && model.eq_ignore_ascii_case("gpt-5.4") {
+            if cfg.model_context_window.is_none() {
+                model_context_window = Some(1_047_576);
+            }
+            if cfg.model_auto_compact_token_limit.is_none() {
+                model_auto_compact_token_limit = Some(942_818);
+            }
+        }
 
         // Load base instructions override from a file if specified. If the
         // path is relative, resolve it against the effective cwd so the
@@ -1557,6 +1571,7 @@ impl Config {
             model_context_window,
             model_max_output_tokens,
             model_auto_compact_token_limit,
+            context_mode,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -3354,6 +3369,54 @@ mod agent_merge_tests {
         )?;
 
         assert_eq!(config.service_tier, None);
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_one_m_expands_gpt_5_4_context() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "1m"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::OneM));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_one_m_is_inert_for_unsupported_models() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.3-codex"
+context_mode = "1m"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::OneM));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
         Ok(())
     }
 }

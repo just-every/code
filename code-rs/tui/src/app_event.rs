@@ -284,6 +284,11 @@ pub(crate) enum AppEvent {
         service_tier: Option<ServiceTier>,
     },
 
+    /// Update the session extended context preset.
+    UpdateSessionContextSelection {
+        enabled: bool,
+    },
+
     /// Update the dedicated review model + reasoning effort
     UpdateReviewModelSelection {
         model: String,

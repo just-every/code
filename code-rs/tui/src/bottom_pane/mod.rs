@@ -742,6 +742,8 @@ impl BottomPane<'_> {
         current_model: String,
         current_effort: ReasoningEffort,
         current_service_tier: Option<ServiceTier>,
+        current_model_context_window: Option<u64>,
+        current_model_auto_compact_token_limit: Option<i64>,
         use_chat_model: bool,
         target: ModelSelectionTarget,
     ) {
@@ -750,6 +752,8 @@ impl BottomPane<'_> {
             current_model,
             current_effort,
             current_service_tier,
+            current_model_context_window,
+            current_model_auto_compact_token_limit,
             use_chat_model,
             target,
             self.app_event_tx.clone(),

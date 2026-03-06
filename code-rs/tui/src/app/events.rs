@@ -1461,6 +1461,11 @@ impl App<'_> {
                         widget.apply_service_tier_selection(service_tier);
                     }
                 }
+                AppEvent::UpdateSessionContextSelection { enabled } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_session_context_selection(enabled);
+                    }
+                }
                 AppEvent::UpdateReviewModelSelection { model, effort } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_review_model_selection(model, effort);
