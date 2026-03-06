@@ -147,6 +147,7 @@ pub(crate) fn map_response_item_to_event_messages(
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::Other => Vec::new(),
     }

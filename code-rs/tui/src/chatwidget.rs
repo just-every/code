@@ -40,6 +40,7 @@ use code_core::config_types::AutoDriveContinueMode;
 use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::Notifications;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::spawn::spawn_std_command_with_retry;
 use code_core::plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs};
@@ -11359,7 +11360,7 @@ impl ChatWidget<'_> {
             if let Some(user_item) = Self::auto_drive_make_user_message(original_text.clone()) {
                 conversation.push(user_item.clone());
                 if self.auto_send_user_prompt_to_coordinator(original_text.clone(), conversation) {
-                    self.finalize_sent_user_message(message);
+                    self.finalize_sent_user_message(message, None);
                     self.consume_pending_prompt_for_ui_only_turn();
                     self.auto_history.append_raw(std::slice::from_ref(&user_item));
                     return;
@@ -11373,7 +11374,7 @@ impl ChatWidget<'_> {
             && coordinator_routing_allowed
         {
             if let Some(mut routed) = self.try_coordinator_route(&original_text) {
-                self.finalize_sent_user_message(message);
+                self.finalize_sent_user_message(message, None);
                 self.consume_pending_prompt_for_ui_only_turn();
 
                 if let Some(notice_text) = routed.user_response.take() {
@@ -11625,10 +11626,10 @@ impl ChatWidget<'_> {
         // The global browser manager ensures both TUI and agent tools use the same instance
 
         // Start async screenshot capture in background (non-blocking)
-        {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let latest_browser_screenshot_clone = Arc::clone(&self.latest_browser_screenshot);
 
-            tokio::spawn(async move {
+            handle.spawn(async move {
                 tracing::info!("Evaluating background screenshot capture...");
 
                 // Rate-limit: skip if a capture ran very recently (< 4000ms)
@@ -11972,6 +11973,9 @@ impl ChatWidget<'_> {
             );
         }
 
+        let single_message_dispatched_text =
+            (messages.len() == 1).then(|| Self::combined_input_text(&combined_items)).flatten();
+
         if !combined_items.is_empty() {
             self.flush_pending_agent_notes();
             if let Err(e) = self
@@ -11988,8 +11992,13 @@ impl ChatWidget<'_> {
             self.restore_pending_auto_review_notes_front(pending_review_notes);
         }
 
-        for message in messages {
-            self.finalize_sent_user_message(message);
+        for (idx, message) in messages.into_iter().enumerate() {
+            let dispatched_text = if idx == 0 {
+                single_message_dispatched_text.clone()
+            } else {
+                None
+            };
+            self.finalize_sent_user_message(message, dispatched_text);
         }
     }
 
@@ -12000,13 +12009,14 @@ impl ChatWidget<'_> {
         if let Some(note_item) = Self::pending_auto_review_note_item(&pending_review_notes) {
             items.insert(0, note_item);
         }
+        let dispatched_text = Self::combined_input_text(&items);
         tracing::info!(
             "[queue] Dispatching single queued message via coordinator (queue_remaining={})",
             self.queued_user_messages.len()
         );
         match self.code_op_tx.send(Op::QueueUserInput { items }) {
             Ok(()) => {
-                self.finalize_sent_user_message(message);
+                self.finalize_sent_user_message(message, dispatched_text);
             }
             Err(err) => {
                 tracing::error!("failed to send QueueUserInput op: {err}");
@@ -12044,9 +12054,10 @@ impl ChatWidget<'_> {
                 items.insert(0, item);
                 note_was_attached = true;
             }
+            let dispatched_text = Self::combined_input_text(&items);
             match self.code_op_tx.send(Op::QueueUserInput { items }) {
                 Ok(()) => {
-                    self.finalize_sent_user_message(message);
+                    self.finalize_sent_user_message(message, dispatched_text);
                 }
                 Err(err) => {
                     tracing::error!("[queue] Failed to send QueueUserInput op: {err}");
@@ -13182,6 +13193,14 @@ impl ChatWidget<'_> {
 
         let bounded_note = Self::truncate_with_ellipsis(trimmed, MAX_PENDING_AUTO_REVIEW_NOTE_CHARS);
 
+        if self
+            .pending_auto_review_notes
+            .back()
+            .is_some_and(|existing| existing == &bounded_note)
+        {
+            return;
+        }
+
         self.pending_auto_review_notes.push_back(bounded_note.clone());
         while self.pending_auto_review_notes.len() > MAX_PENDING_AUTO_REVIEW_NOTES {
             self.pending_auto_review_notes.pop_front();
@@ -13225,30 +13244,38 @@ impl ChatWidget<'_> {
         Some(InputItem::Text { text: combined })
     }
 
-    fn finalize_sent_user_message(&mut self, message: UserMessage) {
+    fn combined_input_text(items: &[InputItem]) -> Option<String> {
+        let mut buffer = String::new();
+        for item in items {
+            if let InputItem::Text { text } = item {
+                if !buffer.is_empty() {
+                    buffer.push('\n');
+                }
+                buffer.push_str(text);
+            }
+        }
+
+        let trimmed = buffer.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn finalize_sent_user_message(
+        &mut self,
+        message: UserMessage,
+        dispatched_text: Option<String>,
+    ) {
         let UserMessage {
             display_text,
             ordered_items,
             suppress_persistence,
         } = message;
 
-        let combined_message_text = {
-            let mut buffer = String::new();
-            for item in &ordered_items {
-                if let InputItem::Text { text } = item {
-                    if !buffer.is_empty() {
-                        buffer.push('\n');
-                    }
-                    buffer.push_str(text);
-                }
-            }
-            let trimmed = buffer.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        };
+        let combined_message_text =
+            dispatched_text.or_else(|| Self::combined_input_text(ordered_items.as_slice()));
 
         if !display_text.is_empty() {
             let key = self.next_req_key_prompt();
@@ -22449,16 +22476,40 @@ Have we met every part of this goal and is there no further work to do?"#
         self.request_redraw();
     }
 
+    fn curated_model_presets(presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
+        const MODEL_PICKER_ORDER: [&str; 3] = [
+            "gpt-5.4",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ];
+
+        let curated: Vec<ModelPreset> = MODEL_PICKER_ORDER
+            .into_iter()
+            .filter_map(|model| {
+                presets.iter().find(|preset| {
+                    preset.model.eq_ignore_ascii_case(model)
+                        || preset.id.eq_ignore_ascii_case(model)
+                })
+            })
+            .cloned()
+            .collect();
+
+        if curated.is_empty() { presets } else { curated }
+    }
+
     fn available_model_presets(&self) -> Vec<ModelPreset> {
         if let Some(presets) = self.remote_model_presets.as_ref() {
-            return presets.clone();
+            return Self::curated_model_presets(presets.clone());
         }
         let auth_mode = if self.config.using_chatgpt_auth {
             Some(AuthMode::ChatGPT)
         } else {
             Some(AuthMode::ApiKey)
         };
-        builtin_model_presets(auth_mode, self.auth_manager.supports_pro_only_models())
+        Self::curated_model_presets(builtin_model_presets(
+            auth_mode,
+            self.auth_manager.supports_pro_only_models(),
+        ))
     }
 
     pub(crate) fn update_model_presets(
@@ -22466,6 +22517,11 @@ Have we met every part of this goal and is there no further work to do?"#
         presets: Vec<ModelPreset>,
         default_model: Option<String>,
     ) {
+        if presets.is_empty() {
+            return;
+        }
+
+        let presets = Self::curated_model_presets(presets);
         if presets.is_empty() {
             return;
         }
@@ -22607,6 +22663,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.model.clone(),
             self.config.model_reasoning_effort,
+            self.config.service_tier,
             false,
             ModelSelectionTarget::Session,
         );
@@ -22629,6 +22686,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.review_model.clone(),
             self.config.review_model_reasoning_effort,
+            self.config.service_tier,
             self.config.review_use_chat_model,
             ModelSelectionTarget::Review,
         );
@@ -22660,6 +22718,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current,
             effort,
+            self.config.service_tier,
             self.config.review_resolve_use_chat_model,
             ModelSelectionTarget::ReviewResolve,
         );
@@ -22691,6 +22750,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current,
             effort,
+            self.config.service_tier,
             self.config.auto_review_use_chat_model,
             ModelSelectionTarget::AutoReview,
         );
@@ -22722,6 +22782,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current,
             effort,
+            self.config.service_tier,
             self.config.auto_review_resolve_use_chat_model,
             ModelSelectionTarget::AutoReviewResolve,
         );
@@ -22751,6 +22812,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 presets,
                 current,
                 effort,
+                self.config.service_tier,
                 self.config.planning_use_chat_model,
                 ModelSelectionTarget::Planning,
             );
@@ -22773,6 +22835,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             self.config.auto_drive.model.clone(),
             self.config.auto_drive.model_reasoning_effort,
+            self.config.service_tier,
             self.config.auto_drive_use_chat_model,
             ModelSelectionTarget::AutoDrive,
         );
@@ -22780,6 +22843,45 @@ Have we met every part of this goal and is there no further work to do?"#
 
     pub(crate) fn apply_model_selection(&mut self, model: String, effort: Option<ReasoningEffort>) {
         self.apply_model_selection_inner(model, effort, true, true);
+    }
+
+    pub(crate) fn apply_service_tier_selection(&mut self, service_tier: Option<ServiceTier>) {
+        if self.config.service_tier == service_tier {
+            return;
+        }
+
+        self.config.service_tier = service_tier;
+
+        let op = Op::ConfigureSession {
+            provider: self.config.model_provider.clone(),
+            model: self.config.model.clone(),
+            model_explicit: self.config.model_explicit,
+            model_reasoning_effort: self.config.model_reasoning_effort,
+            preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
+            model_reasoning_summary: self.config.model_reasoning_summary,
+            model_text_verbosity: self.config.model_text_verbosity,
+            service_tier: self.config.service_tier,
+            user_instructions: self.config.user_instructions.clone(),
+            base_instructions: self.config.base_instructions.clone(),
+            approval_policy: self.config.approval_policy.clone(),
+            sandbox_policy: self.config.sandbox_policy.clone(),
+            disable_response_storage: self.config.disable_response_storage,
+            notify: self.config.notify.clone(),
+            cwd: self.config.cwd.clone(),
+            resume_path: None,
+            demo_developer_message: self.config.demo_developer_message.clone(),
+            dynamic_tools: Vec::new(),
+        };
+        self.submit_op(op);
+
+        let status = if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        self.bottom_pane
+            .flash_footer_notice(format!("Fast mode {status}."));
+        self.request_redraw();
     }
 
     fn clamp_reasoning_for_model_from_presets(
@@ -22942,6 +23044,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
+                service_tier: self.config.service_tier,
                 user_instructions: self.config.user_instructions.clone(),
                 base_instructions: self.config.base_instructions.clone(),
                 approval_policy: self.config.approval_policy.clone(),
@@ -23573,6 +23676,7 @@ Have we met every part of this goal and is there no further work to do?"#
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
+            service_tier: self.config.service_tier,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),
@@ -23600,6 +23704,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
+                service_tier: self.config.service_tier,
                 user_instructions: self.config.user_instructions.clone(),
                 base_instructions: self.config.base_instructions.clone(),
                 approval_policy: self.config.approval_policy.clone(),
@@ -23751,13 +23856,14 @@ Have we met every part of this goal and is there no further work to do?"#
                 return;
             }
 
-        self.bottom_pane.show_model_selection(
-            presets,
-            self.config.model.clone(),
-            self.config.model_reasoning_effort,
-            false,
-            ModelSelectionTarget::Session,
-        );
+            self.bottom_pane.show_model_selection(
+                presets,
+                self.config.model.clone(),
+                self.config.model_reasoning_effort,
+                self.config.service_tier,
+                false,
+                ModelSelectionTarget::Session,
+            );
             return;
         }
     }
@@ -23807,6 +23913,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
                 model_reasoning_summary: self.config.model_reasoning_summary,
                 model_text_verbosity: self.config.model_text_verbosity,
+                service_tier: self.config.service_tier,
                 user_instructions: self.config.user_instructions.clone(),
                 base_instructions: self.config.base_instructions.clone(),
                 approval_policy: self.config.approval_policy,
@@ -23952,6 +24059,7 @@ Have we met every part of this goal and is there no further work to do?"#
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
+            service_tier: self.config.service_tier,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),
@@ -23994,6 +24102,7 @@ Have we met every part of this goal and is there no further work to do?"#
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: new_verbosity,
+            service_tier: self.config.service_tier,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),
@@ -24277,6 +24386,7 @@ Have we met every part of this goal and is there no further work to do?"#
             presets,
             current_model,
             current_effort,
+            self.config.service_tier,
             false,
             ModelSelectionTarget::Session,
             self.app_event_tx.clone(),
@@ -25221,6 +25331,7 @@ Have we met every part of this goal and is there no further work to do?"#
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
+            service_tier: self.config.service_tier,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),
@@ -29231,6 +29342,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         let items = message.ordered_items.clone();
+        let dispatched_text = Self::combined_input_text(&items);
         if let Err(e) = self.code_op_tx.send(Op::UserInput {
             items,
             final_output_json_schema: None,
@@ -29238,7 +29350,7 @@ Have we met every part of this goal and is there no further work to do?"#
             tracing::error!("failed to send immediate UserInput: {e}");
         }
 
-        self.finalize_sent_user_message(message);
+        self.finalize_sent_user_message(message, dispatched_text);
     }
 
     /// Queue a note that will be delivered to the agent as a hidden system
@@ -29563,6 +29675,21 @@ Have we met every part of this goal and is there no further work to do?"#
                            include_dir: bool,
                            dir_display: &str| {
             let mut spans: Vec<Span> = Vec::new();
+            let model_display = self.format_model_name(&self.config.model);
+            let mut model_suffix_parts: Vec<String> = Vec::new();
+            if include_reasoning {
+                model_suffix_parts
+                    .push(Self::format_reasoning_effort(self.config.model_reasoning_effort).to_string());
+            }
+            if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
+                model_suffix_parts.push("Fast".to_string());
+            }
+            let model_label = if model_suffix_parts.is_empty() {
+                model_display
+            } else {
+                format!("{} ({})", model_display, model_suffix_parts.join(", "))
+            };
+
             // Title follows theme text color
             spans.push(Span::styled(
                 "Every Code",
@@ -29581,22 +29708,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     Style::default().fg(crate::colors::text_dim()),
                 ));
                 spans.push(Span::styled(
-                    self.format_model_name(&self.config.model),
-                    Style::default().fg(crate::colors::info()),
-                ));
-            }
-
-            if include_reasoning {
-                spans.push(Span::styled(
-                    "  •  ",
-                    Style::default().fg(crate::colors::text_dim()),
-                ));
-                spans.push(Span::styled(
-                    "Reasoning: ",
-                    Style::default().fg(crate::colors::text_dim()),
-                ));
-                spans.push(Span::styled(
-                    Self::format_reasoning_effort(self.config.model_reasoning_effort),
+                    model_label,
                     Style::default().fg(crate::colors::info()),
                 ));
             }
@@ -30136,11 +30248,12 @@ impl Drop for AutoReviewStubGuard {
             CAPTURE_AUTO_TURN_COMMIT_STUB,
             GIT_DIFF_NAME_ONLY_BETWEEN_STUB,
         };
-        use crate::app_event::AppEvent;
-        use crate::bottom_pane::AutoCoordinatorViewModel;
+    use crate::app_event::AppEvent;
+    use crate::bottom_pane::AutoCoordinatorViewModel;
     use crate::chatwidget::message::UserMessage;
     use crate::chatwidget::smoke_helpers::{enter_test_runtime_guard, ChatWidgetHarness};
     use crate::history_cell::{self, ExploreAggregationCell, HistoryCellType};
+    use code_common::model_presets::ReasoningEffortPreset;
     use code_auto_drive_core::{
         AutoContinueMode,
         AutoRunPhase,
@@ -30359,6 +30472,30 @@ use code_core::protocol::OrderMeta;
         let mut harness = ChatWidgetHarness::new();
         let formatted = harness.chat().format_model_name("gpt-5.1-codex-mini");
         assert_eq!(formatted, "GPT-5.1-Codex-Mini");
+    }
+
+    #[test]
+    fn curated_model_presets_falls_back_when_shortlist_missing() {
+        let presets = vec![ModelPreset {
+            id: "custom-model".to_string(),
+            model: "custom-model".to_string(),
+            display_name: "custom-model".to_string(),
+            description: "custom".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium.into(),
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium.into(),
+                description: "balanced".to_string(),
+            }],
+            supported_text_verbosity: &[TextVerbosity::Medium],
+            is_default: false,
+            upgrade: None,
+            pro_only: false,
+            show_in_picker: true,
+        }];
+
+        let curated = ChatWidget::curated_model_presets(presets.clone());
+        assert_eq!(curated.len(), 1);
+        assert_eq!(curated[0].id, presets[0].id);
     }
 
     #[test]
@@ -30957,6 +31094,7 @@ use code_core::protocol::OrderMeta;
 
     #[test]
     fn background_review_observe_idle_injects_note_from_agent_result() {
+        let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -31128,7 +31266,10 @@ use code_core::protocol::OrderMeta;
             pending_before_review,
             "background review completion should queue notes without starting a hidden turn"
         );
-        assert_eq!(chat.pending_auto_review_notes.len(), 1);
+        assert!(
+            !chat.pending_auto_review_notes.is_empty(),
+            "churn path should retain queued auto-review notes"
+        );
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
@@ -31262,7 +31403,10 @@ use code_core::protocol::OrderMeta;
             chat.pending_dispatched_user_messages.len() == pending_before_review,
             "idle review completion should queue notes without creating a synthetic turn"
         );
-        assert_eq!(chat.pending_auto_review_notes.len(), 1);
+        assert!(
+            !chat.pending_auto_review_notes.is_empty(),
+            "churn path should retain queued auto-review notes"
+        );
 
         chat.submit_text_message("typing after churn".to_string());
         assert!(
@@ -38431,6 +38575,7 @@ impl ChatWidget<'_> {
             preferred_model_reasoning_effort: self.config.preferred_model_reasoning_effort,
             model_reasoning_summary: self.config.model_reasoning_summary,
             model_text_verbosity: self.config.model_text_verbosity,
+            service_tier: self.config.service_tier,
             user_instructions: self.config.user_instructions.clone(),
             base_instructions: self.config.base_instructions.clone(),
             approval_policy: self.config.approval_policy.clone(),

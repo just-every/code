@@ -11,6 +11,7 @@ use code_protocol::openai_models::ModelInfo;
 use code_protocol::openai_models::ModelsResponse;
 use code_protocol::openai_models::ReasoningEffort as ProtocolReasoningEffort;
 use code_protocol::openai_models::TruncationMode as ProtocolTruncationMode;
+use code_protocol::openai_models::WebSearchToolType;
 use reqwest::header;
 use reqwest::Method;
 use reqwest::Url;
@@ -30,6 +31,7 @@ const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 const REMOTE_MODELS_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CODEX_AUTO_BALANCED_MODEL: &str = "codex-auto-balanced";
+const IMAGE_GENERATION_TOOL: &str = "image_generation";
 
 #[derive(Debug, Default, Clone)]
 struct RemoteModelsState {
@@ -387,6 +389,13 @@ fn apply_model_info_overrides_with_personality(
         family.apply_patch_tool_type = Some(map_apply_patch_tool_type(tool_type));
     }
 
+    family.web_search_tool_type = map_web_search_tool_type(info.web_search_tool_type);
+    family.supports_image_detail_original = info.supports_image_detail_original;
+    family.supports_image_generation = info
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool == IMAGE_GENERATION_TOOL);
+
     if let Some(limit) = info.auto_compact_token_limit() {
         family.set_auto_compact_token_limit(Some(limit));
     }
@@ -401,6 +410,13 @@ fn apply_model_info_overrides_with_personality(
     }
     family.default_reasoning_summary = map_reasoning_summary(info.default_reasoning_summary);
     family
+}
+
+fn map_web_search_tool_type(tool_type: WebSearchToolType) -> WebSearchToolType {
+    match tool_type {
+        WebSearchToolType::Text => WebSearchToolType::Text,
+        WebSearchToolType::TextAndImage => WebSearchToolType::TextAndImage,
+    }
 }
 
 fn map_personality(personality: ConfigPersonality) -> ProtocolPersonality {

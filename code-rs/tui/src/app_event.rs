@@ -1,5 +1,6 @@
 use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
 use code_core::protocol::Event;
@@ -276,6 +277,11 @@ pub(crate) enum AppEvent {
     UpdateModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
+    },
+
+    /// Update the session Fast mode service tier.
+    UpdateServiceTierSelection {
+        service_tier: Option<ServiceTier>,
     },
 
     /// Update the dedicated review model + reasoning effort

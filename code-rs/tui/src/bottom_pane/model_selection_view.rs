@@ -5,6 +5,7 @@ use crate::app_event::{AppEvent, ModelSelectionKind};
 use crate::app_event_sender::AppEventSender;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ServiceTier;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::Cell;
 use ratatui::buffer::Buffer;
@@ -36,11 +37,14 @@ impl FlatPreset {
             .supported_reasoning_efforts
             .iter()
             .map(|effort_preset| {
-                let effort_label = Self::effort_label(effort_preset.effort.into());
                 FlatPreset {
                     model: preset.model.to_string(),
                     effort: effort_preset.effort.into(),
-                    label: format!("{} {}", preset.display_name, effort_label.to_lowercase()),
+                    label: format!(
+                        "{} {}",
+                        preset.display_name,
+                        Self::effort_label(effort_preset.effort.into()).to_lowercase()
+                    ),
                     description: effort_preset.description.to_string(),
                 }
             })
@@ -124,6 +128,10 @@ impl ModelSelectionTarget {
     fn supports_follow_chat(self) -> bool {
         !matches!(self, ModelSelectionTarget::Session)
     }
+
+    fn supports_fast_mode(self) -> bool {
+        matches!(self, ModelSelectionTarget::Session)
+    }
 }
 
 pub(crate) struct ModelSelectionView {
@@ -132,6 +140,7 @@ pub(crate) struct ModelSelectionView {
     scroll_top: Cell<usize>,
     current_model: String,
     current_effort: ReasoningEffort,
+    current_service_tier: Option<ServiceTier>,
     use_chat_model: bool,
     app_event_tx: AppEventSender,
     is_complete: bool,
@@ -140,6 +149,7 @@ pub(crate) struct ModelSelectionView {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum EntryKind {
+    FastMode,
     FollowChat,
     Preset(usize),
 }
@@ -149,6 +159,7 @@ impl ModelSelectionView {
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        current_service_tier: Option<ServiceTier>,
         use_chat_model: bool,
         target: ModelSelectionTarget,
         app_event_tx: AppEventSender,
@@ -159,6 +170,7 @@ impl ModelSelectionView {
             .collect();
 
         let initial_index = Self::initial_selection(
+            target.supports_fast_mode(),
             target.supports_follow_chat(),
             use_chat_model,
             &flat_presets,
@@ -171,6 +183,7 @@ impl ModelSelectionView {
             scroll_top: Cell::new(0),
             current_model,
             current_effort,
+            current_service_tier,
             use_chat_model,
             app_event_tx,
             is_complete: false,
@@ -179,6 +192,7 @@ impl ModelSelectionView {
     }
 
     pub(crate) fn update_presets(&mut self, presets: Vec<ModelPreset>) {
+        let include_fast_mode = self.target.supports_fast_mode();
         let include_follow_chat = self.target.supports_follow_chat();
         let previous_entries = self.entries();
         let previous_selected = previous_entries.get(self.selected_index).copied();
@@ -191,9 +205,14 @@ impl ModelSelectionView {
 
         let mut next_selected: Option<usize> = None;
         match previous_selected {
+            Some(EntryKind::FastMode) => {
+                if include_fast_mode {
+                    next_selected = Some(0);
+                }
+            }
             Some(EntryKind::FollowChat) => {
                 if include_follow_chat {
-                    next_selected = Some(0);
+                    next_selected = Some(if include_fast_mode { 1 } else { 0 });
                 }
             }
             Some(EntryKind::Preset(idx)) => {
@@ -207,7 +226,8 @@ impl ModelSelectionView {
                                 && preset.effort == old.effort
                         })
                     {
-                        next_selected = Some(new_idx + if include_follow_chat { 1 } else { 0 });
+                        let prefix = usize::from(include_fast_mode) + usize::from(include_follow_chat);
+                        next_selected = Some(new_idx + prefix);
                     }
                 }
             }
@@ -216,6 +236,7 @@ impl ModelSelectionView {
 
         self.selected_index = next_selected.unwrap_or_else(|| {
             Self::initial_selection(
+                include_fast_mode,
                 include_follow_chat,
                 self.use_chat_model,
                 &self.flat_presets,
@@ -272,12 +293,17 @@ impl ModelSelectionView {
     }
 
     fn initial_selection(
+        include_fast_mode: bool,
         include_follow_chat: bool,
         use_chat_model: bool,
         flat_presets: &[FlatPreset],
         current_model: &str,
         current_effort: ReasoningEffort,
     ) -> usize {
+        if include_fast_mode {
+            return 0;
+        }
+
         if include_follow_chat && use_chat_model {
             return 0;
         }
@@ -285,7 +311,7 @@ impl ModelSelectionView {
         if let Some((idx, _)) = flat_presets.iter().enumerate().find(|(_, preset)| {
             preset.model.eq_ignore_ascii_case(current_model) && preset.effort == current_effort
         }) {
-            return idx + if include_follow_chat { 1 } else { 0 };
+            return idx + usize::from(include_follow_chat);
         }
 
         if let Some((idx, _)) = flat_presets
@@ -293,7 +319,7 @@ impl ModelSelectionView {
             .enumerate()
             .find(|(_, preset)| preset.model.eq_ignore_ascii_case(current_model))
         {
-            return idx + if include_follow_chat { 1 } else { 0 };
+            return idx + usize::from(include_follow_chat);
         }
 
         if include_follow_chat {
@@ -339,6 +365,9 @@ impl ModelSelectionView {
 
     fn entries(&self) -> Vec<EntryKind> {
         let mut entries = Vec::new();
+        if self.target.supports_fast_mode() {
+            entries.push(EntryKind::FastMode);
+        }
         if self.target.supports_follow_chat() {
             entries.push(EntryKind::FollowChat);
         }
@@ -372,6 +401,18 @@ impl ModelSelectionView {
         let entries = self.entries();
         if let Some(entry) = entries.get(self.selected_index) {
             match entry {
+                EntryKind::FastMode => {
+                    let next_service_tier = if matches!(self.current_service_tier, Some(ServiceTier::Fast)) {
+                        None
+                    } else {
+                        Some(ServiceTier::Fast)
+                    };
+                    self.current_service_tier = next_service_tier;
+                    let _ = self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
+                        service_tier: next_service_tier,
+                    });
+                    return;
+                }
                 EntryKind::FollowChat => {
                     match self.target {
                         ModelSelectionTarget::Session => {}
@@ -521,6 +562,59 @@ impl ModelSelectionView {
             is_selected: false,
         });
 
+        if self.target.supports_fast_mode() {
+            let is_selected = matches!(self.entries().get(self.selected_index), Some(EntryKind::FastMode));
+            let fast_enabled = matches!(self.current_service_tier, Some(ServiceTier::Fast));
+            let status = if fast_enabled { "enabled" } else { "disabled" };
+
+            let header_style = Style::default()
+                .fg(crate::colors::text_bright())
+                .add_modifier(Modifier::BOLD);
+            let desc_style = Style::default().fg(crate::colors::text_dim());
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled("Fast mode", header_style)]),
+                is_selected: false,
+            });
+            lines.push(ModelLine {
+                line: Line::from(vec![Span::styled(
+                    "Same model, but 1.5x faster responses (uses 2x credits)",
+                    desc_style,
+                )]),
+                is_selected: false,
+            });
+
+            let mut label_style = Style::default().fg(crate::colors::text());
+            if is_selected {
+                label_style = label_style
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD);
+            }
+            if fast_enabled {
+                label_style = label_style.fg(crate::colors::success());
+            }
+
+            let arrow = if is_selected { "› " } else { "  " };
+            let arrow_style = if is_selected {
+                Style::default()
+                    .bg(crate::colors::selection())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(crate::colors::text_dim())
+            };
+
+            lines.push(ModelLine {
+                line: Line::from(vec![
+                    Span::styled(arrow, arrow_style),
+                    Span::styled(format!("Fast mode: {status}"), label_style),
+                ]),
+                is_selected,
+            });
+            lines.push(ModelLine {
+                line: Line::from(""),
+                is_selected: false,
+            });
+        }
+
         if self.target.supports_follow_chat() {
             let is_selected = self.selected_index == 0;
 
@@ -622,7 +716,7 @@ impl ModelSelectionView {
             let is_current = !self.use_chat_model
                 && flat_preset.model.eq_ignore_ascii_case(&self.current_model)
                 && flat_preset.effort == self.current_effort;
-            let label = Self::effort_label(flat_preset.effort);
+            let label = FlatPreset::effort_label(flat_preset.effort);
             let mut row_text = label.to_string();
             if is_current {
                 row_text.push_str(" (current)");
@@ -675,6 +769,9 @@ impl ModelSelectionView {
 
     fn content_line_count(&self) -> u16 {
         let mut lines: u16 = 3;
+        if self.target.supports_fast_mode() {
+            lines = lines.saturating_add(4);
+        }
         if self.target.supports_follow_chat() {
             // Header + description + entry + spacer
             lines = lines.saturating_add(4);
@@ -733,30 +830,34 @@ impl ModelSelectionView {
     }
 
     fn model_rank(model: &str) -> u8 {
-        if model.eq_ignore_ascii_case("gpt-5.3-codex") {
+        if model.eq_ignore_ascii_case("gpt-5.4") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
+        } else if model.eq_ignore_ascii_case("gpt-5.3-codex") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
             2
-        } else if model.eq_ignore_ascii_case("gpt-5.2") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
             3
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2") {
             4
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             5
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             6
-        } else if model.eq_ignore_ascii_case("gpt-5.1") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             7
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             8
+        } else {
+            9
         }
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
-        if model.eq_ignore_ascii_case("gpt-5.3-codex") {
-            Some("Latest frontier agentic coding model.")
+        if model.eq_ignore_ascii_case("gpt-5.4") {
+            Some("Brings together flagship reasoning, coding, and tool use in a single frontier model.")
+        } else if model.eq_ignore_ascii_case("gpt-5.3-codex") {
+            Some("Frontier agentic coding, 25% faster than previous models.")
         } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
             Some("Fast codex variant tuned for responsive coding loops and smaller edits.")
         } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
@@ -974,17 +1075,18 @@ mod tests {
             presets,
             "model-00".to_string(),
             ReasoningEffort::Low,
+            None,
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
         );
 
-        for _ in 0..11 {
+        for _ in 0..12 {
             let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
         let width = 80;
-        let height = 12;
+        let height = 13;
         let mut buf = ratatui::buffer::Buffer::empty(Rect {
             x: 0,
             y: 0,
@@ -1015,13 +1117,14 @@ mod tests {
             presets,
             "gpt-5.3-codex".to_string(),
             ReasoningEffort::Low,
+            None,
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
         );
 
         let width = 80;
-        let height = 9;
+        let height = 13;
         let mut buf = ratatui::buffer::Buffer::empty(Rect {
             x: 0,
             y: 0,
@@ -1039,10 +1142,91 @@ mod tests {
         let has_header = lines.iter().any(|line| line.contains("GPT-5.3-Codex"));
         let has_desc = lines
             .iter()
-            .any(|line| line.contains("Latest frontier agentic coding model."));
+            .any(|line| line.contains("Frontier agentic coding, 25% faster than previous models."));
 
         assert!(has_header);
         assert!(has_desc);
+    }
+
+    #[test]
+    fn model_selection_prioritizes_gpt_5_4_and_shows_fast_mode_toggle() {
+        let mut gpt_5_4 = make_preset("gpt-5.4");
+        gpt_5_4.supported_reasoning_efforts = vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Low.into(),
+                description: "Fast responses with lighter reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::High.into(),
+                description: "Maximizes reasoning depth".to_string(),
+            },
+        ];
+
+        let presets = vec![make_preset("gpt-5.3-codex"), make_preset("gpt-5.3-codex-spark"), gpt_5_4];
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            Some(ServiceTier::Fast),
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        let width = 100;
+        let height = 18;
+        let mut buf = ratatui::buffer::Buffer::empty(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        view.render(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }, &mut buf);
+
+        let lines = buffer_body_lines(&buf, width, height);
+        let gpt_5_4_idx = lines
+            .iter()
+            .position(|line| line.contains("GPT-5.4"))
+            .expect("gpt-5.4 header");
+        let gpt_5_3_idx = lines
+            .iter()
+            .position(|line| line.contains("GPT-5.3-Codex"))
+            .expect("gpt-5.3-codex header");
+
+        assert!(gpt_5_4_idx < gpt_5_3_idx);
+        assert!(lines.iter().any(|line| line.contains("Fast mode: enabled")));
+    }
+
+    #[test]
+    fn selecting_fast_mode_toggles_service_tier_without_closing() {
+        let presets = vec![make_preset("gpt-5.4")];
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let mut view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            None,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let event = rx.try_recv().expect("service tier event");
+        assert!(matches!(
+            event,
+            AppEvent::UpdateServiceTierSelection {
+                service_tier: Some(ServiceTier::Fast)
+            }
+        ));
+        assert!(!view.is_complete());
     }
 
     #[test]
@@ -1054,6 +1238,7 @@ mod tests {
             presets,
             "gpt-5.3-codex".to_string(),
             ReasoningEffort::Low,
+            None,
             true,
             ModelSelectionTarget::Review,
             AppEventSender::new(tx),
@@ -1093,17 +1278,18 @@ mod tests {
             presets,
             "model-00".to_string(),
             ReasoningEffort::Low,
+            None,
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
         );
 
-        for _ in 0..11 {
+        for _ in 0..12 {
             let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
         let width = 80;
-        let height = 12;
+        let height = 13;
         let mut buf = ratatui::buffer::Buffer::empty(Rect {
             x: 0,
             y: 0,
@@ -1134,8 +1320,8 @@ mod tests {
         }, &mut buf);
 
         let lines = buffer_body_lines(&buf, width, height);
-        let has_first_model = lines.iter().any(|line| line.contains("MODEL-00"));
-        assert!(has_first_model);
+        let has_fast_mode = lines.iter().any(|line| line.contains("Fast mode: disabled"));
+        assert!(has_fast_mode);
     }
 
     #[test]
@@ -1147,12 +1333,13 @@ mod tests {
             presets,
             "model-00".to_string(),
             ReasoningEffort::Low,
+            None,
             false,
             ModelSelectionTarget::Session,
             AppEventSender::new(tx),
         );
 
-        for _ in 0..11 {
+        for _ in 0..12 {
             let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 

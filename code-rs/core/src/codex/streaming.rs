@@ -28,6 +28,7 @@ use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
 use code_app_server_protocol::AuthMode as AppAuthMode;
 use code_protocol::models::FunctionCallOutputContentItem;
+use code_protocol::models::ImageDetail;
 use code_protocol::models::FunctionCallOutputPayload;
 use std::collections::HashMap;
 
@@ -262,6 +263,7 @@ pub(super) async fn submission_loop(
                 preferred_model_reasoning_effort,
                 model_reasoning_summary,
                 model_text_verbosity,
+                service_tier,
                 user_instructions: provided_user_instructions,
                 base_instructions: provided_base_instructions,
                 approval_policy,
@@ -308,6 +310,7 @@ pub(super) async fn submission_loop(
                 }
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
+                updated_config.service_tier = service_tier;
                 updated_config.user_instructions = provided_user_instructions.clone();
                 let base_instructions = provided_base_instructions.or_else(|| {
                     crate::model_family::base_instructions_override_for_personality(
@@ -1958,6 +1961,9 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                                 content: content.clone(),
                                 encrypted_content: encrypted_content.clone(),
                             });
+                        }
+                        (ResponseItem::ImageGenerationCall { .. }, None) => {
+                            items_to_record_in_conversation_history.push(item.clone());
                         }
                         _ => {
                             warn!("Unexpected response item: {item:?} with response: {response:?}");
@@ -3645,6 +3651,7 @@ async fn handle_response_item(
             }
             None
         }
+        ResponseItem::ImageGenerationCall { .. } => None,
         ResponseItem::GhostSnapshot { .. } => None,
         ResponseItem::Other => None,
     };
@@ -5525,16 +5532,12 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                 .filter(|text| !text.is_empty())
                 .unwrap_or(filename);
             let marker = format!("[image: {label}]");
-            let image_message = ResponseInputItem::Message {
-                role: "user".to_string(),
-                content: vec![
-                    ContentItem::InputText { text: marker },
-                    ContentItem::InputImage {
-                        image_url: format!("data:{mime};base64,{encoded}"),
-                    },
-                ],
-            };
-            sess.add_pending_input(image_message);
+            let image_url = format!("data:{mime};base64,{encoded}");
+            let image_detail = sess
+                .client
+                .get_model_family()
+                .supports_image_detail_original
+                .then_some(ImageDetail::Original);
 
             let order = ctx.order_meta(sess.current_request_ordinal());
             let event = sess.make_event_with_order(
@@ -5551,8 +5554,15 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
             ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("attached image: {}", resolved.display())),
-                    success: Some(true)},
+                    body: code_protocol::models::FunctionCallOutputBody::ContentItems(vec![
+                        FunctionCallOutputContentItem::InputText { text: marker },
+                        FunctionCallOutputContentItem::InputImage {
+                            image_url,
+                            detail: image_detail,
+                        },
+                    ]),
+                    success: Some(true),
+                },
             }
         },
     )

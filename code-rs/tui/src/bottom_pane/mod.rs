@@ -103,6 +103,7 @@ use approval_modal_view::ApprovalModalView;
 use approval_ui::ApprovalUi;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
 pub(crate) use model_selection_view::{ModelSelectionTarget, ModelSelectionView};
@@ -740,6 +741,7 @@ impl BottomPane<'_> {
         presets: Vec<ModelPreset>,
         current_model: String,
         current_effort: ReasoningEffort,
+        current_service_tier: Option<ServiceTier>,
         use_chat_model: bool,
         target: ModelSelectionTarget,
     ) {
@@ -747,6 +749,7 @@ impl BottomPane<'_> {
             presets,
             current_model,
             current_effort,
+            current_service_tier,
             use_chat_model,
             target,
             self.app_event_tx.clone(),

@@ -1643,6 +1643,7 @@ fn configure_session_op_from_config(config: &Config) -> Op {
         preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
         model_reasoning_summary: config.model_reasoning_summary,
         model_text_verbosity: config.model_text_verbosity,
+        service_tier: config.service_tier,
         user_instructions: config.user_instructions.clone(),
         base_instructions: config.base_instructions.clone(),
         approval_policy: config.approval_policy.clone(),

@@ -1437,6 +1437,15 @@ pub enum ReasoningSummary {
     None,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ServiceTier {
+    /// Legacy compatibility value for older local config files.
+    Standard,
+    Fast,
+}
+
 /// Text verbosity level for OpenAI API responses.
 /// Controls the level of detail in the model's text responses.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Display)]

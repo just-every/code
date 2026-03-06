@@ -12,6 +12,7 @@ use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use code_protocol::dynamic_tools::DynamicToolSpec;
+use code_protocol::openai_models::WebSearchToolType;
 use crate::tool_apply_patch::{
     create_apply_patch_freeform_tool, create_apply_patch_json_tool, ApplyPatchToolType,
 };
@@ -52,6 +53,8 @@ pub enum OpenAiTool {
     Function(ResponsesApiTool),
     #[serde(rename = "local_shell")]
     LocalShell {},
+    #[serde(rename = "image_generation")]
+    ImageGeneration {},
     /// Native Responses API web search tool. Optional fields like `filters`
     /// are serialized alongside the type discriminator.
     #[serde(rename = "web_search")]
@@ -64,6 +67,8 @@ pub enum OpenAiTool {
 pub struct WebSearchTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_web_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_content_types: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<WebSearchFilters>,
 }
@@ -90,6 +95,8 @@ pub struct ToolsConfig {
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
     pub web_search_external: bool,
+    pub web_search_tool_type: WebSearchToolType,
+    pub image_gen_tool: bool,
     pub search_tool: bool,
     #[allow(dead_code)]
     pub include_view_image_tool: bool,
@@ -160,6 +167,10 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             web_search_external: true,
+            web_search_tool_type: model_family.web_search_tool_type,
+            // Only advertise image_generation when the backend model metadata
+            // explicitly says the model supports it.
+            image_gen_tool: model_family.supports_image_generation,
             search_tool: false,
             include_view_image_tool,
             web_search_allowed_domains: None,
@@ -916,6 +927,8 @@ pub fn get_openai_tools(
     _agents_active: bool,
     dynamic_tools: &[DynamicToolSpec],
 ) -> Vec<OpenAiTool> {
+    const WEB_SEARCH_CONTENT_TYPES: [&str; 2] = ["text", "image"];
+
     let mut tools: Vec<OpenAiTool> = Vec::new();
 
     match &config.shell_type {
@@ -971,19 +984,34 @@ pub fn get_openai_tools(
     tools.push(create_bridge_tool());
 
     if config.web_search_request {
+        let search_content_types = match config.web_search_tool_type {
+            WebSearchToolType::Text => None,
+            WebSearchToolType::TextAndImage => Some(
+                WEB_SEARCH_CONTENT_TYPES
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+        };
         let tool = match &config.web_search_allowed_domains {
             Some(domains) if !domains.is_empty() => OpenAiTool::WebSearch(WebSearchTool {
                 external_web_access: Some(config.web_search_external),
+                search_content_types,
                 filters: Some(WebSearchFilters {
                     allowed_domains: Some(domains.clone()),
                 }),
             }),
             _ => OpenAiTool::WebSearch(WebSearchTool {
                 external_web_access: Some(config.web_search_external),
+                search_content_types,
                 ..WebSearchTool::default()
             }),
         };
         tools.push(tool);
+    }
+
+    if config.image_gen_tool {
+        tools.push(OpenAiTool::ImageGeneration {});
     }
 
 
@@ -1214,6 +1242,7 @@ mod tests {
             .map(|tool| match tool {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
                 OpenAiTool::LocalShell {} => "local_shell",
+                OpenAiTool::ImageGeneration {} => "image_generation",
                 OpenAiTool::WebSearch(_) => "web_search",
                 OpenAiTool::Freeform(FreeformTool { name, .. }) => name,
             })
@@ -1291,6 +1320,74 @@ mod tests {
             .expect("web_search tool should be present");
 
         assert_eq!(web_search_tool.external_web_access, Some(true));
+        assert_eq!(web_search_tool.search_content_types, None);
+    }
+
+    #[test]
+    fn test_web_search_text_and_image_sets_search_content_types() {
+        let mut model_family =
+            find_family_for_model("o3").expect("o3 should be a valid model family");
+        model_family.web_search_tool_type = WebSearchToolType::TextAndImage;
+        let mut config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false,
+            false,
+            true,
+            /*use_experimental_streamable_shell_tool*/ false,
+            false,
+        );
+        apply_default_agent_models(&mut config);
+
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
+        let web_search_tool = tools
+            .iter()
+            .find_map(|tool| match tool {
+                OpenAiTool::WebSearch(web_search_tool) => Some(web_search_tool),
+                _ => None,
+            })
+            .expect("web_search tool should be present");
+
+        assert_eq!(
+            web_search_tool.search_content_types,
+            Some(vec!["text".to_string(), "image".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_image_generation_tool_is_opt_in() {
+        let supported_family =
+            find_family_for_model("o3").expect("o3 should be a valid model family");
+        let mut supported_config = ToolsConfig::new(
+            &supported_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false,
+            false,
+            false,
+            /*use_experimental_streamable_shell_tool*/ false,
+            true,
+        );
+        apply_default_agent_models(&mut supported_config);
+        let supported_tools =
+            get_openai_tools(&supported_config, Some(HashMap::new()), false, false, &[]);
+        assert!(
+            !supported_tools
+                .iter()
+                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration {})),
+            "image_generation should be disabled by default"
+        );
+
+        supported_config.image_gen_tool = true;
+        let supported_tools =
+            get_openai_tools(&supported_config, Some(HashMap::new()), false, false, &[]);
+        assert!(
+            supported_tools
+                .iter()
+                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration {})),
+            "image_generation should be available when explicitly enabled"
+        );
     }
 
     #[test]

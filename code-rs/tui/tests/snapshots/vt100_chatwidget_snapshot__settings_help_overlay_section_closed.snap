@@ -12,15 +12,15 @@ expression: section_closed
  |    Updates            |  Current model: GPT-5.3-Codex                                        | |
  |    Accounts           |  Reasoning effort: Medium                                            | |
  |    Agents             |                                                                      | |
- |    Prompts            |  GPT-5.2                                                             | |
- |    Skills             |  Latest frontier model with improvements across knowledge, reasoning | |
- |    Auto Drive         |     XHigh - Extra high reasoning depth for complex problems          | |
- |    Review             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
- |    Planning           |     Medium - Provides a solid balance of reasoning depth and latency | |
- |    Validation         |                                                                      | |
- |    Chrome             |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
- |    MCP                |                                                                      | |
- |  ↓ Notifications      +----------------------------------------------------------------------+ |
+ |    Prompts            |  Fast mode                                                           | |
+ |    Memories           |  Same model, but 1.5x faster responses (uses 2x credits)             | |
+ |    Skills             |  › Fast mode: enabled                                                | |
+ |    Auto Drive         |                                                                      | |
+ |    Review             |  GPT-5.4                                                             | |
+ |    Planning           |                                                                      | |
+ |    Validation         |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
+ |    Chrome             |                                                                      | |
+ |  ↓ MCP                +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
  +------------------------------------------------------------------------------------------------+

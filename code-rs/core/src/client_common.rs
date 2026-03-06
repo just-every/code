@@ -462,6 +462,33 @@ pub(crate) fn replace_image_payloads_for_model(input: &mut Vec<ResponseItem>, mo
     }
 }
 
+/// Convert upstream `image_generation_call` output items into standard user
+/// `input_image` messages when we replay stateless history.
+pub(crate) fn rewrite_image_generation_calls_for_input(input: &mut Vec<ResponseItem>) {
+    let original_items = std::mem::take(input);
+    *input = original_items
+        .into_iter()
+        .map(|item| match item {
+            ResponseItem::ImageGenerationCall { result, .. } => {
+                let image_url = if result.starts_with("data:") {
+                    result
+                } else {
+                    format!("data:image/png;base64,{result}")
+                };
+
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputImage { image_url }],
+                    end_turn: None,
+                    phase: None,
+                }
+            }
+            _ => item,
+        })
+        .collect();
+}
+
 /// Request object that is serialized as JSON and POST'ed when using the
 /// Responses API.
 #[derive(Debug, Serialize)]
@@ -482,6 +509,8 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) store: bool,
     pub(crate) stream: bool,
     pub(crate) include: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_cache_key: Option<String>,
 }
@@ -553,6 +582,7 @@ mod tests {
                 output: code_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
                     FunctionCallOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,BBB".to_string(),
+                        detail: None,
                     },
                 ]),
             },
@@ -598,6 +628,30 @@ mod tests {
             &input[0],
             ResponseItem::Message { content, .. }
                 if matches!(content.first(), Some(ContentItem::InputImage { .. }))
+        ));
+    }
+
+    #[test]
+    fn rewrite_image_generation_calls_for_input_converts_to_user_image_message() {
+        let mut input = vec![ResponseItem::ImageGenerationCall {
+            id: "ig_1".to_string(),
+            status: "completed".to_string(),
+            revised_prompt: None,
+            result: "Zm9v".to_string(),
+        }];
+
+        rewrite_image_generation_calls_for_input(&mut input);
+
+        assert_eq!(input.len(), 1);
+        assert!(matches!(
+            &input[0],
+            ResponseItem::Message { role, content, .. }
+                if role == "user"
+                    && matches!(
+                        content.first(),
+                        Some(ContentItem::InputImage { image_url })
+                            if image_url == "data:image/png;base64,Zm9v"
+                    )
         ));
     }
 
@@ -722,6 +776,7 @@ mod tests {
             store: false,
             stream: true,
             include: vec![],
+            service_tier: None,
             prompt_cache_key: None,
             text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
         };
@@ -757,6 +812,7 @@ mod tests {
             store: false,
             stream: true,
             include: vec![],
+            service_tier: None,
             prompt_cache_key: None,
             text: Some(Text {
                 verbosity: OpenAiTextVerbosity::Medium,
@@ -804,6 +860,7 @@ mod tests {
             store: false,
             stream: true,
             include: vec![],
+            service_tier: None,
             prompt_cache_key: None,
             text: None,
         };

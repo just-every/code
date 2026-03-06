@@ -75,7 +75,8 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::CompactionSummary { .. }
         | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::Reasoning { .. }
-        | ResponseItem::WebSearchCall { .. } => true,
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. } => true,
         ResponseItem::Other => false,
     }
 }

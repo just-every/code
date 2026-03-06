@@ -51,9 +51,11 @@ use crate::client_common::ResponseStream;
 use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
 use crate::client_common::replace_image_payloads_for_model;
+use crate::client_common::rewrite_image_generation_calls_for_input;
 use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::ServiceTier;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
@@ -680,6 +682,7 @@ impl ModelClient {
         }
 
         let mut input_with_instructions = prompt.get_formatted_input();
+        rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
 
         let want_format = prompt.text_format.clone().or_else(|| {
@@ -740,6 +743,10 @@ impl ModelClient {
                 store: self.provider.is_azure_responses_endpoint(),
                 stream: true,
                 include,
+                service_tier: match self.config.service_tier {
+                    Some(ServiceTier::Fast) => Some("priority".to_string()),
+                    _ => None,
+                },
                 prompt_cache_key: Some(session_id_str.clone()),
             };
 
@@ -1086,6 +1093,7 @@ impl ModelClient {
         }
 
         let mut input_with_instructions = prompt.get_formatted_input();
+        rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
 
         // Build `text` parameter with conditional verbosity and optional format.
@@ -1173,6 +1181,10 @@ impl ModelClient {
                 store: azure_workaround,
                 stream: true,
                 include,
+                service_tier: match self.config.service_tier {
+                    Some(ServiceTier::Fast) => Some("priority".to_string()),
+                    _ => None,
+                },
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
             };
@@ -2237,6 +2249,7 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
         if let ResponseItem::Reasoning { id, .. }
         | ResponseItem::Message { id: Some(id), .. }
         | ResponseItem::WebSearchCall { id: Some(id), .. }
+        | ResponseItem::ImageGenerationCall { id, .. }
         | ResponseItem::FunctionCall { id: Some(id), .. }
         | ResponseItem::LocalShellCall { id: Some(id), .. }
         | ResponseItem::CustomToolCall { id: Some(id), .. } = item

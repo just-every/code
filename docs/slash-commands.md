@@ -59,6 +59,7 @@ Notes
 - `/theme`: customize the app theme.
 - `/verbosity (high|medium|low)`: change text verbosity.
 - `/model`: choose your default model.
+- `/fast`: open the model selector and toggle Fast mode.
 - `/reasoning (minimal|low|medium|high)`: change reasoning effort.
 - `/prompts`: manage custom prompts.
 - `/skills`: manage skills.

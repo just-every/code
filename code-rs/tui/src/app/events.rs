@@ -1276,6 +1276,11 @@ impl App<'_> {
                                 }
                             }
                         }
+                        SlashCommand::Fast => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.show_settings_overlay(Some(SettingsSection::Model));
+                            }
+                        }
                         SlashCommand::Reasoning => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_reasoning_command(command_args);
@@ -1449,6 +1454,11 @@ impl App<'_> {
                 AppEvent::UpdateModelSelection { model, effort } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_model_selection(model, effort);
+                    }
+                }
+                AppEvent::UpdateServiceTierSelection { service_tier } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_service_tier_selection(service_tier);
                     }
                 }
                 AppEvent::UpdateReviewModelSelection { model, effort } => {

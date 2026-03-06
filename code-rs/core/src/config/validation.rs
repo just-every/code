@@ -148,11 +148,32 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 }
 
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
-    if slug.starts_with("gpt-5.2")
-        || slug.starts_with("test-gpt-5.2")
-        || slug.starts_with("gpt-5.3")
-        || slug.starts_with("test-gpt-5.3")
-    {
+    match slug {
+        "gpt-5.2.4" => return Some("gpt-5.4".to_string()),
+        "test-gpt-5.2.4" => return Some("test-gpt-5.4".to_string()),
+        _ => {}
+    }
+
+    fn is_current_or_newer_gpt5_slug(slug: &str) -> bool {
+        for prefix in ["gpt-5.", "test-gpt-5."] {
+            let Some(rest) = slug.strip_prefix(prefix) else {
+                continue;
+            };
+
+            let minor: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if minor.is_empty() {
+                continue;
+            }
+
+            if minor.parse::<u32>().is_ok_and(|value| value >= 2) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    if is_current_or_newer_gpt5_slug(slug) {
         return None;
     }
 

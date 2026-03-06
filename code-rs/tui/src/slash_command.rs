@@ -69,6 +69,7 @@ pub enum SlashCommand {
     Theme,
     Settings,
     Model,
+    Fast,
     Reasoning,
     Verbosity,
     Prompts,
@@ -127,6 +128,7 @@ impl SlashCommand {
             SlashCommand::Prompts => "manage custom prompts",
             SlashCommand::Skills => "manage skills",
             SlashCommand::Model => "choose your default model",
+            SlashCommand::Fast => "open model settings with the Fast mode toggle",
             SlashCommand::Agents => "configure agents",
             SlashCommand::Auto => "work autonomously on long tasks with Auto Drive",
             SlashCommand::Branch => {
@@ -331,6 +333,16 @@ mod tests {
         match process_slash_command_message(msg) {
             ProcessedCommand::RegularCommand(SlashCommand::Auto, command_text) => {
                 assert!(command_text.contains("inspect the failing build"));
+            }
+            other => panic!("expected RegularCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_command_is_regular_command() {
+        match process_slash_command_message("/fast") {
+            ProcessedCommand::RegularCommand(SlashCommand::Fast, command_text) => {
+                assert_eq!(command_text, "/fast");
             }
             other => panic!("expected RegularCommand, got {:?}", other),
         }
