@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.75] - 2026-03-06
+
+- Models: add GPT-5.4 fast mode support and enable fast mode by default for quicker turns. (50821896, 394e5386)
+- Memories: add a settings pane with safer compaction fallback and improved workspace-write support. (be4e7f3c, f72ab43f)
+- Artifacts: expand artifact workflows with package manager bindings plus spreadsheet and presentation generation. (f304b2ef, 0cc68354, 8c5e50ef, 4874b929)
+- JS REPL: support local ESM imports, persist bindings after failed cells, and only allow `data:` image URLs. (ff0341dc, 657841e7, cfbbbb1d)
+- TUI/Core: show session speed in the header and surface diagnostics earlier in the workflow. (1ce1712a, 9fcbbeb5)
+
 ## [0.6.74] - 2026-02-27
 
 - TUI/Auto Review: stop duplicating background review notes as `[developer]` history messages to keep transcript noise down. (114e4003)

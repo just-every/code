@@ -1,11 +1,14 @@
-## @just-every/code v0.6.74
+## @just-every/code v0.6.75
 
-This release sharpens Auto Review messaging so results stay clear without extra transcript noise.
+This release adds faster model defaults, deeper artifact workflows, and stronger reliability across memories and JS REPL flows.
 
 ### Changes
 
-- TUI/Auto Review: stop duplicating background review notes as `[developer]` history messages to keep transcript noise down.
-- TUI/Auto Review: keep review findings routed through the dedicated Auto Review notice while still forwarding hidden context to the coordinator.
+- Models: add GPT-5.4 fast mode support and enable fast mode by default for quicker turns.
+- Memories: add a settings pane with safer compaction fallback and improved workspace-write support.
+- Artifacts: expand artifact workflows with package manager bindings plus spreadsheet and presentation generation.
+- JS REPL: support local ESM imports, persist bindings after failed cells, and only allow `data:` image URLs.
+- TUI/Core: show session speed in the header and surface diagnostics earlier in the workflow.
 
 ### Install
 
@@ -14,4 +17,8 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.73...v0.6.74
+### Thanks
+
+Thanks to @owenlin0 and @felipecoury for contributions!
+
+Compare: https://github.com/just-every/code/compare/v0.6.74...v0.6.75
