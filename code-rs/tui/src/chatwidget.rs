@@ -22497,19 +22497,23 @@ Have we met every part of this goal and is there no further work to do?"#
         if curated.is_empty() { presets } else { curated }
     }
 
-    fn available_model_presets(&self) -> Vec<ModelPreset> {
+    fn all_model_presets(&self) -> Vec<ModelPreset> {
         if let Some(presets) = self.remote_model_presets.as_ref() {
-            return Self::curated_model_presets(presets.clone());
+            return presets.clone();
         }
         let auth_mode = if self.config.using_chatgpt_auth {
             Some(AuthMode::ChatGPT)
         } else {
             Some(AuthMode::ApiKey)
         };
-        Self::curated_model_presets(builtin_model_presets(
+        builtin_model_presets(
             auth_mode,
             self.auth_manager.supports_pro_only_models(),
-        ))
+        )
+    }
+
+    fn available_model_presets(&self) -> Vec<ModelPreset> {
+        Self::curated_model_presets(self.all_model_presets())
     }
 
     pub(crate) fn update_model_presets(
@@ -22521,13 +22525,13 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
-        let presets = Self::curated_model_presets(presets);
-        if presets.is_empty() {
+        let curated_presets = Self::curated_model_presets(presets.clone());
+        if curated_presets.is_empty() {
             return;
         }
 
-        self.remote_model_presets = Some(presets.clone());
-        self.bottom_pane.update_model_selection_presets(presets);
+        self.remote_model_presets = Some(presets);
+        self.bottom_pane.update_model_selection_presets(curated_presets);
 
         if let Some(default_model) = default_model {
             self.maybe_apply_remote_default_model(default_model);
@@ -22635,8 +22639,8 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
-        let presets = self.available_model_presets();
-        if presets.is_empty() {
+        let all_presets = self.all_model_presets();
+        if all_presets.is_empty() {
             let message =
                 "No model presets are available. Update your configuration to define models."
                     .to_string();
@@ -22646,7 +22650,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
         let trimmed = command_args.trim();
         if !trimmed.is_empty() {
-            if let Some(preset) = self.find_model_preset(trimmed, &presets) {
+            if let Some(preset) = self.find_model_preset(trimmed, &all_presets) {
                 let effort = Self::preset_effort_for_model(&preset);
                 self.apply_model_selection(preset.model.to_string(), Some(effort));
             } else {
@@ -22659,6 +22663,7 @@ Have we met every part of this goal and is there no further work to do?"#
             return;
         }
 
+        let presets = self.available_model_presets();
         self.bottom_pane.show_model_selection(
             presets,
             self.config.model.clone(),
@@ -23027,7 +23032,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let requested_effort = effort
             .or(self.config.preferred_model_reasoning_effort)
             .unwrap_or(self.config.model_reasoning_effort);
-        let presets = self.available_model_presets();
+        let presets = self.all_model_presets();
         let clamped_effort = Self::clamp_reasoning_for_model_from_presets(trimmed, requested_effort, &presets);
 
         if self.config.model_reasoning_effort != clamped_effort {
@@ -30496,6 +30501,37 @@ use code_core::protocol::OrderMeta;
         let curated = ChatWidget::curated_model_presets(presets.clone());
         assert_eq!(curated.len(), 1);
         assert_eq!(curated[0].id, presets[0].id);
+    }
+
+    #[test]
+    fn model_command_accepts_supported_non_curated_builtin_model() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.handle_model_command("gpt-5.2".to_string());
+
+        assert_eq!(chat.config.model, "gpt-5.2");
+        assert_eq!(chat.config.model_reasoning_effort, ReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn model_command_accepts_supported_non_curated_remote_model() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        let remote_presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
+            .into_iter()
+            .filter(|preset| preset.id == "gpt-5.4" || preset.id == "gpt-5.2")
+            .collect();
+        assert_eq!(remote_presets.len(), 2, "expected remote test presets");
+
+        chat.update_model_presets(remote_presets, None);
+        chat.handle_model_command("gpt-5.2".to_string());
+
+        assert_eq!(chat.config.model, "gpt-5.2");
+        assert_eq!(chat.config.model_reasoning_effort, ReasoningEffort::Medium);
     }
 
     #[test]
