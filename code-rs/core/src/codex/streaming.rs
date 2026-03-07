@@ -53,6 +53,19 @@ const AUTO_CONTEXT_MIN_PROJECTED_TURN_GROWTH_TOKENS: u64 = 24_000;
 const AUTO_CONTEXT_MAX_PROJECTED_TURN_GROWTH_TOKENS: u64 = 180_000;
 const AUTO_CONTEXT_JUDGE_PRIMARY_MODEL: &str = "gpt-5.3-codex-spark";
 const AUTO_CONTEXT_JUDGE_FALLBACK_MODEL: &str = "codex-mini-latest";
+const AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE: &str = concat!(
+    "You decide whether Code should compact conversation history before the next user turn. ",
+    "Return strict JSON only that matches the provided schema. ",
+    "The provided tokens_in_context already includes the new user turn before assistant/tool work begins. ",
+    "Strongly prefer should_compact_now=false when the new user message is clearly continuing the same thread ",
+    "and recent context is likely still needed. However, as projected usage approaches or exceeds the standard ",
+    "usage limit, increase your bias toward compaction even for continuations. If the current turn is likely to go ",
+    "past the standard usage limit, treat should_compact_now=true as materially more favorable unless doing so ",
+    "would likely harm correctness or progress. If the current turn is likely to go past the force-compact threshold ",
+    "or hard 1M context limit, strongly prefer should_compact_now=true. The farther the projected usage goes past ",
+    "the standard usage limit, the more aggressively you should lean toward compaction. Prefer preserving continuity ",
+    "only when nearby context appears genuinely essential to finishing the active thread correctly."
+);
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -2015,7 +2028,7 @@ async fn maybe_run_auto_context_compaction(
         id: None,
         role: "developer".to_string(),
         content: vec![ContentItem::InputText {
-            text: "You decide whether Code should compact conversation history before the next user turn. Return strict JSON only. The provided tokens_in_context already includes the new user turn before assistant/tool work begins. Strongly prefer false when the new user message is clearly continuing the same thread and recent context is likely still needed. However, as projected usage approaches or exceeds the standard usage limit, increase your bias toward compaction even for continuations. If the current turn is likely to go past the standard usage limit, treat compacting as materially more favorable unless doing so would likely harm correctness or progress. If the current turn is likely to go past the force-compact threshold or hard 1M context limit, strongly prefer true. The farther the projected usage goes past the standard usage limit, the more aggressively you should lean toward compaction. Prefer preserving continuity only when nearby context appears genuinely essential to finishing the active thread correctly.".to_string(),
+            text: AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.to_string(),
         }],
         end_turn: None,
         phase: None,
@@ -13613,6 +13626,7 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 mod tests {
     use super::{
         estimate_auto_context_turn_risk,
+        AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE,
         AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
         AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
         auto_context_judge_models,
@@ -13711,6 +13725,13 @@ mod tests {
                 AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
             ]
         );
+    }
+
+    #[test]
+    fn auto_context_judge_instructions_reference_schema_fields() {
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("should_compact_now=false"));
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("should_compact_now=true"));
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("Return strict JSON only"));
     }
 
     #[test]
