@@ -233,7 +233,7 @@ const AUTO_ESC_EXIT_HINT_DOUBLE: &str = "Press Esc again to exit Auto Drive";
 const AUTO_COMPLETION_CELEBRATION_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_millis(500);
-const MID_TURN_IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_secs(3);
+const MID_TURN_IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_secs(15);
 const AUTO_BOOTSTRAP_GOAL_PLACEHOLDER: &str = "Deriving goal from recent conversation";
 const AUTO_DRIVE_SESSION_SUMMARY_NOTICE: &str = "Summarizing session";
 const AUTO_DRIVE_SESSION_SUMMARY_PROMPT: &str =
@@ -3866,9 +3866,7 @@ impl ChatWidget<'_> {
                 self.overall_task_status = "complete".to_string();
                 self.idle_spinner_clear_started_at = None;
             } else {
-                self.schedule_idle_spinner_recheck(
-                    clear_grace.saturating_sub(elapsed),
-                );
+                self.schedule_idle_spinner_recheck(clear_grace.saturating_sub(elapsed));
             }
         } else {
             self.idle_spinner_clear_started_at = None;
@@ -26247,6 +26245,19 @@ Have we met every part of this goal and is there no further work to do?"#
         }
     }
 
+    fn apply_mid_turn_flag_and_sync(
+        &mut self,
+        stream_id: Option<&str>,
+        state: &mut AssistantMessageState,
+    ) {
+        self.apply_mid_turn_flag(stream_id, state);
+        if let Some(record) = self.history_state.record_mut(state.id) {
+            if let HistoryRecord::AssistantMessage(existing) = record {
+                *existing = state.clone();
+            }
+        }
+    }
+
     fn maybe_clear_mid_turn_for_last_answer(&mut self, stream_id: &str) {
         let Some(last_history_id) = self.last_answer_history_id_in_turn else {
             return;
@@ -26448,7 +26459,7 @@ Have we met every part of this goal and is there no further work to do?"#
             }
             self.last_assistant_message = Some(final_source.clone());
             let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
-            self.apply_mid_turn_flag(id.as_deref(), &mut state);
+            self.apply_mid_turn_flag_and_sync(id.as_deref(), &mut state);
             let history_id = state.id;
             let mut key = match id.as_deref() {
                 Some(rid) => self.try_stream_order_key(StreamKind::Answer, rid).unwrap_or_else(|| {
@@ -26602,7 +26613,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 idx
             );
             let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
-            self.apply_mid_turn_flag(id.as_deref(), &mut state);
+            self.apply_mid_turn_flag_and_sync(id.as_deref(), &mut state);
             let history_id = state.id;
             let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
             self.history_replace_at(idx, Box::new(cell));
@@ -26640,7 +26651,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 );
                 let mut state =
                     self.finalize_answer_stream_state(id.as_deref(), &final_source);
-                self.apply_mid_turn_flag(id.as_deref(), &mut state);
+                self.apply_mid_turn_flag_and_sync(id.as_deref(), &mut state);
                 let history_id = state.id;
                 let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
                 self.history_replace_at(idx, Box::new(cell));
@@ -26691,7 +26702,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 );
                 let mut state =
                     self.finalize_answer_stream_state(id.as_deref(), &final_source);
-                self.apply_mid_turn_flag(id.as_deref(), &mut state);
+                self.apply_mid_turn_flag_and_sync(id.as_deref(), &mut state);
                 let history_id = state.id;
                 let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
                 self.history_replace_at(idx, Box::new(cell));
@@ -26743,7 +26754,7 @@ Have we met every part of this goal and is there no further work to do?"#
             Self::debug_fmt_order_key(key)
         );
         let mut state = self.finalize_answer_stream_state(id.as_deref(), &final_source);
-        self.apply_mid_turn_flag(id.as_deref(), &mut state);
+        self.apply_mid_turn_flag_and_sync(id.as_deref(), &mut state);
         let history_id = state.id;
         let cell = history_cell::AssistantMarkdownCell::from_state(state, &self.config);
         self.history_insert_existing_record(
@@ -30249,12 +30260,18 @@ use code_core::protocol::OrderMeta;
     }
 
     fn expect_immediate_user_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
-        match code_op_rx.try_recv().expect("user input op") {
-            Op::UserInput {
-                items,
-                final_output_json_schema: None,
-            } => ChatWidget::combined_input_text(&items).unwrap_or_default(),
-            other => panic!("expected UserInput, got {other:?}"),
+        loop {
+            match code_op_rx.try_recv().expect("user input op") {
+                Op::UserInput {
+                    items,
+                    final_output_json_schema: None,
+                }
+                | Op::QueueUserInput {
+                    items,
+                } => return ChatWidget::combined_input_text(&items).unwrap_or_default(),
+                Op::AddPostTurnDeveloperInput { .. } | Op::AddToHistory { .. } => continue,
+                other => panic!("expected UserInput, got {other:?}"),
+            }
         }
     }
 
@@ -34372,7 +34389,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn mid_turn_answer_keeps_spinner_during_short_idle_gap() {
+    fn mid_turn_answer_stays_unfinalized_while_turn_is_active() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         {
@@ -34404,19 +34421,51 @@ use code_core::protocol::OrderMeta;
 
         harness.flush_into_widget();
 
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Working through the first part."));
+        assert!(
+            !frame.contains(" • Working through the first part."),
+            "mid-turn assistant output should not render as a finalized assistant cell:\n{frame}"
+        );
+
         {
             let chat = harness.chat();
+            assert_eq!(
+                chat.active_task_ids.len(),
+                1,
+                "turn should still be active after a mid-turn assistant message"
+            );
+            assert!(
+                chat.last_answer_is_mid_turn(),
+                "assistant cell should still be tagged as mid-turn before TaskComplete"
+            );
+            assert!(
+                chat.bottom_pane.is_task_running(),
+                "spinner should still be active before idle cleanup runs"
+            );
             chat.idle_spinner_clear_started_at = Some(
                 Instant::now()
                     .checked_sub(IDLE_SPINNER_CLEAR_GRACE + Duration::from_millis(50))
                     .expect("timestamp should subtract"),
             );
             chat.maybe_hide_spinner();
+            assert!(
+                chat.bottom_pane.is_task_running(),
+                "spinner flipped off inside maybe_hide_spinner (tasks={}, mid_turn={})",
+                chat.active_task_ids.len(),
+                chat.last_answer_is_mid_turn()
+            );
         }
 
         assert!(
             harness.chat().bottom_pane.is_task_running(),
-            "mid-turn assistant output should keep the spinner active during a short idle gap"
+            "mid-turn assistant output should keep the spinner active until the turn completes"
+        );
+
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(
+            frame.contains("Thinking..."),
+            "mid-turn idle waiting should continue to show Thinking...:\n{frame}"
         );
     }
 

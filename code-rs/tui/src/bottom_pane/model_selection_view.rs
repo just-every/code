@@ -1204,7 +1204,7 @@ mod tests {
             .collect();
 
         let (tx, _rx) = mpsc::channel::<AppEvent>();
-        let view = ModelSelectionView::new(
+        let mut view = ModelSelectionView::new(
             presets,
             "gpt-5.3-codex".to_string(),
             ReasoningEffort::Low,

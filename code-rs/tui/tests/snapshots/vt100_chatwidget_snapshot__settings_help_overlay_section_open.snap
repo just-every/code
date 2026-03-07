@@ -12,11 +12,11 @@ expression: section_open
  |    Updates            |  Curren+------------------------------+                              | |
  |    Accounts           |  Reason|Model Shortcuts               |                              | |
  |    Agents             |        |                              |                              | |
- |    Prompts            |  Fast m|• Esc    Return to overview   |                              | |
- |    Memories           |  Same m|• Tab    Cycle sections       |(uses 2x credits)             | |
+ |    Prompts            |  Mode S|• Esc    Return to overview   |                              | |
+ |    Memories           |  Fast m|• Tab    Cycle sections       |t is available on supported m | |
  |    Skills             |  › Fast|• Shift+Tab  Cycle backwards  |                              | |
- |    Auto Drive         |        |• ?      Toggle this help     |                              | |
- |    Review             |  GPT-5.|                              |                              | |
+ |    Auto Drive         |    1M C|• ?      Toggle this help     |                              | |
+ |    Review             |  Unavai|                              |ings apply automatically on s | |
  |    Planning           |        |Press Esc to close            |                              | |
  |    Validation         |  ↑↓ Nav+------------------------------+                              | |
  |    Chrome             |                                                                      | |

@@ -12,11 +12,11 @@ expression: section_closed
  |    Updates            |  Current model: GPT-5.3-Codex                                        | |
  |    Accounts           |  Reasoning effort: Medium                                            | |
  |    Agents             |                                                                      | |
- |    Prompts            |  Fast mode                                                           | |
- |    Memories           |  Same model, but 1.5x faster responses (uses 2x credits)             | |
- |    Skills             |  › Fast mode: enabled                                                | |
- |    Auto Drive         |                                                                      | |
- |    Review             |  GPT-5.4                                                             | |
+ |    Prompts            |  Mode Settings                                                       | |
+ |    Memories           |  Fast mode speeds up replies. 1M Context is available on supported m | |
+ |    Skills             |  › Fast Mode: disabled                                               | |
+ |    Auto Drive         |    1M Context: disabled                                              | |
+ |    Review             |  Unavailable for this model. Saved settings apply automatically on s | |
  |    Planning           |                                                                      | |
  |    Validation         |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
  |    Chrome             |                                                                      | |
