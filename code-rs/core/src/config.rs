@@ -3484,6 +3484,30 @@ model = "gpt-5.4"
         assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
         Ok(())
     }
+
+    #[test]
+    fn context_mode_disabled_preserves_standard_limits() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "disabled"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Disabled));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
+    }
 }
 
 #[cfg(test)]

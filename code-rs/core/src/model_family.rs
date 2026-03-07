@@ -435,6 +435,9 @@ pub fn resolve_context_mode_limits(
                 EXTENDED_CONTEXT_WINDOW_1M,
             )),
         ),
+        Some(ContextMode::Disabled) => {
+            (family.context_window, family.auto_compact_token_limit())
+        }
         _ => (family.context_window, family.auto_compact_token_limit()),
     }
 }

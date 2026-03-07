@@ -22898,6 +22898,7 @@ Have we met every part of this goal and is there no further work to do?"#
         &mut self,
         context_mode: Option<ContextMode>,
     ) {
+        let context_mode = context_mode.or(Some(ContextMode::Disabled));
         if self.config.context_mode == context_mode && !self.sync_session_context_selection_for_model() {
             return;
         }
@@ -22925,6 +22926,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     persisted_context_mode.map(|mode| match mode {
                         ContextMode::OneM => "1m",
                         ContextMode::Auto => "auto",
+                        ContextMode::Disabled => "disabled",
                     }),
                 )],
             )
@@ -22939,7 +22941,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let status = match self.config.context_mode {
             Some(ContextMode::OneM) => "1M context enabled.".to_string(),
             Some(ContextMode::Auto) => "Auto Context enabled.".to_string(),
-            None => "Context mode disabled.".to_string(),
+            Some(ContextMode::Disabled) | None => "Context mode disabled.".to_string(),
         };
         self.bottom_pane.flash_footer_notice(status);
         self.request_redraw();
@@ -30224,7 +30226,7 @@ impl Drop for AutoReviewStubGuard {
 use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
     use code_core::config::{Config, ConfigOverrides, ConfigToml};
-    use code_core::config_types::{McpServerConfig, McpServerTransportConfig, ServiceTier};
+    use code_core::config_types::{ContextMode, McpServerConfig, McpServerTransportConfig, ServiceTier};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -30600,6 +30602,46 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn apply_context_mode_selection_persists_disabled_override() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let code_home = tempdir().expect("temp code home");
+        let config_path = code_home.path().join("config.toml");
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().config.code_home = code_home.path().to_path_buf();
+        harness.chat().config.context_mode = Some(ContextMode::Auto);
+
+        harness.chat().apply_session_context_mode_selection(None);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+            if contents.contains("context_mode = \"disabled\"") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected persisted disabled context mode in {config_path:?}, got: {contents:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let cfg_text = std::fs::read_to_string(&config_path).expect("read config");
+        let cfg = toml::from_str::<ConfigToml>(&cfg_text).expect("parse config");
+        let reloaded = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )
+        .expect("reload config");
+
+        assert_eq!(reloaded.context_mode, Some(ContextMode::Disabled));
+        assert_eq!(reloaded.model_context_window, Some(272_000));
+    }
+
+    #[test]
     fn auto_review_triggers_when_enabled_and_diff_seen() {
         let _stub_lock = AUTO_STUB_LOCK.lock().unwrap();
         let _guard = AutoReviewStubGuard::install(|| {});
@@ -30914,6 +30956,10 @@ use code_core::protocol::OrderMeta;
         assert!(
             note.contains("Background auto-review completed and reported 1 issue(s)"),
             "idle auto-review findings should be sent to core immediately"
+        );
+        assert!(
+            note.contains("Auto Review: 1 issue(s) found. needs work Merge /tmp/wt to apply fixes."),
+            "developer follow-up should include the same concise notice shown in the UI"
         );
     }
 
@@ -36667,13 +36713,12 @@ impl ChatWidget<'_> {
         })
     }
 
-    fn insert_auto_review_notice(
-        &mut self,
+    fn auto_review_notice_line(
         branch: &str,
         worktree_path: &std::path::Path,
         summary: Option<&str>,
         findings: usize,
-    ) {
+    ) -> String {
         let path_text = format!("{}", worktree_path.display());
         let has_path = !path_text.is_empty();
 
@@ -36694,6 +36739,17 @@ impl ChatWidget<'_> {
             line.push_str(&format!("Merge {path_text} to apply fixes."));
         }
         line.push_str(" [Ctrl+A] Show");
+        line
+    }
+
+    fn insert_auto_review_notice(
+        &mut self,
+        branch: &str,
+        worktree_path: &std::path::Path,
+        summary: Option<&str>,
+        findings: usize,
+    ) {
+        let line = Self::auto_review_notice_line(branch, worktree_path, summary, findings);
 
         let message_lines = vec![MessageLine {
             kind: MessageLineKind::Paragraph,
@@ -36857,6 +36913,14 @@ impl ChatWidget<'_> {
             resolved_worktree_path.display().to_string()
         };
         let errored = error.is_some();
+        let notice_line = has_findings.then(|| {
+            Self::auto_review_notice_line(
+                &worktree_label,
+                &resolved_worktree_path,
+                summary.as_deref(),
+                effective_findings,
+            )
+        });
         let (indicator_status, developer_note) = if let Some(err) = error {
             let summarized_error = Self::summarize_auto_review_error(&err);
             let classification = Self::classify_auto_review_error(&err);
@@ -36873,7 +36937,8 @@ impl ChatWidget<'_> {
             )
         } else if has_findings {
             let mut note = format!(
-                "[developer] Background auto-review completed and reported {effective_findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{worktree_label}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}",
+                "[developer] {}\n\nBackground auto-review completed and reported {effective_findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{worktree_label}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}",
+                notice_line.as_deref().unwrap_or("Background auto-review found issues."),
             );
             if let Some(summary_note) = summary_note {
                 note.push('\n');

@@ -1455,6 +1455,8 @@ pub enum ContextMode {
     OneM,
     #[serde(alias = "\"auto\"")]
     Auto,
+    #[serde(alias = "\"disabled\"")]
+    Disabled,
 }
 
 /// Text verbosity level for OpenAI API responses.

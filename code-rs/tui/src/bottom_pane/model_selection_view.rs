@@ -446,9 +446,9 @@ impl ModelSelectionView {
                 }
                 EntryKind::ContextMode => {
                     let next_context_mode = match self.current_context_mode {
-                        None => Some(ContextMode::OneM),
+                        None | Some(ContextMode::Disabled) => Some(ContextMode::OneM),
                         Some(ContextMode::OneM) => Some(ContextMode::Auto),
-                        Some(ContextMode::Auto) => None,
+                        Some(ContextMode::Auto) => Some(ContextMode::Disabled),
                     };
                     self.current_context_mode = next_context_mode;
                     let _ = self.app_event_tx.send(AppEvent::UpdateSessionContextModeSelection {
@@ -654,7 +654,7 @@ impl ModelSelectionView {
             let context_status = match self.current_context_mode {
                 Some(ContextMode::OneM) => "enabled",
                 Some(ContextMode::Auto) => "auto",
-                None => "disabled",
+                Some(ContextMode::Disabled) | None => "disabled",
             };
             let context_available = self.supports_extended_context();
             let mut context_label_style = Style::default().fg(crate::colors::text());
