@@ -30884,7 +30884,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
-        let _code_op_rx = replace_code_op_channel(chat);
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -30953,7 +30953,7 @@ use code_core::protocol::OrderMeta;
     fn background_review_failure_note_is_sanitized_and_bounded() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
-        let _code_op_rx = replace_code_op_channel(chat);
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
