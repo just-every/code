@@ -22,6 +22,8 @@ export type { ArchiveConversationResponse } from "./ArchiveConversationResponse"
 export type { AskForApproval } from "./AskForApproval";
 export type { AuthMode } from "./AuthMode";
 export type { AuthStatusChangeNotification } from "./AuthStatusChangeNotification";
+export type { AutoContextCheckEvent } from "./AutoContextCheckEvent";
+export type { AutoContextPhase } from "./AutoContextPhase";
 export type { BackgroundEventEvent } from "./BackgroundEventEvent";
 export type { ByteRange } from "./ByteRange";
 export type { CallToolResult } from "./CallToolResult";

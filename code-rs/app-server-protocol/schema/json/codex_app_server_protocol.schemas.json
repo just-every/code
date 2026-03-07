@@ -379,6 +379,13 @@
       "title": "AuthStatusChangeNotification",
       "type": "object"
     },
+    "AutoContextPhase": {
+      "enum": [
+        "checking",
+        "compacting"
+      ],
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -2816,6 +2823,33 @@
             "type"
           ],
           "title": "TokenCountEventMsg",
+          "type": "object"
+        },
+        {
+          "description": "Auto Context is evaluating whether to compact before the next turn.",
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AutoContextPhase"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "auto_context_check"
+              ],
+              "title": "AutoContextCheckEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AutoContextCheckEventMsg",
           "type": "object"
         },
         {

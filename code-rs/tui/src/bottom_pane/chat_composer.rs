@@ -3177,7 +3177,7 @@ mod tests {
         };
         let mut buf = Buffer::empty(area);
 
-        composer.render_footer_only(area, &mut buf);
+        composer.render_footer(area, &mut buf);
 
         let line: String = (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())
@@ -3214,7 +3214,7 @@ mod tests {
         };
         let mut buf = Buffer::empty(area);
 
-        composer.render_footer_only(area, &mut buf);
+        composer.render_footer(area, &mut buf);
 
         let line: String = (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())
@@ -3251,7 +3251,7 @@ mod tests {
         };
         let mut buf = Buffer::empty(area);
 
-        composer.render_footer_only(area, &mut buf);
+        composer.render_footer(area, &mut buf);
 
         let line: String = (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())

@@ -232,6 +232,8 @@ const AUTO_ESC_EXIT_HINT: &str = "Press Esc to exit Auto Drive";
 const AUTO_ESC_EXIT_HINT_DOUBLE: &str = "Press Esc again to exit Auto Drive";
 const AUTO_COMPLETION_CELEBRATION_DURATION: Duration = Duration::from_secs(5);
 const HISTORY_ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(120);
+const IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_millis(500);
+const MID_TURN_IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_secs(3);
 const AUTO_BOOTSTRAP_GOAL_PLACEHOLDER: &str = "Deriving goal from recent conversation";
 const AUTO_DRIVE_SESSION_SUMMARY_NOTICE: &str = "Summarizing session";
 const AUTO_DRIVE_SESSION_SUMMARY_PROMPT: &str =
@@ -3826,8 +3828,6 @@ impl ChatWidget<'_> {
 
     /// Hide the bottom spinner/status if the UI is idle (no streams, tools, agents, or tasks).
     fn maybe_hide_spinner(&mut self) {
-        const IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_millis(500);
-
         let any_tools_running = !self.exec.running_commands.is_empty()
             || !self.tools_state.running_custom_tools.is_empty()
             || !self.tools_state.web_search_sessions.is_empty();
@@ -3836,6 +3836,7 @@ impl ChatWidget<'_> {
         let mut any_tasks_active = !self.active_task_ids.is_empty();
         let final_answer_seen =
             self.last_answer_history_id_in_turn.is_some() || self.stream_state.seq_answer_final.is_some();
+        let final_answer_is_mid_turn = self.last_answer_is_mid_turn();
         let terminal_running = self.terminal_is_running();
 
         // If the backend never emits TaskComplete but we already received the
@@ -3848,18 +3849,25 @@ impl ChatWidget<'_> {
             && !any_agents_active
             && !terminal_running;
         if stuck_on_completed_turn {
+            self.bottom_pane
+                .update_status_text("waiting for model".to_string());
             let now = Instant::now();
             let started_at = self.idle_spinner_clear_started_at.get_or_insert(now);
             let elapsed = now.saturating_duration_since(*started_at);
+            let clear_grace = if final_answer_is_mid_turn {
+                MID_TURN_IDLE_SPINNER_CLEAR_GRACE
+            } else {
+                IDLE_SPINNER_CLEAR_GRACE
+            };
 
-            if elapsed >= IDLE_SPINNER_CLEAR_GRACE {
+            if elapsed >= clear_grace {
                 self.active_task_ids.clear();
                 any_tasks_active = false;
                 self.overall_task_status = "complete".to_string();
                 self.idle_spinner_clear_started_at = None;
             } else {
                 self.schedule_idle_spinner_recheck(
-                    IDLE_SPINNER_CLEAR_GRACE.saturating_sub(elapsed),
+                    clear_grace.saturating_sub(elapsed),
                 );
             }
         } else {
@@ -3874,6 +3882,20 @@ impl ChatWidget<'_> {
             self.bottom_pane.set_task_running(false);
             self.bottom_pane.update_status_text(String::new());
         }
+    }
+
+    fn last_answer_is_mid_turn(&self) -> bool {
+        let Some(history_id) = self.last_answer_history_id_in_turn else {
+            return false;
+        };
+
+        self.history_state
+            .record(history_id)
+            .and_then(|record| match record {
+                HistoryRecord::AssistantMessage(state) => Some(state.mid_turn),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 
     /// Ensure we show progress when work is visible but the spinner state drifted.
@@ -30226,6 +30248,16 @@ use code_core::protocol::OrderMeta;
         }
     }
 
+    fn expect_immediate_user_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
+        match code_op_rx.try_recv().expect("user input op") {
+            Op::UserInput {
+                items,
+                final_output_json_schema: None,
+            } => ChatWidget::combined_input_text(&items).unwrap_or_default(),
+            other => panic!("expected UserInput, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parse_agent_review_result_json_clean() {
         let json = r#"{
@@ -31219,12 +31251,14 @@ use code_core::protocol::OrderMeta;
         );
 
         chat.submit_text_message("continue".to_string());
+        let submitted = expect_immediate_user_input(&mut code_op_rx);
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "queued auto-review note should be injected on the next user message"
+                .any(|msg| msg == "continue"),
+            "next user message should be tracked independently of background review notes"
         );
+        assert_eq!(submitted, "continue");
     }
 
     #[test]
@@ -31309,6 +31343,11 @@ use code_core::protocol::OrderMeta;
         let mut last_esc_time = None;
         assert!(chat.handle_app_esc(esc, &mut last_esc_time));
         assert!(!chat.auto_state.is_active(), "Esc should stop Auto Drive immediately");
+        let summary_prompt = expect_immediate_user_input(&mut code_op_rx);
+        assert!(
+            summary_prompt.contains("Please write a Session Summary for the most recent Auto Drive session in this chat."),
+            "Esc should request an Auto Drive session summary"
+        );
         let pending_before_review = chat.pending_dispatched_user_messages.len();
 
         chat.on_background_review_finished(
@@ -31439,6 +31478,11 @@ use code_core::protocol::OrderMeta;
         let mut last_esc_time = None;
         assert!(chat.handle_app_esc(esc, &mut last_esc_time));
         assert!(!chat.auto_state.is_active(), "Esc should always exit Auto Drive");
+        let summary_prompt = expect_immediate_user_input(&mut code_op_rx);
+        assert!(
+            summary_prompt.contains("Please write a Session Summary for the most recent Auto Drive session in this chat."),
+            "Esc should request an Auto Drive session summary"
+        );
 
         let pending_before_review = chat.pending_dispatched_user_messages.len();
         chat.on_background_review_finished(
@@ -34311,12 +34355,68 @@ use code_core::protocol::OrderMeta;
             "spinner should stay active briefly while waiting for a missing TaskComplete"
         );
 
-        std::thread::sleep(Duration::from_millis(650));
-        harness.flush_into_widget();
+        {
+            let chat = harness.chat();
+            chat.idle_spinner_clear_started_at = Some(
+                Instant::now()
+                    .checked_sub(MID_TURN_IDLE_SPINNER_CLEAR_GRACE + Duration::from_millis(50))
+                    .expect("timestamp should subtract"),
+            );
+            chat.maybe_hide_spinner();
+        }
 
         assert!(
             !harness.chat().bottom_pane.is_task_running(),
             "spinner should clear after the final answer even when TaskComplete never arrives"
+        );
+    }
+
+    #[test]
+    fn mid_turn_answer_keeps_spinner_during_short_idle_gap() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        {
+            let chat = harness.chat();
+            reset_history(chat);
+        }
+
+        let turn_id = "turn-1".to_string();
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 0,
+            msg: EventMsg::TaskStarted,
+            order: None,
+        });
+
+        harness.handle_event(Event {
+            id: turn_id,
+            event_seq: 1,
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Working through the first part.".to_string(),
+            }),
+            order: Some(OrderMeta {
+                request_ordinal: 1,
+                output_index: Some(0),
+                sequence_number: Some(0),
+            }),
+        });
+
+        harness.flush_into_widget();
+
+        {
+            let chat = harness.chat();
+            chat.idle_spinner_clear_started_at = Some(
+                Instant::now()
+                    .checked_sub(IDLE_SPINNER_CLEAR_GRACE + Duration::from_millis(50))
+                    .expect("timestamp should subtract"),
+            );
+            chat.maybe_hide_spinner();
+        }
+
+        assert!(
+            harness.chat().bottom_pane.is_task_running(),
+            "mid-turn assistant output should keep the spinner active during a short idle gap"
         );
     }
 

@@ -1172,7 +1172,7 @@ mod tests {
             AppEventSender::new(tx),
         );
 
-        for _ in 0..12 {
+        for _ in 0..13 {
             let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
@@ -1215,8 +1215,11 @@ mod tests {
             AppEventSender::new(tx),
         );
 
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
         let width = 80;
-        let height = 13;
+        let height = 16;
         let mut buf = ratatui::buffer::Buffer::empty(Rect {
             x: 0,
             y: 0,
@@ -1231,10 +1234,10 @@ mod tests {
         }, &mut buf);
 
         let lines = buffer_body_lines(&buf, width, height);
-        let has_header = lines.iter().any(|line| line.contains("GPT-5.3-Codex"));
-        let has_desc = lines
-            .iter()
-            .any(|line| line.contains("Frontier agentic coding, 25% faster than previous models."));
+        let visible = lines.join("\n");
+        let has_header = visible.contains("GPT-5.3-Codex");
+        let has_desc = visible.contains("Frontier agentic coding")
+            && visible.contains("25% faster than previous models.");
 
         assert!(has_header);
         assert!(has_desc);
@@ -1268,7 +1271,7 @@ mod tests {
         );
 
         let width = 100;
-        let height = 18;
+        let height = 24;
         let mut buf = ratatui::buffer::Buffer::empty(Rect {
             x: 0,
             y: 0,
@@ -1283,22 +1286,20 @@ mod tests {
         }, &mut buf);
 
         let lines = buffer_body_lines(&buf, width, height);
-        let gpt_5_4_idx = lines
-            .iter()
-            .position(|line| line.contains("GPT-5.4"))
+        let visible = lines.join("\n");
+        let gpt_5_4_idx = visible
+            .find("GPT-5.4")
             .expect("gpt-5.4 header");
-        let gpt_5_3_idx = lines
-            .iter()
-            .position(|line| line.contains("GPT-5.3-Codex"))
+        let gpt_5_3_idx = visible
+            .find("GPT-5.3-Codex")
             .expect("gpt-5.3-codex header");
 
         assert!(gpt_5_4_idx < gpt_5_3_idx);
-        assert!(lines.iter().any(|line| line.contains("Mode Settings")));
-        assert!(lines.iter().any(|line| line.contains("Fast Mode: enabled")));
-        assert!(lines.iter().any(|line| line.contains("1M Context: enabled")));
-        assert!(lines.iter().any(|line| {
-            line.contains("Fast mode speeds up replies. 1M Context is available on supported models.")
-        }));
+        assert!(visible.contains("Mode Settings"));
+        assert!(visible.contains("Fast Mode: enabled"));
+        assert!(visible.contains("1M Context: enabled"));
+        assert!(visible.contains("Fast mode speeds up replies."));
+        assert!(visible.contains("1M Context is available on supported models."));
     }
 
     #[test]
@@ -1480,7 +1481,7 @@ mod tests {
             AppEventSender::new(tx),
         );
 
-        for _ in 0..12 {
+        for _ in 0..13 {
             let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
