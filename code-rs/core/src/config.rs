@@ -1269,7 +1269,10 @@ impl Config {
             Some(ServiceTier::Standard) => None,
             None => None,
         };
-        let context_mode = config_profile.context_mode.or(cfg.context_mode);
+        let context_mode = config_profile
+            .context_mode
+            .or(cfg.context_mode)
+            .or(Some(ContextMode::Auto));
 
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
@@ -3442,6 +3445,29 @@ context_mode = "1m"
             r#"
 model = "gpt-5.4"
 context_mode = "auto"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Auto));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_defaults_to_auto_when_unspecified() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
 "#,
         )?;
         let config = Config::load_from_base_config_with_overrides(
