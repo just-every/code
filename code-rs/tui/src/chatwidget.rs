@@ -1322,6 +1322,8 @@ const MAX_AGENT_RUNTIME_ENTRIES: usize = 768;
 const MAX_HISTORY_CELLS_HARD_LIMIT: usize = 2400;
 const HISTORY_CELLS_TRIM_TARGET: usize = 1800;
 const MAX_SESSION_PATCH_SETS: usize = 256;
+const HISTORY_SNAPSHOT_FLUSH_INTERVAL_IDLE_MS: u64 = 400;
+const HISTORY_SNAPSHOT_FLUSH_INTERVAL_ACTIVE_MS: u64 = 2_000;
 const MAX_PENDING_DISPATCHED_USER_MESSAGES: usize = 256;
 const MAX_PENDING_AUTO_REVIEW_NOTE_CHARS: usize = 2400;
 const MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS: usize = 1200;
@@ -12356,8 +12358,16 @@ impl ChatWidget<'_> {
             return;
         }
         if !force {
+            let snapshot_interval = if self.is_task_running()
+                || !self.active_task_ids.is_empty()
+                || self.stream.is_write_cycle_active()
+            {
+                Duration::from_millis(HISTORY_SNAPSHOT_FLUSH_INTERVAL_ACTIVE_MS)
+            } else {
+                Duration::from_millis(HISTORY_SNAPSHOT_FLUSH_INTERVAL_IDLE_MS)
+            };
             if let Some(last) = self.history_snapshot_last_flush {
-                if last.elapsed() < Duration::from_millis(400) {
+                if last.elapsed() < snapshot_interval {
                     return;
                 }
             }
