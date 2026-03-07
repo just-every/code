@@ -49,6 +49,8 @@ const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
 const AUTO_CONTEXT_JUDGE_MIN_TOKENS: u64 = 150_000;
 const AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS: u64 = 20_000;
 const AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN: u64 = 4;
+const AUTO_CONTEXT_MIN_PROJECTED_TURN_GROWTH_TOKENS: u64 = 24_000;
+const AUTO_CONTEXT_MAX_PROJECTED_TURN_GROWTH_TOKENS: u64 = 180_000;
 const AUTO_CONTEXT_JUDGE_PRIMARY_MODEL: &str = "gpt-5.3-codex-spark";
 const AUTO_CONTEXT_JUDGE_FALLBACK_MODEL: &str = "codex-mini-latest";
 
@@ -1620,6 +1622,16 @@ struct AutoContextJudgeDecision {
     recent_context_still_useful: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoContextTurnRisk {
+    estimated_additional_turn_tokens: u64,
+    projected_post_turn_tokens: u64,
+    crosses_standard_limit_now: bool,
+    crosses_standard_limit_after_turn: bool,
+    crosses_force_compact_after_turn: bool,
+    crosses_hard_limit_after_turn: bool,
+}
+
 fn auto_context_force_compact_threshold(limit: Option<u64>) -> u64 {
     limit
         .unwrap_or(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M)
@@ -1736,6 +1748,41 @@ fn estimate_next_turn_context_tokens(history: &[ResponseItem], items: &[InputIte
     let next_item: ResponseItem = compact::response_input_from_core_items(items.to_vec()).into();
     with_next_turn.push(next_item);
     estimate_response_items_tokens(&with_next_turn)
+}
+
+fn estimate_auto_context_turn_risk(
+    tokens_in_context: u64,
+    new_user_message: &str,
+    last_token_usage: Option<&TokenUsage>,
+    force_compact_threshold: u64,
+) -> AutoContextTurnRisk {
+    let standard_limit = crate::model_family::STANDARD_CONTEXT_WINDOW_272K;
+    let hard_limit = crate::model_family::EXTENDED_CONTEXT_WINDOW_1M;
+    let message_complexity_tokens = estimate_text_tokens(new_user_message).saturating_mul(6);
+    let last_turn_growth_tokens = last_token_usage
+        .map(|usage| {
+            usage
+                .output_tokens
+                .saturating_add(usage.reasoning_output_tokens)
+                .max(usage.blended_total() / 2)
+        })
+        .unwrap_or(0);
+    let estimated_additional_turn_tokens = message_complexity_tokens
+        .max(last_turn_growth_tokens)
+        .clamp(
+            AUTO_CONTEXT_MIN_PROJECTED_TURN_GROWTH_TOKENS,
+            AUTO_CONTEXT_MAX_PROJECTED_TURN_GROWTH_TOKENS,
+        );
+    let projected_post_turn_tokens = tokens_in_context.saturating_add(estimated_additional_turn_tokens);
+
+    AutoContextTurnRisk {
+        estimated_additional_turn_tokens,
+        projected_post_turn_tokens,
+        crosses_standard_limit_now: tokens_in_context >= standard_limit,
+        crosses_standard_limit_after_turn: projected_post_turn_tokens >= standard_limit,
+        crosses_force_compact_after_turn: projected_post_turn_tokens >= force_compact_threshold,
+        crosses_hard_limit_after_turn: projected_post_turn_tokens >= hard_limit,
+    }
 }
 
 fn is_obvious_continuation_message(text: &str) -> bool {
@@ -1941,11 +1988,34 @@ async fn maybe_run_auto_context_compaction(
         return;
     }
 
+    let last_token_usage = {
+        let state = sess.state.lock().unwrap();
+        state.token_usage_info.as_ref().map(|info| info.last_token_usage.clone())
+    };
+    let turn_risk = estimate_auto_context_turn_risk(
+        tokens_in_context,
+        &new_user_message,
+        last_token_usage.as_ref(),
+        force_compact_threshold,
+    );
+    let standard_usage_limit_tokens = crate::model_family::STANDARD_CONTEXT_WINDOW_272K;
+    let hard_context_limit_tokens = crate::model_family::EXTENDED_CONTEXT_WINDOW_1M;
+    let standard_limit_ratio = if standard_usage_limit_tokens == 0 {
+        0.0
+    } else {
+        tokens_in_context as f64 / standard_usage_limit_tokens as f64
+    };
+    let hard_limit_ratio = if hard_context_limit_tokens == 0 {
+        0.0
+    } else {
+        tokens_in_context as f64 / hard_context_limit_tokens as f64
+    };
+
     let developer_message = ResponseItem::Message {
         id: None,
         role: "developer".to_string(),
         content: vec![ContentItem::InputText {
-            text: "You decide whether Code should compact conversation history before the next user turn. Return strict JSON only. Strongly prefer false when the new user message is continuing the same thread, referring to prior work, or is likely to depend on nearby context. Only prefer true when the user is clearly pivoting to a new subtask, restarting with a fresh request, or when the transcript is mostly stale detail. Increase your bias toward compaction as pressure rises toward 1M tokens, but continuation should still receive a strong keep-context bias unless pressure is truly high.".to_string(),
+            text: "You decide whether Code should compact conversation history before the next user turn. Return strict JSON only. The provided tokens_in_context already includes the new user turn before assistant/tool work begins. Strongly prefer false when the new user message is clearly continuing the same thread and recent context is likely still needed. However, as projected usage approaches or exceeds the standard usage limit, increase your bias toward compaction even for continuations. If the current turn is likely to go past the standard usage limit, treat compacting as materially more favorable unless doing so would likely harm correctness or progress. If the current turn is likely to go past the force-compact threshold or hard 1M context limit, strongly prefer true. The farther the projected usage goes past the standard usage limit, the more aggressively you should lean toward compaction. Prefer preserving continuity only when nearby context appears genuinely essential to finishing the active thread correctly.".to_string(),
         }],
         end_turn: None,
         phase: None,
@@ -1954,9 +2024,29 @@ async fn maybe_run_auto_context_compaction(
         "tokens_in_context": tokens_in_context,
         "judge_window": {
             "start_tokens": AUTO_CONTEXT_JUDGE_MIN_TOKENS,
+            "standard_usage_limit_tokens": standard_usage_limit_tokens,
             "force_compact_at_tokens": force_compact_threshold,
+            "hard_context_limit_tokens": hard_context_limit_tokens,
         },
         "pressure_band": pressure_band.as_str(),
+        "pressure": {
+            "standard_limit_ratio": standard_limit_ratio,
+            "hard_limit_ratio": hard_limit_ratio,
+            "distance_to_standard_limit_tokens": i64::try_from(standard_usage_limit_tokens).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+            "distance_to_force_compact_tokens": i64::try_from(force_compact_threshold).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+            "distance_to_hard_limit_tokens": i64::try_from(hard_context_limit_tokens).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+        },
+        "turn_risk": {
+            "estimated_additional_turn_tokens": turn_risk.estimated_additional_turn_tokens,
+            "projected_post_turn_tokens": turn_risk.projected_post_turn_tokens,
+            "would_cross_standard_limit_now": turn_risk.crosses_standard_limit_now,
+            "would_cross_standard_limit_after_turn": turn_risk.crosses_standard_limit_after_turn,
+            "would_cross_force_compact_after_turn": turn_risk.crosses_force_compact_after_turn,
+            "would_cross_hard_limit_after_turn": turn_risk.crosses_hard_limit_after_turn,
+        },
         "new_user_message": new_user_message,
         "recent_messages": recent_messages,
     });
@@ -2052,6 +2142,12 @@ async fn maybe_run_auto_context_compaction(
     tracing::info!(
         tokens_in_context,
         pressure_band = pressure_band.as_str(),
+        estimated_additional_turn_tokens = turn_risk.estimated_additional_turn_tokens,
+        projected_post_turn_tokens = turn_risk.projected_post_turn_tokens,
+        crosses_standard_limit_now = turn_risk.crosses_standard_limit_now,
+        crosses_standard_limit_after_turn = turn_risk.crosses_standard_limit_after_turn,
+        crosses_force_compact_after_turn = turn_risk.crosses_force_compact_after_turn,
+        crosses_hard_limit_after_turn = turn_risk.crosses_hard_limit_after_turn,
         should_compact_now = decision.should_compact_now,
         continuation_of_previous_thread = decision.continuation_of_previous_thread,
         recent_context_still_useful = decision.recent_context_still_useful,
@@ -13516,6 +13612,7 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 #[cfg(test)]
 mod tests {
     use super::{
+        estimate_auto_context_turn_risk,
         AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
         AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
         auto_context_judge_models,
@@ -13528,6 +13625,7 @@ mod tests {
         TRUNCATION_MARKER,
     };
     use crate::exec::{ExecToolCallOutput, StreamOutput};
+    use crate::protocol::TokenUsage;
     use serde_json::Value;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -13613,6 +13711,40 @@ mod tests {
                 AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
             ]
         );
+    }
+
+    #[test]
+    fn auto_context_turn_risk_flags_standard_limit_pressure() {
+        let risk = estimate_auto_context_turn_risk(
+            290_000,
+            "continue fixing the active bug and update the tests",
+            None,
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M.saturating_sub(20_000),
+        );
+
+        assert!(risk.crosses_standard_limit_after_turn);
+        assert!(!risk.crosses_hard_limit_after_turn);
+        assert!(risk.projected_post_turn_tokens > 290_000);
+    }
+
+    #[test]
+    fn auto_context_turn_risk_flags_hard_limit_pressure() {
+        let risk = estimate_auto_context_turn_risk(
+            975_000,
+            "continue",
+            Some(&TokenUsage {
+                input_tokens: 20_000,
+                cached_input_tokens: 0,
+                output_tokens: 80_000,
+                reasoning_output_tokens: 10_000,
+                total_tokens: 110_000,
+            }),
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M.saturating_sub(20_000),
+        );
+
+        assert!(risk.crosses_standard_limit_now);
+        assert!(risk.crosses_force_compact_after_turn);
+        assert!(risk.crosses_hard_limit_after_turn);
     }
 
     #[test]
