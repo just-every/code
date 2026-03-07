@@ -14096,6 +14096,9 @@ impl ChatWidget<'_> {
                 );
                 self.update_stream_token_usage_metadata();
             }
+            EventMsg::AutoContextCheck(event) => {
+                self.bottom_pane.set_auto_context_phase(event.phase);
+            }
             EventMsg::Warning(WarningEvent { message }) => {
                 self.history_push_plain_state(history_cell::new_warning_event(message));
                 self.request_redraw();
@@ -22917,6 +22920,28 @@ Have we met every part of this goal and is there no further work to do?"#
         self.config.service_tier = service_tier;
         self.submit_configure_session_op();
 
+        let code_home = self.config.code_home.clone();
+        let profile = self.config.active_profile.clone();
+        let persisted_service_tier = match (profile.as_deref(), self.config.service_tier) {
+            (Some(_), None) => Some("standard"),
+            (_, Some(ServiceTier::Fast)) => Some("fast"),
+            (_, Some(ServiceTier::Standard)) => Some("standard"),
+            (_, None) => None,
+        };
+        tokio::spawn(async move {
+            if let Err(err) = code_core::config_edit::persist_overrides_and_clear_if_none(
+                &code_home,
+                profile.as_deref(),
+                &[(&["service_tier"] as &[&str], persisted_service_tier)],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist fast mode setting: {err}");
+            }
+        });
+
+        self.refresh_settings_overview_rows();
+
         let status = if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
             "enabled"
         } else {
@@ -30243,7 +30268,8 @@ impl Drop for AutoReviewStubGuard {
     };
 use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
-    use code_core::config_types::{McpServerConfig, McpServerTransportConfig};
+    use code_core::config::{Config, ConfigOverrides, ConfigToml};
+    use code_core::config_types::{McpServerConfig, McpServerTransportConfig, ServiceTier};
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -30487,6 +30513,96 @@ use code_core::protocol::OrderMeta;
 
         assert_eq!(chat.config.model, "gpt-5.2");
         assert_eq!(chat.config.model_reasoning_effort, ReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn apply_service_tier_selection_persists_fast_mode_toggle() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let code_home = tempdir().expect("temp code home");
+        let config_path = code_home.path().join("config.toml");
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().config.code_home = code_home.path().to_path_buf();
+
+        harness
+            .chat()
+            .apply_service_tier_selection(Some(ServiceTier::Fast));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+            if contents.contains("service_tier = \"fast\"") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected persisted fast mode enablement in {config_path:?}, got: {contents:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        harness.chat().apply_service_tier_selection(None);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+            if !contents.contains("service_tier") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected persisted fast mode disablement in {config_path:?}, got: {contents:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn apply_service_tier_selection_persists_profile_disable_as_standard() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let code_home = tempdir().expect("temp code home");
+        let config_path = code_home.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "profile = \"work\"\nservice_tier = \"fast\"\n[profiles.work]\n",
+        )
+        .expect("seed config");
+
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().config.code_home = code_home.path().to_path_buf();
+        harness.chat().config.active_profile = Some("work".to_string());
+        harness.chat().config.service_tier = Some(ServiceTier::Fast);
+
+        harness.chat().apply_service_tier_selection(None);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+            if contents.contains("[profiles.work]")
+                && contents.contains("service_tier = \"standard\"")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "expected persisted profile fast mode disablement in {config_path:?}, got: {contents:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let cfg_text = std::fs::read_to_string(&config_path).expect("read config");
+        let cfg = toml::from_str::<ConfigToml>(&cfg_text).expect("parse config");
+        let reloaded = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )
+        .expect("reload config");
+
+        assert_eq!(reloaded.active_profile.as_deref(), Some("work"));
+        assert_eq!(reloaded.service_tier, None);
     }
 
     #[test]

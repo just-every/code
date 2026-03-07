@@ -812,6 +812,9 @@ pub enum EventMsg {
     /// used in the current session and the latest rate limit snapshot.
     TokenCount(TokenCountEvent),
 
+    /// Auto Context is evaluating whether to compact before the next turn.
+    AutoContextCheck(AutoContextCheckEvent),
+
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
 
@@ -950,6 +953,18 @@ pub struct WarningEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoContextPhase {
+    Checking,
+    Compacting,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutoContextCheckEvent {
+    pub phase: Option<AutoContextPhase>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]

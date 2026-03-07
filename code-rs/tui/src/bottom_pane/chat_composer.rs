@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, StatefulWidgetRef, WidgetRef};
 use code_core::config_types::ContextMode;
+use code_core::protocol::AutoContextPhase;
 use code_core::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -86,6 +87,7 @@ struct TokenUsageInfo {
     last_token_usage: TokenUsage,
     model_context_window: Option<u64>,
     context_mode: Option<ContextMode>,
+    auto_context_phase: Option<AutoContextPhase>,
     /// Baseline token count present in the context before the user's first
     /// message content is considered. This is used to normalize the
     /// "context left" percentage so it reflects the portion the user can
@@ -134,14 +136,19 @@ fn format_with_thousands(n: u64) -> String {
 fn context_window_footer_label(
     context_window: u64,
     context_mode: Option<ContextMode>,
+    auto_context_phase: Option<AutoContextPhase>,
 ) -> Option<&'static str> {
     if context_window != EXTENDED_CONTEXT_WINDOW_1M {
         return None;
     }
 
-    Some(match context_mode {
+    Some(match auto_context_phase {
+        Some(AutoContextPhase::Checking) => "Checking context...",
+        Some(AutoContextPhase::Compacting) => "Compacting...",
+        None => match context_mode {
         Some(ContextMode::Auto) => "1M Auto",
         _ => "1M Context",
+        },
     })
 }
 
@@ -662,8 +669,18 @@ impl ChatComposer {
             last_token_usage,
             model_context_window,
             context_mode,
+            auto_context_phase: self
+                .token_usage_info
+                .as_ref()
+                .and_then(|info| info.auto_context_phase),
             initial_prompt_tokens,
         });
+    }
+
+    pub(crate) fn set_auto_context_phase(&mut self, phase: Option<AutoContextPhase>) {
+        if let Some(info) = self.token_usage_info.as_mut() {
+            info.auto_context_phase = phase;
+        }
     }
 
     /// Record the history metadata advertised by `SessionConfiguredEvent` so
@@ -2103,7 +2120,11 @@ impl ChatComposer {
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
                     spans.push(Span::from("% left").style(label_style));
                     if let Some(context_label) =
-                        context_window_footer_label(context_window, token_usage_info.context_mode)
+                        context_window_footer_label(
+                            context_window,
+                            token_usage_info.context_mode,
+                            token_usage_info.auto_context_phase,
+                        )
                     {
                         spans.push(Span::from(" • ").style(label_style));
                         spans.push(
@@ -2132,7 +2153,11 @@ impl ChatComposer {
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
                     spans.push(Span::from("% left").style(label_style));
                     if let Some(context_label) =
-                        context_window_footer_label(context_window, token_usage_info.context_mode)
+                        context_window_footer_label(
+                            context_window,
+                            token_usage_info.context_mode,
+                            token_usage_info.auto_context_phase,
+                        )
                     {
                         spans.push(Span::from(" • ").style(label_style));
                         spans.push(
@@ -3156,5 +3181,79 @@ mod tests {
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect();
         assert!(line.contains("1M Auto"));
+    }
+
+    #[test]
+    fn footer_shows_checking_context_while_auto_context_check_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::Auto),
+        );
+        composer.set_auto_context_phase(Some(AutoContextPhase::Checking));
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+
+        composer.render_footer_only(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(line.contains("Checking context..."));
+    }
+
+    #[test]
+    fn footer_shows_compacting_while_auto_context_compact_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::Auto),
+        );
+        composer.set_auto_context_phase(Some(AutoContextPhase::Compacting));
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+
+        composer.render_footer_only(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(line.contains("Compacting..."));
     }
 }

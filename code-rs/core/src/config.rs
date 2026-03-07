@@ -1267,7 +1267,7 @@ impl Config {
         let service_tier = match config_profile.service_tier.or(cfg.service_tier) {
             Some(ServiceTier::Fast) => Some(ServiceTier::Fast),
             Some(ServiceTier::Standard) => None,
-            None => Some(ServiceTier::Fast),
+            None => None,
         };
         let context_mode = config_profile.context_mode.or(cfg.context_mode);
 
@@ -3337,10 +3337,27 @@ mod agent_merge_tests {
     }
 
     #[test]
-    fn service_tier_defaults_to_fast_when_unspecified() -> anyhow::Result<()> {
+    fn service_tier_defaults_to_standard_when_unspecified() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let config = Config::load_from_base_config_with_overrides(
             ConfigToml::default(),
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, None);
+        Ok(())
+    }
+
+    #[test]
+    fn service_tier_fast_preserves_override() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(r#"service_tier = "fast""#)?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
             ConfigOverrides {
                 cwd: Some(code_home.path().to_path_buf()),
                 ..Default::default()

@@ -104,6 +104,7 @@ use approval_ui::ApprovalUi;
 use code_common::model_presets::ModelPreset;
 use code_core::config_types::ReasoningEffort;
 use code_core::config_types::ContextMode;
+use code_core::protocol::AutoContextPhase;
 use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
@@ -710,6 +711,11 @@ impl BottomPane<'_> {
             model_context_window,
             context_mode,
         );
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_auto_context_phase(&mut self, phase: Option<AutoContextPhase>) {
+        self.composer.set_auto_context_phase(phase);
         self.request_redraw();
     }
 

@@ -780,6 +780,9 @@ pub enum EventMsg {
     /// Optional means unknown — UIs should not display when `None`.
     TokenCount(TokenCountEvent),
 
+    /// Auto Context is evaluating whether to compact before the next turn.
+    AutoContextCheck(AutoContextCheckEvent),
+
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
 
@@ -1209,6 +1212,18 @@ pub struct TurnStartedEvent {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub collaboration_mode_kind: ModeKind,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoContextPhase {
+    Checking,
+    Compacting,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct AutoContextCheckEvent {
+    pub phase: Option<AutoContextPhase>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]

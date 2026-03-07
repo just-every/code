@@ -1598,7 +1598,6 @@ struct AutoContextJudgeDecision {
     reason: String,
     continuation_of_previous_thread: bool,
     recent_context_still_useful: bool,
-    pressure_band: AutoContextPressureBand,
 }
 
 fn auto_context_force_compact_threshold(limit: Option<u64>) -> u64 {
@@ -1797,6 +1796,18 @@ fn extract_first_json_object(input: &str) -> Option<String> {
     None
 }
 
+async fn emit_auto_context_phase(
+    sess: &Arc<Session>,
+    sub_id: &str,
+    phase: Option<crate::protocol::AutoContextPhase>,
+) {
+    sess.send_event(sess.make_event(
+        sub_id,
+        EventMsg::AutoContextCheck(crate::protocol::AutoContextCheckEvent { phase }),
+    ))
+    .await;
+}
+
 async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> CodexResult<String> {
     use futures::StreamExt;
 
@@ -1824,6 +1835,7 @@ async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> 
 
 async fn maybe_run_auto_context_compaction(
     sess: &Arc<Session>,
+    sub_id: &str,
     items: &[InputItem],
 ) {
     if sess.client.get_context_mode() != Some(crate::config_types::ContextMode::Auto) {
@@ -1858,8 +1870,15 @@ async fn maybe_run_auto_context_compaction(
             pressure_band = pressure_band.as_str(),
             "auto context forcing compaction before next turn"
         );
+        emit_auto_context_phase(
+            sess,
+            sub_id,
+            Some(crate::protocol::AutoContextPhase::Compacting),
+        )
+        .await;
         let turn_context = sess.make_turn_context();
         let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+        emit_auto_context_phase(sess, sub_id, None).await;
         return;
     }
 
@@ -1940,23 +1959,25 @@ async fn maybe_run_auto_context_compaction(
                 "should_compact_now": { "type": "boolean" },
                 "reason": { "type": "string", "minLength": 1, "maxLength": 240 },
                 "continuation_of_previous_thread": { "type": "boolean" },
-                "recent_context_still_useful": { "type": "boolean" },
-                "pressure_band": {
-                    "type": "string",
-                    "enum": ["medium", "high", "critical"]
-                }
+                "recent_context_still_useful": { "type": "boolean" }
             },
             "required": [
                 "should_compact_now",
                 "reason",
                 "continuation_of_previous_thread",
-                "recent_context_still_useful",
-                "pressure_band"
+                "recent_context_still_useful"
             ],
             "additionalProperties": false
         })),
     });
     prompt.set_log_tag("auto_context/judge");
+
+    emit_auto_context_phase(
+        sess,
+        sub_id,
+        Some(crate::protocol::AutoContextPhase::Checking),
+    )
+    .await;
 
     let raw_decision = match tokio::time::timeout(
         std::time::Duration::from_secs(12),
@@ -1966,14 +1987,18 @@ async fn maybe_run_auto_context_compaction(
     {
         Ok(Ok(raw)) => raw,
         Ok(Err(err)) => {
+            emit_auto_context_phase(sess, sub_id, None).await;
             tracing::warn!(?err, "auto context judge request failed");
             return;
         }
         Err(_) => {
+            emit_auto_context_phase(sess, sub_id, None).await;
             tracing::warn!("auto context judge timed out");
             return;
         }
     };
+
+    emit_auto_context_phase(sess, sub_id, None).await;
 
     let parsed = serde_json::from_str::<AutoContextJudgeDecision>(&raw_decision)
         .or_else(|_| {
@@ -1992,7 +2017,6 @@ async fn maybe_run_auto_context_compaction(
     tracing::info!(
         tokens_in_context,
         pressure_band = pressure_band.as_str(),
-        decision_pressure_band = decision.pressure_band.as_str(),
         should_compact_now = decision.should_compact_now,
         continuation_of_previous_thread = decision.continuation_of_previous_thread,
         recent_context_still_useful = decision.recent_context_still_useful,
@@ -2001,8 +2025,15 @@ async fn maybe_run_auto_context_compaction(
     );
 
     if decision.should_compact_now {
+        emit_auto_context_phase(
+            sess,
+            sub_id,
+            Some(crate::protocol::AutoContextPhase::Compacting),
+        )
+        .await;
         let turn_context = sess.make_turn_context();
         let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+        emit_auto_context_phase(sess, sub_id, None).await;
     }
 }
 
@@ -2012,7 +2043,7 @@ async fn spawn_user_turn(
     items: Vec<InputItem>,
     final_output_json_schema: Option<serde_json::Value>,
 ) {
-    maybe_run_auto_context_compaction(&sess, &items).await;
+    maybe_run_auto_context_compaction(&sess, &sub_id, &items).await;
     let turn_context = match final_output_json_schema {
         Some(schema) => sess.make_turn_context_with_schema(Some(schema)),
         None => sess.make_turn_context(),

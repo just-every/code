@@ -258,6 +258,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     );
                 }
             }
+            EventMsg::AutoContextCheck(_) => {}
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 if !self.answer_started {
                     ts_println!(self, "{}\n", "codex".style(self.italic).style(self.magenta));
