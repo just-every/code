@@ -49,6 +49,8 @@ const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
 const AUTO_CONTEXT_JUDGE_MIN_TOKENS: u64 = 150_000;
 const AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS: u64 = 20_000;
 const AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN: u64 = 4;
+const AUTO_CONTEXT_JUDGE_PRIMARY_MODEL: &str = "gpt-5.3-codex-spark";
+const AUTO_CONTEXT_JUDGE_FALLBACK_MODEL: &str = "codex-mini-latest";
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -1851,6 +1853,13 @@ async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> 
     Ok(out)
 }
 
+fn auto_context_judge_models() -> [&'static str; 2] {
+    [
+        AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+        AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+    ]
+}
+
 async fn maybe_run_auto_context_compaction(
     sess: &Arc<Session>,
     sub_id: &str,
@@ -1965,8 +1974,6 @@ async fn maybe_run_auto_context_compaction(
     let mut prompt = Prompt::default();
     prompt.input = vec![developer_message, user_message];
     prompt.include_additional_instructions = false;
-    prompt.model_override = Some("gpt-5.3-codex-spark".to_string());
-    prompt.model_family_override = Some(derive_default_model_family("gpt-5.3-codex-spark"));
     prompt.text_format = Some(TextFormat {
         r#type: "json_schema".to_string(),
         name: Some("auto_context_decision".to_string()),
@@ -1997,23 +2004,33 @@ async fn maybe_run_auto_context_compaction(
     )
     .await;
 
-    let raw_decision = match tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        request_auto_context_decision(sess, &prompt),
-    )
-    .await
-    {
-        Ok(Ok(raw)) => raw,
-        Ok(Err(err)) => {
-            emit_auto_context_phase(sess, sub_id, None).await;
-            tracing::warn!(?err, "auto context judge request failed");
-            return;
+    let mut raw_decision: Option<String> = None;
+    for model in auto_context_judge_models() {
+        prompt.model_override = Some(model.to_string());
+        prompt.model_family_override = Some(derive_default_model_family(model));
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            request_auto_context_decision(sess, &prompt),
+        )
+        .await
+        {
+            Ok(Ok(raw)) => {
+                raw_decision = Some(raw);
+                break;
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(?err, model, "auto context judge request failed");
+            }
+            Err(_) => {
+                tracing::warn!(model, "auto context judge timed out");
+            }
         }
-        Err(_) => {
-            emit_auto_context_phase(sess, sub_id, None).await;
-            tracing::warn!("auto context judge timed out");
-            return;
-        }
+    }
+
+    let Some(raw_decision) = raw_decision else {
+        emit_auto_context_phase(sess, sub_id, None).await;
+        return;
     };
 
     emit_auto_context_phase(sess, sub_id, None).await;
@@ -13499,6 +13516,9 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 #[cfg(test)]
 mod tests {
     use super::{
+        AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+        AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+        auto_context_judge_models,
         choose_larger_context_model_from_candidates,
         ContextFallbackCandidate,
         format_exec_output_with_limit,
@@ -13582,6 +13602,17 @@ mod tests {
             "response.failed: usage_not_included"
         ));
         assert!(!is_usage_limit_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn auto_context_judge_prefers_spark_then_mini() {
+        assert_eq!(
+            auto_context_judge_models(),
+            [
+                AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+                AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+            ]
+        );
     }
 
     #[test]

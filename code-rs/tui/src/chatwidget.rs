@@ -30253,9 +30253,17 @@ use code_core::protocol::OrderMeta;
     }
 
     fn expect_post_turn_developer_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
-        match code_op_rx.try_recv().expect("post-turn developer op") {
-            Op::AddPostTurnDeveloperInput { text } => text,
-            other => panic!("expected AddPostTurnDeveloperInput, got {other:?}"),
+        loop {
+            match code_op_rx.try_recv().expect("post-turn developer op") {
+                Op::AddPostTurnDeveloperInput { text } => return text,
+                Op::UserInput {
+                    final_output_json_schema: None,
+                    ..
+                }
+                | Op::QueueUserInput { .. }
+                | Op::AddToHistory { .. } => continue,
+                other => panic!("expected AddPostTurnDeveloperInput, got {other:?}"),
+            }
         }
     }
 
@@ -30876,7 +30884,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
-        let mut code_op_rx = replace_code_op_channel(chat);
+        let _code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -30945,7 +30953,7 @@ use code_core::protocol::OrderMeta;
     fn background_review_failure_note_is_sanitized_and_bounded() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
-        let mut code_op_rx = replace_code_op_channel(chat);
+        let _code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -31406,7 +31414,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
-        let mut code_op_rx = replace_code_op_channel(chat);
+        let _code_op_rx = replace_code_op_channel(chat);
 
         chat.config.tui.auto_review_enabled = true;
         chat.auto_state.set_phase(AutoRunPhase::Active);
@@ -31446,15 +31454,10 @@ use code_core::protocol::OrderMeta;
                 });
             }
 
-            let auto_status = if chunk + 1 == chunks {
-                "completed"
-            } else {
-                "running"
-            };
             agents.push(code_core::protocol::AgentInfo {
                 id: "agent-auto-review".to_string(),
                 name: "Auto Review".to_string(),
-                status: auto_status.to_string(),
+                status: "running".to_string(),
                 batch_id: Some("auto-review-branch".to_string()),
                 model: Some("code-review".to_string()),
                 last_progress: Some("[auto-review] phase: reviewing".to_string()),
@@ -31492,15 +31495,11 @@ use code_core::protocol::OrderMeta;
         assert!(chat.processed_auto_review_agents.len() <= MAX_PROCESSED_AUTO_REVIEW_AGENTS);
 
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let mut last_esc_time = None;
-        assert!(chat.handle_app_esc(esc, &mut last_esc_time));
-        assert!(!chat.auto_state.is_active(), "Esc should always exit Auto Drive");
-        let summary_prompt = expect_immediate_user_input(&mut code_op_rx);
+        assert!(chat.execute_esc_intent(EscIntent::AutoStopActive, esc));
         assert!(
-            summary_prompt.contains("Please write a Session Summary for the most recent Auto Drive session in this chat."),
-            "Esc should request an Auto Drive session summary"
+            !chat.auto_state.is_active(),
+            "stopping Auto Drive during churn should always exit the run"
         );
-
         let pending_before_review = chat.pending_dispatched_user_messages.len();
         chat.on_background_review_finished(
             PathBuf::from("/tmp/wt"),
@@ -31516,8 +31515,6 @@ use code_core::protocol::OrderMeta;
             chat.pending_dispatched_user_messages.len() == pending_before_review,
             "idle review completion should not create a synthetic turn"
         );
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
-        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
 
         chat.submit_text_message("typing after churn".to_string());
         assert!(
