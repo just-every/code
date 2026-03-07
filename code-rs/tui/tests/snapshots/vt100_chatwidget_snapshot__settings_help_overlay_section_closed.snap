@@ -15,7 +15,7 @@ expression: section_closed
  |    Prompts            |  Mode Settings                                                       | |
  |    Memories           |  Fast mode speeds up replies. 1M Context is available on supported m | |
  |    Skills             |  › Fast Mode: disabled                                               | |
- |    Auto Drive         |    1M Context: disabled                                              | |
+ |    Auto Drive         |    1M Context: auto                                                  | |
  |    Review             |  Unavailable for this model. Saved settings apply automatically on s | |
  |    Planning           |                                                                      | |
  |    Validation         |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
