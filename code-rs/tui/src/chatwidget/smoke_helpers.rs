@@ -178,6 +178,9 @@ impl ChatWidgetHarness {
                 AppEvent::FlushInterruptsIfIdle => {
                     self.chat.flush_interrupts_if_stream_idle();
                 }
+                AppEvent::RecheckSpinnerIfIdle => {
+                    self.chat.recheck_spinner_if_idle();
+                }
                 AppEvent::ShowAgentsOverview => {
                     self.chat.ensure_settings_overlay_section(SettingsSection::Agents);
                     self.chat.show_agents_overview_ui();

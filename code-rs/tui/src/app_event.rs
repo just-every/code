@@ -164,6 +164,9 @@ pub(crate) enum AppEvent {
     /// Internal: when interrupts queue up behind a stalled/idle stream,
     /// finalize the stream and flush the queue so Exec/Tool cells render.
     FlushInterruptsIfIdle,
+    /// Internal: re-check whether a turn-level spinner is truly stuck after a
+    /// short grace period.
+    RecheckSpinnerIfIdle,
 
     KeyEvent(KeyEvent),
 

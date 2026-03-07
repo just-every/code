@@ -580,7 +580,9 @@ impl ChatComposer {
         // Catch some common technical terms
         else if lower.contains("processing") || lower.contains("analyzing") {
             "Thinking".to_string()
-        } else if lower.contains("reading") || lower.contains("searching") {
+        } else if lower == "search" || lower.contains("searching") {
+            "Searching".to_string()
+        } else if lower.contains("reading") {
             "Reading".to_string()
         } else {
             // Default fallback - use "working" for unknown status
@@ -3255,5 +3257,21 @@ mod tests {
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect();
         assert!(line.contains("Compacting..."));
+    }
+
+    #[test]
+    fn map_status_message_shows_searching_for_search_status() {
+        assert_eq!(
+            ChatComposer::map_status_message("Search"),
+            "Searching".to_string()
+        );
+        assert_eq!(
+            ChatComposer::map_status_message("searching files"),
+            "Searching".to_string()
+        );
+        assert_eq!(
+            ChatComposer::map_status_message("waiting for user input"),
+            "Working".to_string()
+        );
     }
 }

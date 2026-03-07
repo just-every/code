@@ -1595,6 +1595,8 @@ pub(crate) struct ChatWidget<'a> {
     // Track the ID of the current streaming reasoning to prevent duplicates
     exec: ExecState,
     tools_state: ToolState,
+    idle_spinner_clear_started_at: Option<Instant>,
+    idle_spinner_recheck_scheduled: bool,
     live_builder: RowBuilder,
     header_wave: HeaderWaveEffect,
     browser_overlay_visible: bool,
@@ -3793,6 +3795,8 @@ impl ChatWidget<'_> {
 
     /// Hide the bottom spinner/status if the UI is idle (no streams, tools, agents, or tasks).
     fn maybe_hide_spinner(&mut self) {
+        const IDLE_SPINNER_CLEAR_GRACE: Duration = Duration::from_millis(500);
+
         let any_tools_running = !self.exec.running_commands.is_empty()
             || !self.tools_state.running_custom_tools.is_empty()
             || !self.tools_state.web_search_sessions.is_empty();
@@ -3813,9 +3817,22 @@ impl ChatWidget<'_> {
             && !any_agents_active
             && !terminal_running;
         if stuck_on_completed_turn {
-            self.active_task_ids.clear();
-            any_tasks_active = false;
-            self.overall_task_status = "complete".to_string();
+            let now = Instant::now();
+            let started_at = self.idle_spinner_clear_started_at.get_or_insert(now);
+            let elapsed = now.saturating_duration_since(*started_at);
+
+            if elapsed >= IDLE_SPINNER_CLEAR_GRACE {
+                self.active_task_ids.clear();
+                any_tasks_active = false;
+                self.overall_task_status = "complete".to_string();
+                self.idle_spinner_clear_started_at = None;
+            } else {
+                self.schedule_idle_spinner_recheck(
+                    IDLE_SPINNER_CLEAR_GRACE.saturating_sub(elapsed),
+                );
+            }
+        } else {
+            self.idle_spinner_clear_started_at = None;
         }
         if !(any_tools_running
             || any_streaming
@@ -3830,6 +3847,7 @@ impl ChatWidget<'_> {
 
     /// Ensure we show progress when work is visible but the spinner state drifted.
     fn ensure_spinner_for_activity(&mut self, reason: &'static str) {
+        self.idle_spinner_clear_started_at = None;
         if self.bottom_pane.auto_drive_style_active()
             && !self.bottom_pane.auto_drive_view_active()
             && !self.bottom_pane.has_active_modal_view()
@@ -3847,9 +3865,36 @@ impl ChatWidget<'_> {
 
     #[inline]
     fn stop_spinner(&mut self) {
+        self.idle_spinner_clear_started_at = None;
         self.bottom_pane.set_task_running(false);
         self.bottom_pane.update_status_text(String::new());
         self.maybe_hide_spinner();
+    }
+
+    fn schedule_idle_spinner_recheck(&mut self, delay: Duration) {
+        if self.idle_spinner_recheck_scheduled {
+            return;
+        }
+        self.idle_spinner_recheck_scheduled = true;
+        let tx = self.app_event_tx.clone();
+        let fallback_tx = tx.clone();
+        if thread_spawner::spawn_lightweight("spinner-idle-recheck", move || {
+            std::thread::sleep(delay);
+            tx.send(AppEvent::RecheckSpinnerIfIdle);
+        })
+        .is_none()
+        {
+            let _ = fallback_tx.send(AppEvent::RecheckSpinnerIfIdle);
+        }
+    }
+
+    pub(crate) fn recheck_spinner_if_idle(&mut self) {
+        self.idle_spinner_recheck_scheduled = false;
+        let was_running = self.bottom_pane.is_task_running();
+        self.maybe_hide_spinner();
+        if was_running != self.bottom_pane.is_task_running() {
+            self.request_redraw();
+        }
     }
 
     #[cfg(any(test, feature = "test-helpers"))]
@@ -6529,6 +6574,8 @@ impl ChatWidget<'_> {
             },
             canceled_exec_call_ids: HashSet::new(),
             tools_state: ToolState::default(),
+            idle_spinner_clear_started_at: None,
+            idle_spinner_recheck_scheduled: false,
             // Use max width to disable wrapping during streaming
             // Text will be properly wrapped when displayed based on terminal width
             live_builder: RowBuilder::new(usize::MAX),
@@ -6915,6 +6962,8 @@ impl ChatWidget<'_> {
                 agent_last_key: None,
                 auto_drive_tracker: None,
             },
+            idle_spinner_clear_started_at: None,
+            idle_spinner_recheck_scheduled: false,
             live_builder: RowBuilder::new(usize::MAX),
             header_wave: {
                 let effect = HeaderWaveEffect::new();
@@ -15356,7 +15405,7 @@ impl ChatWidget<'_> {
                             .agent_runtime
                             .values()
                             .all(|rt| rt.completed_at.is_some());
-                    if all_agents_terminal {
+                    if all_agents_terminal && self.active_task_ids.is_empty() {
                         let any_tools_running = !self.exec.running_commands.is_empty()
                             || !self.tools_state.running_custom_tools.is_empty()
                             || !self.tools_state.web_search_sessions.is_empty();
@@ -34184,6 +34233,102 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn final_answer_does_not_clear_spinner_while_task_is_still_active() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        {
+            let chat = harness.chat();
+            reset_history(chat);
+        }
+
+        let turn_id = "turn-1".to_string();
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 0,
+            msg: EventMsg::TaskStarted,
+            order: None,
+        });
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 1,
+            msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+                agents: vec![CoreAgentInfo {
+                    id: "agent-1".to_string(),
+                    name: "Todo Agent".to_string(),
+                    status: "running".to_string(),
+                    batch_id: Some("batch-single".to_string()),
+                    model: None,
+                    last_progress: None,
+                    result: None,
+                    error: None,
+                    elapsed_ms: None,
+                    token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
+                    source_kind: None,
+                }],
+                context: None,
+                task: None,
+            }),
+            order: None,
+        });
+
+        harness.handle_event(Event {
+            id: turn_id.clone(),
+            event_seq: 2,
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Working through the task now.".to_string(),
+            }),
+            order: Some(OrderMeta {
+                request_ordinal: 1,
+                output_index: Some(0),
+                sequence_number: Some(0),
+            }),
+        });
+
+        harness.flush_into_widget();
+
+        assert!(
+            harness.chat().bottom_pane.is_task_running(),
+            "final assistant output should not clear the spinner before TaskComplete"
+        );
+
+        harness.handle_event(Event {
+            id: turn_id,
+            event_seq: 3,
+            msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
+                agents: vec![CoreAgentInfo {
+                    id: "agent-1".to_string(),
+                    name: "Todo Agent".to_string(),
+                    status: "completed".to_string(),
+                    batch_id: Some("batch-single".to_string()),
+                    model: None,
+                    last_progress: None,
+                    result: Some("Still working".to_string()),
+                    error: None,
+                    elapsed_ms: None,
+                    token_count: None,
+                    last_activity_at: None,
+                    seconds_since_last_activity: None,
+                    source_kind: None,
+                }],
+                context: None,
+                task: None,
+            }),
+            order: None,
+        });
+
+        harness.flush_into_widget();
+
+        assert!(
+            harness.chat().bottom_pane.is_task_running(),
+            "terminal agent status should not clear the spinner while the turn is still active"
+        );
+    }
+
+    #[test]
     fn scrollback_spacer_preserves_top_cell_bottom_line() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -34271,6 +34416,14 @@ use code_core::protocol::OrderMeta;
             }),
         });
 
+        harness.flush_into_widget();
+
+        assert!(
+            harness.chat().bottom_pane.is_task_running(),
+            "spinner should stay active briefly while waiting for a missing TaskComplete"
+        );
+
+        std::thread::sleep(Duration::from_millis(650));
         harness.flush_into_widget();
 
         assert!(
