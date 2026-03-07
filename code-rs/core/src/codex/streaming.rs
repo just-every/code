@@ -7,6 +7,7 @@ use super::exec::{
 };
 use super::session::{
     BackgroundExecState,
+    FollowUpTurnAction,
     QueuedUserInput,
     State,
     WaitInterruptReason,
@@ -258,6 +259,23 @@ pub(super) async fn submission_loop(
                     }];
                     let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub_id, sentinel_input);
                     sess.set_task(agent);
+                }
+            }
+            Op::AddPostTurnDeveloperInput { text } => {
+                let sess = match sess.as_ref() {
+                    Some(s) => s.clone(),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+                let dev_msg = ResponseInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText { text }],
+                };
+                let should_start_turn = sess.enqueue_post_turn_item(dev_msg);
+                if should_start_turn {
+                    sess.start_post_turn_pending_only_turn_if_idle().await;
                 }
             }
             Op::ConfigureSession {
@@ -2183,11 +2201,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     let mut review_messages: Vec<String> = Vec::new();
     let mut review_exit_emitted = false;
 
+    let post_turn_only_turn = input.len() == 1
+        && matches!(
+            &input[0],
+            InputItem::Text { text } if text == POST_TURN_PENDING_ONLY_SENTINEL
+        );
     let pending_only_turn = input.len() == 1
         && matches!(
             &input[0],
             InputItem::Text { text } if text == PENDING_ONLY_SENTINEL
-        );
+        )
+        || post_turn_only_turn;
 
     // Debug logging for ephemeral images
     let ephemeral_count = input
@@ -2243,7 +2267,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         // review model, causing loops. Only include queued user inputs when not in
         // review mode. They will be picked up after TaskComplete via
         // pop_next_queued_user_input.
-        let pending_input = if is_review_mode {
+        let pending_input = if is_review_mode || post_turn_only_turn {
             sess.get_pending_input_filtered(false)
         } else {
             sess.get_pending_input()
@@ -2608,28 +2632,38 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     }
     sess.tx_event.send(event).await.ok();
 
-    if let Some(compact_sub_id) = sess.dequeue_manual_compact() {
-        let turn_context = sess.make_turn_context();
-        let prompt_text = sess.compact_prompt_text();
-        compact::spawn_compact_task(
-            Arc::clone(&sess),
-            turn_context,
-            compact_sub_id,
-            vec![InputItem::Text {
-                text: prompt_text,
-            }],
-        );
-        return;
-    }
-
-    if let Some(queued) = sess.pop_next_queued_user_input() {
-        let sess_clone = Arc::clone(&sess);
-        tokio::spawn(async move {
-            sess_clone.cleanup_old_status_items().await;
-            let submission_id = queued.submission_id;
-            let items = queued.core_items;
-            spawn_user_turn(sess_clone, submission_id, items, None).await;
-        });
+    if let Some(action) = sess.take_follow_up_turn_action() {
+        match action {
+            FollowUpTurnAction::PostTurnPendingInput => {
+                sess.start_internal_pending_only_turn(POST_TURN_PENDING_ONLY_SENTINEL)
+                    .await;
+            }
+            FollowUpTurnAction::ManualCompact(compact_sub_id) => {
+                let turn_context = sess.make_turn_context();
+                let prompt_text = sess.compact_prompt_text();
+                compact::spawn_compact_task(
+                    Arc::clone(&sess),
+                    turn_context,
+                    compact_sub_id,
+                    vec![InputItem::Text {
+                        text: prompt_text,
+                    }],
+                );
+            }
+            FollowUpTurnAction::PendingInput => {
+                sess.start_internal_pending_only_turn(PENDING_ONLY_SENTINEL)
+                    .await;
+            }
+            FollowUpTurnAction::QueuedUserInput(queued) => {
+                let sess_clone = Arc::clone(&sess);
+                tokio::spawn(async move {
+                    sess_clone.cleanup_old_status_items().await;
+                    let submission_id = queued.submission_id;
+                    let items = queued.core_items;
+                    spawn_user_turn(sess_clone, submission_id, items, None).await;
+                });
+            }
+        }
     }
 }
 

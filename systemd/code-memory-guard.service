@@ -1,0 +1,21 @@
+[Unit]
+Description=Guard Every Code memory usage
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/code-memory-guard.sh
+Restart=always
+RestartSec=2
+Nice=10
+Environment=MATCH_UID=1000
+Environment=RSS_KB_LIMIT=8388608
+Environment=PRESSURE_RSS_KB_LIMIT=4194304
+Environment=MEM_AVAILABLE_FLOOR_KB=786432
+Environment=HARD_MEM_AVAILABLE_FLOOR_KB=2097152
+Environment=INTERVAL_SEC=5
+Environment=TERM_GRACE_SEC=10
+
+[Install]
+WantedBy=multi-user.target

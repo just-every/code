@@ -104,6 +104,7 @@ use self::streaming::{add_pending_screenshot, capture_browser_screenshot, submis
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 const HOOK_OUTPUT_LIMIT: usize = 2048;
 const PENDING_ONLY_SENTINEL: &str = "__code_pending_only__";
+const POST_TURN_PENDING_ONLY_SENTINEL: &str = "__code_post_turn_pending_only__";
 const MIN_SHELL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
 #[derive(Clone, Default)]

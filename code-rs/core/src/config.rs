@@ -3180,6 +3180,7 @@ mod agent_merge_tests {
     use super::ConfigOverrides;
     use super::ConfigToml;
     use crate::config_types::AgentConfig;
+    use crate::config_types::ContextMode;
     use crate::config_types::ServiceTier;
     use tempfile::TempDir;
 

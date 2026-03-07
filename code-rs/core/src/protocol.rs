@@ -270,6 +270,13 @@ pub enum Op {
         text: String,
     },
 
+    /// Queue a developer-role message to run in a dedicated follow-up turn
+    /// immediately after the current turn completes.
+    AddPostTurnDeveloperInput {
+        /// The developer message text to add to the post-turn queue.
+        text: String,
+    },
+
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
 

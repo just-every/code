@@ -1321,11 +1321,43 @@ const MAX_AGENTS_TERMINAL_ENTRIES: usize = 256;
 const MAX_AGENT_RUNTIME_ENTRIES: usize = 768;
 const MAX_HISTORY_CELLS_HARD_LIMIT: usize = 2400;
 const HISTORY_CELLS_TRIM_TARGET: usize = 1800;
+const MAX_SESSION_PATCH_SETS: usize = 256;
 const MAX_PENDING_DISPATCHED_USER_MESSAGES: usize = 256;
-const MAX_PENDING_AUTO_REVIEW_NOTES: usize = 32;
 const MAX_PENDING_AUTO_REVIEW_NOTE_CHARS: usize = 2400;
 const MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS: usize = 1200;
 const MAX_AUTO_REVIEW_ERROR_SUMMARY_CHARS: usize = 320;
+
+fn compact_patch_change(
+    change: &code_core::protocol::FileChange,
+) -> code_core::protocol::FileChange {
+    match change {
+        code_core::protocol::FileChange::Add { .. } => {
+            code_core::protocol::FileChange::Add {
+                content: String::new(),
+            }
+        }
+        code_core::protocol::FileChange::Delete => code_core::protocol::FileChange::Delete,
+        code_core::protocol::FileChange::Update {
+            unified_diff,
+            move_path,
+            ..
+        } => code_core::protocol::FileChange::Update {
+            unified_diff: unified_diff.clone(),
+            move_path: move_path.clone(),
+            original_content: String::new(),
+            new_content: String::new(),
+        },
+    }
+}
+
+fn compact_patch_changes(
+    changes: &HashMap<PathBuf, code_core::protocol::FileChange>,
+) -> HashMap<PathBuf, code_core::protocol::FileChange> {
+    changes
+        .iter()
+        .map(|(path, change)| (path.clone(), compact_patch_change(change)))
+        .collect()
+}
 
 #[derive(Clone, Copy)]
 struct AutoReviewFailureClassification {
@@ -1808,11 +1840,8 @@ pub(crate) struct ChatWidget<'a> {
     /// When true, render without the top status bar and HUD so the normal
     /// terminal scrollback remains usable (Ctrl+T standard terminal mode).
     pub(crate) standard_terminal_mode: bool,
-    // Pending system notes to inject into the agent's conversation history
-    // before the next user turn. Each entry is sent in order ahead of the
-    // user's visible prompt.
+    // Pending system notes to append to persistent history.
     pending_agent_notes: Vec<String>,
-    pending_auto_review_notes: VecDeque<String>,
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
@@ -5317,54 +5346,17 @@ impl ChatWidget<'_> {
             grant_root,
         } = ev;
 
-        // Clone for session storage before moving into history
-        let changes_clone = changes.clone();
+        let history_changes = compact_patch_changes(&changes);
         // Surface the patch summary in the main conversation
         let key = self.next_internal_key();
         let _ = self.history_insert_with_key_global(
             Box::new(history_cell::new_patch_event(
                 history_cell::PatchEventType::ApprovalRequest,
-                changes,
+                history_changes,
             )),
             key,
         );
-        // Record change set for session diff popup (latest last)
-        self.diffs.session_patch_sets.push(changes_clone);
-        // For any new paths, capture an original baseline snapshot the first time we see them
-        if let Some(last) = self.diffs.session_patch_sets.last() {
-            for (src_path, chg) in last.iter() {
-                match chg {
-                    code_core::protocol::FileChange::Update {
-                        move_path: Some(dest_path),
-                        ..
-                    } => {
-                        if let Some(baseline) =
-                            self.diffs.baseline_file_contents.get(src_path).cloned()
-                        {
-                            // Mirror baseline under destination so tabs use the new path
-                            self.diffs
-                                .baseline_file_contents
-                                .entry(dest_path.clone())
-                                .or_insert(baseline);
-                        } else if !self.diffs.baseline_file_contents.contains_key(dest_path) {
-                            // Snapshot from source (pre-apply)
-                            let baseline = std::fs::read_to_string(src_path).unwrap_or_default();
-                            self.diffs
-                                .baseline_file_contents
-                                .insert(dest_path.clone(), baseline);
-                        }
-                    }
-                    _ => {
-                        if !self.diffs.baseline_file_contents.contains_key(src_path) {
-                            let baseline = std::fs::read_to_string(src_path).unwrap_or_default();
-                            self.diffs
-                                .baseline_file_contents
-                                .insert(src_path.clone(), baseline);
-                        }
-                    }
-                }
-            }
-        }
+        self.diffs.record_patch_set(&changes, false);
         // Enable Ctrl+D footer hint now that we have diffs to show
         self.bottom_pane.set_diffs_hint(true);
 
@@ -6447,7 +6439,6 @@ impl ChatWidget<'_> {
             self.queued_user_messages.clear();
             self.bottom_pane.update_status_text(String::new());
             self.pending_dispatched_user_messages.clear();
-            self.pending_auto_review_notes.clear();
             self.refresh_queued_user_messages(false);
         }
         self.maybe_hide_spinner();
@@ -6757,7 +6748,6 @@ impl ChatWidget<'_> {
             scroll_history_hint_shown: false,
             access_status_idx: None,
             pending_agent_notes: Vec::new(),
-            pending_auto_review_notes: VecDeque::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             ui_background_seq_counters: HashMap::new(),
@@ -7144,7 +7134,6 @@ impl ChatWidget<'_> {
             access_status_idx: None,
             standard_terminal_mode: !config.tui.alternate_screen,
             pending_agent_notes: Vec::new(),
-            pending_auto_review_notes: VecDeque::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             ui_background_seq_counters: HashMap::new(),
@@ -12006,11 +11995,6 @@ impl ChatWidget<'_> {
             combined_items.extend(message.ordered_items.clone());
         }
 
-        let pending_review_notes = self.drain_pending_auto_review_notes();
-        if let Some(note_item) = Self::pending_auto_review_note_item(&pending_review_notes) {
-            combined_items.insert(0, note_item);
-        }
-
         let total_items = combined_items.len();
         let ephemeral_count = combined_items
             .iter()
@@ -12037,10 +12021,7 @@ impl ChatWidget<'_> {
                 })
             {
                 tracing::error!("failed to send Op::UserInput: {e}");
-                self.restore_pending_auto_review_notes_front(pending_review_notes);
             }
-        } else {
-            self.restore_pending_auto_review_notes_front(pending_review_notes);
         }
 
         for (idx, message) in messages.into_iter().enumerate() {
@@ -12055,11 +12036,7 @@ impl ChatWidget<'_> {
 
     fn dispatch_queued_user_message_now(&mut self, message: UserMessage) {
         let message = self.take_queued_user_message(&message).unwrap_or(message);
-        let pending_review_notes = self.drain_pending_auto_review_notes();
-        let mut items = message.ordered_items.clone();
-        if let Some(note_item) = Self::pending_auto_review_note_item(&pending_review_notes) {
-            items.insert(0, note_item);
-        }
+        let items = message.ordered_items.clone();
         let dispatched_text = Self::combined_input_text(&items);
         tracing::info!(
             "[queue] Dispatching single queued message via coordinator (queue_remaining={})",
@@ -12071,7 +12048,6 @@ impl ChatWidget<'_> {
             }
             Err(err) => {
                 tracing::error!("failed to send QueueUserInput op: {err}");
-                self.restore_pending_auto_review_notes_front(pending_review_notes);
                 self.queued_user_messages.push_front(message);
                 self.refresh_queued_user_messages(true);
             }
@@ -12082,11 +12058,6 @@ impl ChatWidget<'_> {
         if batch.is_empty() {
             return;
         }
-
-        let pending_review_notes = self.drain_pending_auto_review_notes();
-        let mut note_item = Self::pending_auto_review_note_item(&pending_review_notes);
-        let mut note_was_attached = false;
-        let mut should_restore_notes = false;
 
         tracing::info!(
             "[queue] Draining batch via coordinator path (batch_size={}, auto_active={})",
@@ -12100,11 +12071,7 @@ impl ChatWidget<'_> {
                 continue;
             };
 
-            let mut items = message.ordered_items.clone();
-            if let Some(item) = note_item.take() {
-                items.insert(0, item);
-                note_was_attached = true;
-            }
+            let items = message.ordered_items.clone();
             let dispatched_text = Self::combined_input_text(&items);
             match self.code_op_tx.send(Op::QueueUserInput { items }) {
                 Ok(()) => {
@@ -12112,18 +12079,11 @@ impl ChatWidget<'_> {
                 }
                 Err(err) => {
                     tracing::error!("[queue] Failed to send QueueUserInput op: {err}");
-                    if note_was_attached {
-                        should_restore_notes = true;
-                    }
                     self.queued_user_messages.push_front(message);
                     self.refresh_queued_user_messages(true);
                     break;
                 }
             }
-        }
-
-        if should_restore_notes || !note_was_attached {
-            self.restore_pending_auto_review_notes_front(pending_review_notes);
         }
     }
 
@@ -13216,7 +13176,6 @@ impl ChatWidget<'_> {
         self.pending_dispatched_user_messages.clear();
         self.pending_user_prompts_for_next_turn = 0;
         self.queued_user_messages.clear();
-        self.pending_auto_review_notes.clear();
         self.refresh_queued_user_messages(false);
         self.bottom_pane.clear_composer();
         self.bottom_pane.clear_ctrl_c_quit_hint();
@@ -13234,65 +13193,6 @@ impl ChatWidget<'_> {
                 tracing::error!("failed to send AddToHistory op: {e}");
             }
         }
-    }
-
-    fn queue_pending_auto_review_note(&mut self, note: String) {
-        let trimmed = note.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-
-        let bounded_note = Self::truncate_with_ellipsis(trimmed, MAX_PENDING_AUTO_REVIEW_NOTE_CHARS);
-
-        if self
-            .pending_auto_review_notes
-            .back()
-            .is_some_and(|existing| existing == &bounded_note)
-        {
-            return;
-        }
-
-        self.pending_auto_review_notes.push_back(bounded_note.clone());
-        while self.pending_auto_review_notes.len() > MAX_PENDING_AUTO_REVIEW_NOTES {
-            self.pending_auto_review_notes.pop_front();
-        }
-
-        let cleaned = Self::strip_context_sections(&bounded_note);
-        if !cleaned.trim().is_empty() {
-            self.last_developer_message =
-                Some(Self::truncate_with_ellipsis(&cleaned, MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS));
-        }
-    }
-
-    fn drain_pending_auto_review_notes(&mut self) -> Vec<String> {
-        self.pending_auto_review_notes.drain(..).collect()
-    }
-
-    fn restore_pending_auto_review_notes_front(&mut self, notes: Vec<String>) {
-        if notes.is_empty() {
-            return;
-        }
-        for note in notes.into_iter().rev() {
-            self.pending_auto_review_notes.push_front(note);
-        }
-    }
-
-    fn pending_auto_review_note_item(notes: &[String]) -> Option<InputItem> {
-        if notes.is_empty() {
-            return None;
-        }
-
-        let combined = notes
-            .iter()
-            .map(|note| note.trim())
-            .filter(|note| !note.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if combined.is_empty() {
-            return None;
-        }
-
-        Some(InputItem::Text { text: combined })
     }
 
     fn combined_input_text(items: &[InputItem]) -> Option<String> {
@@ -14495,45 +14395,7 @@ impl ChatWidget<'_> {
             }) => {
                 let exec_call_id = ExecCallId(call_id.clone());
                 self.exec.suppress_exec_end(exec_call_id);
-                // Store for session diff popup (clone before moving into history)
-                self.diffs.session_patch_sets.push(changes.clone());
-                // Capture/adjust baselines, including rename moves
-                if let Some(last) = self.diffs.session_patch_sets.last() {
-                    for (src_path, chg) in last.iter() {
-                        match chg {
-                            code_core::protocol::FileChange::Update {
-                                move_path: Some(dest_path),
-                                ..
-                            } => {
-                                // Prefer to carry forward existing baseline from src to dest.
-                                if let Some(baseline) =
-                                    self.diffs.baseline_file_contents.remove(src_path)
-                                {
-                                    self.diffs
-                                        .baseline_file_contents
-                                        .insert(dest_path.clone(), baseline);
-                                } else if !self.diffs.baseline_file_contents.contains_key(dest_path)
-                                {
-                                    // Fallback: snapshot current contents of src (pre-apply) under dest key.
-                                    let baseline =
-                                        std::fs::read_to_string(src_path).unwrap_or_default();
-                                    self.diffs
-                                        .baseline_file_contents
-                                        .insert(dest_path.clone(), baseline);
-                                }
-                            }
-                            _ => {
-                                if !self.diffs.baseline_file_contents.contains_key(src_path) {
-                                    let baseline =
-                                        std::fs::read_to_string(src_path).unwrap_or_default();
-                                    self.diffs
-                                        .baseline_file_contents
-                                        .insert(src_path.clone(), baseline);
-                                }
-                            }
-                        }
-                    }
-                }
+                self.diffs.record_patch_set(&changes, true);
                 // Enable Ctrl+D footer hint now that we have diffs to show
                 self.bottom_pane.set_diffs_hint(true);
                 // Strict order
@@ -14544,9 +14406,10 @@ impl ChatWidget<'_> {
                         self.next_internal_key()
                     }
                 };
+                let history_changes = compact_patch_changes(&changes);
                 let cell = history_cell::new_patch_event(
                     PatchEventType::ApplyBegin { auto_approved },
-                    changes,
+                    history_changes,
                 );
                 let _ = self.history_insert_with_key_global(Box::new(cell), ok);
             }
@@ -30329,6 +30192,7 @@ use code_core::protocol::OrderMeta;
         ExecCommandBeginEvent,
         McpServerFailure,
         McpServerFailurePhase,
+        Op,
         TaskCompleteEvent,
     };
     use code_core::protocol::AgentInfo as CoreAgentInfo;
@@ -30337,6 +30201,20 @@ use code_core::protocol::OrderMeta;
     use tempfile::tempdir;
     use std::sync::Arc;
     use std::path::PathBuf;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    fn replace_code_op_channel(chat: &mut ChatWidget<'static>) -> UnboundedReceiver<Op> {
+        let (code_op_tx, code_op_rx) = unbounded_channel::<Op>();
+        chat.code_op_tx = code_op_tx;
+        code_op_rx
+    }
+
+    fn expect_post_turn_developer_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
+        match code_op_rx.try_recv().expect("post-turn developer op") {
+            Op::AddPostTurnDeveloperInput { text } => text,
+            other => panic!("expected AddPostTurnDeveloperInput, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_agent_review_result_json_clean() {
@@ -30939,6 +30817,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -30960,30 +30839,54 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        assert_eq!(
-            chat.pending_auto_review_notes.len(),
-            1,
-            "idle auto-review findings should queue a hidden follow-up note"
-        );
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(
             chat.pending_dispatched_user_messages.is_empty(),
             "auto review notes should not start a synthetic background turn"
         );
-
-        chat.submit_text_message("follow up".to_string());
-
         assert!(
-            chat.pending_dispatched_user_messages
-                .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "queued auto review note should be injected on the next user turn"
+            note.contains("Background auto-review completed and reported 1 issue(s)"),
+            "idle auto-review findings should be sent to core immediately"
         );
+    }
+
+    #[test]
+    fn background_review_clean_dispatches_post_turn_developer_input() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-clean".to_string()),
+            snapshot: Some("ghost-clean".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            Some("looks clean".to_string()),
+            None,
+            Some("agent-clean".to_string()),
+            Some("ghost-clean".to_string()),
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Background auto-review completed with no findings."));
+        assert!(note.contains("ghost-clean"));
     }
 
     #[test]
     fn background_review_failure_note_is_sanitized_and_bounded() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -31017,10 +30920,7 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = chat
-            .pending_auto_review_notes
-            .front()
-            .expect("sanitized failure note should be queued");
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
 
         assert!(note.contains("Background auto-review failed."));
         assert!(note.contains("Failure class: context_budget_exhausted"));
@@ -31049,6 +30949,7 @@ use code_core::protocol::OrderMeta;
     fn auto_review_failure_note_classifies_os_error_2_with_path_context_as_missing_path() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -31071,10 +30972,7 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = chat
-            .pending_auto_review_notes
-            .front()
-            .expect("sanitized failure note should be queued");
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(note.contains("Failure class: exec_missing_path"));
         assert!(note.contains("Phase: exec_run"));
         assert!(note.contains("Retryable: false"));
@@ -31085,6 +30983,7 @@ use code_core::protocol::OrderMeta;
     fn auto_review_failure_note_keeps_generic_os_error_2_as_unknown() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -31107,10 +31006,7 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = chat
-            .pending_auto_review_notes
-            .front()
-            .expect("sanitized failure note should be queued");
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(note.contains("Failure class: unknown"));
         assert!(note.contains("Retryable: true"));
     }
@@ -31119,6 +31015,7 @@ use code_core::protocol::OrderMeta;
     fn auto_review_failure_note_uses_placeholders_for_missing_worktree_context() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::new(),
@@ -31141,10 +31038,7 @@ use code_core::protocol::OrderMeta;
             None,
         );
 
-        let note = chat
-            .pending_auto_review_notes
-            .front()
-            .expect("sanitized failure note should be queued");
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(note.contains("Failure class: worktree_prepare_failed"));
         assert!(note.contains("Phase: worktree_prepare"));
         assert!(note.contains("Worktree: '(unknown)'"));
@@ -31196,6 +31090,7 @@ use code_core::protocol::OrderMeta;
     fn background_review_busy_path_enqueues_developer_note_with_merge_hint() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.config.tui.auto_review_enabled = true;
         chat.bottom_pane.set_task_running(true); // simulate busy state so note is queued
@@ -31233,6 +31128,8 @@ use code_core::protocol::OrderMeta;
 
         assert!(chat.pending_agent_notes.is_empty());
         assert!(chat.pending_dispatched_user_messages.is_empty());
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Merge the worktree 'auto-review-branch'"));
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -31253,6 +31150,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.config.tui.auto_review_enabled = true;
         chat.background_review = Some(BackgroundReviewState {
@@ -31290,15 +31188,12 @@ use code_core::protocol::OrderMeta;
 
         chat.observe_auto_review_status(&[agent]);
 
-        assert_eq!(
-            chat.pending_auto_review_notes.len(),
-            1,
-            "idle observe path should queue a hidden follow-up note"
-        );
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(
             chat.pending_dispatched_user_messages.is_empty(),
             "idle observe path should not auto-start a hidden follow-up turn"
         );
+        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -31386,6 +31281,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.auto_state.set_phase(AutoRunPhase::Active);
         chat.auto_state.goal = Some("keep running".to_string());
@@ -31420,27 +31316,16 @@ use code_core::protocol::OrderMeta;
         assert_eq!(
             pending_after_review,
             pending_before_review,
-            "background review completion should queue notes without starting a hidden turn"
+            "background review completion should not start a hidden turn"
         );
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(
-            !chat.pending_auto_review_notes.is_empty(),
-            "churn path should retain queued auto-review notes"
-        );
-        assert!(
-            chat.pending_dispatched_user_messages
-                .iter()
-                .all(|msg| !msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "the auto-review findings should remain queued until the next user turn"
+            note.contains("Background auto-review completed and reported 1 issue(s)"),
+            "auto-review findings should be submitted to core immediately after completion"
         );
         assert!(!chat.is_task_running(), "background review should not hold task-running state");
 
         chat.submit_text_message("after esc".to_string());
-        assert!(
-            chat.pending_dispatched_user_messages
-                .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "queued auto-review findings should be injected on the next user turn"
-        );
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
@@ -31455,6 +31340,7 @@ use code_core::protocol::OrderMeta;
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.config.tui.auto_review_enabled = true;
         chat.auto_state.set_phase(AutoRunPhase::Active);
@@ -31557,20 +31443,12 @@ use code_core::protocol::OrderMeta;
         );
         assert!(
             chat.pending_dispatched_user_messages.len() == pending_before_review,
-            "idle review completion should queue notes without creating a synthetic turn"
+            "idle review completion should not create a synthetic turn"
         );
-        assert!(
-            !chat.pending_auto_review_notes.is_empty(),
-            "churn path should retain queued auto-review notes"
-        );
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
 
         chat.submit_text_message("typing after churn".to_string());
-        assert!(
-            chat.pending_dispatched_user_messages
-                .iter()
-                .any(|msg| msg.contains("Background auto-review completed and reported 1 issue(s)")),
-            "churn path should still forward queued auto-review findings"
-        );
         assert!(
             chat.pending_dispatched_user_messages
                 .iter()
@@ -36757,8 +36635,6 @@ impl ChatWidget<'_> {
             findings
         };
 
-        let was_task_running = self.is_task_running();
-
         let inflight_worktree_path = self
             .background_review
             .as_ref()
@@ -36783,7 +36659,6 @@ impl ChatWidget<'_> {
         self.background_review = None;
         self.background_review_guard = None;
         release_background_lock(&agent_id);
-        let mut developer_note: Option<String> = None;
         let snapshot_note = inflight_snapshot
             .as_deref()
             .map(str::trim)
@@ -36826,18 +36701,20 @@ impl ChatWidget<'_> {
             resolved_worktree_path.display().to_string()
         };
         let errored = error.is_some();
-        let indicator_status = if let Some(err) = error {
+        let (indicator_status, developer_note) = if let Some(err) = error {
             let summarized_error = Self::summarize_auto_review_error(&err);
             let classification = Self::classify_auto_review_error(&err);
-            developer_note = Some(format!(
-                "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{worktree_label}'\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}\nFailure class: {}\nPhase: {}\nRetryable: {}\nHint: {}\nError: {err}",
-                classification.failure_class,
-                classification.phase,
-                classification.retryable,
-                classification.remediation_hint,
-                err = summarized_error,
-            ));
-            AutoReviewIndicatorStatus::Failed
+            (
+                AutoReviewIndicatorStatus::Failed,
+                Some(format!(
+                    "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{worktree_label}'\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}\nFailure class: {}\nPhase: {}\nRetryable: {}\nHint: {}\nError: {err}",
+                    classification.failure_class,
+                    classification.phase,
+                    classification.retryable,
+                    classification.remediation_hint,
+                    err = summarized_error,
+                )),
+            )
         } else if has_findings {
             let mut note = format!(
                 "[developer] Background auto-review completed and reported {effective_findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{worktree_label}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}",
@@ -36846,10 +36723,14 @@ impl ChatWidget<'_> {
                 note.push('\n');
                 note.push_str(&summary_note);
             }
-            developer_note = Some(note);
-            AutoReviewIndicatorStatus::Fixed
+            (AutoReviewIndicatorStatus::Fixed, Some(note))
         } else {
-            AutoReviewIndicatorStatus::Clean
+            (
+                AutoReviewIndicatorStatus::Clean,
+                Some(format!(
+                    "[developer] Background auto-review completed with no findings.\n\nA separate LLM ran /review in an isolated git worktree and did not report actionable issues.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}"
+                )),
+            )
         };
 
         let findings_for_indicator =
@@ -36869,7 +36750,7 @@ impl ChatWidget<'_> {
         }
 
         if let Some(note) = developer_note {
-            self.record_background_review_note(note, !was_task_running);
+            self.record_background_review_note(note);
         }
 
         // Auto review completion should never leave the composer spinner active.
@@ -36894,22 +36775,25 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    fn record_background_review_note(&mut self, note: String, _allow_immediate_dispatch: bool) {
+    fn record_background_review_note(&mut self, note: String) {
         let trimmed = note.trim();
         if trimmed.is_empty() {
             return;
         }
 
-        // The Auto Review notice cell is now the user-facing UI. Keep this
-        // note out of history and only use it as hidden coordinator context.
-        //
-        // Do not auto-dispatch a synthetic hidden turn here: that can start a
-        // fresh task while the user is actively typing and causes the next
-        // user message to be silently queued behind background work.
-        //
-        // Queue the note for delivery on the next real user/model turn so the
-        // findings are eventually integrated without blocking progress.
-        self.queue_pending_auto_review_note(trimmed.to_string());
+        let bounded_note = Self::truncate_with_ellipsis(trimmed, MAX_PENDING_AUTO_REVIEW_NOTE_CHARS);
+        let cleaned = Self::strip_context_sections(&bounded_note);
+        if !cleaned.trim().is_empty() {
+            self.last_developer_message =
+                Some(Self::truncate_with_ellipsis(&cleaned, MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS));
+        }
+
+        if let Err(err) = self
+            .code_op_tx
+            .send(Op::AddPostTurnDeveloperInput { text: bounded_note })
+        {
+            tracing::error!("failed to send AddPostTurnDeveloperInput op: {err}");
+        }
     }
 
     fn handle_auto_review_completion_state(
@@ -42661,6 +42545,52 @@ struct DiffsState {
     overlay: Option<DiffOverlay>,
     confirm: Option<DiffConfirm>,
     body_visible_rows: std::cell::Cell<u16>,
+}
+
+impl DiffsState {
+    fn record_patch_set(
+        &mut self,
+        changes: &HashMap<PathBuf, code_core::protocol::FileChange>,
+        move_existing_baselines: bool,
+    ) {
+        let compact_changes = compact_patch_changes(changes);
+        self.session_patch_sets.push(compact_changes);
+        if self.session_patch_sets.len() > MAX_SESSION_PATCH_SETS {
+            let overflow = self.session_patch_sets.len() - MAX_SESSION_PATCH_SETS;
+            self.session_patch_sets.drain(0..overflow);
+        }
+
+        for (src_path, change) in changes {
+            match change {
+                code_core::protocol::FileChange::Update {
+                    move_path: Some(dest_path),
+                    ..
+                } => {
+                    if move_existing_baselines {
+                        if let Some(baseline) = self.baseline_file_contents.remove(src_path) {
+                            self.baseline_file_contents.insert(dest_path.clone(), baseline);
+                        } else if !self.baseline_file_contents.contains_key(dest_path) {
+                            let baseline = std::fs::read_to_string(src_path).unwrap_or_default();
+                            self.baseline_file_contents.insert(dest_path.clone(), baseline);
+                        }
+                    } else if let Some(baseline) = self.baseline_file_contents.get(src_path).cloned() {
+                        self.baseline_file_contents
+                            .entry(dest_path.clone())
+                            .or_insert(baseline);
+                    } else if !self.baseline_file_contents.contains_key(dest_path) {
+                        let baseline = std::fs::read_to_string(src_path).unwrap_or_default();
+                        self.baseline_file_contents.insert(dest_path.clone(), baseline);
+                    }
+                }
+                _ => {
+                    if !self.baseline_file_contents.contains_key(src_path) {
+                        let baseline = std::fs::read_to_string(src_path).unwrap_or_default();
+                        self.baseline_file_contents.insert(src_path.clone(), baseline);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]

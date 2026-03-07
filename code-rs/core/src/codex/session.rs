@@ -145,6 +145,7 @@ pub(super) struct State {
     pub(super) pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(super) selected_mcp_tools: Vec<String>,
     pub(super) pending_input: Vec<ResponseInputItem>,
+    pub(super) pending_post_turn_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
     /// Tracks which completed agents (by id) have already been returned to the
@@ -233,6 +234,37 @@ pub(crate) struct QueuedUserInput {
     pub(super) core_items: Vec<InputItem>,
 }
 
+pub(super) enum FollowUpTurnAction {
+    PostTurnPendingInput,
+    ManualCompact(String),
+    PendingInput,
+    QueuedUserInput(QueuedUserInput),
+}
+
+fn take_follow_up_turn_action(state: &mut State) -> Option<FollowUpTurnAction> {
+    if !state.pending_post_turn_input.is_empty() {
+        let mut post_turn_input = std::mem::take(&mut state.pending_post_turn_input);
+        state.pending_input.append(&mut post_turn_input);
+        return Some(FollowUpTurnAction::PostTurnPendingInput);
+    }
+
+    if let Some(sub_id) = state.pending_manual_compacts.pop_front() {
+        return Some(FollowUpTurnAction::ManualCompact(sub_id));
+    }
+
+    if !state.pending_input.is_empty() {
+        return Some(FollowUpTurnAction::PendingInput);
+    }
+
+    if state.pending_user_input.is_empty() {
+        None
+    } else {
+        Some(FollowUpTurnAction::QueuedUserInput(
+            state.pending_user_input.remove(0),
+        ))
+    }
+}
+
 /// Buffers partial turn progress produced during a single HTTP streaming attempt.
 /// This is not recorded to persistent history. It is only used to seed retries
 /// when the SSE stream disconnects mid‑turn.
@@ -317,7 +349,18 @@ pub(super) fn is_connectivity_error(err: &CodexErr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_connectivity_error;
+    use super::{FollowUpTurnAction, QueuedUserInput, State, take_follow_up_turn_action};
     use crate::error::CodexErr;
+    use code_protocol::models::{ContentItem, ResponseInputItem};
+
+    fn developer_input(text: &str) -> ResponseInputItem {
+        ResponseInputItem::Message {
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+        }
+    }
 
     #[test]
     fn context_overflow_transport_stream_is_not_connectivity() {
@@ -339,6 +382,47 @@ mod tests {
         );
 
         assert!(is_connectivity_error(&err));
+    }
+
+    #[test]
+    fn follow_up_turn_action_prioritizes_post_turn_input() {
+        let mut state = State::default();
+        state.pending_post_turn_input.push(developer_input("post-turn"));
+        state.pending_manual_compacts.push_back("compact-1".to_string());
+        state.pending_input.push(developer_input("pending"));
+        state.pending_user_input.push(QueuedUserInput {
+            submission_id: "queued-1".to_string(),
+            response_item: developer_input("queued"),
+            core_items: vec![],
+        });
+
+        let action = take_follow_up_turn_action(&mut state).expect("follow-up action");
+        assert!(matches!(action, FollowUpTurnAction::PostTurnPendingInput));
+        assert!(state.pending_post_turn_input.is_empty());
+        assert_eq!(state.pending_input.len(), 2);
+        assert_eq!(state.pending_manual_compacts.len(), 1);
+        assert_eq!(state.pending_user_input.len(), 1);
+    }
+
+    #[test]
+    fn follow_up_turn_action_preserves_queued_user_input_after_post_turn_input() {
+        let mut state = State::default();
+        state.pending_post_turn_input.push(developer_input("post-turn"));
+        state.pending_user_input.push(QueuedUserInput {
+            submission_id: "queued-1".to_string(),
+            response_item: developer_input("queued"),
+            core_items: vec![],
+        });
+
+        let first = take_follow_up_turn_action(&mut state).expect("post-turn action");
+        assert!(matches!(first, FollowUpTurnAction::PostTurnPendingInput));
+        assert_eq!(state.pending_user_input.len(), 1);
+
+        state.pending_input.clear();
+
+        let second = take_follow_up_turn_action(&mut state).expect("queued user action");
+        assert!(matches!(second, FollowUpTurnAction::QueuedUserInput(_)));
+        assert!(state.pending_user_input.is_empty());
     }
 }
 
@@ -933,7 +1017,7 @@ impl Session {
         state.current_task = Some(agent);
     }
 
-    pub async fn start_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+    pub(super) async fn start_internal_pending_only_turn(self: &Arc<Self>, sentinel: &str) -> bool {
         let should_start = {
             let state = self.state.lock().unwrap();
             state.current_task.is_none()
@@ -947,11 +1031,35 @@ impl Session {
         let turn_context = self.make_turn_context();
         let sub_id = self.next_internal_sub_id();
         let sentinel_input = vec![InputItem::Text {
-            text: PENDING_ONLY_SENTINEL.to_string(),
+            text: sentinel.to_string(),
         }];
         let agent = AgentTask::spawn(Arc::clone(self), turn_context, sub_id, sentinel_input);
         self.set_task(agent);
         true
+    }
+
+    pub async fn start_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+        self.start_internal_pending_only_turn(PENDING_ONLY_SENTINEL).await
+    }
+
+    pub async fn start_post_turn_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+        let should_start = {
+            let mut state = self.state.lock().unwrap();
+            if state.current_task.is_some() || state.pending_post_turn_input.is_empty() {
+                false
+            } else {
+                let mut post_turn_input = std::mem::take(&mut state.pending_post_turn_input);
+                state.pending_input.append(&mut post_turn_input);
+                true
+            }
+        };
+
+        if !should_start {
+            return false;
+        }
+
+        self.start_internal_pending_only_turn(POST_TURN_PENDING_ONLY_SENTINEL)
+            .await
     }
 
     pub fn replace_history(&self, items: Vec<ResponseItem>) {
@@ -966,6 +1074,18 @@ impl Session {
                 state.current_task.take();
             }
         }
+    }
+
+    pub fn enqueue_post_turn_item(&self, item: ResponseInputItem) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let should_start_turn = state.current_task.is_none();
+        state.pending_post_turn_input.push(item);
+        should_start_turn
+    }
+
+    pub(super) fn take_follow_up_turn_action(&self) -> Option<FollowUpTurnAction> {
+        let mut state = self.state.lock().unwrap();
+        take_follow_up_turn_action(&mut state)
     }
 
     pub fn has_running_task(&self) -> bool {
@@ -1129,15 +1249,6 @@ impl Session {
         }
 
         *content = new_content;
-    }
-
-    pub fn pop_next_queued_user_input(&self) -> Option<QueuedUserInput> {
-        let mut state = self.state.lock().unwrap();
-        if state.pending_user_input.is_empty() {
-            None
-        } else {
-            Some(state.pending_user_input.remove(0))
-        }
     }
 
     /// Enqueue a response item that should be surfaced to the model at the start of the
@@ -1975,12 +2086,6 @@ impl Session {
         state.pending_manual_compacts.push_back(sub_id);
         was_empty
     }
-
-    pub fn dequeue_manual_compact(&self) -> Option<String> {
-        let mut state = self.state.lock().unwrap();
-        state.pending_manual_compacts.pop_front()
-    }
-
 
     pub fn get_pending_input(&self) -> Vec<ResponseInputItem> {
         self.get_pending_input_filtered(true)
