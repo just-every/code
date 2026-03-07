@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.77] - 2026-03-07
+
+- Core/Context: default session context mode to `auto` for better out-of-the-box context selection. (9a24bc71)
+- Auto Context: enrich 1M-judge risk signals to improve context quality and decision reliability. (fde66502)
+- TUI/Context: persist explicit disabled state for 1M mode so settings stay consistent across sessions. (c99bb77d)
+
 ## [0.6.75] - 2026-03-06
 
 - Models: add GPT-5.4 fast mode support and enable fast mode by default for quicker turns. (50821896, 394e5386)

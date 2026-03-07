@@ -1,14 +1,12 @@
-## @just-every/code v0.6.75
+## @just-every/code v0.6.77
 
-This release adds faster model defaults, deeper artifact workflows, and stronger reliability across memories and JS REPL flows.
+This release improves automatic context selection defaults and strengthens context-mode reliability.
 
 ### Changes
 
-- Models: add GPT-5.4 fast mode support and enable fast mode by default for quicker turns.
-- Memories: add a settings pane with safer compaction fallback and improved workspace-write support.
-- Artifacts: expand artifact workflows with package manager bindings plus spreadsheet and presentation generation.
-- JS REPL: support local ESM imports, persist bindings after failed cells, and only allow `data:` image URLs.
-- TUI/Core: show session speed in the header and surface diagnostics earlier in the workflow.
+- Core/Context: default session context mode to `auto` for better out-of-the-box context selection.
+- Auto Context: enrich 1M-judge risk signals to improve context quality and decision reliability.
+- TUI/Context: persist explicit disabled state for 1M mode so settings stay consistent across sessions.
 
 ### Install
 
@@ -17,8 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-
-Thanks to @owenlin0 and @felipecoury for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.74...v0.6.75
+Compare: https://github.com/just-every/code/compare/v0.6.76...v0.6.77
