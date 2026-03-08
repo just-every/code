@@ -3083,9 +3083,9 @@ model_verbosity = "high"
 
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
         assert!(enabled_names.contains("code-gpt-5.4"));
-        assert!(enabled_names.contains("claude-sonnet-4.5"));
-        assert!(enabled_names.contains("gemini-3-pro"));
-        assert!(enabled_names.contains("qwen-3-coder"));
+        assert!(enabled_names.contains("claude-sonnet-4.6"));
+        assert!(enabled_names.contains("gemini-3.1-pro-preview"));
+        assert!(enabled_names.contains("qwen3-coder-plus"));
         Ok(())
     }
 
@@ -3296,20 +3296,20 @@ mod agent_merge_tests {
     fn gemini_alias_and_canonical_dedupe_prefers_last_state() {
         let agents = vec![
             agent("gemini-2.5-pro", "gemini", true),
-            agent("gemini-3-pro", "gemini", false),
+            agent("gemini-3.1-pro-preview", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later canonical disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"
@@ -3319,21 +3319,21 @@ mod agent_merge_tests {
     #[test]
     fn gemini_alias_disable_overrides_prior_canonical_enable() {
         let agents = vec![
-            agent("gemini-3-pro", "gemini", true),
+            agent("gemini-3.1-pro-preview", "gemini", true),
             agent("gemini-2.5-pro", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later alias disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"

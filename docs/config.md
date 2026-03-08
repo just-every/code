@@ -198,7 +198,7 @@ approval_policy = "never"
 
 Use `[[agents]]` blocks to register additional CLI programs that Code can launch as peers. Each block maps a short `name` (referenced elsewhere in the config) to the command to execute, optional default flags, and environment variables.
 
-> **Note:** Built-in model slugs (for example `code-gpt-5.4`, `claude-sonnet-4.5`) automatically inject the correct `--model` or `-m` flag. To avoid conflicting arguments, Code strips any `--model`/`-m` flags you place in `args`, `args_read_only`, or `args_write` before launching the agent. If you need a new model variant, add a slug in `code-rs/core/src/agent_defaults.rs` (or set an environment variable consumed by the CLI) rather than pinning the flag here.
+> **Note:** Built-in model slugs (for example `code-gpt-5.4`, `claude-sonnet-4.6`) automatically inject the correct `--model` or `-m` flag. To avoid conflicting arguments, Code strips any `--model`/`-m` flags you place in `args`, `args_read_only`, or `args_write` before launching the agent. If you need a new model variant, add a slug in `code-rs/core/src/agent_defaults.rs` (or set an environment variable consumed by the CLI) rather than pinning the flag here.
 
 ```toml
 [[agents]]
@@ -449,7 +449,7 @@ tool_timeout_sec = 30
 
 Sub-agents are orchestrated helper workflows you can trigger with slash commands (for example `/plan`, `/solve`, `/code`). Each entry under `[[subagents.commands]]` defines the slash command name, whether spawned agents run in read-only mode, which `agents` to launch, and extra guidance for both the orchestrator (Code) and the individual agents.
 
-By default (when no `[[agents]]` are configured) Code advertises these model slugs for multi-agent runs: `code-gpt-5.4`, `code-gpt-5.3-codex`, `claude-opus-4.6`, `gemini-3-pro`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`, `claude-haiku-4.5`, and `qwen-3-coder`. The cloud counterpart, `cloud-gpt-5.1-codex-max`, only appears when `CODE_ENABLE_CLOUD_AGENT_MODEL=1` is set. (`gemini` resolves to `gemini-3-flash`.) You can override the list by defining `[[agents]]` entries or by specifying `agents = [ … ]` on a given `[[subagents.commands]]` entry.
+By default (when no `[[agents]]` are configured) Code advertises these model slugs for multi-agent runs: `code-gpt-5.4`, `code-gpt-5.3-codex`, `code-gpt-5.3-codex-spark`, `claude-opus-4.6`, `gemini-3.1-pro-preview`, `code-gpt-5.1-codex-mini`, `claude-sonnet-4.6`, `gemini-3-flash-preview`, `claude-haiku-4.5`, and `qwen3-coder-plus`. The cloud counterpart, `cloud-gpt-5.1-codex-max`, only appears when `CODE_ENABLE_CLOUD_AGENT_MODEL=1` is set. (`gemini` resolves to `gemini-3-flash-preview`.) You can override the list by defining `[[agents]]` entries or by specifying `agents = [ … ]` on a given `[[subagents.commands]]` entry.
 
 ```toml
 [[subagents.commands]]
