@@ -138,12 +138,36 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
         }
     }
 
+    fn maybe_upgrade_name(field: &mut String) {
+        if let Some(new) = upgrade_legacy_model_slug(field) {
+            tracing::info!(
+                target: "code.config",
+                old = field.as_str(),
+                new,
+                "upgrading legacy agent slug to newer default",
+            );
+            *field = new;
+        }
+    }
+
     maybe_upgrade(&mut cfg.model);
     maybe_upgrade(&mut cfg.review_model);
 
     for profile in cfg.profiles.values_mut() {
         maybe_upgrade(&mut profile.model);
         maybe_upgrade(&mut profile.review_model);
+    }
+
+    for agent in &mut cfg.agents {
+        maybe_upgrade_name(&mut agent.name);
+    }
+
+    if let Some(subagents) = cfg.subagents.as_mut() {
+        for command in &mut subagents.commands {
+            for agent in &mut command.agents {
+                maybe_upgrade_name(agent);
+            }
+        }
     }
 }
 

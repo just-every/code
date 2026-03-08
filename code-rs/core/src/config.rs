@@ -2970,6 +2970,90 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn upgrade_legacy_model_slugs_updates_agent_names() {
+        let mut cfg = ConfigToml::default();
+        cfg.agents = vec![
+            AgentConfig {
+                name: "claude-sonnet-4.5".to_string(),
+                command: "claude".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+            AgentConfig {
+                name: "gemini-3-pro".to_string(),
+                command: "gemini".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+            AgentConfig {
+                name: "qwen-3-coder".to_string(),
+                command: "qwen".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+        ];
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.agents[0].name, "claude-sonnet-4.6");
+        assert_eq!(cfg.agents[1].name, "gemini-3.1-pro-preview");
+        assert_eq!(cfg.agents[2].name, "qwen3-coder-plus");
+    }
+
+    #[test]
+    fn upgrade_legacy_model_slugs_updates_subagent_agent_lists() {
+        let mut cfg = ConfigToml::default();
+        cfg.subagents = Some(crate::config_types::SubagentsToml {
+            max_depth: None,
+            commands: vec![crate::config_types::SubagentCommandConfig {
+                name: "code".to_string(),
+                read_only: false,
+                agents: vec![
+                    "claude-sonnet-4.5".to_string(),
+                    "gemini-3-flash".to_string(),
+                    "qwen-3-coder".to_string(),
+                ],
+                orchestrator_instructions: None,
+                agent_instructions: None,
+            }],
+        });
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        let command = &cfg
+            .subagents
+            .as_ref()
+            .expect("subagents exist")
+            .commands[0];
+        assert_eq!(
+            command.agents,
+            vec![
+                "claude-sonnet-4.6".to_string(),
+                "gemini-3-flash-preview".to_string(),
+                "qwen3-coder-plus".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn upgrade_legacy_model_slugs_does_not_rewrite_gpt_5_4() {
         let mut cfg = ConfigToml {
             model: Some("gpt-5.4".to_string()),
