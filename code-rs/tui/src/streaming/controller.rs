@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::memory_citation::strip_memory_citations;
 use code_core::config::Config;
 use ratatui::text::Line;
 use ratatui::style::Modifier;
@@ -121,6 +122,23 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             return None;
         }
         Some(self.state(kind).collector.full_render_source_preview())
+    }
+
+    fn flush_pending_hidden_tags(&mut self, kind: StreamKind) {
+        let tail = {
+            let state = self.state_mut(kind);
+            let tail = state.citation_parser.finish();
+            if !tail.citations.is_empty() {
+                state.citations.extend(tail.citations);
+            }
+            tail.visible_text
+        };
+
+        if !tail.is_empty() {
+            let state = self.state_mut(kind);
+            state.has_seen_delta = true;
+            state.collector.push_delta(&tail);
+        }
     }
 
     fn emit_header_if_needed(&mut self, kind: StreamKind, out_lines: &mut Lines) -> bool {
@@ -281,7 +299,23 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             tracing::debug!("push_and_maybe_commit called but no current_stream");
             return;
         };
-        tracing::debug!("push_and_maybe_commit for {:?}, delta.len={} contains_nl={}", kind, delta.len(), delta.contains('\n'));
+        let parsed = {
+            let state = self.state_mut(kind);
+            let parsed = state.citation_parser.push_str(delta);
+            if !parsed.citations.is_empty() {
+                state.citations.extend(parsed.citations.clone());
+            }
+            parsed
+        };
+        let visible_delta = parsed.visible_text;
+
+        tracing::debug!(
+            "push_and_maybe_commit for {:?}, raw_len={} visible_len={} contains_nl={}",
+            kind,
+            delta.len(),
+            visible_delta.len(),
+            visible_delta.contains('\n')
+        );
         let cfg = self.config.clone();
 
         // Check header flag before borrowing state (used only to avoid double headers)
@@ -290,13 +324,15 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         // Mutate collector and counters in a short scope to avoid long mutable borrows.
         {
             let state = self.state_mut(kind);
-            if !delta.is_empty() {
+            if !visible_delta.is_empty() {
                 state.has_seen_delta = true;
             }
-            state.collector.push_delta(delta);
-            state.tail_chars_since_commit = state.tail_chars_since_commit.saturating_add(delta.len());
+            state.collector.push_delta(&visible_delta);
+            state.tail_chars_since_commit = state
+                .tail_chars_since_commit
+                .saturating_add(visible_delta.len());
         }
-        if delta.contains('\n') {
+        if visible_delta.contains('\n') {
             let mut newly_completed = self.state_mut(kind).collector.commit_complete_lines(&cfg);
             // Reduce leading blanks to at most one across commits
             if !newly_completed.is_empty() {
@@ -508,6 +544,7 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         if self.current_stream != Some(kind) {
             return false;
         }
+        self.flush_pending_hidden_tags(kind);
         let cfg = self.config.clone();
         // Capture the full render source BEFORE draining/clearing the collector so
         // we can rebuild the final Assistant cell without losing any content.
@@ -802,9 +839,13 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             
             // Inject the full message since we haven't been streaming it
             if !message.is_empty() {
+                let parsed = strip_memory_citations(message);
+                if !parsed.citations.is_empty() {
+                    state.citations.extend(parsed.citations);
+                }
                 tracing::debug!("Injecting full message into {:?} collector", kind);
                 // normalize to end with newline
-                let mut msg = message.to_owned();
+                let mut msg = parsed.visible_text;
                 if !msg.ends_with('\n') {
                     msg.push('\n');
                 }
@@ -818,5 +859,110 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
         }
 
         self.finalize(kind, immediate, sink)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HistorySink;
+    use super::StreamController;
+    use super::StreamKind;
+    use code_core::config::Config;
+    use code_core::config::ConfigOverrides;
+    use code_core::config::ConfigToml;
+    use ratatui::text::Line;
+
+    #[derive(Default)]
+    struct TestSink {
+        final_source: Option<String>,
+        streamed_lines: Vec<String>,
+    }
+
+    impl HistorySink for std::cell::RefCell<TestSink> {
+        fn insert_history(&self, lines: Vec<Line<'static>>) {
+            self.borrow_mut().streamed_lines.extend(flatten_lines(lines));
+        }
+
+        fn insert_history_with_kind(
+            &self,
+            _id: Option<String>,
+            _kind: StreamKind,
+            lines: Vec<Line<'static>>,
+        ) {
+            self.borrow_mut().streamed_lines.extend(flatten_lines(lines));
+        }
+
+        fn insert_final_answer(
+            &self,
+            _id: Option<String>,
+            _lines: Vec<Line<'static>>,
+            full_markdown_source: String,
+        ) {
+            self.borrow_mut().final_source = Some(full_markdown_source);
+        }
+
+        fn start_commit_animation(&self) {}
+
+        fn stop_commit_animation(&self) {}
+    }
+
+    #[test]
+    fn streamed_answer_hides_memory_citation_tags() {
+        let mut controller = StreamController::new(test_config());
+        let sink = std::cell::RefCell::new(TestSink::default());
+
+        controller.begin_with_id(StreamKind::Answer, Some("answer-1".to_string()), &sink);
+        controller.push_and_maybe_commit("hello <oai-mem-cit", &sink);
+        controller.push_and_maybe_commit("ation>doc1</oai-mem-citation> world\n", &sink);
+        assert!(controller.finalize(StreamKind::Answer, true, &sink));
+
+        let final_source = sink
+            .borrow()
+            .final_source
+            .clone()
+            .expect("final answer source");
+        assert_eq!(final_source, "hello  world\n");
+        assert!(!final_source.contains("<oai-mem-citation>"));
+    }
+
+    #[test]
+    fn final_only_answer_hides_memory_citation_tags() {
+        let mut controller = StreamController::new(test_config());
+        let sink = std::cell::RefCell::new(TestSink::default());
+
+        controller.begin_with_id(StreamKind::Answer, Some("answer-2".to_string()), &sink);
+        assert!(controller.apply_final_answer(
+            "hello <oai-mem-citation>doc2</oai-mem-citation> world",
+            &sink,
+        ));
+
+        let final_source = sink
+            .borrow()
+            .final_source
+            .clone()
+            .expect("final answer source");
+        assert_eq!(final_source, "hello  world\n");
+        assert!(!final_source.contains("<oai-mem-citation>"));
+    }
+
+    fn flatten_lines(lines: Vec<Line<'static>>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn test_config() -> Config {
+        Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            std::env::temp_dir(),
+        )
+        .expect("config")
     }
 }

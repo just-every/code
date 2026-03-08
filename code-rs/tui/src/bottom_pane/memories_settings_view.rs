@@ -73,7 +73,7 @@ impl MemoriesSettingsView {
 
         lines.push(Line::from(vec![
             Span::styled(format!("{indicator} "), style),
-            Span::styled("Enable Memories".to_string(), style),
+            Span::styled("Use Cross-Session Memories".to_string(), style),
             Span::raw("  "),
             Span::styled(
                 format!("[{}]", if self.memories_enabled { "x" } else { " " }),
@@ -83,7 +83,7 @@ impl MemoriesSettingsView {
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(
-                "Enables upstream-style memory prompts. Takes effect on next session.",
+                "Controls memory prompts for future turns. Turn it off to stop injecting memory guidance.",
                 dim,
             ),
         ]));

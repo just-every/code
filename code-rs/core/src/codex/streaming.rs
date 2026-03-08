@@ -773,7 +773,9 @@ pub(super) async fn submission_loop(
                 }
                 sess = Some(new_session);
                 if config.memories_enabled && config.memories.generate_memories {
-                    crate::memories::maybe_spawn_memory_summary_refresh(config.code_home.clone());
+                    crate::memories::maybe_spawn_memory_refresh(Arc::clone(
+                        sess.as_ref().expect("session initialized"),
+                    ));
                 }
                 if let Some(sess_arc) = &sess {
                     if !config.always_allow_commands.is_empty() {
@@ -3955,6 +3957,13 @@ async fn try_run_turn(
             }
             ResponseEvent::ServerReasoningIncluded(_included) => {}
             ResponseEvent::OutputItemDone { item, sequence_number, output_index } => {
+                let (item, rollout_ids) = crate::memories::sanitize_response_item(item);
+                if !rollout_ids.is_empty() {
+                    let code_home = sess.client.code_home().to_path_buf();
+                    tokio::spawn(async move {
+                        crate::memories::note_memory_usage(&code_home, &rollout_ids).await;
+                    });
+                }
                 let response =
                     handle_response_item(sess, turn_diff_tracker, sub_id, item.clone(), sequence_number, output_index, attempt_req).await?;
 

@@ -38,6 +38,29 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
     }
 }
 
+/// Whether a rollout item is useful as memory extraction input.
+#[inline]
+pub(crate) fn should_persist_response_item_for_memories(item: &RolloutItem) -> bool {
+    match item {
+        RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
+        RolloutItem::ResponseItem(
+            ResponseItem::Message { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::CompactionSummary { .. },
+        ) => true,
+        RolloutItem::Event(ev) => event_msg_from_protocol(&ev.msg)
+            .is_some_and(|msg| should_persist_event_msg(&msg)),
+        RolloutItem::EventMsg(msg) => event_msg_from_protocol(msg)
+            .is_some_and(|event| should_persist_event_msg(&event)),
+        _ => false,
+    }
+}
+
 /// Whether an [`EventMsg`] should be persisted.
 #[inline]
 pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {

@@ -406,6 +406,10 @@ impl ModelClient {
         &self.config.code_home
     }
 
+    pub(crate) fn config(&self) -> &crate::config::Config {
+        &self.config
+    }
+
     pub fn debug_enabled(&self) -> bool {
         self.config.debug
     }

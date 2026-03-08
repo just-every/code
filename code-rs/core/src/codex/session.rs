@@ -549,6 +549,14 @@ impl ToolCallCtx {
 }
 
 impl Session {
+    pub(crate) fn client(&self) -> &crate::ModelClient {
+        &self.client
+    }
+
+    pub(crate) fn remote_models_manager(&self) -> Option<&Arc<RemoteModelsManager>> {
+        self.remote_models_manager.as_ref()
+    }
+
     #[allow(dead_code)]
     pub(crate) fn get_writable_roots(&self) -> &[PathBuf] {
         &self._writable_roots

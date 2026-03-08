@@ -25,21 +25,27 @@ pub const DEFAULT_MEMORIES_MAX_UNUSED_DAYS: i64 = 30;
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemoriesToml {
+    #[serde(default)]
+    pub no_memories_if_mcp_or_web_search: Option<bool>,
     pub generate_memories: Option<bool>,
     pub use_memories: Option<bool>,
+    #[serde(default, alias = "max_raw_memories_for_consolidation")]
     pub max_raw_memories_for_global: Option<usize>,
     pub max_unused_days: Option<i64>,
     pub max_rollout_age_days: Option<i64>,
     pub max_rollouts_per_startup: Option<usize>,
     pub min_rollout_idle_hours: Option<i64>,
     /// Optional override for the model used by stage 1 extraction.
+    #[serde(default, alias = "extract_model")]
     pub phase_1_model: Option<String>,
     /// Optional override for the model used by stage 2 consolidation.
+    #[serde(default, alias = "consolidation_model")]
     pub phase_2_model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoriesConfig {
+    pub no_memories_if_mcp_or_web_search: bool,
     pub generate_memories: bool,
     pub use_memories: bool,
     pub max_raw_memories_for_global: usize,
@@ -54,6 +60,7 @@ pub struct MemoriesConfig {
 impl Default for MemoriesConfig {
     fn default() -> Self {
         Self {
+            no_memories_if_mcp_or_web_search: false,
             generate_memories: true,
             use_memories: true,
             max_raw_memories_for_global: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL,
@@ -71,6 +78,9 @@ impl From<MemoriesToml> for MemoriesConfig {
     fn from(toml: MemoriesToml) -> Self {
         let defaults = Self::default();
         Self {
+            no_memories_if_mcp_or_web_search: toml
+                .no_memories_if_mcp_or_web_search
+                .unwrap_or(defaults.no_memories_if_mcp_or_web_search),
             generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
             use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
             max_raw_memories_for_global: toml
@@ -1828,5 +1838,47 @@ mod tests {
                 .contains("oauth_resource is not supported for stdio"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn deserialize_memories_upstream_aliases() {
+        let cfg: MemoriesToml = toml::from_str(
+            r#"
+            no_memories_if_mcp_or_web_search = true
+            max_raw_memories_for_consolidation = 7
+            extract_model = "gpt-5-mini"
+            consolidation_model = "gpt-5"
+        "#,
+        )
+        .expect("should deserialize memories aliases");
+
+        assert_eq!(cfg.no_memories_if_mcp_or_web_search, Some(true));
+        assert_eq!(cfg.max_raw_memories_for_global, Some(7));
+        assert_eq!(cfg.phase_1_model.as_deref(), Some("gpt-5-mini"));
+        assert_eq!(cfg.phase_2_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn memories_config_defaults_and_aliases_flow_through() {
+        let toml = MemoriesToml {
+            no_memories_if_mcp_or_web_search: Some(true),
+            generate_memories: None,
+            use_memories: Some(false),
+            max_raw_memories_for_global: Some(9),
+            max_unused_days: None,
+            max_rollout_age_days: None,
+            max_rollouts_per_startup: None,
+            min_rollout_idle_hours: None,
+            phase_1_model: Some("phase1".to_string()),
+            phase_2_model: Some("phase2".to_string()),
+        };
+
+        let cfg: MemoriesConfig = toml.into();
+        assert_eq!(cfg.no_memories_if_mcp_or_web_search, true);
+        assert_eq!(cfg.generate_memories, true);
+        assert_eq!(cfg.use_memories, false);
+        assert_eq!(cfg.max_raw_memories_for_global, 9);
+        assert_eq!(cfg.phase_1_model.as_deref(), Some("phase1"));
+        assert_eq!(cfg.phase_2_model.as_deref(), Some("phase2"));
     }
 }
