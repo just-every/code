@@ -18,6 +18,7 @@ use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_user_input_tool_description;
 use crate::tools::registry::ToolRegistryBuilder;
+use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
@@ -58,6 +59,7 @@ pub(crate) struct ToolsConfig {
     pub allow_login_shell: bool,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
+    pub web_search_config: Option<WebSearchConfig>,
     pub web_search_tool_type: WebSearchToolType,
     pub image_gen_tool: bool,
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
@@ -102,7 +104,7 @@ impl ToolsConfig {
             features.enabled(Feature::Artifact) && codex_artifacts::can_manage_artifact_runtime();
         let include_image_gen_tool =
             features.enabled(Feature::ImageGeneration) && supports_image_generation(model_info);
-        let include_agent_jobs = include_collab_tools && features.enabled(Feature::Sqlite);
+        let include_agent_jobs = include_collab_tools;
         let request_permission_enabled = features.enabled(Feature::RequestPermissions);
         let shell_command_backend =
             if features.enabled(Feature::ShellTool) && features.enabled(Feature::ShellZshFork) {
@@ -158,6 +160,7 @@ impl ToolsConfig {
             allow_login_shell: true,
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
+            web_search_config: None,
             web_search_tool_type: model_info.web_search_tool_type,
             image_gen_tool: include_image_gen_tool,
             agent_roles: BTreeMap::new(),
@@ -182,6 +185,11 @@ impl ToolsConfig {
 
     pub fn with_allow_login_shell(mut self, allow_login_shell: bool) -> Self {
         self.allow_login_shell = allow_login_shell;
+        self
+    }
+
+    pub fn with_web_search_config(mut self, web_search_config: Option<WebSearchConfig>) -> Self {
+        self.web_search_config = web_search_config;
         self
     }
 }
@@ -253,7 +261,7 @@ fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<Stri
             JsonSchema::String {
                 description: Some(
                     if request_permission_enabled {
-                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem access (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem, network, or macOS permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     } else {
                         "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     }
@@ -291,36 +299,100 @@ fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<Stri
         properties.insert(
             "additional_permissions".to_string(),
             JsonSchema::Object {
-                properties: BTreeMap::from([(
-                    "file_system".to_string(),
-                    JsonSchema::Object {
-                        properties: BTreeMap::from([
-                            (
-                                "read".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String { description: None }),
+                properties: BTreeMap::from([
+                    (
+                        "network".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([(
+                                "enabled".to_string(),
+                                JsonSchema::Boolean {
                                     description: Some(
-                                        "Additional filesystem paths to grant read access for this command."
+                                        "Set to true to enable network access for this command."
                                             .to_string(),
                                     ),
                                 },
-                            ),
-                            (
-                                "write".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String { description: None }),
-                                    description: Some(
-                                        "Additional filesystem paths to grant write access for this command."
-                                            .to_string(),
-                                    ),
-                                },
-                            ),
-                        ]),
-                        required: None,
-                        additional_properties: Some(false.into()),
-                    },
-                )]),
-                required: Some(vec!["file_system".to_string()]),
+                            )]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                    (
+                        "file_system".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([
+                                (
+                                    "read".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional filesystem paths to grant read access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "write".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional filesystem paths to grant write access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                            ]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                    (
+                        "macos".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([
+                                (
+                                    "preferences".to_string(),
+                                    JsonSchema::String {
+                                        description: Some(
+                                            "Additional macOS preferences access for this command. Supported values: \"readonly\" or \"readwrite\"."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "automations".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional macOS automation targets for this command as bundle IDs, or use true in clients that support boolean union payloads."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "accessibility".to_string(),
+                                    JsonSchema::Boolean {
+                                        description: Some(
+                                            "Set to true to allow macOS accessibility APIs for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "calendar".to_string(),
+                                    JsonSchema::Boolean {
+                                        description: Some(
+                                            "Set to true to allow macOS Calendar access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                            ]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                ]),
+                required: None,
                 additional_properties: Some(false.into()),
             },
         );
@@ -620,7 +692,7 @@ fn create_collab_input_items_schema() -> JsonSchema {
             "path".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Path when type is local_image/skill, or mention target such as app://<connector-id> when type is mention."
+                    "Path when type is local_image/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."
                         .to_string(),
                 ),
             },
@@ -1915,12 +1987,26 @@ pub(crate) fn build_specs(
 
         builder.push_spec(ToolSpec::WebSearch {
             external_web_access: Some(external_web_access),
+            filters: config
+                .web_search_config
+                .as_ref()
+                .and_then(|cfg| cfg.filters.clone()),
+            user_location: config
+                .web_search_config
+                .as_ref()
+                .and_then(|cfg| cfg.user_location.clone()),
+            search_context_size: config
+                .web_search_config
+                .as_ref()
+                .and_then(|cfg| cfg.search_context_size),
             search_content_types,
         });
     }
 
     if config.image_gen_tool {
-        builder.push_spec(ToolSpec::ImageGeneration {});
+        builder.push_spec(ToolSpec::ImageGeneration {
+            output_format: "png".to_string(),
+        });
     }
 
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -2052,7 +2138,7 @@ mod tests {
         match tool {
             ToolSpec::Function(ResponsesApiTool { name, .. }) => name,
             ToolSpec::LocalShell {} => "local_shell",
-            ToolSpec::ImageGeneration {} => "image_generation",
+            ToolSpec::ImageGeneration { .. } => "image_generation",
             ToolSpec::WebSearch { .. } => "web_search",
             ToolSpec::Freeform(FreeformTool { name, .. }) => name,
         }
@@ -2144,7 +2230,7 @@ mod tests {
             }
             ToolSpec::Freeform(_)
             | ToolSpec::LocalShell {}
-            | ToolSpec::ImageGeneration {}
+            | ToolSpec::ImageGeneration { .. }
             | ToolSpec::WebSearch { .. } => {}
         }
     }
@@ -2200,6 +2286,9 @@ mod tests {
             create_apply_patch_freeform_tool(),
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
                 search_content_types: None,
             },
             create_view_image_tool(),
@@ -2432,6 +2521,14 @@ mod tests {
         });
         let (supported_tools, _) = build_specs(&supported_tools_config, None, None, &[]).build();
         assert_contains_tool_names(&supported_tools, &["image_generation"]);
+        let image_generation_tool = find_tool(&supported_tools, "image_generation");
+        assert_eq!(
+            serde_json::to_value(&image_generation_tool.spec).expect("serialize image tool"),
+            serde_json::json!({
+                "type": "image_generation",
+                "output_format": "png"
+            })
+        );
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &unsupported_model_info,
@@ -2518,6 +2615,9 @@ mod tests {
             tool.spec,
             ToolSpec::WebSearch {
                 external_web_access: Some(false),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
                 search_content_types: None,
             }
         );
@@ -2543,6 +2643,51 @@ mod tests {
             tool.spec,
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }
+        );
+    }
+
+    #[test]
+    fn web_search_config_is_forwarded_to_tool_spec() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+        let web_search_config = WebSearchConfig {
+            filters: Some(codex_protocol::config_types::WebSearchFilters {
+                allowed_domains: Some(vec!["example.com".to_string()]),
+            }),
+            user_location: Some(codex_protocol::config_types::WebSearchUserLocation {
+                r#type: codex_protocol::config_types::WebSearchUserLocationType::Approximate,
+                country: Some("US".to_string()),
+                region: Some("California".to_string()),
+                city: Some("San Francisco".to_string()),
+                timezone: Some("America/Los_Angeles".to_string()),
+            }),
+            search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
+        };
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Live),
+            session_source: SessionSource::Cli,
+        })
+        .with_web_search_config(Some(web_search_config.clone()));
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+
+        let tool = find_tool(&tools, "web_search");
+        assert_eq!(
+            tool.spec,
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: web_search_config.filters,
+                user_location: web_search_config.user_location,
+                search_context_size: web_search_config.search_context_size,
                 search_content_types: None,
             }
         );
@@ -2569,6 +2714,9 @@ mod tests {
             tool.spec,
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
                 search_content_types: Some(
                     WEB_SEARCH_CONTENT_TYPES
                         .into_iter()
@@ -3076,6 +3224,7 @@ mod tests {
                         ),
                         connector_id: Some("calendar".to_string()),
                         connector_name: Some("Calendar".to_string()),
+                        plugin_display_names: Vec::new(),
                     },
                 ),
                 (
@@ -3086,6 +3235,7 @@ mod tests {
                         tool: mcp_tool("echo", "Echo", serde_json::json!({"type": "object"})),
                         connector_id: None,
                         connector_name: None,
+                        plugin_display_names: Vec::new(),
                     },
                 ),
             ])),
@@ -3364,6 +3514,18 @@ Examples of valid command strings:
             panic!("expected sandbox_permissions description");
         };
         assert!(description.contains("with_additional_permissions"));
+        assert!(description.contains("macOS permissions"));
+
+        let Some(JsonSchema::Object {
+            properties: additional_properties,
+            ..
+        }) = properties.get("additional_permissions")
+        else {
+            panic!("expected additional_permissions schema");
+        };
+        assert!(additional_properties.contains_key("network"));
+        assert!(additional_properties.contains_key("file_system"));
+        assert!(additional_properties.contains_key("macos"));
     }
 
     #[test]

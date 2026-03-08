@@ -5,6 +5,8 @@ use crate::mcp::RequestId;
 use crate::models::MacOsSeatbeltProfileExtensions;
 use crate::models::PermissionProfile;
 use crate::parse_command::ParsedCommand;
+use crate::permissions::FileSystemSandboxPolicy;
+use crate::permissions::NetworkSandboxPolicy;
 use crate::protocol::FileChange;
 use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
@@ -17,6 +19,8 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Permissions {
     pub sandbox_policy: SandboxPolicy,
+    pub file_system_sandbox_policy: FileSystemSandboxPolicy,
+    pub network_sandbox_policy: NetworkSandboxPolicy,
     pub macos_seatbelt_profile_extensions: Option<MacOsSeatbeltProfileExtensions>,
 }
 
@@ -196,10 +200,16 @@ impl ExecApprovalRequestEvent {
 #[ts(tag = "mode")]
 pub enum ElicitationRequest {
     Form {
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, rename = "_meta")]
+        meta: Option<JsonValue>,
         message: String,
         requested_schema: JsonValue,
     },
     Url {
+        #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, rename = "_meta")]
+        meta: Option<JsonValue>,
         message: String,
         url: String,
         elicitation_id: String,
@@ -216,6 +226,10 @@ impl ElicitationRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct ElicitationRequestEvent {
+    /// Turn ID that this elicitation belongs to, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub turn_id: Option<String>,
     pub server_name: String,
     #[ts(type = "string | number")]
     pub id: RequestId,

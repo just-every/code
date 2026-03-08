@@ -5,6 +5,9 @@
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
 use crate::exec::ExecToolCallOutput;
+use crate::guardian::GuardianReviewRequest;
+use crate::guardian::review_approval_request;
+use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::CommandSpec;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
@@ -25,6 +28,7 @@ use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::ReviewDecision;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -46,13 +50,35 @@ impl ApplyPatchRuntime {
         Self
     }
 
-    fn build_command_spec(req: &ApplyPatchRequest) -> Result<CommandSpec, ToolError> {
-        use std::env;
+    fn build_guardian_review_request(req: &ApplyPatchRequest) -> GuardianReviewRequest {
+        GuardianReviewRequest {
+            action: json!({
+                "tool": "apply_patch",
+                "cwd": req.action.cwd,
+                "files": req.file_paths,
+                "change_count": req.changes.len(),
+                "patch": req.action.patch,
+            }),
+        }
+    }
+
+    fn build_command_spec(
+        req: &ApplyPatchRequest,
+        _codex_home: &std::path::Path,
+    ) -> Result<CommandSpec, ToolError> {
         let exe = if let Some(path) = &req.codex_exe {
             path.clone()
         } else {
-            env::current_exe()
-                .map_err(|e| ToolError::Rejected(format!("failed to determine codex exe: {e}")))?
+            #[cfg(target_os = "windows")]
+            {
+                codex_windows_sandbox::resolve_current_exe_for_launch(_codex_home, "codex.exe")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                std::env::current_exe().map_err(|e| {
+                    ToolError::Rejected(format!("failed to determine codex exe: {e}"))
+                })?
+            }
         };
         let program = exe.to_string_lossy().to_string();
         Ok(CommandSpec {
@@ -108,6 +134,10 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
         Box::pin(async move {
+            if routes_approval_to_guardian(turn) {
+                let request = ApplyPatchRuntime::build_guardian_review_request(req);
+                return review_approval_request(session, turn, request, retry_reason).await;
+            }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
                     .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
@@ -159,7 +189,7 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let spec = Self::build_command_spec(req)?;
+        let spec = Self::build_command_spec(req, &ctx.turn.config.codex_home)?;
         let env = attempt
             .env_for(spec, None)
             .map_err(|err| ToolError::Codex(err.into()))?;
@@ -174,6 +204,8 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
 mod tests {
     use super::*;
     use codex_protocol::protocol::RejectConfig;
+    use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
 
     #[test]
     fn wants_no_sandbox_approval_reject_respects_sandbox_flag() {
@@ -192,6 +224,47 @@ mod tests {
                 rules: false,
                 mcp_elicitations: false,
             }))
+        );
+    }
+
+    #[test]
+    fn guardian_review_request_includes_full_patch_without_duplicate_changes() {
+        let path = std::env::temp_dir().join("guardian-apply-patch-test.txt");
+        let action = ApplyPatchAction::new_add_for_test(&path, "hello".to_string());
+        let expected_cwd = action.cwd.clone();
+        let expected_patch = action.patch.clone();
+        let request = ApplyPatchRequest {
+            action,
+            file_paths: vec![
+                AbsolutePathBuf::from_absolute_path(&path).expect("temp path should be absolute"),
+            ],
+            changes: HashMap::from([(
+                path,
+                FileChange::Add {
+                    content: "hello".to_string(),
+                },
+            )]),
+            exec_approval_requirement: ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            timeout_ms: None,
+            codex_exe: None,
+        };
+
+        let guardian_request = ApplyPatchRuntime::build_guardian_review_request(&request);
+
+        assert_eq!(
+            guardian_request,
+            GuardianReviewRequest {
+                action: json!({
+                    "tool": "apply_patch",
+                    "cwd": expected_cwd,
+                    "files": request.file_paths,
+                    "change_count": 1usize,
+                    "patch": expected_patch,
+                }),
+            }
         );
     }
 }
