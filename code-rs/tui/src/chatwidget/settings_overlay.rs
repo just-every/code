@@ -176,6 +176,8 @@ pub(crate) struct ModelSettingsContent {
 
 impl ModelSettingsContent {
     pub(crate) fn new(view: ModelSelectionView) -> Self {
+        let mut view = view;
+        view.defer_session_mode_toggles_until_close();
         Self { view }
     }
 }
@@ -191,6 +193,10 @@ impl SettingsContent for ModelSettingsContent {
 
     fn is_complete(&self) -> bool {
         self.view.is_complete()
+    }
+
+    fn on_close(&mut self) {
+        self.view.flush_deferred_session_updates();
     }
 }
 
