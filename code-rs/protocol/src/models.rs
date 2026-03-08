@@ -95,6 +95,7 @@ pub enum MacOsPreferencesValue {
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, JsonSchema, TS)]
+#[serde(untagged)]
 pub enum MacOsAutomationValue {
     Bool(bool),
     BundleIds(Vec<String>),
@@ -2011,6 +2012,20 @@ mod tests {
         assert_eq!(
             value,
             MacOsAutomationValue::BundleIds(vec!["com.apple.Notes".to_string()])
+        );
+    }
+
+    #[test]
+    fn macos_automation_value_serializes_as_bool_or_array() {
+        assert_eq!(
+            serde_json::to_value(MacOsAutomationValue::Bool(false)).unwrap(),
+            serde_json::json!(false)
+        );
+
+        assert_eq!(
+            serde_json::to_value(MacOsAutomationValue::BundleIds(vec!["com.apple.Notes".to_string()]))
+                .unwrap(),
+            serde_json::json!(["com.apple.Notes"])
         );
     }
 }

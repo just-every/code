@@ -223,35 +223,15 @@
       ]
     },
     "MacOsAutomationValue": {
-      "oneOf": [
+      "anyOf": [
         {
-          "additionalProperties": false,
-          "properties": {
-            "Bool": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "Bool"
-          ],
-          "title": "BoolMacOsAutomationValue",
-          "type": "object"
+          "type": "boolean"
         },
         {
-          "additionalProperties": false,
-          "properties": {
-            "BundleIds": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
+          "items": {
+            "type": "string"
           },
-          "required": [
-            "BundleIds"
-          ],
-          "title": "BundleIdsMacOsAutomationValue",
-          "type": "object"
+          "type": "array"
         }
       ]
     },
