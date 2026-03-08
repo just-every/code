@@ -54,7 +54,7 @@ pub enum OpenAiTool {
     #[serde(rename = "local_shell")]
     LocalShell {},
     #[serde(rename = "image_generation")]
-    ImageGeneration {},
+    ImageGeneration { output_format: String },
     /// Native Responses API web search tool. Optional fields like `filters`
     /// are serialized alongside the type discriminator.
     #[serde(rename = "web_search")]
@@ -71,12 +71,44 @@ pub struct WebSearchTool {
     pub search_content_types: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<WebSearchFilters>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_location: Option<WebSearchUserLocation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_context_size: Option<WebSearchContextSize>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct WebSearchFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchContextSize {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchUserLocationType {
+    Approximate,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WebSearchUserLocation {
+    #[serde(rename = "type")]
+    pub r#type: WebSearchUserLocationType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +223,120 @@ impl ToolsConfig {
             p.use_streamable_shell_tool,
             p.include_view_image_tool,
         )
+    }
+}
+
+pub(crate) fn create_additional_permissions_schema() -> JsonSchema {
+    JsonSchema::Object {
+        properties: BTreeMap::from([
+            (
+                "network".to_string(),
+                JsonSchema::Object {
+                    properties: BTreeMap::from([(
+                        "enabled".to_string(),
+                        JsonSchema::Boolean {
+                            description: Some(
+                                "Set to true to enable network access for this command."
+                                    .to_string(),
+                            ),
+                        },
+                    )]),
+                    required: None,
+                    additional_properties: Some(false.into()),
+                },
+            ),
+            (
+                "file_system".to_string(),
+                JsonSchema::Object {
+                    properties: BTreeMap::from([
+                        (
+                            "read".to_string(),
+                            JsonSchema::Array {
+                                items: Box::new(JsonSchema::String {
+                                    description: None,
+                                    allowed_values: None,
+                                }),
+                                description: Some(
+                                    "Additional filesystem paths to grant read access for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                        (
+                            "write".to_string(),
+                            JsonSchema::Array {
+                                items: Box::new(JsonSchema::String {
+                                    description: None,
+                                    allowed_values: None,
+                                }),
+                                description: Some(
+                                    "Additional filesystem paths to grant write access for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                    ]),
+                    required: None,
+                    additional_properties: Some(false.into()),
+                },
+            ),
+            (
+                "macos".to_string(),
+                JsonSchema::Object {
+                    properties: BTreeMap::from([
+                        (
+                            "preferences".to_string(),
+                            JsonSchema::String {
+                                description: Some(
+                                    "macOS preferences access level for this command."
+                                        .to_string(),
+                                ),
+                                allowed_values: Some(vec![
+                                    "none".to_string(),
+                                    "read_only".to_string(),
+                                    "read_write".to_string(),
+                                ]),
+                            },
+                        ),
+                        (
+                            "automations".to_string(),
+                            JsonSchema::Array {
+                                items: Box::new(JsonSchema::String {
+                                    description: None,
+                                    allowed_values: None,
+                                }),
+                                description: Some(
+                                    "Bundle identifiers that need Apple Events automation access."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                        (
+                            "accessibility".to_string(),
+                            JsonSchema::Boolean {
+                                description: Some(
+                                    "Set to true to allow accessibility APIs for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                        (
+                            "calendar".to_string(),
+                            JsonSchema::Boolean {
+                                description: Some(
+                                    "Set to true to allow Calendar access for this command."
+                                        .to_string(),
+                                ),
+                            },
+                        ),
+                    ]),
+                    required: None,
+                    additional_properties: Some(false.into()),
+                },
+            ),
+        ]),
+        required: None,
+        additional_properties: Some(false.into()),
     }
 }
 
@@ -579,7 +725,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
             "sandbox_permissions".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem access (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                    "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem, network, or macOS permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                         .to_string(),
                 ),
                 allowed_values: Some(vec![
@@ -601,45 +747,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
         );
         properties.insert(
             "additional_permissions".to_string(),
-            JsonSchema::Object {
-                properties: BTreeMap::from([(
-                    "file_system".to_string(),
-                    JsonSchema::Object {
-                        properties: BTreeMap::from([
-                            (
-                                "read".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String {
-                                        description: None,
-                                        allowed_values: None,
-                                    }),
-                                    description: Some(
-                                        "Additional filesystem paths to grant read access for this command."
-                                            .to_string(),
-                                    ),
-                                },
-                            ),
-                            (
-                                "write".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String {
-                                        description: None,
-                                        allowed_values: None,
-                                    }),
-                                    description: Some(
-                                        "Additional filesystem paths to grant write access for this command."
-                                            .to_string(),
-                                    ),
-                                },
-                            ),
-                        ]),
-                        required: None,
-                        additional_properties: Some(false.into()),
-                    },
-                )]),
-                required: Some(vec!["file_system".to_string()]),
-                additional_properties: Some(false.into()),
-            },
+            create_additional_permissions_schema(),
         );
     }
 
@@ -675,7 +783,8 @@ The shell tool is used to execute shell commands.
   - Include a short, 1 sentence explanation for why we need escalated permissions in the justification parameter.
 - When additional sandboxed filesystem access is enough:
   - Provide the sandbox_permissions parameter with the value \"with_additional_permissions\"
-  - Provide additional_permissions.file_system.read and/or additional_permissions.file_system.write with the minimal paths needed.
+  - Provide additional_permissions with the minimal sandbox expansion needed.
+  - Supported fields are additional_permissions.network.enabled, additional_permissions.file_system.read, additional_permissions.file_system.write, additional_permissions.macos.preferences, additional_permissions.macos.automations, additional_permissions.macos.accessibility, and additional_permissions.macos.calendar.
 
 Long-running commands may be backgrounded after an initial window. Use `wait` to await background tasks. Optional `timeout` can set a hard kill if needed."#,
                 roots_str,
@@ -1000,6 +1109,8 @@ pub fn get_openai_tools(
                 filters: Some(WebSearchFilters {
                     allowed_domains: Some(domains.clone()),
                 }),
+                user_location: None,
+                search_context_size: None,
             }),
             _ => OpenAiTool::WebSearch(WebSearchTool {
                 external_web_access: Some(config.web_search_external),
@@ -1011,7 +1122,9 @@ pub fn get_openai_tools(
     }
 
     if config.image_gen_tool {
-        tools.push(OpenAiTool::ImageGeneration {});
+        tools.push(OpenAiTool::ImageGeneration {
+            output_format: "png".to_string(),
+        });
     }
 
 
@@ -1242,7 +1355,7 @@ mod tests {
             .map(|tool| match tool {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
                 OpenAiTool::LocalShell {} => "local_shell",
-                OpenAiTool::ImageGeneration {} => "image_generation",
+                OpenAiTool::ImageGeneration { .. } => "image_generation",
                 OpenAiTool::WebSearch(_) => "web_search",
                 OpenAiTool::Freeform(FreeformTool { name, .. }) => name,
             })
@@ -1375,7 +1488,7 @@ mod tests {
         assert!(
             !supported_tools
                 .iter()
-                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration {})),
+                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration { .. })),
             "image_generation should be disabled by default"
         );
 
@@ -1385,7 +1498,7 @@ mod tests {
         assert!(
             supported_tools
                 .iter()
-                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration {})),
+                .any(|tool| matches!(tool, OpenAiTool::ImageGeneration { .. })),
             "image_generation should be available when explicitly enabled"
         );
     }

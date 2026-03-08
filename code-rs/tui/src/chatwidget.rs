@@ -1330,6 +1330,19 @@ const MAX_PENDING_DISPATCHED_USER_MESSAGES: usize = 256;
 const MAX_PENDING_AUTO_REVIEW_NOTE_CHARS: usize = 2400;
 const MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS: usize = 1200;
 const MAX_AUTO_REVIEW_ERROR_SUMMARY_CHARS: usize = 320;
+const AUTO_REVIEW_FAILURE_DEDUPE_WINDOW_SECS: u64 = 300;
+const AUTO_REVIEW_CONTEXT_BLOCK_CHARS: usize = 600;
+const AUTO_REVIEW_SCOPE_MAX_LISTED_PATHS: usize = 40;
+const AUTO_REVIEW_DIFF_EXCERPT_CHARS: usize = 24_000;
+const AUTO_REVIEW_MAX_CHANGED_PATHS: usize = 120;
+const AUTO_REVIEW_MAX_RAW_DIFF_CHARS: usize = 120_000;
+const AUTO_REVIEW_SCOPE_EXCLUDED_PREFIXES: [&str; 5] = [
+    "codex-rs/",
+    "node_modules/",
+    "target/",
+    ".git/",
+    ".code/",
+];
 
 fn compact_patch_change(
     change: &code_core::protocol::FileChange,
@@ -1363,12 +1376,121 @@ fn compact_patch_changes(
         .collect()
 }
 
+fn should_include_auto_review_scope_path(path: &str) -> bool {
+    !AUTO_REVIEW_SCOPE_EXCLUDED_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
+fn format_background_review_scope_from_paths(snapshot_id: &str, paths: &[String]) -> Option<String> {
+    let mut listed_paths: Vec<&str> = Vec::new();
+    let mut seen_paths: HashSet<&str> = HashSet::new();
+    let mut excluded_count = 0usize;
+    let mut truncated_count = 0usize;
+
+    for raw_path in paths {
+        let normalized = raw_path.trim().trim_start_matches("./");
+        if normalized.is_empty() {
+            continue;
+        }
+        if !seen_paths.insert(normalized) {
+            continue;
+        }
+        if !should_include_auto_review_scope_path(normalized) {
+            excluded_count = excluded_count.saturating_add(1);
+            continue;
+        }
+        if listed_paths.len() < AUTO_REVIEW_SCOPE_MAX_LISTED_PATHS {
+            listed_paths.push(normalized);
+        } else {
+            truncated_count = truncated_count.saturating_add(1);
+        }
+    }
+
+    if listed_paths.is_empty() && excluded_count == 0 && truncated_count == 0 {
+        return None;
+    }
+
+    let mut scope = String::new();
+    scope.push_str("\n\nReview only the relevant changed files from commit ");
+    scope.push_str(snapshot_id);
+    scope.push_str(". Ignore unrelated files.\n");
+
+    if !listed_paths.is_empty() {
+        scope.push_str("Changed files to prioritize:\n");
+        for path in listed_paths {
+            scope.push_str("- ");
+            scope.push_str(path);
+            scope.push('\n');
+        }
+    }
+
+    let omitted_count = excluded_count.saturating_add(truncated_count);
+    if omitted_count > 0 {
+        scope.push_str(&format!(
+            "Omitted {omitted_count} changed path(s) from this list ({excluded_count} excluded by path policy; {truncated_count} truncated for prompt size)."
+        ));
+        scope.push('\n');
+    }
+
+    Some(scope.trim_end().to_string())
+}
+
+fn build_background_review_prompt(
+    snapshot_id: &str,
+    scope_note: Option<&str>,
+    diff_excerpt: Option<&str>,
+    turn_context: Option<&str>,
+) -> String {
+    let mut prompt = String::from(
+        "/review Review only the provided code change scope. Identify critical bugs, regressions, security/performance/concurrency risks, or incorrect assumptions. Provide actionable feedback and references to the changed code; ignore minor style or formatting nits.",
+    );
+
+    prompt.push_str("\n\nSnapshot: ");
+    prompt.push_str(snapshot_id);
+    prompt.push('.');
+
+    if let Some(scope_note) = scope_note
+        && !scope_note.trim().is_empty()
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(scope_note.trim());
+    }
+
+    if let Some(diff_excerpt) = diff_excerpt
+        && !diff_excerpt.trim().is_empty()
+    {
+        prompt.push_str("\n\nReview only this diff excerpt unless additional inspection is absolutely necessary:\n```diff\n");
+        prompt.push_str(diff_excerpt.trim());
+        prompt.push_str("\n```");
+    }
+
+    if let Some(context) = turn_context
+        && !context.trim().is_empty()
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(context.trim());
+    }
+
+    prompt
+}
+
 #[derive(Clone, Copy)]
 struct AutoReviewFailureClassification {
     failure_class: &'static str,
     phase: &'static str,
     retryable: bool,
     remediation_hint: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutoReviewFailureRecord {
+    failure_class: &'static str,
+    phase: &'static str,
+    worktree_label: String,
+    worktree_path_label: String,
+    summarized_error: String,
+    observed_at: Instant,
 }
 
 fn auto_review_repo_dir(git_root: &Path) -> Result<PathBuf, String> {
@@ -1673,6 +1795,7 @@ pub(crate) struct ChatWidget<'a> {
     background_review: Option<BackgroundReviewState>,
     auto_review_status: Option<AutoReviewStatus>,
     auto_review_notice: Option<AutoReviewNotice>,
+    last_auto_review_failure: Option<AutoReviewFailureRecord>,
     auto_review_baseline: Option<GhostCommit>,
     auto_review_reviewed_marker: Option<GhostCommit>,
     pending_auto_review_range: Option<PendingAutoReviewRange>,
@@ -6628,6 +6751,7 @@ impl ChatWidget<'_> {
             background_review: None,
             auto_review_status: None,
             auto_review_notice: None,
+            last_auto_review_failure: None,
             auto_review_baseline: None,
             auto_review_reviewed_marker: None,
             pending_auto_review_range: None,
@@ -7013,6 +7137,7 @@ impl ChatWidget<'_> {
             background_review: None,
             auto_review_status: None,
             auto_review_notice: None,
+            last_auto_review_failure: None,
             auto_review_baseline: None,
             auto_review_reviewed_marker: None,
             pending_auto_review_range: None,
@@ -30029,6 +30154,82 @@ async fn run_background_review(
         let snapshot_id = snapshot.id().to_string();
         bump_snapshot_epoch_for(&config.cwd);
 
+        let review_scope = task::spawn_blocking({
+            let cwd = config.cwd.clone();
+            let snapshot_id = snapshot_id.clone();
+            let parent_id = base_snapshot
+                .as_ref()
+                .map(|base| base.id().to_string())
+                .unwrap_or_default();
+            move || {
+                let name_only_output = if parent_id.is_empty() {
+                    std::process::Command::new("git")
+                        .current_dir(&cwd)
+                        .args(["show", "--pretty=format:", "--name-only", &snapshot_id])
+                        .output()
+                        .map_err(|err| format!("failed to collect review scope paths: {err}"))?
+                } else {
+                    std::process::Command::new("git")
+                        .current_dir(&cwd)
+                        .args(["diff", "--name-only", &parent_id, &snapshot_id])
+                        .output()
+                        .map_err(|err| format!("failed to collect review scope paths: {err}"))?
+                };
+                if !name_only_output.status.success() {
+                    return Ok::<(Option<String>, Option<String>), String>((None, None));
+                }
+                let stdout = String::from_utf8_lossy(&name_only_output.stdout);
+                let paths = stdout.lines().map(str::to_string).collect::<Vec<_>>();
+                let scope_note = format_background_review_scope_from_paths(&snapshot_id, &paths);
+
+                if paths.len() > AUTO_REVIEW_MAX_CHANGED_PATHS {
+                    return Err(format!(
+                        "auto review scope exceeds configured background review size limits: {} changed paths (limit {}).",
+                        paths.len(),
+                        AUTO_REVIEW_MAX_CHANGED_PATHS,
+                    ));
+                }
+
+                let diff_output = if parent_id.is_empty() {
+                    std::process::Command::new("git")
+                        .current_dir(&cwd)
+                        .args(["show", "--format=", "--unified=3", &snapshot_id])
+                        .output()
+                        .map_err(|err| format!("failed to collect review diff excerpt: {err}"))?
+                } else {
+                    std::process::Command::new("git")
+                        .current_dir(&cwd)
+                        .args(["diff", "--unified=3", &parent_id, &snapshot_id])
+                        .output()
+                        .map_err(|err| format!("failed to collect review diff excerpt: {err}"))?
+                };
+                if !diff_output.status.success() {
+                    return Ok((scope_note, None));
+                }
+
+                let diff_text = String::from_utf8_lossy(&diff_output.stdout);
+                if diff_text.chars().count() > AUTO_REVIEW_MAX_RAW_DIFF_CHARS {
+                    return Err(format!(
+                        "auto review scope exceeds configured background review size limits: diff is {} chars (limit {}).",
+                        diff_text.chars().count(),
+                        AUTO_REVIEW_MAX_RAW_DIFF_CHARS,
+                    ));
+                }
+
+                let diff_excerpt = if diff_text.trim().is_empty() {
+                    None
+                } else {
+                    Some(ChatWidget::truncate_with_ellipsis(
+                        diff_text.trim(),
+                        AUTO_REVIEW_DIFF_EXCERPT_CHARS,
+                    ))
+                };
+                Ok((scope_note, diff_excerpt))
+            }
+        })
+        .await
+        .map_err(|e| format!("failed to spawn review scope task: {e}"))??;
+
         // Attempt to hold the shared review lock; if busy or a previous review
         // with findings is still surfaced, fall back to a per-request
         // auto-review worktree to avoid clobbering pending fixes.
@@ -30089,14 +30290,12 @@ async fn run_background_review(
         };
 
         // Use the /review entrypoint so upstream wiring (model defaults, review formatting) stays intact.
-        let mut review_prompt = format!(
-            "/review Analyze only changes made in commit {snapshot_id}. Identify critical bugs, regressions, security/performance/concurrency risks or incorrect assumptions. Provide actionable feedback and references to the changed code; ignore minor style or formatting nits."
+        let review_prompt = build_background_review_prompt(
+            &snapshot_id,
+            review_scope.0.as_deref(),
+            review_scope.1.as_deref(),
+            turn_context.as_deref(),
         );
-
-        if let Some(context) = turn_context {
-            review_prompt.push_str("\n\n");
-            review_prompt.push_str(&context);
-        }
 
         let mut manager = code_core::AGENT_MANAGER.write().await;
         let agent_id = manager
@@ -30285,6 +30484,16 @@ use code_core::protocol::OrderMeta;
         }
     }
 
+    fn assert_no_code_ops_pending(code_op_rx: &mut UnboundedReceiver<Op>) {
+        assert!(
+            matches!(
+                code_op_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "expected no pending code ops"
+        );
+    }
+
     #[test]
     fn parse_agent_review_result_json_clean() {
         let json = r#"{
@@ -30298,6 +30507,63 @@ use code_core::protocol::OrderMeta;
         assert!(!has_findings);
         assert_eq!(findings, 0);
         assert_eq!(summary.as_deref(), Some("looks clean"));
+    }
+
+    #[test]
+    fn background_review_scope_note_filters_and_truncates_paths() {
+        let paths = vec![
+            "src/lib.rs".to_string(),
+            "target/debug/app".to_string(),
+            "src/main.rs".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+
+        let scope = format_background_review_scope_from_paths("abc123", &paths)
+            .expect("scope note should be present");
+
+        assert!(scope.contains("commit abc123"));
+        assert!(scope.contains("- src/lib.rs"));
+        assert!(scope.contains("- src/main.rs"));
+        assert!(!scope.contains("target/debug/app"));
+        assert!(scope.contains("excluded by path policy"));
+    }
+
+    #[test]
+    fn background_review_prompt_prefers_diff_excerpt_over_commit_scope() {
+        let prompt = build_background_review_prompt(
+            "abc123",
+            Some("Changed files to prioritize:\n- src/lib.rs"),
+            Some("diff --git a/src/lib.rs b/src/lib.rs\n+new line"),
+            Some("<context>\n<user>Fix it</user>\n</context>"),
+        );
+
+        assert!(prompt.contains("Review only the provided code change scope"));
+        assert!(prompt.contains("Snapshot: abc123."));
+        assert!(prompt.contains("Changed files to prioritize"));
+        assert!(prompt.contains("```diff"));
+        assert!(prompt.contains("+new line"));
+        assert!(prompt.contains("<context>"));
+        assert!(!prompt.contains("Analyze only changes made in commit"));
+    }
+
+    #[test]
+    fn turn_context_block_omits_prior_auto_review_developer_note() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.last_user_message = Some("Fix the tests".to_string());
+        chat.last_developer_message = Some(
+            "[developer] Background auto-review failed. Merge the worktree 'auto-review'."
+                .to_string(),
+        );
+        chat.last_assistant_message = Some("I updated the failing assertions".to_string());
+
+        let context = chat.turn_context_block().expect("context block");
+
+        assert!(context.contains("<user>Fix the tests</user>"));
+        assert!(context.contains("<assistant>I updated the failing assertions</assistant>"));
+        assert!(!context.contains("Background auto-review failed"));
+        assert!(!context.contains("Merge the worktree"));
     }
 
     #[test]
@@ -31125,6 +31391,160 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn auto_review_failure_note_prefers_missing_path_over_context_window_noise() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "Model hit the context window while running auto review. Detail: Command failed: 2026-03-08T12:06:27.985551Z ERROR code_core::exec: exec error: exec preflight failed: working directory does not exist: /home/azureuser/.analysis";
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Failure class: exec_missing_path"));
+        assert!(note.contains("Phase: exec_preflight"));
+        assert!(note.contains("Retryable: false"));
+    }
+
+    #[test]
+    fn auto_review_failure_note_classifies_disk_full_snapshot_errors() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "failed to capture snapshot: git command `git add --all` failed with status exit status: 128: fatal: sha1 file '/tmp/code-git-index-123/index.lock' write error. No space left on device (os error 28)";
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Failure class: disk_full"));
+        assert!(note.contains("Phase: snapshot_capture"));
+        assert!(note.contains("Retryable: false"));
+        assert!(note.contains("Free space in /tmp"));
+    }
+
+    #[test]
+    fn duplicate_auto_review_failure_note_is_suppressed() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        let error = "failed to capture snapshot: No space left on device (os error 28) at path '/tmp/code-git-index-123'";
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+        let first = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(first.contains("Failure class: disk_full"));
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        assert_no_code_ops_pending(&mut code_op_rx);
+    }
+
+    #[test]
+    fn non_retryable_auto_review_failures_do_not_queue_followup_review() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+        let base = GhostCommit::new("base-disk-full".to_string(), None);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            snapshot: Some("ghost123".to_string()),
+            base: Some(base),
+            last_seen: Instant::now(),
+        });
+
+        let error = "failed to capture snapshot: No space left on device (os error 28) at path '/tmp/code-git-index-123'";
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Failure class: disk_full"));
+        assert!(
+            chat.pending_auto_review_range.is_none(),
+            "non-retryable failures should not queue another background review"
+        );
+    }
+
+    #[test]
     fn auto_review_failure_note_uses_placeholders_for_missing_worktree_context() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31156,6 +31576,72 @@ use code_core::protocol::OrderMeta;
         assert!(note.contains("Phase: worktree_prepare"));
         assert!(note.contains("Worktree: '(unknown)'"));
         assert!(note.contains("Worktree path: (unavailable)"));
+    }
+
+    #[test]
+    fn auto_review_failure_note_classifies_fallback_worktree_prepare_errors() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::new(),
+            branch: String::new(),
+            agent_id: None,
+            snapshot: None,
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "failed to prepare fallback worktree: Failed to create reusable worktree: Preparing worktree (detached HEAD e54553f43)";
+        chat.on_background_review_finished(
+            PathBuf::new(),
+            String::new(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            None,
+            None,
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Failure class: worktree_prepare_failed"));
+        assert!(note.contains("Phase: worktree_prepare"));
+        assert!(note.contains("Retryable: false"));
+    }
+
+    #[test]
+    fn auto_review_failure_note_classifies_scope_too_large_errors() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::new(),
+            branch: String::new(),
+            agent_id: None,
+            snapshot: None,
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        let error = "auto review scope exceeds configured background review size limits: 400 changed paths (limit 120).";
+        chat.on_background_review_finished(
+            PathBuf::new(),
+            String::new(),
+            false,
+            0,
+            None,
+            Some(error.to_string()),
+            None,
+            None,
+        );
+
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Failure class: review_scope_too_large"));
+        assert!(note.contains("Phase: prompt_build"));
+        assert!(note.contains("Retryable: false"));
     }
 
     #[test]
@@ -35101,6 +35587,14 @@ impl ChatWidget<'_> {
         cleaned
     }
 
+    fn should_include_auto_review_context_message(text: &str) -> bool {
+        let lowered = text.to_ascii_lowercase();
+        !(lowered.contains("background auto-review failed")
+            || lowered.contains("background auto-review completed")
+            || lowered.contains("auto review:")
+            || lowered.contains("merge the worktree"))
+    }
+
     fn turn_context_block(&self) -> Option<String> {
         let mut lines: Vec<String> = Vec::new();
         let mut any = false;
@@ -35111,6 +35605,7 @@ impl ChatWidget<'_> {
             .as_ref()
             .map(|msg| Self::strip_context_sections(msg))
             .map(|msg| msg.trim().to_string())
+            .map(|msg| Self::truncate_with_ellipsis(&msg, AUTO_REVIEW_CONTEXT_BLOCK_CHARS))
             .filter(|msg| !msg.is_empty())
         {
             any = true;
@@ -35121,6 +35616,8 @@ impl ChatWidget<'_> {
             .as_ref()
             .map(|msg| Self::strip_context_sections(msg))
             .map(|msg| msg.trim().to_string())
+            .filter(|msg| Self::should_include_auto_review_context_message(msg))
+            .map(|msg| Self::truncate_with_ellipsis(&msg, AUTO_REVIEW_CONTEXT_BLOCK_CHARS))
             .filter(|msg| !msg.is_empty())
         {
             any = true;
@@ -35131,6 +35628,7 @@ impl ChatWidget<'_> {
             .as_ref()
             .map(|msg| Self::strip_context_sections(msg))
             .map(|msg| msg.trim().to_string())
+            .map(|msg| Self::truncate_with_ellipsis(&msg, AUTO_REVIEW_CONTEXT_BLOCK_CHARS))
             .filter(|msg| !msg.is_empty())
         {
             any = true;
@@ -36361,8 +36859,13 @@ impl ChatWidget<'_> {
         let hit_usage_limit = lowered.contains("usage_limit_reached")
             || lowered.contains("429 too many requests")
             || lowered.contains("usage limit has been reached");
+        let disk_full = lowered.contains("no space left on device")
+            || lowered.contains("os error 28");
 
-        let mut summary = if hit_context_window && hit_usage_limit {
+        let mut summary = if disk_full {
+            "Auto review could not create temporary git data because the disk is full."
+                .to_string()
+        } else if hit_context_window && hit_usage_limit {
             "Model hit the context window repeatedly and then exhausted usage while compacting."
                 .to_string()
         } else if hit_context_window {
@@ -36407,14 +36910,20 @@ impl ChatWidget<'_> {
     fn classify_auto_review_error(error: &str) -> AutoReviewFailureClassification {
         let lowered = error.to_ascii_lowercase();
         let worktree_prepare_failed = lowered.contains("failed to prepare worktree")
+            || lowered.contains("failed to prepare fallback worktree")
+            || lowered.contains("failed to create reusable worktree")
             || lowered.contains("failed to reset reusable worktree")
-            || lowered.contains("not a git repository");
+            || lowered.contains("not a git repository")
+            || lowered.contains("preparing worktree (detached head");
+        let scope_too_large = lowered.contains("auto review scope exceeds configured background review size limits");
         let hit_context_window = lowered.contains("context-window limit")
             || lowered.contains("context window")
             || lowered.contains("input exceeds the context window");
         let hit_usage_limit = lowered.contains("usage_limit_reached")
             || lowered.contains("429 too many requests")
             || lowered.contains("usage limit has been reached");
+        let disk_full = lowered.contains("no space left on device")
+            || lowered.contains("os error 28");
 
         let missing_binary = lowered.contains("executable not found")
             || lowered.contains("command not found")
@@ -36438,16 +36947,29 @@ impl ChatWidget<'_> {
             };
         }
 
-        if hit_context_window {
+        if scope_too_large {
             return AutoReviewFailureClassification {
-                failure_class: "context_budget_exhausted",
-                phase: if lowered.contains("compact") {
-                    "compact"
+                failure_class: "review_scope_too_large",
+                phase: "prompt_build",
+                retryable: false,
+                remediation_hint: "The change set is too large for one background auto-review; run /review manually on a smaller scope or split the change set.",
+            };
+        }
+
+        if disk_full {
+            return AutoReviewFailureClassification {
+                failure_class: "disk_full",
+                phase: if lowered.contains("snapshot")
+                    || lowered.contains("write-tree")
+                    || lowered.contains("git add --all")
+                    || lowered.contains("git write-tree")
+                {
+                    "snapshot_capture"
                 } else {
-                    "prompt_build"
+                    "exec_run"
                 },
-                retryable: hit_usage_limit,
-                remediation_hint: "Reduce review scope or chunk large diffs so compaction can finish within model limits.",
+                retryable: false,
+                remediation_hint: "Free space in /tmp (or point temporary files elsewhere) before retrying auto review.",
             };
         }
 
@@ -36474,6 +36996,19 @@ impl ChatWidget<'_> {
                 },
                 retryable: false,
                 remediation_hint: "Verify the auto-review worktree path exists and command/file paths are valid before retrying.",
+            };
+        }
+
+        if hit_context_window {
+            return AutoReviewFailureClassification {
+                failure_class: "context_budget_exhausted",
+                phase: if lowered.contains("compact") {
+                    "compact"
+                } else {
+                    "prompt_build"
+                },
+                retryable: hit_usage_limit,
+                remediation_hint: "Reduce review scope or chunk large diffs so compaction can finish within model limits.",
             };
         }
 
@@ -36742,6 +37277,37 @@ impl ChatWidget<'_> {
         line
     }
 
+    fn should_record_auto_review_failure_note(
+        &mut self,
+        classification: AutoReviewFailureClassification,
+        worktree_label: &str,
+        worktree_path_label: &str,
+        summarized_error: &str,
+    ) -> bool {
+        let now = Instant::now();
+        let candidate = AutoReviewFailureRecord {
+            failure_class: classification.failure_class,
+            phase: classification.phase,
+            worktree_label: worktree_label.to_string(),
+            worktree_path_label: worktree_path_label.to_string(),
+            summarized_error: summarized_error.to_string(),
+            observed_at: now,
+        };
+
+        let duplicate = self.last_auto_review_failure.as_ref().is_some_and(|last| {
+            last.failure_class == candidate.failure_class
+                && last.phase == candidate.phase
+                && last.worktree_label == candidate.worktree_label
+                && last.worktree_path_label == candidate.worktree_path_label
+                && last.summarized_error == candidate.summarized_error
+                && now.duration_since(last.observed_at).as_secs()
+                    <= AUTO_REVIEW_FAILURE_DEDUPE_WINDOW_SECS
+        });
+
+        self.last_auto_review_failure = Some(candidate);
+        !duplicate
+    }
+
     fn insert_auto_review_notice(
         &mut self,
         branch: &str,
@@ -36921,21 +37487,31 @@ impl ChatWidget<'_> {
                 effective_findings,
             )
         });
+        let mut error_retryable = false;
         let (indicator_status, developer_note) = if let Some(err) = error {
             let summarized_error = Self::summarize_auto_review_error(&err);
             let classification = Self::classify_auto_review_error(&err);
-            (
-                AutoReviewIndicatorStatus::Failed,
-                Some(format!(
-                    "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{worktree_label}'\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}\nFailure class: {}\nPhase: {}\nRetryable: {}\nHint: {}\nError: {err}",
-                    classification.failure_class,
-                    classification.phase,
-                    classification.retryable,
-                    classification.remediation_hint,
-                    err = summarized_error,
-                )),
-            )
+            error_retryable = classification.retryable;
+            let note = self
+                .should_record_auto_review_failure_note(
+                    classification,
+                    &worktree_label,
+                    &worktree_path_label,
+                    &summarized_error,
+                )
+                .then(|| {
+                    format!(
+                        "[developer] Background auto-review failed.\n\nThis auto-review ran in an isolated git worktree and did not modify your current workspace.\n\nWorktree: '{worktree_label}'\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}\nFailure class: {}\nPhase: {}\nRetryable: {}\nHint: {}\nError: {err}",
+                        classification.failure_class,
+                        classification.phase,
+                        classification.retryable,
+                        classification.remediation_hint,
+                        err = summarized_error,
+                    )
+                });
+            (AutoReviewIndicatorStatus::Failed, note)
         } else if has_findings {
+            self.last_auto_review_failure = None;
             let mut note = format!(
                 "[developer] {}\n\nBackground auto-review completed and reported {effective_findings} issue(s).\n\nA separate LLM ran /review (and may have run auto-resolve) in an isolated git worktree. Any proposed fixes live only in that worktree until you merge them.\n\nNext: Decide if the findings are genuine. If yes, Merge the worktree '{worktree_label}' to apply the changes (or cherry-pick selectively). If not, do not merge.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}",
                 notice_line.as_deref().unwrap_or("Background auto-review found issues."),
@@ -36946,6 +37522,7 @@ impl ChatWidget<'_> {
             }
             (AutoReviewIndicatorStatus::Fixed, Some(note))
         } else {
+            self.last_auto_review_failure = None;
             (
                 AutoReviewIndicatorStatus::Clean,
                 Some(format!(
@@ -36981,6 +37558,7 @@ impl ChatWidget<'_> {
         self.handle_auto_review_completion_state(
             has_findings,
             errored,
+            error_retryable,
             inflight_base,
             inflight_snapshot,
         );
@@ -37021,6 +37599,7 @@ impl ChatWidget<'_> {
         &mut self,
         has_findings: bool,
         errored: bool,
+        error_retryable: bool,
         inflight_base: Option<GhostCommit>,
         snapshot: Option<String>,
     ) {
@@ -37034,7 +37613,9 @@ impl ChatWidget<'_> {
         }
 
         if was_skipped || errored {
-            if let Some(base) = inflight_base {
+            if (was_skipped || error_retryable)
+                && let Some(base) = inflight_base
+            {
                 self.queue_skipped_auto_review(base);
             }
             return;

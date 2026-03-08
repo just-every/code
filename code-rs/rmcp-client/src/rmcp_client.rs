@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::io;
 use std::process::Stdio;
@@ -24,6 +25,7 @@ use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -33,6 +35,8 @@ use tracing::info;
 use tracing::warn;
 
 use crate::logging_client_handler::LoggingClientHandler;
+use crate::utils::apply_default_headers;
+use crate::utils::build_default_headers;
 use crate::utils::convert_call_tool_result;
 use crate::utils::convert_to_mcp;
 use crate::utils::convert_to_rmcp;
@@ -128,13 +132,32 @@ impl RmcpClient {
         })
     }
 
-    pub fn new_streamable_http_client(url: String, bearer_token: Option<String>) -> Result<Self> {
+    pub fn new_streamable_http_client(
+        url: String,
+        bearer_token: Option<String>,
+        bearer_token_env_var: Option<String>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
+    ) -> Result<Self> {
+        let default_headers = build_default_headers(http_headers, env_http_headers)?;
+        let bearer_token = bearer_token.or_else(|| {
+            bearer_token_env_var.and_then(|env_var| env::var(env_var).ok())
+        });
+
+        let auth_header = default_headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
         let mut config = StreamableHttpClientTransportConfig::with_uri(url);
-        if let Some(token) = bearer_token {
+        if let Some(token) = bearer_token.as_ref() {
             config = config.auth_header(format!("Bearer {token}"));
+        } else if let Some(auth_header) = auth_header {
+            config = config.auth_header(auth_header);
         }
 
-        let transport = StreamableHttpClientTransport::from_config(config);
+        let http_client = apply_default_headers(reqwest::Client::builder(), &default_headers).build()?;
+        let transport = StreamableHttpClientTransport::with_client(http_client, config);
 
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {

@@ -45,8 +45,16 @@ impl SandboxPermissions {
         matches!(self, SandboxPermissions::RequireEscalated)
     }
 
-    pub fn requires_additional_permissions(self) -> bool {
+    pub fn requests_sandbox_override(self) -> bool {
         !matches!(self, SandboxPermissions::UseDefault)
+    }
+
+    pub fn uses_additional_permissions(self) -> bool {
+        matches!(self, SandboxPermissions::WithAdditionalPermissions)
+    }
+
+    pub fn requires_additional_permissions(self) -> bool {
+        self.requests_sandbox_override()
     }
 }
 
@@ -86,15 +94,55 @@ pub enum MacOsPreferencesValue {
     Mode(String),
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, JsonSchema, TS)]
 pub enum MacOsAutomationValue {
     Bool(bool),
     BundleIds(Vec<String>),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum MacOsAutomationValueDe {
+    Bool(bool),
+    BundleIds(Vec<String>),
+    BundleIdsObject { bundle_ids: Vec<String> },
+}
+
+impl<'de> Deserialize<'de> for MacOsAutomationValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = MacOsAutomationValueDe::deserialize(deserializer)?;
+        Ok(match value {
+            MacOsAutomationValueDe::Bool(value) => Self::Bool(value),
+            MacOsAutomationValueDe::BundleIds(bundle_ids) => Self::BundleIds(bundle_ids),
+            MacOsAutomationValueDe::BundleIdsObject { bundle_ids } => Self::BundleIds(bundle_ids),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct NetworkPermissions {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum NetworkPermissionValue {
+    Bool(bool),
+    Object(NetworkPermissions),
+}
+
 #[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PermissionProfile {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_network_permission",
+        deserialize_with = "deserialize_network_permission"
+    )]
+    #[schemars(with = "Option<NetworkPermissions>")]
     pub network: Option<bool>,
     pub file_system: Option<FileSystemPermissions>,
     pub macos: Option<MacOsPermissions>,
@@ -114,6 +162,33 @@ impl PermissionProfile {
                 .map(MacOsPermissions::is_empty)
                 .unwrap_or(true)
     }
+}
+
+fn serialize_network_permission<S>(
+    network: &Option<bool>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match network {
+        Some(enabled) => NetworkPermissions {
+            enabled: Some(*enabled),
+        }
+        .serialize(serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_network_permission<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<NetworkPermissionValue>::deserialize(deserializer)?;
+    Ok(value.map(|value| match value {
+        NetworkPermissionValue::Bool(enabled) => enabled,
+        NetworkPermissionValue::Object(NetworkPermissions { enabled }) => enabled.unwrap_or(false),
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
@@ -1906,5 +1981,36 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn permission_profile_accepts_network_object_shape() {
+        let profile: PermissionProfile = serde_json::from_value(serde_json::json!({
+            "network": { "enabled": true }
+        }))
+        .expect("deserialize network permission profile");
+
+        assert_eq!(profile.network, Some(true));
+        assert_eq!(
+            serde_json::to_value(profile).expect("serialize network permission profile"),
+            serde_json::json!({
+                "network": { "enabled": true },
+                "file_system": null,
+                "macos": null,
+            })
+        );
+    }
+
+    #[test]
+    fn macos_automation_value_accepts_bundle_ids_object() {
+        let value: MacOsAutomationValue = serde_json::from_value(serde_json::json!({
+            "bundle_ids": ["com.apple.Notes"]
+        }))
+        .expect("deserialize automation bundle ids object");
+
+        assert_eq!(
+            value,
+            MacOsAutomationValue::BundleIds(vec!["com.apple.Notes".to_string()])
+        );
     }
 }

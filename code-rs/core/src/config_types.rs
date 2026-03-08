@@ -188,6 +188,11 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
             url: Option<String>,
             bearer_token: Option<String>,
+            bearer_token_env_var: Option<String>,
+            #[serde(default)]
+            http_headers: Option<HashMap<String, String>>,
+            #[serde(default)]
+            env_http_headers: Option<HashMap<String, String>>,
             oauth_resource: Option<String>,
 
             #[serde(default)]
@@ -228,11 +233,21 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 env,
                 url,
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
                 oauth_resource,
                 ..
             } => {
                 throw_if_set("stdio", "url", url.as_ref())?;
                 throw_if_set("stdio", "bearer_token", bearer_token.as_ref())?;
+                throw_if_set(
+                    "stdio",
+                    "bearer_token_env_var",
+                    bearer_token_env_var.as_ref(),
+                )?;
+                throw_if_set("stdio", "http_headers", http_headers.as_ref())?;
+                throw_if_set("stdio", "env_http_headers", env_http_headers.as_ref())?;
                 throw_if_set("stdio", "oauth_resource", oauth_resource.as_ref())?;
                 McpServerTransportConfig::Stdio {
                     command,
@@ -243,6 +258,9 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             RawMcpServerConfig {
                 url: Some(url),
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
                 oauth_resource,
                 command,
                 args,
@@ -255,6 +273,9 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 McpServerTransportConfig::StreamableHttp {
                     url,
                     bearer_token,
+                    bearer_token_env_var,
+                    http_headers,
+                    env_http_headers,
                     oauth_resource,
                 }
             }
@@ -288,6 +309,15 @@ pub enum McpServerTransportConfig {
         /// This should be used with caution because it lives on disk in clear text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bearer_token: Option<String>,
+        /// Name of the environment variable holding an HTTP bearer token.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_env_var: Option<String>,
+        /// Additional HTTP headers to include in requests to this server.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_headers: Option<HashMap<String, String>>,
+        /// HTTP headers where the value is sourced from an environment variable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_http_headers: Option<HashMap<String, String>>,
         /// Optional OAuth resource parameter (RFC 8707) for providers that require it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         oauth_resource: Option<String>,
@@ -1745,6 +1775,9 @@ mod tests {
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token: None,
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
                 oauth_resource: None
             }
         );
@@ -1765,7 +1798,38 @@ mod tests {
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token: Some("secret".to_string()),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
                 oauth_resource: None
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_streamable_http_server_config_with_header_sources() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            bearer_token_env_var = "MCP_TOKEN"
+            http_headers = { "X-Foo" = "bar" }
+            env_http_headers = { "X-Token" = "MCP_HEADER" }
+        "#,
+        )
+        .expect("should deserialize http config with header sources");
+
+        assert_eq!(
+            cfg.transport,
+            McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token: None,
+                bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                http_headers: Some(HashMap::from([("X-Foo".to_string(), "bar".to_string())])),
+                env_http_headers: Some(HashMap::from([(
+                    "X-Token".to_string(),
+                    "MCP_HEADER".to_string(),
+                )])),
+                oauth_resource: None,
             }
         );
     }
@@ -1785,6 +1849,9 @@ mod tests {
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token: None,
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
                 oauth_resource: Some("https://api.example.com".to_string())
             }
         );
@@ -1821,6 +1888,17 @@ mod tests {
         "#,
         )
         .expect_err("should reject bearer token for stdio transport");
+    }
+
+    #[test]
+    fn deserialize_rejects_http_headers_for_stdio_transport() {
+        toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            http_headers = { "X-Foo" = "bar" }
+        "#,
+        )
+        .expect_err("should reject http_headers for stdio transport");
     }
 
     #[test]

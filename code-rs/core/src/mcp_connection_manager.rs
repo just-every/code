@@ -162,10 +162,19 @@ impl McpClientAdapter {
     async fn new_streamable_http_client(
         url: String,
         bearer_token: Option<String>,
+        bearer_token_env_var: Option<String>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
         params: mcp_types::InitializeRequestParams,
         startup_timeout: Duration,
     ) -> Result<Self> {
-        let client = Arc::new(RmcpClient::new_streamable_http_client(url, bearer_token)?);
+        let client = Arc::new(RmcpClient::new_streamable_http_client(
+            url,
+            bearer_token,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        )?);
         client.initialize(params, Some(startup_timeout)).await?;
         Ok(McpClientAdapter::Rmcp(client))
     }
@@ -308,11 +317,17 @@ impl McpConnectionManager {
                     McpServerTransportConfig::StreamableHttp {
                         url,
                         bearer_token,
+                        bearer_token_env_var,
+                        http_headers,
+                        env_http_headers,
                         oauth_resource: _,
                     } => {
                         McpClientAdapter::new_streamable_http_client(
                             url,
                             bearer_token,
+                            bearer_token_env_var,
+                            http_headers,
+                            env_http_headers,
                             params,
                             startup_timeout,
                         )

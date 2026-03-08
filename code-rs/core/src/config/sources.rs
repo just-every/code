@@ -114,11 +114,41 @@ pub fn write_global_mcp_servers(
                 McpServerTransportConfig::StreamableHttp {
                     url,
                     bearer_token,
+                    bearer_token_env_var,
+                    http_headers,
+                    env_http_headers,
                     oauth_resource,
                 } => {
                     entry["url"] = toml_edit::value(url.clone());
                     if let Some(token) = bearer_token {
                         entry["bearer_token"] = toml_edit::value(token.clone());
+                    }
+                    if let Some(token_env_var) = bearer_token_env_var {
+                        entry["bearer_token_env_var"] = toml_edit::value(token_env_var.clone());
+                    }
+                    if let Some(headers) = http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut headers_table = TomlTable::new();
+                        headers_table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            headers_table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["http_headers"] = TomlItem::Table(headers_table);
+                    }
+                    if let Some(headers) = env_http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut headers_table = TomlTable::new();
+                        headers_table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            headers_table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["env_http_headers"] = TomlItem::Table(headers_table);
                     }
                     if let Some(resource) = oauth_resource {
                         entry["oauth_resource"] = toml_edit::value(resource.clone());
@@ -1291,6 +1321,56 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         .get("bearer_token")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let bearer_token_env_var = t
+                        .get("bearer_token_env_var")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let http_headers = t.get("http_headers").and_then(|v| {
+                        v.as_table()
+                            .map(|table| {
+                                table
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.to_string(), value.to_string()))
+                                    })
+                                    .collect::<HashMap<_, _>>()
+                            })
+                            .or_else(|| {
+                                v.as_inline_table().map(|table| {
+                                    table
+                                        .iter()
+                                        .filter_map(|(key, value)| {
+                                            value
+                                                .as_str()
+                                                .map(|value| (key.to_string(), value.to_string()))
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                            })
+                    });
+                    let env_http_headers = t.get("env_http_headers").and_then(|v| {
+                        v.as_table()
+                            .map(|table| {
+                                table
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.to_string(), value.to_string()))
+                                    })
+                                    .collect::<HashMap<_, _>>()
+                            })
+                            .or_else(|| {
+                                v.as_inline_table().map(|table| {
+                                    table
+                                        .iter()
+                                        .filter_map(|(key, value)| {
+                                            value
+                                                .as_str()
+                                                .map(|value| (key.to_string(), value.to_string()))
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                            })
+                    });
                     let oauth_resource = t
                         .get("oauth_resource")
                         .and_then(|v| v.as_str())
@@ -1299,6 +1379,9 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                     McpServerTransportConfig::StreamableHttp {
                         url: url.to_string(),
                         bearer_token,
+                        bearer_token_env_var,
+                        http_headers,
+                        env_http_headers,
                         oauth_resource,
                     }
                 } else {
@@ -1420,11 +1503,34 @@ pub fn add_mcp_server(
         McpServerTransportConfig::StreamableHttp {
             url,
             bearer_token,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
             oauth_resource,
         } => {
             server_tbl.insert("url", toml_edit::value(url));
             if let Some(token) = bearer_token {
                 server_tbl.insert("bearer_token", toml_edit::value(token));
+            }
+            if let Some(token_env_var) = bearer_token_env_var {
+                server_tbl.insert("bearer_token_env_var", toml_edit::value(token_env_var));
+            }
+            if let Some(headers) = http_headers {
+                let mut it = toml_edit::InlineTable::new();
+                for (k, v) in headers {
+                    it.insert(&k, toml_edit::Value::from(v));
+                }
+                server_tbl.insert("http_headers", TomlItem::Value(toml_edit::Value::InlineTable(it)));
+            }
+            if let Some(headers) = env_http_headers {
+                let mut it = toml_edit::InlineTable::new();
+                for (k, v) in headers {
+                    it.insert(&k, toml_edit::Value::from(v));
+                }
+                server_tbl.insert(
+                    "env_http_headers",
+                    TomlItem::Value(toml_edit::Value::InlineTable(it)),
+                );
             }
             if let Some(resource) = oauth_resource {
                 server_tbl.insert("oauth_resource", toml_edit::value(resource));

@@ -130,6 +130,9 @@ fn build_mcp_transport_for_add(
             return Ok(McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token: Some(bearer_token),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
                 oauth_resource: None,
             });
         }
@@ -242,6 +245,9 @@ mod tests {
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token,
+                bearer_token_env_var: _,
+                http_headers: _,
+                env_http_headers: _,
                 oauth_resource,
             } => {
                 assert_eq!(url, "https://mcp.example.com/mcp");
@@ -302,12 +308,18 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
                     McpServerTransportConfig::StreamableHttp {
                         url,
                         bearer_token,
+                        bearer_token_env_var,
+                        http_headers,
+                        env_http_headers,
                         oauth_resource,
                     } => {
                         serde_json::json!({
                             "type": "streamable_http",
                             "url": url,
                             "bearer_token": bearer_token,
+                            "bearer_token_env_var": bearer_token_env_var,
+                            "http_headers": http_headers,
+                            "env_http_headers": env_http_headers,
                             "oauth_resource": oauth_resource,
                         })
                     }
@@ -360,13 +372,17 @@ fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Resul
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
                 oauth_resource: _,
             } => {
-                let has_bearer = if bearer_token.is_some() {
+                let has_bearer = if bearer_token.is_some() || bearer_token_env_var.is_some() {
                     "True"
                 } else {
                     "False"
                 };
+                let _ = (http_headers, env_http_headers);
                 http_rows.push([name.clone(), url.clone(), has_bearer.into()]);
             }
         }
@@ -465,11 +481,17 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
                 oauth_resource,
             } => serde_json::json!({
                 "type": "streamable_http",
                 "url": url,
                 "bearer_token": bearer_token,
+                "bearer_token_env_var": bearer_token_env_var,
+                "http_headers": http_headers,
+                "env_http_headers": env_http_headers,
                 "oauth_resource": oauth_resource,
             }),
         };
@@ -512,6 +534,9 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
         McpServerTransportConfig::StreamableHttp {
             url,
             bearer_token,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
             oauth_resource,
         } => {
             println!("  transport: streamable_http");
@@ -519,8 +544,15 @@ fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<(
             let token_display = bearer_token
                 .as_ref()
                 .map(|_| "<redacted>".to_string())
+                .or_else(|| bearer_token_env_var.as_ref().map(|value| format!("env:{value}")))
                 .unwrap_or_else(|| "-".to_string());
             println!("  bearer_token: {token_display}");
+            if let Some(headers) = http_headers {
+                println!("  http_headers: {}", serde_json::to_string(headers)?);
+            }
+            if let Some(headers) = env_http_headers {
+                println!("  env_http_headers: {}", serde_json::to_string(headers)?);
+            }
             let resource_display = oauth_resource
                 .clone()
                 .unwrap_or_else(|| "-".to_string());

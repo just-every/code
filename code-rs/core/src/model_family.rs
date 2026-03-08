@@ -3,8 +3,13 @@ use crate::config_types::ContextMode;
 use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
 use crate::tool_apply_patch::ApplyPatchToolType;
+use code_protocol::openai_models::ConfigShellToolType;
+use code_protocol::openai_models::ModelInfo;
+use code_protocol::openai_models::ModelsResponse;
+use code_protocol::openai_models::TruncationMode;
 use code_protocol::openai_models::WebSearchToolType;
 use code_protocol::protocol::TruncationPolicy;
+use once_cell::sync::Lazy;
 
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
@@ -32,6 +37,13 @@ const CONTEXT_WINDOW_96K: u64 = 96_000;
 const CONTEXT_WINDOW_16K: u64 = 16_385;
 const CONTEXT_WINDOW_1M: u64 = 1_047_576;
 const MAX_OUTPUT_DEFAULT: u64 = 128_000;
+const IMAGE_GENERATION_TOOL: &str = "image_generation";
+
+static UPSTREAM_MODELS: Lazy<Vec<ModelInfo>> = Lazy::new(|| {
+    serde_json::from_str::<ModelsResponse>(include_str!("../../../codex-rs/core/models.json"))
+        .map(|response| response.models)
+        .unwrap_or_else(|err| panic!("failed to parse upstream models.json: {err}"))
+});
 
 pub const STANDARD_CONTEXT_WINDOW_272K: u64 = CONTEXT_WINDOW_272K;
 pub const EXTENDED_CONTEXT_WINDOW_1M: u64 = CONTEXT_WINDOW_1M;
@@ -157,8 +169,46 @@ macro_rules! model_family {
         $(
             mf.$key = $value;
         )*
-        Some(mf)
+        Some(apply_upstream_model_overrides(mf))
     }};
+}
+
+fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
+    let Some(model_info) = UPSTREAM_MODELS.iter().find(|model| model.slug == family.slug) else {
+        return family;
+    };
+
+    family.base_instructions = model_info.base_instructions.clone();
+    family.context_window = model_info.context_window.and_then(|limit| u64::try_from(limit).ok());
+    family.default_reasoning_effort = model_info.default_reasoning_level.map(|effort| match effort {
+        code_protocol::openai_models::ReasoningEffort::None
+        | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
+        code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
+        code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
+        code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
+        code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
+    });
+    family.default_reasoning_summary = model_info.default_reasoning_summary.into();
+    family.supports_reasoning_summaries = model_info.supports_reasoning_summaries;
+    family.supports_parallel_tool_calls = model_info.supports_parallel_tool_calls;
+    family.web_search_tool_type = model_info.web_search_tool_type;
+    family.supports_image_detail_original = model_info.supports_image_detail_original;
+    family.supports_image_generation = model_info
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool == IMAGE_GENERATION_TOOL);
+    family.uses_local_shell_tool = matches!(model_info.shell_type, ConfigShellToolType::Local);
+    family.auto_compact_token_limit = model_info.auto_compact_token_limit();
+    family.truncation_policy = match model_info.truncation_policy.mode {
+        TruncationMode::Bytes => TruncationPolicy::Bytes(
+            usize::try_from(model_info.truncation_policy.limit).unwrap_or(10_000),
+        ),
+        TruncationMode::Tokens => TruncationPolicy::Tokens(
+            usize::try_from(model_info.truncation_policy.limit).unwrap_or(10_000),
+        ),
+    };
+
+    family
 }
 
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
@@ -365,7 +415,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
 }
 
 pub fn derive_default_model_family(model: &str) -> ModelFamily {
-    ModelFamily {
+    apply_upstream_model_overrides(ModelFamily {
         slug: model.to_string(),
         family: model.to_string(),
         needs_special_apply_patch_instructions: false,
@@ -384,7 +434,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         supports_image_detail_original: false,
         supports_image_generation: false,
         base_instructions: BASE_INSTRUCTIONS.to_string(),
-    }
+    })
 }
 
 impl ModelFamily {
