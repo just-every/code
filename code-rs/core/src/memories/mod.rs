@@ -809,9 +809,18 @@ async fn merge_usage_metadata_from_persisted(
     code_home: &Path,
     outputs: &mut [Stage1Output],
 ) -> io::Result<()> {
-    let existing_outputs: Vec<Stage1Output> =
-        match load_json_file(stage1_outputs_path(code_home)).await {
-        Ok(outputs) => outputs,
+    let path = stage1_outputs_path(code_home);
+    let existing_outputs: Vec<Stage1Output> = match tokio::fs::read_to_string(&path).await {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(outputs) => outputs,
+            Err(err) => {
+                warn!(
+                    path = %path.display(),
+                    "ignoring malformed persisted stage1 outputs while saving refreshed memories: {err}"
+                );
+                return Ok(());
+            }
+        },
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
@@ -1027,5 +1036,31 @@ mod tests {
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].usage_count, 9);
         assert_eq!(saved[0].last_usage, persisted_last_usage);
+    }
+
+    #[tokio::test]
+    async fn save_stage1_outputs_recovers_from_malformed_existing_file() {
+        let code_home = tempfile::tempdir().expect("tempdir");
+        let session_id = Uuid::new_v4();
+        tokio::fs::create_dir_all(state_dir(code_home.path()))
+            .await
+            .expect("create state dir");
+        tokio::fs::write(stage1_outputs_path(code_home.path()), "{not json")
+            .await
+            .expect("write malformed json");
+
+        save_stage1_outputs(
+            code_home.path(),
+            &[output(session_id, 3, "2026-02-01T00:00:00Z")],
+        )
+        .await
+        .expect("save stage1 outputs");
+
+        let saved = load_stage1_outputs(code_home.path())
+            .await
+            .expect("load repaired stage1 outputs");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].session_id, session_id);
+        assert_eq!(saved[0].usage_count, 3);
     }
 }
