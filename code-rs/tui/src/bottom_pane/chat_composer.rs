@@ -2836,6 +2836,14 @@ impl ChatComposer {
     }
 }
 
+impl Drop for ChatComposer {
+    fn drop(&mut self) {
+        if let Some(animation_flag) = self.animation_running.take() {
+            animation_flag.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         if self.render_mode == ComposerRenderMode::FooterOnly {
@@ -3074,8 +3082,56 @@ fn lerp_gradient_color(gradient: BorderGradient, ratio: f32) -> Color {
 mod tests {
     use super::*;
     use crate::app_event::AppEvent;
+    use crate::thread_spawner;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn wait_for_background_threads_at_most(limit: usize, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if thread_spawner::active_thread_count() <= limit {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background thread count stayed above {limit}: {}",
+                thread_spawner::active_thread_count()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_background_threads_at_least(limit: usize, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if thread_spawner::active_thread_count() >= limit {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background thread count never reached {limit}: {}",
+                thread_spawner::active_thread_count()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn drop_stops_running_animation_thread() {
+        let baseline = thread_spawner::active_thread_count();
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+
+        {
+            let mut composer = ChatComposer::new(true, app_tx, true, false);
+            composer.set_task_running(true);
+            wait_for_background_threads_at_least(baseline + 1, Duration::from_millis(250));
+        }
+
+        wait_for_background_threads_at_most(baseline, Duration::from_secs(2));
+    }
 
     #[test]
     fn auto_review_status_stays_left_with_auto_drive_footer() {

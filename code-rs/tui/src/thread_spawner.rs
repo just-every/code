@@ -85,3 +85,8 @@ where
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) fn active_thread_count() -> usize {
+    ACTIVE_THREADS.load(Ordering::SeqCst)
+}
