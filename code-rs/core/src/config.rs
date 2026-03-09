@@ -2970,6 +2970,90 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn upgrade_legacy_model_slugs_updates_agent_names() {
+        let mut cfg = ConfigToml::default();
+        cfg.agents = vec![
+            AgentConfig {
+                name: "claude-sonnet-4.5".to_string(),
+                command: "claude".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+            AgentConfig {
+                name: "gemini-3-pro".to_string(),
+                command: "gemini".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+            AgentConfig {
+                name: "qwen-3-coder".to_string(),
+                command: "qwen".to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled: true,
+                description: None,
+                env: None,
+                args_read_only: None,
+                args_write: None,
+                instructions: None,
+            },
+        ];
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.agents[0].name, "claude-sonnet-4.6");
+        assert_eq!(cfg.agents[1].name, "gemini-3.1-pro-preview");
+        assert_eq!(cfg.agents[2].name, "qwen3-coder-plus");
+    }
+
+    #[test]
+    fn upgrade_legacy_model_slugs_updates_subagent_agent_lists() {
+        let mut cfg = ConfigToml::default();
+        cfg.subagents = Some(crate::config_types::SubagentsToml {
+            max_depth: None,
+            commands: vec![crate::config_types::SubagentCommandConfig {
+                name: "code".to_string(),
+                read_only: false,
+                agents: vec![
+                    "claude-sonnet-4.5".to_string(),
+                    "gemini-3-flash".to_string(),
+                    "qwen-3-coder".to_string(),
+                ],
+                orchestrator_instructions: None,
+                agent_instructions: None,
+            }],
+        });
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        let command = &cfg
+            .subagents
+            .as_ref()
+            .expect("subagents exist")
+            .commands[0];
+        assert_eq!(
+            command.agents,
+            vec![
+                "claude-sonnet-4.6".to_string(),
+                "gemini-3-flash-preview".to_string(),
+                "qwen3-coder-plus".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn upgrade_legacy_model_slugs_does_not_rewrite_gpt_5_4() {
         let mut cfg = ConfigToml {
             model: Some("gpt-5.4".to_string()),
@@ -3083,9 +3167,9 @@ model_verbosity = "high"
 
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
         assert!(enabled_names.contains("code-gpt-5.4"));
-        assert!(enabled_names.contains("claude-sonnet-4.5"));
-        assert!(enabled_names.contains("gemini-3-pro"));
-        assert!(enabled_names.contains("qwen-3-coder"));
+        assert!(enabled_names.contains("claude-sonnet-4.6"));
+        assert!(enabled_names.contains("gemini-3.1-pro-preview"));
+        assert!(enabled_names.contains("qwen3-coder-plus"));
         Ok(())
     }
 
@@ -3296,20 +3380,20 @@ mod agent_merge_tests {
     fn gemini_alias_and_canonical_dedupe_prefers_last_state() {
         let agents = vec![
             agent("gemini-2.5-pro", "gemini", true),
-            agent("gemini-3-pro", "gemini", false),
+            agent("gemini-3.1-pro-preview", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later canonical disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"
@@ -3319,21 +3403,21 @@ mod agent_merge_tests {
     #[test]
     fn gemini_alias_disable_overrides_prior_canonical_enable() {
         let agents = vec![
-            agent("gemini-3-pro", "gemini", true),
+            agent("gemini-3.1-pro-preview", "gemini", true),
             agent("gemini-2.5-pro", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later alias disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro-preview"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"

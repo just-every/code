@@ -43,7 +43,7 @@ read-only = false
 description = "Qwen Coder assistant (tracks latest default model)"
 # No default -m: let the CLI choose its current default model
 # To pin a model explicitly, export QWEN_MODEL or add here, e.g.:
-# args = ["-m", "qwen-3-coder", "-y"]
+# args = ["-m", "qwen3-coder-plus", "-y"]
 args = ["-y"]
 # Optional environment variables (either name works; mirrored automatically):
 # env = { QWEN_API_KEY = "your-key", DASHSCOPE_API_KEY = "your-key" }
@@ -55,7 +55,7 @@ enabled = true
 read-only = true
 description = "Qwen Coder assistant in read-only mode"
 # No -y in read-only; omit -m to track latest default. To pin:
-# args = ["-m", "qwen-3-coder"]
+# args = ["-m", "qwen3-coder-plus"]
 args = []
 
 [[agents]]

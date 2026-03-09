@@ -138,12 +138,36 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
         }
     }
 
+    fn maybe_upgrade_name(field: &mut String) {
+        if let Some(new) = upgrade_legacy_model_slug(field) {
+            tracing::info!(
+                target: "code.config",
+                old = field.as_str(),
+                new,
+                "upgrading legacy agent slug to newer default",
+            );
+            *field = new;
+        }
+    }
+
     maybe_upgrade(&mut cfg.model);
     maybe_upgrade(&mut cfg.review_model);
 
     for profile in cfg.profiles.values_mut() {
         maybe_upgrade(&mut profile.model);
         maybe_upgrade(&mut profile.review_model);
+    }
+
+    for agent in &mut cfg.agents {
+        maybe_upgrade_name(&mut agent.name);
+    }
+
+    if let Some(subagents) = cfg.subagents.as_mut() {
+        for command in &mut subagents.commands {
+            for agent in &mut command.agents {
+                maybe_upgrade_name(agent);
+            }
+        }
     }
 }
 
@@ -199,14 +223,29 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("claude-opus-4.6".to_string());
     }
 
-    // Upgrade Gemini 2.5 Pro to Gemini 3 Pro (or preview alias)
-    if slug.eq_ignore_ascii_case("gemini-2.5-pro") || slug.eq_ignore_ascii_case("gemini-3-pro-preview") {
-        return Some("gemini-3-pro".to_string());
+    // Upgrade Anthropic Sonnet 4.5 to 4.6.
+    if slug.eq_ignore_ascii_case("claude-sonnet-4.5") {
+        return Some("claude-sonnet-4.6".to_string());
     }
 
-    // Upgrade Gemini 2.5 Flash to Gemini 3 Flash
-    if slug.eq_ignore_ascii_case("gemini-2.5-flash") {
-        return Some("gemini-3-flash".to_string());
+    // Upgrade Gemini Pro slugs to the latest preview track.
+    if slug.eq_ignore_ascii_case("gemini-2.5-pro")
+        || slug.eq_ignore_ascii_case("gemini-3-pro")
+        || slug.eq_ignore_ascii_case("gemini-3-pro-preview")
+    {
+        return Some("gemini-3.1-pro-preview".to_string());
+    }
+
+    // Upgrade Gemini Flash slugs to the latest preview track.
+    if slug.eq_ignore_ascii_case("gemini-2.5-flash")
+        || slug.eq_ignore_ascii_case("gemini-3-flash")
+    {
+        return Some("gemini-3-flash-preview".to_string());
+    }
+
+    // Upgrade the older Qwen coder slug to the current plus line.
+    if slug.eq_ignore_ascii_case("qwen-3-coder") {
+        return Some("qwen3-coder-plus".to_string());
     }
 
     // Keep codex variants on their existing line; upgrades are surfaced via the
