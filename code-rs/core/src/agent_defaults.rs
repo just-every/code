@@ -25,6 +25,8 @@ const GEMINI_PRO_READ_ONLY: &[&str] = &[];
 const GEMINI_PRO_WRITE: &[&str] = &["-y"];
 const GEMINI_FLASH_READ_ONLY: &[&str] = &[];
 const GEMINI_FLASH_WRITE: &[&str] = &["-y"];
+const COPILOT_READ_ONLY: &[&str] = &["-p"];
+const COPILOT_WRITE: &[&str] = &["--autopilot", "--yolo", "-p"];
 const QWEN_3_CODER_READ_ONLY: &[&str] = &[];
 const QWEN_3_CODER_WRITE: &[&str] = &["-y"];
 const CLOUD_GPT5_CODEX_READ_ONLY: &[&str] = &[];
@@ -44,6 +46,7 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "code-gpt-5.1-codex-mini",
     "claude-sonnet-4.5",
     "gemini-3-flash",
+    "github-copilot",
     // Mixed/general and alternates
     "claude-haiku-4.5",
     "qwen-3-coder",
@@ -245,6 +248,20 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         description: "Primary Gemini default for most tasks; fast and low-cost with near gemini-3-pro quality.",
         enabled_by_default: true,
         aliases: &["gemini", "gemini-flash", "gemini-2.5-flash"],
+        gating_env: None,
+        is_frontline: false,
+        pro_only: false,
+    },
+    AgentModelSpec {
+        slug: "github-copilot",
+        family: "copilot",
+        cli: "copilot",
+        read_only_args: COPILOT_READ_ONLY,
+        write_args: COPILOT_WRITE,
+        model_args: &[],
+        description: "GitHub Copilot CLI agent; uses your signed-in Copilot account and configured default model.",
+        enabled_by_default: true,
+        aliases: &["copilot", "github-copilot-cli"],
         gating_env: None,
         is_frontline: false,
         pro_only: false,
@@ -506,6 +523,18 @@ mod tests {
     fn cloud_defaults_are_empty_both_modes() {
         assert!(default_params_for("cloud", true).is_empty());
         assert!(default_params_for("cloud", false).is_empty());
+    }
+
+    #[test]
+    fn github_copilot_defaults_match_cli_contract() {
+        assert_eq!(default_params_for("github-copilot", true), vec!["-p"]);
+        assert_eq!(
+            default_params_for("github-copilot", false),
+            vec!["--autopilot", "--yolo", "-p"]
+        );
+
+        let spec = agent_model_spec("copilot").expect("copilot alias should resolve");
+        assert_eq!(spec.slug, "github-copilot");
     }
 
     #[test]

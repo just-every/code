@@ -1421,6 +1421,8 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         transport,
                         startup_timeout_sec,
                         tool_timeout_sec,
+                        enabled_tools: None,
+                        disabled_tools: None,
                     },
                 ));
             }
@@ -1478,6 +1480,8 @@ pub fn add_mcp_server(
         transport,
         startup_timeout_sec,
         tool_timeout_sec,
+        enabled_tools,
+        disabled_tools,
     } = cfg;
 
     // Build table for this server
@@ -1543,6 +1547,30 @@ pub fn add_mcp_server(
     }
     if let Some(duration) = tool_timeout_sec {
         server_tbl.insert("tool_timeout_sec", toml_edit::value(duration.as_secs_f64()));
+    }
+    if let Some(enabled_tools) = enabled_tools
+        && !enabled_tools.is_empty()
+    {
+        let mut arr = toml_edit::Array::new();
+        for tool in enabled_tools {
+            arr.push(tool);
+        }
+        server_tbl.insert(
+            "enabled_tools",
+            TomlItem::Value(toml_edit::Value::Array(arr)),
+        );
+    }
+    if let Some(disabled_tools) = disabled_tools
+        && !disabled_tools.is_empty()
+    {
+        let mut arr = toml_edit::Array::new();
+        for tool in disabled_tools {
+            arr.push(tool);
+        }
+        server_tbl.insert(
+            "disabled_tools",
+            TomlItem::Value(toml_edit::Value::Array(arr)),
+        );
     }
 
     // Write into enabled table

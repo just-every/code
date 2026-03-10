@@ -171,6 +171,14 @@ pub struct McpServerConfig {
     /// Default timeout for MCP tool calls initiated via this server.
     #[serde(default, with = "option_duration_secs")]
     pub tool_timeout_sec: Option<Duration>,
+
+    /// Explicit allow-list of tools exposed from this server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_tools: Option<Vec<String>>,
+
+    /// Explicit deny-list of tools. Applied after `enabled_tools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -201,6 +209,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             startup_timeout_ms: Option<u64>,
             #[serde(default, with = "option_duration_secs")]
             tool_timeout_sec: Option<Duration>,
+            #[serde(default)]
+            enabled_tools: Option<Vec<String>>,
+            #[serde(default)]
+            disabled_tools: Option<Vec<String>>,
         }
 
         let raw = RawMcpServerConfig::deserialize(deserializer)?;
@@ -213,6 +225,8 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             (None, Some(ms)) => Some(Duration::from_millis(ms)),
             (None, None) => None,
         };
+        let enabled_tools = raw.enabled_tools.clone();
+        let disabled_tools = raw.disabled_tools.clone();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -286,6 +300,8 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             transport,
             startup_timeout_sec,
             tool_timeout_sec: raw.tool_timeout_sec,
+            enabled_tools,
+            disabled_tools,
         })
     }
 }
@@ -1831,6 +1847,27 @@ mod tests {
                 )])),
                 oauth_resource: None,
             }
+        );
+    }
+
+    #[test]
+    fn deserialize_mcp_tool_filters() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            enabled_tools = ["search_code"]
+            disabled_tools = ["delete_repo"]
+        "#,
+        )
+        .expect("should deserialize MCP tool filters");
+
+        assert_eq!(
+            cfg.enabled_tools,
+            Some(vec!["search_code".to_string()])
+        );
+        assert_eq!(
+            cfg.disabled_tools,
+            Some(vec!["delete_repo".to_string()])
         );
     }
 

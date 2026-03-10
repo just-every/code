@@ -136,6 +136,39 @@ struct ManagedClient {
     client: McpClientAdapter,
     startup_timeout: Duration,
     tool_timeout: Option<Duration>,
+    tool_filter: ToolFilter,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ToolFilter {
+    enabled: Option<HashSet<String>>,
+    disabled: HashSet<String>,
+}
+
+impl ToolFilter {
+    fn from_config(cfg: &McpServerConfig) -> Self {
+        let enabled = cfg
+            .enabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<HashSet<_>>());
+        let disabled = cfg
+            .disabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
+
+        Self { enabled, disabled }
+    }
+
+    fn allows(&self, tool_name: &str) -> bool {
+        if let Some(enabled) = &self.enabled
+            && !enabled.contains(tool_name)
+        {
+            return false;
+        }
+
+        !self.disabled.contains(tool_name)
+    }
 }
 
 #[derive(Clone)]
@@ -261,6 +294,7 @@ impl McpConnectionManager {
 
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec;
+            let tool_filter = ToolFilter::from_config(&cfg);
 
             join_set.spawn(async move {
                 let McpServerConfig { transport, .. } = cfg;
@@ -336,14 +370,14 @@ impl McpConnectionManager {
                 }
                 .map(|c| (c, startup_timeout));
 
-                ((server_name, tool_timeout), client)
+                ((server_name, tool_timeout, tool_filter), client)
             });
         }
 
         let mut clients: HashMap<String, ManagedClient> = HashMap::with_capacity(join_set.len());
 
         while let Some(res) = join_set.join_next().await {
-            let ((server_name, tool_timeout), client_res) = match res {
+            let ((server_name, tool_timeout, tool_filter), client_res) = match res {
                 Ok(result) => result,
                 Err(e) => {
                     warn!("Task panic when starting MCP server: {e:#}");
@@ -359,6 +393,7 @@ impl McpConnectionManager {
                             client,
                             startup_timeout,
                             tool_timeout,
+                            tool_filter,
                         },
                     );
                 }
@@ -501,16 +536,17 @@ async fn list_all_tools(
         let server_name_cloned = server_name.clone();
         let client_clone = managed_client.client.clone();
         let startup_timeout = managed_client.startup_timeout;
+        let tool_filter = managed_client.tool_filter.clone();
         join_set.spawn(async move {
             let res = client_clone.list_tools(None, Some(startup_timeout)).await;
-            (server_name_cloned, res)
+            (server_name_cloned, tool_filter, res)
         });
     }
 
     let mut aggregated: Vec<ToolInfo> = Vec::with_capacity(join_set.len());
 
     while let Some(join_res) = join_set.join_next().await {
-        let (server_name, list_result) = if let Ok(result) = join_res {
+        let (server_name, tool_filter, list_result) = if let Ok(result) = join_res {
             result
         } else {
             warn!("Task panic when listing tools for MCP server: {join_res:#?}");
@@ -520,6 +556,9 @@ async fn list_all_tools(
         match list_result {
             Ok(result) => {
                 for tool in result.tools {
+                    if !tool_filter.allows(&tool.name) {
+                        continue;
+                    }
                     if excluded_tools.contains(&(server_name.clone(), tool.name.clone())) {
                         continue;
                     }
@@ -566,6 +605,13 @@ fn is_valid_mcp_server_name(server_name: &str) -> bool {
 mod tests {
     use super::*;
     use mcp_types::ToolInputSchema;
+
+    fn filter(enabled: Option<&[&str]>, disabled: &[&str]) -> ToolFilter {
+        ToolFilter {
+            enabled: enabled.map(|tools| tools.iter().map(|tool| (*tool).to_string()).collect()),
+            disabled: disabled.iter().map(|tool| (*tool).to_string()).collect(),
+        }
+    }
 
     fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
         ToolInfo {
@@ -671,6 +717,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tool_filter_allows_all_tools_by_default() {
+        let filter = ToolFilter::default();
+        assert!(filter.allows("search_code"));
+        assert!(filter.allows("delete_repo"));
+    }
+
+    #[test]
+    fn tool_filter_honors_enabled_tools() {
+        let filter = filter(Some(&["search_code"]), &[]);
+        assert!(filter.allows("search_code"));
+        assert!(!filter.allows("delete_repo"));
+    }
+
+    #[test]
+    fn tool_filter_honors_disabled_tools_after_enabled_tools() {
+        let filter = filter(Some(&["search_code", "delete_repo"]), &["delete_repo"]);
+        assert!(filter.allows("search_code"));
+        assert!(!filter.allows("delete_repo"));
+    }
+
     #[tokio::test]
     async fn stdio_spawn_error_mentions_server_and_command() {
         let mut servers = HashMap::new();
@@ -684,6 +751,8 @@ mod tests {
                 },
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
 

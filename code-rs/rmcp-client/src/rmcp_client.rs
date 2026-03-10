@@ -25,7 +25,6 @@ use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use reqwest::header::AUTHORIZATION;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -61,6 +60,13 @@ enum ClientState {
 /// https://github.com/modelcontextprotocol/rust-sdk
 pub struct RmcpClient {
     state: Mutex<ClientState>,
+}
+
+fn resolve_streamable_http_bearer_token(
+    bearer_token: Option<String>,
+    bearer_token_env_var: Option<String>,
+) -> Option<String> {
+    bearer_token.or_else(|| bearer_token_env_var.and_then(|env_var| env::var(env_var).ok()))
 }
 
 impl RmcpClient {
@@ -140,20 +146,12 @@ impl RmcpClient {
         env_http_headers: Option<HashMap<String, String>>,
     ) -> Result<Self> {
         let default_headers = build_default_headers(http_headers, env_http_headers)?;
-        let bearer_token = bearer_token.or_else(|| {
-            bearer_token_env_var.and_then(|env_var| env::var(env_var).ok())
-        });
-
-        let auth_header = default_headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let bearer_token =
+            resolve_streamable_http_bearer_token(bearer_token, bearer_token_env_var);
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(url);
-        if let Some(token) = bearer_token.as_ref() {
-            config = config.auth_header(format!("Bearer {token}"));
-        } else if let Some(auth_header) = auth_header {
-            config = config.auth_header(auth_header);
+        if let Some(token) = bearer_token {
+            config = config.auth_header(token);
         }
 
         let http_client = apply_default_headers(reqwest::Client::builder(), &default_headers).build()?;
@@ -303,5 +301,32 @@ mod tests {
             "MCP_SCHEMA_VERSION should be in YYYY-MM-DD format"
         );
         assert!(parts.iter().all(|segment| !segment.trim().is_empty()));
+    }
+
+    #[test]
+    fn streamable_http_bearer_token_uses_explicit_value_without_prefixing() {
+        let token = resolve_streamable_http_bearer_token(Some("Bearer token".to_string()), None)
+            .expect("token should resolve");
+        assert_eq!(token, "Bearer token");
+    }
+
+    #[test]
+    fn streamable_http_bearer_token_reads_env_fallback() {
+        let original = std::env::var_os("CODE_TEST_MCP_TOKEN");
+        unsafe {
+            std::env::set_var("CODE_TEST_MCP_TOKEN", "env-token");
+        }
+
+        let token = resolve_streamable_http_bearer_token(
+            None,
+            Some("CODE_TEST_MCP_TOKEN".to_string()),
+        )
+        .expect("token should resolve from env");
+        assert_eq!(token, "env-token");
+
+        match original {
+            Some(value) => unsafe { std::env::set_var("CODE_TEST_MCP_TOKEN", value) },
+            None => unsafe { std::env::remove_var("CODE_TEST_MCP_TOKEN") },
+        }
     }
 }

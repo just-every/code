@@ -2066,6 +2066,8 @@ exclude_slash_tmp = true
                 },
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
 

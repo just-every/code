@@ -1678,7 +1678,7 @@ async fn execute_model_with_permissions(
     };
 
     // Configuration overrides for Codex CLI families. External CLIs (claude,
-    // gemini, qwen) do not understand our config flags, so only attach these
+    // gemini, copilot, qwen) do not understand our config flags, so only attach these
     // when launching Codex binaries.
     let effort_override = format!(
         "model_reasoning_effort={}",
@@ -1689,7 +1689,7 @@ async fn execute_model_with_permissions(
         clamped_effort.to_string().to_ascii_lowercase()
     );
     match family {
-        "claude" | "gemini" | "qwen" => {
+        "claude" | "gemini" | "copilot" | "qwen" => {
             let mut defaults = default_params_for(slug_for_defaults, read_only);
             strip_model_flags(&mut defaults);
             final_args.extend(defaults);

@@ -193,6 +193,8 @@ fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<(
         transport,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
+        enabled_tools: None,
+        disabled_tools: None,
     };
 
     servers.insert(name.clone(), new_entry);

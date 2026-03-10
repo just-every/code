@@ -428,7 +428,7 @@ impl App<'_> {
                         // Standard text paste shortcuts (Ctrl/Cmd+V, Ctrl+Shift+V,
                         // Shift+Insert) must flow through terminal paste events to avoid
                         // truncating text on terminals that also emit partial key streams.
-                        // Keep an opt-in image path on Ctrl+Alt+V for environments that
+                        // Keep a direct image path on Ctrl+V / Alt+V for environments that
                         // don't emit Event::Paste for image clipboards.
                         key_event if is_image_clipboard_paste_shortcut(&key_event) => {
                             self.dispatch_paste_event(String::new());
@@ -2433,8 +2433,8 @@ fn is_image_clipboard_paste_shortcut(key_event: &KeyEvent) -> bool {
             modifiers,
             ..
         } => {
-            modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
-                && modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                || *modifiers == crossterm::event::KeyModifiers::CONTROL
         }
         _ => false,
     }
@@ -2523,15 +2523,20 @@ mod next_event_priority_tests {
     }
 
     #[test]
-    fn image_clipboard_fallback_shortcut_is_ctrl_alt_v_only() {
+    fn image_clipboard_fallback_shortcut_accepts_ctrl_or_alt_v() {
         assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
             KeyCode::Char('v'),
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
         )));
 
-        assert!(!is_image_clipboard_paste_shortcut(&KeyEvent::new(
+        assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
             KeyCode::Char('v'),
             crossterm::event::KeyModifiers::CONTROL,
+        )));
+
+        assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
+            KeyCode::Char('v'),
+            crossterm::event::KeyModifiers::ALT,
         )));
 
         assert!(!is_image_clipboard_paste_shortcut(&KeyEvent::new(

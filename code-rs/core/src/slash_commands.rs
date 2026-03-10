@@ -341,6 +341,32 @@ mod tests {
         restore_var("CLAUDE_CONFIG_DIR", orig_claude_config_dir);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn default_models_include_github_copilot_when_binary_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let orig_path = std::env::var_os("PATH");
+        let fake_bin_dir = tempdir().expect("temp bin dir");
+        let copilot_path = fake_bin_dir.path().join("copilot");
+        std::fs::write(&copilot_path, "#!/bin/sh\nexit 0\n").expect("write fake copilot");
+        let mut perms = std::fs::metadata(&copilot_path)
+            .expect("stat fake copilot")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&copilot_path, perms).expect("chmod fake copilot");
+
+        unsafe {
+            std::env::set_var("PATH", fake_bin_dir.path());
+        }
+
+        let defaults = get_default_models();
+        assert!(defaults.iter().any(|v| v == "github-copilot"));
+
+        restore_var("PATH", orig_path);
+    }
+
     #[test]
     fn test_slash_command_parsing() {
         // Test /plan command

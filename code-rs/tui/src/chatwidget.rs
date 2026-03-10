@@ -43838,3 +43838,9 @@ impl ChatWidget<'_> {
         }
     }
 }
+                            enabled_tools: None,
+                            disabled_tools: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                enabled_tools: None,
+                disabled_tools: None,

@@ -1460,6 +1460,8 @@ fn convert_mcp_servers(
                         },
                         startup_timeout_sec: None,
                         tool_timeout_sec: None,
+                        enabled_tools: None,
+                        disabled_tools: None,
                     },
                 );
             }
