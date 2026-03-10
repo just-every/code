@@ -1276,6 +1276,16 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
         let mut out = Vec::new();
         for (name, item) in tbl.iter() {
             if let Some(t) = item.as_table() {
+                let parse_string_array = |key: &str| {
+                    t.get(key).and_then(|value| {
+                        value.as_array().map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                };
                 let transport = if let Some(command) = t.get("command").and_then(|v| v.as_str()) {
                     let args: Vec<String> = t
                         .get("args")
@@ -1421,8 +1431,8 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         transport,
                         startup_timeout_sec,
                         tool_timeout_sec,
-                        enabled_tools: None,
-                        disabled_tools: None,
+                        enabled_tools: parse_string_array("enabled_tools"),
+                        disabled_tools: parse_string_array("disabled_tools"),
                     },
                 ));
             }
@@ -1839,4 +1849,48 @@ pub(crate) fn get_compact_prompt_override(
     cwd: &Path,
 ) -> std::io::Result<Option<String>> {
     read_override_file(path, cwd, "compact prompt override file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONFIG_TOML_FILE;
+    use super::list_mcp_servers;
+
+    #[test]
+    fn list_mcp_servers_preserves_tool_filters() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_path,
+            r#"
+[mcp_servers.enabled_stdio]
+command = "npx"
+args = ["-y", "server-a"]
+enabled_tools = ["search_code", "read_file"]
+
+[mcp_servers_disabled.disabled_http]
+url = "https://example.com/mcp"
+disabled_tools = ["delete_repo"]
+"#,
+        )
+        .expect("write config");
+
+        let (enabled, disabled) = list_mcp_servers(tempdir.path()).expect("list servers");
+
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].0, "enabled_stdio");
+        assert_eq!(
+            enabled[0].1.enabled_tools,
+            Some(vec!["search_code".to_string(), "read_file".to_string()])
+        );
+        assert_eq!(enabled[0].1.disabled_tools, None);
+
+        assert_eq!(disabled.len(), 1);
+        assert_eq!(disabled[0].0, "disabled_http");
+        assert_eq!(disabled[0].1.enabled_tools, None);
+        assert_eq!(
+            disabled[0].1.disabled_tools,
+            Some(vec!["delete_repo".to_string()])
+        );
+    }
 }
