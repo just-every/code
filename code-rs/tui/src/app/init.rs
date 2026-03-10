@@ -28,6 +28,20 @@ use crate::tui::TerminalInfo;
 
 use super::state::{App, AppState, ChatWidgetArgs, FrameTimer};
 
+#[cfg(unix)]
+fn stdin_is_foreground_process_group() -> bool {
+    // Avoid SIGTTIN from the input loop if some earlier terminal handoff left
+    // the TUI out of the foreground process group. In that case we should wait
+    // for foreground ownership to be restored instead of touching stdin.
+    unsafe {
+        let stdin_pgrp = libc::tcgetpgrp(libc::STDIN_FILENO);
+        if stdin_pgrp == -1 {
+            return true;
+        }
+        stdin_pgrp == libc::getpgrp()
+    }
+}
+
 impl App<'_> {
     pub(crate) fn new(
         config: Config,
@@ -135,6 +149,11 @@ impl App<'_> {
                 loop {
                     if !input_running_thread.load(Ordering::Relaxed) { break; }
                     if input_suspended_thread.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    if !stdin_is_foreground_process_group() {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
