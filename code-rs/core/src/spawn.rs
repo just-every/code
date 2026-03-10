@@ -80,6 +80,34 @@ pub fn spawn_std_command_with_retry(
     spawn_with_retry_blocking(|| cmd.spawn())
 }
 
+/// Spawn a fire-and-forget helper without sharing this process's controlling
+/// terminal. This avoids job-control collisions with the TUI when background
+/// helpers are launched from interactive sessions.
+pub fn spawn_background_command_with_retry(
+    cmd: &mut std::process::Command,
+) -> io::Result<std::process::Child> {
+    cmd.stdin(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EPERM) {
+                        return Err(err);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
+    spawn_std_command_with_retry(cmd)
+}
+
 pub async fn spawn_tokio_command_with_retry(cmd: &mut Command) -> io::Result<Child> {
     spawn_with_retry_async(|| cmd.spawn()).await
 }
@@ -179,4 +207,74 @@ pub(crate) async fn spawn_child_async(
     cmd.kill_on_drop(true);
 
     spawn_tokio_command_with_retry(&mut cmd).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    static STDIN_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    struct StdinRedirectGuard {
+        saved_stdin_fd: i32,
+        read_fd: i32,
+        write_fd: i32,
+    }
+
+    #[cfg(unix)]
+    impl StdinRedirectGuard {
+        fn install_pipe_as_stdin() -> Self {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+            let saved_stdin_fd = unsafe { libc::dup(libc::STDIN_FILENO) };
+            assert!(saved_stdin_fd >= 0, "dup stdin");
+            assert_eq!(unsafe { libc::dup2(fds[0], libc::STDIN_FILENO) }, libc::STDIN_FILENO, "dup2 stdin");
+            Self {
+                saved_stdin_fd,
+                read_fd: fds[0],
+                write_fd: fds[1],
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for StdinRedirectGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = libc::dup2(self.saved_stdin_fd, libc::STDIN_FILENO);
+                let _ = libc::close(self.saved_stdin_fd);
+                let _ = libc::close(self.read_fd);
+                let _ = libc::close(self.write_fd);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_spawn_redirects_stdin_away_from_parent_terminal() {
+        let _guard = STDIN_GUARD.lock().expect("stdin test mutex");
+        let _stdin_guard = StdinRedirectGuard::install_pipe_as_stdin();
+
+        let mut cmd = std::process::Command::new("python3");
+        cmd.arg("-c")
+            .arg("import sys; data = sys.stdin.read(); print('eof' if data == '' else 'data')")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = spawn_background_command_with_retry(&mut cmd).expect("spawn background helper");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(_status) = child.try_wait().expect("poll child") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "background helper should not block on inherited stdin");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let output = child.wait_with_output().expect("wait with output");
+        assert!(output.status.success(), "child should exit successfully: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "eof");
+    }
 }
