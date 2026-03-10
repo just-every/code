@@ -25,8 +25,8 @@ const GEMINI_PRO_READ_ONLY: &[&str] = &[];
 const GEMINI_PRO_WRITE: &[&str] = &["-y"];
 const GEMINI_FLASH_READ_ONLY: &[&str] = &[];
 const GEMINI_FLASH_WRITE: &[&str] = &["-y"];
-const COPILOT_READ_ONLY: &[&str] = &["-p"];
-const COPILOT_WRITE: &[&str] = &["--autopilot", "--yolo", "-p"];
+const COPILOT_READ_ONLY: &[&str] = &[];
+const COPILOT_WRITE: &[&str] = &["--autopilot", "--yolo"];
 const QWEN_3_CODER_READ_ONLY: &[&str] = &[];
 const QWEN_3_CODER_WRITE: &[&str] = &["-y"];
 const CLOUD_GPT5_CODEX_READ_ONLY: &[&str] = &[];
@@ -527,10 +527,10 @@ mod tests {
 
     #[test]
     fn github_copilot_defaults_match_cli_contract() {
-        assert_eq!(default_params_for("github-copilot", true), vec!["-p"]);
+        assert!(default_params_for("github-copilot", true).is_empty());
         assert_eq!(
             default_params_for("github-copilot", false),
-            vec!["--autopilot", "--yolo", "-p"]
+            vec!["--autopilot", "--yolo"]
         );
 
         let spec = agent_model_spec("copilot").expect("copilot alias should resolve");

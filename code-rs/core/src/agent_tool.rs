@@ -3005,6 +3005,44 @@ mod tests {
         assert_eq!(output.trim(), "local-claude");
     }
 
+    #[tokio::test]
+    async fn github_copilot_launches_with_single_prompt_flag() {
+        let dir = tempdir().expect("tempdir");
+        let copilot = script_path(dir.path(), "copilot");
+        write_argv_script(&copilot);
+
+        let cfg = AgentConfig {
+            name: "github-copilot".to_string(),
+            command: copilot.display().to_string(),
+            args: Vec::new(),
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-test",
+            "github-copilot",
+            "hello from copilot",
+            true,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute copilot agent");
+
+        let args: Vec<&str> = output.trim().split('|').collect();
+        assert_eq!(args, vec!["-p", "hello from copilot"]);
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -3063,6 +3101,24 @@ mod tests {
     fn write_script(path: &Path, marker: &str) {
         let script = format!("#!/bin/sh\necho {marker}\nexit 0\n");
         std::fs::write(path, script).expect("write script");
+        let mut perms = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod script");
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_argv_script(path: &Path) {
+        let script = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset out=\r\n:loop\r\nif \"%~1\"==\"\" goto done\r\nif defined out (set out=!out!|%~1) else (set out=%~1)\r\nshift\r\ngoto loop\r\n:done\r\necho %out%\r\nexit /b 0\r\n";
+        std::fs::write(path, script).expect("write argv cmd");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_argv_script(path: &Path) {
+        let script = "#!/bin/sh\nprintf '%s' \"$1\"\nshift\nfor arg in \"$@\"; do\n  printf '|%s' \"$arg\"\ndone\nprintf '\\n'\nexit 0\n";
+        std::fs::write(path, script).expect("write argv script");
         let mut perms = std::fs::metadata(path)
             .expect("script metadata")
             .permissions();
