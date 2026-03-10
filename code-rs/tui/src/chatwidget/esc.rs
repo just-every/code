@@ -152,6 +152,10 @@ impl ChatWidget<'_> {
             return EscRoute::new(EscIntent::CancelAgents, true, false);
         }
 
+        if self.auto_state.last_run_summary.is_some() {
+            return EscRoute::new(EscIntent::AutoDismissSummary, true, false);
+        }
+
         if self.auto_state.should_show_goal_entry() {
             return EscRoute::new(
                 match self.auto_goal_escape_state {
@@ -162,10 +166,6 @@ impl ChatWidget<'_> {
                 true,
                 false,
             );
-        }
-
-        if self.auto_state.last_run_summary.is_some() {
-            return EscRoute::new(EscIntent::AutoDismissSummary, true, false);
         }
 
         if self.auto_manual_entry_active() && !self.composer_is_empty() {

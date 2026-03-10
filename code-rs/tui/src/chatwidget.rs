@@ -20515,10 +20515,6 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn auto_rebuild_live_ring(&mut self) {
         if !self.auto_state.is_active() {
-            if self.auto_state.should_show_goal_entry() {
-                self.auto_show_goal_entry_panel();
-                return;
-            }
             if let Some(summary) = self.auto_state.last_run_summary.clone() {
                 self.bottom_pane.clear_live_ring();
                 self.auto_reset_intro_timing();
@@ -20567,6 +20563,11 @@ Have we met every part of this goal and is there no further work to do?"#
                 .show_auto_coordinator_view(model);
             self.bottom_pane.release_auto_drive_style();
             self.bottom_pane.set_standard_terminal_hint(None);
+            return;
+        }
+
+        if self.auto_state.should_show_goal_entry() {
+            self.auto_show_goal_entry_panel();
             return;
         }
 
@@ -33397,6 +33398,52 @@ use code_core::protocol::OrderMeta;
 
         let route = chat.describe_esc_context();
         assert_eq!(route.intent, EscIntent::AutoDismissSummary);
+    }
+
+    #[test]
+    fn completed_auto_drive_prefers_summary_before_next_goal_prompt() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.last_run_summary = Some(AutoRunSummary {
+            duration: Duration::from_secs(42),
+            turns_completed: 3,
+            message: Some("All tasks done.".to_string()),
+            goal: Some("Finish feature".to_string()),
+        });
+        chat.auto_state.set_phase(AutoRunPhase::AwaitingGoalEntry);
+
+        chat.auto_rebuild_live_ring();
+
+        let model = chat
+            .bottom_pane
+            .auto_view_model()
+            .expect("auto coordinator view should be active");
+        let AutoCoordinatorViewModel::Active(active) = model;
+        assert_eq!(active.goal.as_deref(), Some("Finish feature"));
+        assert_eq!(active.status_lines, vec!["All tasks done.".to_string()]);
+        assert!(active.ctrl_switch_hint.contains("Esc"));
+
+        assert!(chat.auto_state.should_show_goal_entry());
+        assert!(chat.auto_state.last_run_summary.is_some());
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::AutoDismissSummary);
+        assert!(chat.execute_esc_intent(
+            route.intent,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ));
+
+        let model = chat
+            .bottom_pane
+            .auto_view_model()
+            .expect("auto coordinator view should show goal entry after dismissing summary");
+        let AutoCoordinatorViewModel::Active(active) = model;
+        assert!(active.goal.is_none());
+        assert_eq!(
+            active.status_lines,
+            vec!["Let's do this! What's your goal?".to_string()]
+        );
     }
 
     #[test]
