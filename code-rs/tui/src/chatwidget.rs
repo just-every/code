@@ -18570,6 +18570,10 @@ fi\n\
     }
 
     fn auto_show_goal_entry_panel(&mut self) {
+        self.auto_show_goal_entry_panel_with_draft(false);
+    }
+
+    fn auto_show_goal_entry_panel_with_draft(&mut self, preserve_draft: bool) {
         self.auto_state.set_phase(AutoRunPhase::AwaitingGoalEntry);
         self.auto_state.goal = None;
         self.auto_pending_goal_request = false;
@@ -18579,7 +18583,9 @@ fi\n\
             self.auto_reset_intro_timing();
             self.auto_ensure_intro_timing();
         }
-        self.auto_goal_escape_state = AutoGoalEscState::Inactive;
+        if !preserve_draft {
+            self.auto_goal_escape_state = AutoGoalEscState::Inactive;
+        }
         let hint = "Let's do this! What's your goal?".to_string();
         let status_lines = vec![hint];
         let model = AutoCoordinatorViewModel::Active(AutoActiveViewModel {
@@ -18613,7 +18619,11 @@ fi\n\
         self.bottom_pane.update_status_text("Auto Drive".to_string());
         self.auto_update_terminal_hint();
         self.bottom_pane.ensure_input_focus();
-        self.clear_composer();
+        if preserve_draft {
+            self.auto_sync_goal_escape_state_from_composer();
+        } else {
+            self.clear_composer();
+        }
         self.request_redraw();
     }
 
@@ -33444,6 +33454,57 @@ use code_core::protocol::OrderMeta;
             active.status_lines,
             vec!["Let's do this! What's your goal?".to_string()]
         );
+    }
+
+    #[test]
+    fn dismissing_completed_summary_preserves_typed_next_goal() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.last_run_summary = Some(AutoRunSummary {
+            duration: Duration::from_secs(42),
+            turns_completed: 3,
+            message: Some("All tasks done.".to_string()),
+            goal: Some("Finish feature".to_string()),
+        });
+        chat.auto_state.set_phase(AutoRunPhase::AwaitingGoalEntry);
+        chat.auto_rebuild_live_ring();
+        chat.handle_paste("Suggested goal".to_string());
+
+        assert_eq!(chat.bottom_pane.composer_text(), "Suggested goal");
+        assert!(matches!(
+            chat.auto_goal_escape_state,
+            AutoGoalEscState::NeedsEnableEditing
+        ));
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::AutoDismissSummary);
+        assert!(chat.execute_esc_intent(
+            route.intent,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ));
+
+        assert!(chat.auto_state.last_run_summary.is_none());
+        assert!(chat.auto_state.should_show_goal_entry());
+        assert_eq!(chat.bottom_pane.composer_text(), "Suggested goal");
+        assert!(matches!(
+            chat.auto_goal_escape_state,
+            AutoGoalEscState::NeedsEnableEditing
+        ));
+
+        let model = chat
+            .bottom_pane
+            .auto_view_model()
+            .expect("auto coordinator view should show preserved goal draft");
+        let AutoCoordinatorViewModel::Active(active) = model;
+        assert!(active.goal.is_none());
+        assert_eq!(
+            active.status_lines,
+            vec!["Let's do this! What's your goal?".to_string()]
+        );
+
+        let route = chat.describe_esc_context();
+        assert_eq!(route.intent, EscIntent::AutoGoalEnableEdit);
     }
 
     #[test]

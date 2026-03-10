@@ -89,11 +89,18 @@ impl ChatWidget<'_> {
             self.request_redraw();
             return;
         }
+        let should_restore_goal_entry = self.auto_state.should_show_goal_entry();
+        let preserve_goal_draft = should_restore_goal_entry
+            && !self.bottom_pane.composer_text().trim().is_empty();
         self.auto_state.last_run_summary = None;
         self.bottom_pane.clear_auto_coordinator_view(true);
         self.bottom_pane.clear_live_ring();
         self.bottom_pane.set_standard_terminal_hint(None);
         self.bottom_pane.ensure_input_focus();
+        if should_restore_goal_entry {
+            self.auto_show_goal_entry_panel_with_draft(preserve_goal_draft);
+            return;
+        }
         self.auto_rebuild_live_ring();
         self.request_redraw();
     }
