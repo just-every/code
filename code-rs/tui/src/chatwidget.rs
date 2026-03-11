@@ -10865,7 +10865,17 @@ impl ChatWidget<'_> {
     /// Push a cell using a synthetic key at the TOP of the NEXT request.
     fn history_push_top_next_req(&mut self, cell: impl HistoryCell + 'static) {
         let key = self.next_req_key_top();
-        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prelude", None);
+        let cell = Box::new(cell);
+        if matches!(cell.kind(), HistoryCellType::BackgroundEvent) {
+            let record = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::BackgroundEventCell>()
+                .map(|background| HistoryDomainRecord::BackgroundEvent(background.state().clone()));
+            let _ = self.history_insert_with_key_global_tagged(cell, key, "background", record);
+            return;
+        }
+
+        let _ = self.history_insert_with_key_global_tagged(cell, key, "prelude", None);
     }
     fn history_replace_with_record(
         &mut self,
@@ -35246,6 +35256,18 @@ use code_core::protocol::OrderMeta;
             vec![HistoryCellType::BackgroundEvent, HistoryCellType::Assistant],
             "streaming assistant output should append after the existing background tail cell",
         );
+    }
+
+    #[test]
+    fn startup_background_prelude_uses_background_tagging() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        reset_history(chat);
+
+        chat.history_push_top_next_req(history_cell::new_connecting_mcp_status());
+
+        assert_eq!(chat.history_cells.len(), 1);
+        assert_eq!(chat.history_cells[0].kind(), HistoryCellType::BackgroundEvent);
     }
 
     #[test]
