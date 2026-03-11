@@ -27,6 +27,27 @@ pub const CODEX_SANDBOX_ENV_VAR: &str = "CODEX_SANDBOX";
 
 const SPAWN_RETRY_DELAYS_MS: [u64; 3] = [0, 10, 50];
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnixChildSessionStrategy {
+    NewSession,
+    NewProcessGroup,
+}
+
+#[cfg(unix)]
+fn unix_child_session_strategy(stdio_policy: StdioPolicy) -> UnixChildSessionStrategy {
+    match stdio_policy {
+        // Shell tool commands are non-interactive, but they may launch their own
+        // long-lived descendants (for example via `nohup ... &`). Starting the
+        // shell tool in a new session ensures those descendants cannot retain
+        // the TUI's controlling terminal and steal foreground ownership.
+        StdioPolicy::RedirectForShellTool => UnixChildSessionStrategy::NewSession,
+        // Interactive children should keep terminal semantics while still being
+        // isolated in their own process group for targeted signal handling.
+        StdioPolicy::Inherit => UnixChildSessionStrategy::NewProcessGroup,
+    }
+}
+
 fn is_temporary_resource_error(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock
         || matches!(err.raw_os_error(), Some(35) | Some(libc::ENOMEM))
@@ -163,9 +184,24 @@ pub(crate) async fn spawn_child_async(
             StdioPolicy::RedirectForShellTool => crate::cgroup::default_exec_memory_max_bytes(),
             StdioPolicy::Inherit => None,
         };
+        #[cfg(unix)]
+        let session_strategy = unix_child_session_strategy(stdio_policy);
         cmd.pre_exec(move || {
-            // Start a new process group
-            let _ = libc::setpgid(0, 0);
+            #[cfg(unix)]
+            match session_strategy {
+                UnixChildSessionStrategy::NewSession => {
+                    if libc::setsid() == -1 {
+                        let err = std::io::Error::last_os_error();
+                        if err.raw_os_error() != Some(libc::EPERM) {
+                            return Err(err);
+                        }
+                    }
+                }
+                UnixChildSessionStrategy::NewProcessGroup => {
+                    // Start a new process group.
+                    let _ = libc::setpgid(0, 0);
+                }
+            }
             #[cfg(target_os = "linux")]
             {
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
@@ -212,6 +248,7 @@ pub(crate) async fn spawn_child_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::SandboxPolicy;
 
     #[cfg(unix)]
     static STDIN_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -276,5 +313,53 @@ mod tests {
         let output = child.wait_with_output().expect("wait with output");
         assert!(output.status.success(), "child should exit successfully: {output:?}");
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "eof");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn redirect_for_shell_tool_uses_new_session_strategy() {
+        assert_eq!(
+            unix_child_session_strategy(StdioPolicy::RedirectForShellTool),
+            UnixChildSessionStrategy::NewSession,
+        );
+        assert_eq!(
+            unix_child_session_strategy(StdioPolicy::Inherit),
+            UnixChildSessionStrategy::NewProcessGroup,
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn redirect_for_shell_tool_detaches_from_controlling_tty() {
+        let parent_tty = match std::fs::OpenOptions::new().read(true).open("/dev/tty") {
+            Ok(tty) => tty,
+            Err(_) => return,
+        };
+
+        drop(parent_tty);
+
+        let child = spawn_child_async(
+            PathBuf::from("python3"),
+            vec![
+                "-c".to_string(),
+                "import os\ntry:\n os.open('/dev/tty', os.O_RDONLY)\n print('tty-present')\nexcept OSError as e:\n print(f'tty-missing:{e.errno}')".to_string(),
+            ],
+            None,
+            std::env::current_dir().expect("cwd"),
+            &SandboxPolicy::DangerFullAccess,
+            StdioPolicy::RedirectForShellTool,
+            HashMap::new(),
+        )
+        .await
+        .expect("spawn shell tool child");
+
+        let output = child.wait_with_output().await.expect("wait for child");
+        assert!(output.status.success(), "child should exit successfully: {output:?}");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.trim_start().starts_with("tty-missing:"),
+            "shell tool child should not retain a controlling tty: {stdout:?}"
+        );
     }
 }
