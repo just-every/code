@@ -31,7 +31,7 @@ impl UserNotifier {
         command.arg(json);
 
         // Fire-and-forget – we do not wait for completion.
-        if let Err(e) = crate::spawn::spawn_std_command_with_retry(&mut command) {
+        if let Err(e) = crate::spawn::spawn_background_command_with_retry(&mut command) {
             warn!("failed to spawn notifier '{}': {e}", notify_command[0]);
         }
     }

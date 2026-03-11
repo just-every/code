@@ -28,6 +28,89 @@ use crate::tui::TerminalInfo;
 
 use super::state::{App, AppState, ChatWidgetArgs, FrameTimer};
 
+#[cfg(unix)]
+fn process_group_exists(pgid: libc::pid_t) -> bool {
+    if pgid <= 0 {
+        return false;
+    }
+
+    // `kill(-pgid, 0)` checks whether any process in the process group still
+    // exists without sending a signal. `EPERM` still means the group exists.
+    let result = unsafe { libc::kill(-pgid, 0) };
+    if result == 0 {
+        return true;
+    }
+
+    let err = std::io::Error::last_os_error();
+    matches!(err.raw_os_error(), Some(libc::EPERM))
+}
+
+#[cfg(unix)]
+fn reclaim_stdin_foreground_process_group(target_pgrp: libc::pid_t) -> bool {
+    if target_pgrp <= 0 {
+        return false;
+    }
+
+    unsafe {
+        let mut block_set = std::mem::zeroed();
+        let mut previous_set = std::mem::zeroed();
+        libc::sigemptyset(&mut block_set);
+        libc::sigaddset(&mut block_set, libc::SIGTTOU);
+
+        if libc::pthread_sigmask(libc::SIG_BLOCK, &block_set, &mut previous_set) != 0 {
+            return false;
+        }
+
+        let reclaimed = libc::tcsetpgrp(libc::STDIN_FILENO, target_pgrp) == 0;
+        let _ = libc::pthread_sigmask(libc::SIG_SETMASK, &previous_set, std::ptr::null_mut());
+
+        reclaimed && libc::tcgetpgrp(libc::STDIN_FILENO) == target_pgrp
+    }
+}
+
+#[cfg(unix)]
+fn stdin_is_foreground_process_group() -> bool {
+    // Avoid SIGTTIN from the input loop if some earlier terminal handoff left
+    // the TUI out of the foreground process group. In that case we should wait
+    // for foreground ownership to be restored instead of touching stdin.
+    unsafe {
+        let stdin_pgrp = libc::tcgetpgrp(libc::STDIN_FILENO);
+        if stdin_pgrp == -1 {
+            return true;
+        }
+        let self_pgrp = libc::getpgrp();
+        if stdin_pgrp == self_pgrp {
+            return true;
+        }
+
+        // Some earlier noninteractive descendant can steal the tty foreground
+        // process group and then exit, leaving stdin pointed at a dead process
+        // group forever. In that case, reclaim the tty instead of sleeping in
+        // the input loop indefinitely.
+        if !process_group_exists(stdin_pgrp) {
+            return reclaim_stdin_foreground_process_group(self_pgrp);
+        }
+
+        false
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tty_tests {
+    use super::*;
+
+    #[test]
+    fn current_process_group_exists() {
+        let current_pgrp = unsafe { libc::getpgrp() };
+        assert!(process_group_exists(current_pgrp));
+    }
+
+    #[test]
+    fn absurd_process_group_is_missing() {
+        assert!(!process_group_exists(999_999_999));
+    }
+}
+
 impl App<'_> {
     pub(crate) fn new(
         config: Config,
@@ -135,6 +218,11 @@ impl App<'_> {
                 loop {
                     if !input_running_thread.load(Ordering::Relaxed) { break; }
                     if input_suspended_thread.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    if !stdin_is_foreground_process_group() {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
