@@ -977,6 +977,7 @@ mod tests {
     fn rollout_skip_flag_detects_mcp_function_calls() {
         let item = RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             name: "mcp__context7__resolve".to_string(),
+            namespace: None,
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
             id: None,

@@ -690,6 +690,7 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
             ResponseItem::FunctionCall {
                 id,
                 name,
+                namespace,
                 arguments,
                 call_id,
             } => {
@@ -697,6 +698,7 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                 Some(ResponseItem::FunctionCall {
                     id,
                     name,
+                    namespace,
                     arguments,
                     call_id,
                 })
@@ -753,6 +755,10 @@ pub fn prune_orphan_tool_outputs(items: &mut Vec<ResponseItem>) -> usize {
     for item in items.iter() {
         match item {
             ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            }
             | ResponseItem::CustomToolCall { call_id, .. } => {
                 seen_calls.insert(call_id.clone());
             }
@@ -776,6 +782,10 @@ pub fn prune_orphan_tool_outputs(items: &mut Vec<ResponseItem>) -> usize {
     let before = items.len();
     items.retain(|item| match item {
         ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::ToolSearchOutput {
+            call_id: Some(call_id),
+            ..
+        }
         | ResponseItem::CustomToolCallOutput { call_id, .. } => seen_calls.contains(call_id),
         _ => true,
     });

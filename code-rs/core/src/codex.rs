@@ -189,6 +189,7 @@ fn to_proto_approval_policy(policy: AskForApproval) -> ProtoAskForApproval {
         AskForApproval::Reject(config) => ProtoAskForApproval::Reject(ProtoRejectConfig {
             sandbox_approval: config.sandbox_approval,
             rules: config.rules,
+            skill_approval: config.skill_approval,
             request_permissions: config.request_permissions,
             mcp_elicitations: config.mcp_elicitations,
         }),
@@ -1008,7 +1009,6 @@ use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ReasoningItemReasoningSummary;
 use code_protocol::models::ResponseInputItem;
 use code_protocol::models::ResponseItem;
-use code_protocol::models::ShellToolCallParams;
 use code_protocol::models::SandboxPermissions;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::get_openai_tools;

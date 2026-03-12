@@ -502,8 +502,9 @@ pub async fn auth_for_stored_account(
                         return Err(std::io::Error::other(err));
                     }
                 };
-                tokens.id_token =
-                    parse_id_token(&refresh_response.id_token).map_err(std::io::Error::other)?;
+                if let Some(id_token) = refresh_response.id_token {
+                    tokens.id_token = parse_id_token(&id_token).map_err(std::io::Error::other)?;
+                }
                 if let Some(access_token) = refresh_response.access_token {
                     tokens.access_token = access_token;
                 }
@@ -721,14 +722,16 @@ pub fn write_auth_json(auth_file: &Path, auth_dot_json: &AuthDotJson) -> std::io
 
 async fn update_tokens(
     auth_file: &Path,
-    id_token: String,
+    id_token: Option<String>,
     access_token: Option<String>,
     refresh_token: Option<String>,
 ) -> std::io::Result<AuthDotJson> {
     let mut auth_dot_json = try_read_auth_json(auth_file)?;
 
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
-    tokens.id_token = parse_id_token(&id_token).map_err(std::io::Error::other)?;
+    if let Some(id_token) = id_token {
+        tokens.id_token = parse_id_token(&id_token).map_err(std::io::Error::other)?;
+    }
     if let Some(access_token) = access_token {
         tokens.access_token = access_token.to_string();
     }
@@ -764,7 +767,6 @@ async fn try_refresh_token(
         client_id: CLIENT_ID,
         grant_type: "refresh_token",
         refresh_token,
-        scope: "openid profile email",
     };
 
     // Use shared client factory to include standard headers
@@ -797,12 +799,11 @@ struct RefreshRequest {
     client_id: &'static str,
     grant_type: &'static str,
     refresh_token: String,
-    scope: &'static str,
 }
 
 #[derive(Deserialize, Clone)]
 struct RefreshResponse {
-    id_token: String,
+    id_token: Option<String>,
     access_token: Option<String>,
     refresh_token: Option<String>,
 }
@@ -1351,6 +1352,47 @@ mod tests {
         let auth_json = serde_json::to_string_pretty(&auth_json_data)?;
         std::fs::write(auth_file, auth_json)?;
         Ok(fake_jwt)
+    }
+
+    #[tokio::test]
+    async fn update_tokens_keeps_existing_id_token_when_refresh_omits_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let original_id_token = write_auth_file(
+            AuthFileParams {
+                openai_api_key: None,
+                chatgpt_plan_type: "plus".to_string(),
+            },
+            tmp.path(),
+        )
+        .expect("write auth file");
+
+        let updated = update_tokens(
+            &get_auth_file(tmp.path()),
+            None,
+            Some("updated-access-token".to_string()),
+            Some("updated-refresh-token".to_string()),
+        )
+        .await
+        .expect("update tokens");
+
+        let tokens = updated.tokens.expect("tokens after refresh");
+        let expected = parse_id_token(&original_id_token).expect("parse original id token");
+        assert_eq!(tokens.id_token, expected);
+        assert_eq!(tokens.access_token, "updated-access-token");
+        assert_eq!(tokens.refresh_token, "updated-refresh-token");
+    }
+
+    #[test]
+    fn refresh_response_deserializes_without_id_token() {
+        let parsed = serde_json::from_value::<RefreshResponse>(serde_json::json!({
+            "access_token": "updated-access-token",
+            "refresh_token": "updated-refresh-token"
+        }))
+        .expect("deserialize refresh response");
+
+        assert!(parsed.id_token.is_none());
+        assert_eq!(parsed.access_token.as_deref(), Some("updated-access-token"));
+        assert_eq!(parsed.refresh_token.as_deref(), Some("updated-refresh-token"));
     }
 }
 

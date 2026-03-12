@@ -51,6 +51,12 @@ pub struct FreeformToolFormat {
 pub enum OpenAiTool {
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "tool_search")]
+    ToolSearch {
+        execution: String,
+        description: String,
+        parameters: JsonSchema,
+    },
     #[serde(rename = "local_shell")]
     LocalShell {},
     #[serde(rename = "image_generation")]
@@ -353,7 +359,7 @@ impl ToolsConfig {
 /// Whether additional properties are allowed, and if so, any required schema
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub(crate) enum AdditionalProperties {
+pub enum AdditionalProperties {
     Boolean(bool),
     Schema(Box<JsonSchema>),
 }
@@ -373,7 +379,7 @@ impl From<JsonSchema> for AdditionalProperties {
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub(crate) enum JsonSchema {
+pub enum JsonSchema {
     Boolean {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -671,17 +677,16 @@ fn create_search_tool_bm25_tool() -> OpenAiTool {
         },
     );
 
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "search_tool_bm25".to_string(),
+    OpenAiTool::ToolSearch {
+        execution: "client".to_string(),
         description: "Searches MCP tool metadata with BM25 and exposes matching tools for the current session/thread."
             .to_string(),
-        strict: false,
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["query".to_string()]),
             additional_properties: Some(false.into()),
         },
-    })
+    }
 }
 
 fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
@@ -1354,6 +1359,7 @@ mod tests {
             .iter()
             .map(|tool| match tool {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
+                OpenAiTool::ToolSearch { .. } => "tool_search",
                 OpenAiTool::LocalShell {} => "local_shell",
                 OpenAiTool::ImageGeneration { .. } => "image_generation",
                 OpenAiTool::WebSearch(_) => "web_search",

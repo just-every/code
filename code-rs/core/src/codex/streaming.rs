@@ -33,6 +33,8 @@ use code_protocol::models::ResponseItem;
 use code_protocol::models::FunctionCallOutputContentItem;
 use code_protocol::models::ImageDetail;
 use code_protocol::models::FunctionCallOutputPayload;
+use code_protocol::models::ShellCommandToolCallParams;
+use code_protocol::models::ShellToolCallParams;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,7 +46,8 @@ enum AgentTaskKind {
 
 const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
     include_str!("../../templates/search_tool/developer_instructions.md");
-const SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+const LEGACY_SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
 const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
 const AUTO_CONTEXT_JUDGE_MIN_TOKENS: u64 = 150_000;
 const AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS: u64 = 20_000;
@@ -2589,6 +2592,25 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                             );
                         }
                         (
+                            ResponseItem::ToolSearchCall { .. },
+                            Some(ResponseInputItem::ToolSearchOutput {
+                                call_id,
+                                status,
+                                execution,
+                                tools,
+                            }),
+                        ) => {
+                            items_to_record_in_conversation_history.push(item.clone());
+                            items_to_record_in_conversation_history.push(
+                                ResponseItem::ToolSearchOutput {
+                                    call_id: Some(call_id.clone()),
+                                    status: status.clone(),
+                                    execution: execution.clone(),
+                                    tools: tools.clone(),
+                                },
+                            );
+                        }
+                        (
                             ResponseItem::Reasoning {
                                 id,
                                 summary,
@@ -3415,7 +3437,12 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
     for item in history {
         match item {
             ResponseItem::FunctionCall { name, call_id, .. } => {
-                if name == SEARCH_TOOL_BM25_TOOL_NAME {
+                if name == TOOL_SEARCH_TOOL_NAME || name == LEGACY_SEARCH_TOOL_BM25_TOOL_NAME {
+                    search_call_ids.insert(call_id.clone());
+                }
+            }
+            ResponseItem::ToolSearchCall { call_id, .. } => {
+                if let Some(call_id) = call_id {
                     search_call_ids.insert(call_id.clone());
                 }
             }
@@ -3442,6 +3469,26 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
                 else {
                     continue;
                 };
+                active_selected_tools = Some(selected_tools);
+            }
+            ResponseItem::ToolSearchOutput { call_id, tools, .. } => {
+                let Some(call_id) = call_id else {
+                    continue;
+                };
+                if !search_call_ids.contains(call_id) {
+                    continue;
+                }
+                let selected_tools = tools
+                    .iter()
+                    .filter_map(|tool| {
+                        tool.get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>();
+                if selected_tools.is_empty() {
+                    continue;
+                }
                 active_selected_tools = Some(selected_tools);
             }
             _ => {}
@@ -3535,12 +3582,14 @@ mod mcp_tool_selection_tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "shell".to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-shell".to_string(),
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search-1".to_string(),
             },
@@ -3555,7 +3604,8 @@ mod mcp_tool_selection_tests {
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search-2".to_string(),
             },
@@ -3589,6 +3639,7 @@ mod mcp_tool_selection_tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "shell".to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-shell".to_string(),
             },
@@ -3603,7 +3654,8 @@ mod mcp_tool_selection_tests {
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search".to_string(),
             },
@@ -4227,6 +4279,22 @@ async fn handle_response_item(
                 .await,
             )
         }
+        ResponseItem::ToolSearchCall {
+            call_id,
+            execution,
+            arguments,
+            ..
+        } => Some(
+            handle_tool_search(
+                sess,
+                ToolSearchResponseMode::ToolSearchOutput {
+                    call_id: call_id.unwrap_or_default(),
+                    execution,
+                },
+                arguments,
+            )
+            .await,
+        ),
         ResponseItem::LocalShellCall {
             id,
             call_id,
@@ -4284,6 +4352,10 @@ async fn handle_response_item(
         }
         ResponseItem::FunctionCallOutput { .. } => {
             debug!("unexpected FunctionCallOutput from stream");
+            None
+        }
+        ResponseItem::ToolSearchOutput { .. } => {
+            debug!("unexpected ToolSearchOutput from stream");
             None
         }
         ResponseItem::CustomToolCallOutput { .. } => {
@@ -4437,7 +4509,7 @@ async fn handle_function_call(
 ) -> ResponseInputItem {
     let ctx = ToolCallCtx::new(sub_id.clone(), call_id.clone(), seq_hint, output_index);
     match name.as_str() {
-        "container.exec" | "shell" => {
+        "container.exec" | "shell" | "local_shell" => {
             let params = match parse_container_exec_arguments(arguments, sess, &call_id) {
                 Ok(params) => params,
                 Err(output) => {
@@ -4446,6 +4518,25 @@ async fn handle_function_call(
             };
             handle_container_exec_with_params(params, sess, turn_diff_tracker, sub_id, call_id, seq_hint, output_index, attempt_req)
                 .await
+        }
+        "shell_command" => {
+            let params = match parse_shell_command_arguments(arguments, sess, &call_id) {
+                Ok(params) => params,
+                Err(output) => {
+                    return *output;
+                }
+            };
+            handle_container_exec_with_params(
+                params,
+                sess,
+                turn_diff_tracker,
+                sub_id,
+                call_id,
+                seq_hint,
+                output_index,
+                attempt_req,
+            )
+            .await
         }
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
         "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
@@ -4459,7 +4550,29 @@ async fn handle_function_call(
         "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
-        SEARCH_TOOL_BM25_TOOL_NAME => handle_search_tool_bm25(sess, &ctx, arguments).await,
+        TOOL_SEARCH_TOOL_NAME | LEGACY_SEARCH_TOOL_BM25_TOOL_NAME => {
+            let arguments = match serde_json::from_str::<serde_json::Value>(&arguments) {
+                Ok(arguments) => arguments,
+                Err(err) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                                "invalid {TOOL_SEARCH_TOOL_NAME} arguments: {err}"
+                            )),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            handle_tool_search(
+                sess,
+                ToolSearchResponseMode::FunctionCallOutput(ctx.call_id.clone()),
+                arguments,
+            )
+            .await
+        }
         _ => {
             if sess.is_dynamic_tool(&name) {
                 return handle_dynamic_tool_call(sess, &ctx, name, arguments).await;
@@ -4657,17 +4770,71 @@ async fn handle_dynamic_tool_call(
     }
 }
 
-const SEARCH_TOOL_BM25_DEFAULT_LIMIT: usize = 8;
+const TOOL_SEARCH_DEFAULT_LIMIT: usize = 8;
 
-fn search_tool_bm25_default_limit() -> usize {
-    SEARCH_TOOL_BM25_DEFAULT_LIMIT
+fn tool_search_default_limit() -> usize {
+    TOOL_SEARCH_DEFAULT_LIMIT
 }
 
 #[derive(Deserialize)]
-struct SearchToolBm25Args {
+struct ToolSearchArgs {
     query: String,
-    #[serde(default = "search_tool_bm25_default_limit")]
+    #[serde(default = "tool_search_default_limit")]
     limit: usize,
+}
+
+enum ToolSearchResponseMode {
+    FunctionCallOutput(String),
+    ToolSearchOutput { call_id: String, execution: String },
+}
+
+impl ToolSearchResponseMode {
+    fn error(self, message: impl Into<String>) -> ResponseInputItem {
+        let message = message.into();
+        match self {
+            Self::FunctionCallOutput(call_id) => ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(message),
+                    success: Some(false),
+                },
+            },
+            Self::ToolSearchOutput { call_id, execution } => ResponseInputItem::ToolSearchOutput {
+                call_id,
+                status: "failed".to_string(),
+                execution,
+                tools: Vec::new(),
+            },
+        }
+    }
+
+    fn success(self, query: &str, total_tools: usize, active_selected_tools: Vec<String>, tools: Vec<serde_json::Value>) -> ResponseInputItem {
+        match self {
+            Self::FunctionCallOutput(call_id) => {
+                let content = serde_json::json!({
+                    "query": query,
+                    "total_tools": total_tools,
+                    "active_selected_tools": active_selected_tools,
+                    "tools": tools,
+                })
+                .to_string();
+
+                ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        body: code_protocol::models::FunctionCallOutputBody::Text(content),
+                        success: Some(true),
+                    },
+                }
+            }
+            Self::ToolSearchOutput { call_id, execution } => ResponseInputItem::ToolSearchOutput {
+                call_id,
+                status: "completed".to_string(),
+                execution,
+                tools,
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -4769,49 +4936,25 @@ fn score_search_candidate(
     score
 }
 
-async fn handle_search_tool_bm25(
+async fn handle_tool_search(
     sess: &Session,
-    ctx: &ToolCallCtx,
-    arguments: String,
+    response_mode: ToolSearchResponseMode,
+    arguments: serde_json::Value,
 ) -> ResponseInputItem {
-    let args = match serde_json::from_str::<SearchToolBm25Args>(&arguments) {
+    let args = match serde_json::from_value::<ToolSearchArgs>(arguments) {
         Ok(args) => args,
         Err(err) => {
-            return ResponseInputItem::FunctionCallOutput {
-                call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
-                        "invalid {SEARCH_TOOL_BM25_TOOL_NAME} arguments: {err}"
-                    )),
-                    success: Some(false),
-                },
-            };
+            return response_mode.error(format!("invalid {TOOL_SEARCH_TOOL_NAME} arguments: {err}"));
         }
     };
 
     let query = args.query.trim();
     if query.is_empty() {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id: ctx.call_id.clone(),
-            output: FunctionCallOutputPayload {
-                body: code_protocol::models::FunctionCallOutputBody::Text(
-                    "query must not be empty".to_string(),
-                ),
-                success: Some(false),
-            },
-        };
+        return response_mode.error("query must not be empty");
     }
 
     if args.limit == 0 {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id: ctx.call_id.clone(),
-            output: FunctionCallOutputPayload {
-                body: code_protocol::models::FunctionCallOutputBody::Text(
-                    "limit must be greater than zero".to_string(),
-                ),
-                success: Some(false),
-            },
-        };
+        return response_mode.error("limit must be greater than zero");
     }
 
     let all_mcp_tools = sess.mcp_connection_manager.list_all_tools_with_server_names();
@@ -4873,21 +5016,7 @@ async fn handle_search_tool_bm25(
         }));
     }
 
-    let content = serde_json::json!({
-        "query": query,
-        "total_tools": total_tools,
-        "active_selected_tools": active_selected_tools,
-        "tools": tools_payload,
-    })
-    .to_string();
-
-    ResponseInputItem::FunctionCallOutput {
-        call_id: ctx.call_id.clone(),
-        output: FunctionCallOutputPayload {
-            body: code_protocol::models::FunctionCallOutputBody::Text(content),
-            success: Some(true),
-        },
-    }
+    response_mode.success(query, total_tools, active_selected_tools, tools_payload)
 }
 
 async fn handle_browser_cleanup(sess: &Session, ctx: &ToolCallCtx) -> ResponseInputItem {
@@ -7427,6 +7556,46 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
     }
 }
 
+fn to_exec_params_from_shell_command(params: ShellCommandToolCallParams, sess: &Session) -> ExecParams {
+    let timeout_ms = params.timeout_ms.map(|ms| ms.max(MIN_SHELL_TIMEOUT_MS));
+    let with_escalated_permissions = params
+        .sandbox_permissions
+        .and_then(|p| p.requires_escalated_permissions().then_some(true));
+    let command = sess
+        .user_shell
+        .format_default_shell_invocation(vec![params.command.clone()])
+        .unwrap_or_else(|| default_shell_command(params.command));
+
+    ExecParams {
+        command,
+        cwd: sess.resolve_path(params.workdir.clone()),
+        timeout_ms,
+        env: create_env(&sess.shell_environment_policy),
+        with_escalated_permissions,
+        justification: params.justification,
+    }
+}
+
+#[cfg(unix)]
+fn default_shell_command(command: String) -> Vec<String> {
+    vec!["sh".to_string(), "-lc".to_string(), command]
+}
+
+#[cfg(target_os = "windows")]
+fn default_shell_command(command: String) -> Vec<String> {
+    vec![
+        "powershell.exe".to_string(),
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        command,
+    ]
+}
+
+#[cfg(all(not(unix), not(target_os = "windows")))]
+fn default_shell_command(command: String) -> Vec<String> {
+    vec![command]
+}
+
 fn resolve_agent_read_only(
     write: Option<bool>,
     read_only: Option<bool>,
@@ -7541,6 +7710,28 @@ fn parse_container_exec_arguments(
                 output: FunctionCallOutputPayload {
                     body: code_protocol::models::FunctionCallOutputBody::Text(format!("failed to parse function arguments: {e}")),
                     success: None},
+            };
+            Err(Box::new(output))
+        }
+    }
+}
+
+fn parse_shell_command_arguments(
+    arguments: String,
+    sess: &Session,
+    call_id: &str,
+) -> Result<ExecParams, Box<ResponseInputItem>> {
+    match serde_json::from_str::<ShellCommandToolCallParams>(&arguments) {
+        Ok(shell_command_params) => Ok(to_exec_params_from_shell_command(shell_command_params, sess)),
+        Err(err) => {
+            let output = ResponseInputItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "failed to parse function arguments: {err}"
+                    )),
+                    success: None,
+                },
             };
             Err(Box::new(output))
         }

@@ -570,6 +570,7 @@ impl MessageProcessor {
                 code_core::protocol::AskForApproval::Reject(config) => V2AskForApproval::Reject {
                     sandbox_approval: config.sandbox_approval,
                     rules: config.rules,
+                    skill_approval: config.skill_approval,
                     request_permissions: config.request_permissions,
                     mcp_elicitations: config.mcp_elicitations,
                 },
@@ -766,6 +767,7 @@ fn map_approval_policy_to_v2(
         code_core::protocol::AskForApproval::Reject(config) => V2AskForApproval::Reject {
             sandbox_approval: config.sandbox_approval,
             rules: config.rules,
+            skill_approval: config.skill_approval,
             request_permissions: config.request_permissions,
             mcp_elicitations: config.mcp_elicitations,
         },

@@ -2111,6 +2111,7 @@ fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) ->
             core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
                 rules: config.rules,
+                skill_approval: config.skill_approval,
                 request_permissions: config.request_permissions,
                 mcp_elicitations: config.mcp_elicitations,
             })
@@ -2128,6 +2129,7 @@ fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protoc
             code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
                 rules: config.rules,
+                skill_approval: config.skill_approval,
                 request_permissions: config.request_permissions,
                 mcp_elicitations: config.mcp_elicitations,
             })

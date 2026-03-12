@@ -143,7 +143,9 @@ pub(crate) fn map_response_item_to_event_messages(
 
         // Variants that require side effects are handled by higher layers and do not emit events here.
         ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }

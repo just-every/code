@@ -80,10 +80,14 @@ pub(crate) async fn stream_chat_completions(
     for item in &input {
         match item {
             ResponseItem::Message { role, .. } => last_emitted_role = Some(role.as_str()),
-            ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
+            ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::LocalShellCall { .. } => {
                 last_emitted_role = Some("assistant")
             }
-            ResponseItem::FunctionCallOutput { .. } => last_emitted_role = Some("tool"),
+            ResponseItem::FunctionCallOutput { .. } | ResponseItem::ToolSearchOutput { .. } => {
+                last_emitted_role = Some("tool")
+            }
             ResponseItem::CompactionSummary { .. } => last_emitted_role = Some("assistant"),
             ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
             ResponseItem::CustomToolCall { .. } => {}
@@ -147,7 +151,9 @@ pub(crate) async fn stream_chat_completions(
                 // Otherwise, attach to immediate next assistant anchor (tool-calls or assistant message)
                 if !attached && idx + 1 < input.len() {
                     match &input[idx + 1] {
-                        ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
+                        ResponseItem::FunctionCall { .. }
+                        | ResponseItem::ToolSearchCall { .. }
+                        | ResponseItem::LocalShellCall { .. } => {
                             reasoning_by_anchor_index
                                 .entry(idx + 1)
                                 .and_modify(|v| v.push_str(&text))
@@ -236,6 +242,24 @@ pub(crate) async fn stream_chat_completions(
                 });
                 push_tool_call_message(&mut messages, tool_call, reasoning);
             }
+            ResponseItem::ToolSearchCall {
+                call_id,
+                status,
+                execution,
+                arguments,
+                ..
+            } => {
+                let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
+                let tool_call = json!({
+                    "id": call_id.clone().unwrap_or_default(),
+                    "type": "tool_search_call",
+                    "call_id": call_id,
+                    "status": status,
+                    "execution": execution,
+                    "arguments": arguments,
+                });
+                push_tool_call_message(&mut messages, tool_call, reasoning);
+            }
             ResponseItem::LocalShellCall {
                 id,
                 call_id: _,
@@ -257,6 +281,23 @@ pub(crate) async fn stream_chat_completions(
                     "role": "tool",
                     "tool_call_id": call_id,
                     "content": output.to_string(),
+                }));
+            }
+            ResponseItem::ToolSearchOutput {
+                call_id,
+                status,
+                execution,
+                tools,
+            } => {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id.clone().unwrap_or_default(),
+                    "content": serde_json::json!({
+                        "status": status,
+                        "execution": execution,
+                        "tools": tools,
+                    })
+                    .to_string(),
                 }));
             }
             ResponseItem::CustomToolCall {
@@ -904,6 +945,7 @@ async fn process_chat_sse<S>(
                         let item = ResponseItem::FunctionCall {
                             id: current_item_id.clone(),
                             name: fn_call_state.name.clone().unwrap_or_else(|| "".to_string()),
+                            namespace: None,
                             arguments: fn_call_state.arguments.clone(),
                             call_id: fn_call_state.call_id.clone().unwrap_or_else(String::new),
                         };
