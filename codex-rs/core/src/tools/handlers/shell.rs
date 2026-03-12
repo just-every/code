@@ -403,6 +403,7 @@ impl ShellHandler {
                 command: &exec_params.command,
                 approval_policy: turn.approval_policy.value(),
                 sandbox_policy: turn.sandbox_policy.get(),
+                file_system_sandbox_policy: &turn.file_system_sandbox_policy,
                 sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
                     codex_protocol::models::SandboxPermissions::UseDefault
                 } else {
@@ -421,6 +422,9 @@ impl ShellHandler {
             network: exec_params.network.clone(),
             sandbox_permissions: effective_additional_permissions.sandbox_permissions,
             additional_permissions: normalized_additional_permissions,
+            #[cfg(unix)]
+            additional_permissions_preapproved: effective_additional_permissions
+                .permissions_preapproved,
             justification: exec_params.justification.clone(),
             exec_approval_requirement,
         };

@@ -6,6 +6,8 @@ use app_test_support::McpProcess;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::PluginAuthPolicy;
+use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::RequestId;
@@ -24,6 +26,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_CURATED_PLUGIN_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
 #[tokio::test]
 async fn plugin_list_returns_invalid_request_for_invalid_marketplace_file() -> Result<()> {
@@ -222,10 +225,26 @@ enabled = false
     assert_eq!(marketplace.plugins[0].name, "enabled-plugin");
     assert_eq!(marketplace.plugins[0].installed, true);
     assert_eq!(marketplace.plugins[0].enabled, true);
+    assert_eq!(
+        marketplace.plugins[0].install_policy,
+        PluginInstallPolicy::Available
+    );
+    assert_eq!(
+        marketplace.plugins[0].auth_policy,
+        PluginAuthPolicy::OnInstall
+    );
     assert_eq!(marketplace.plugins[1].id, "disabled-plugin@codex-curated");
     assert_eq!(marketplace.plugins[1].name, "disabled-plugin");
     assert_eq!(marketplace.plugins[1].installed, true);
     assert_eq!(marketplace.plugins[1].enabled, false);
+    assert_eq!(
+        marketplace.plugins[1].install_policy,
+        PluginInstallPolicy::Available
+    );
+    assert_eq!(
+        marketplace.plugins[1].auth_policy,
+        PluginAuthPolicy::OnInstall
+    );
     assert_eq!(
         marketplace.plugins[2].id,
         "uninstalled-plugin@codex-curated"
@@ -233,6 +252,14 @@ enabled = false
     assert_eq!(marketplace.plugins[2].name, "uninstalled-plugin");
     assert_eq!(marketplace.plugins[2].installed, false);
     assert_eq!(marketplace.plugins[2].enabled, false);
+    assert_eq!(
+        marketplace.plugins[2].install_policy,
+        PluginInstallPolicy::Available
+    );
+    assert_eq!(
+        marketplace.plugins[2].auth_policy,
+        PluginAuthPolicy::OnInstall
+    );
     Ok(())
 }
 
@@ -358,7 +385,10 @@ async fn plugin_list_returns_plugin_interface_with_absolute_asset_paths() -> Res
       "source": {
         "source": "local",
         "path": "./plugins/demo-plugin"
-      }
+      },
+      "installPolicy": "AVAILABLE",
+      "authPolicy": "ON_INSTALL",
+      "category": "Design"
     }
   ]
 }"#,
@@ -413,6 +443,8 @@ async fn plugin_list_returns_plugin_interface_with_absolute_asset_paths() -> Res
     assert_eq!(plugin.id, "demo-plugin@codex-curated");
     assert_eq!(plugin.installed, false);
     assert_eq!(plugin.enabled, false);
+    assert_eq!(plugin.install_policy, PluginInstallPolicy::Available);
+    assert_eq!(plugin.auth_policy, PluginAuthPolicy::OnInstall);
     let interface = plugin
         .interface
         .as_ref()
@@ -421,6 +453,7 @@ async fn plugin_list_returns_plugin_interface_with_absolute_asset_paths() -> Res
         interface.display_name.as_deref(),
         Some("Plugin Display Name")
     );
+    assert_eq!(interface.category.as_deref(), Some("Design"));
     assert_eq!(
         interface.website_url.as_deref(),
         Some("https://openai.com/")
@@ -581,7 +614,9 @@ async fn plugin_list_force_remote_sync_reconciles_curated_plugin_state() -> Resu
     assert!(
         codex_home
             .path()
-            .join("plugins/cache/openai-curated/gmail/local")
+            .join(format!(
+                "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}"
+            ))
             .is_dir()
     );
     assert!(
@@ -674,5 +709,10 @@ fn write_openai_curated_marketplace(
             format!(r#"{{"name":"{plugin_name}"}}"#),
         )?;
     }
+    std::fs::create_dir_all(codex_home.join(".tmp"))?;
+    std::fs::write(
+        codex_home.join(".tmp/plugins.sha"),
+        format!("{TEST_CURATED_PLUGIN_SHA}\n"),
+    )?;
     Ok(())
 }

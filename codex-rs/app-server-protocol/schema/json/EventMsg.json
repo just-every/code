@@ -3015,9 +3015,15 @@
               "description": "Identifier for the collab tool call.",
               "type": "string"
             },
+            "model": {
+              "type": "string"
+            },
             "prompt": {
               "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
               "type": "string"
+            },
+            "reasoning_effort": {
+              "$ref": "#/definitions/ReasoningEffort"
             },
             "sender_thread_id": {
               "allOf": [
@@ -3037,7 +3043,9 @@
           },
           "required": [
             "call_id",
+            "model",
             "prompt",
+            "reasoning_effort",
             "sender_thread_id",
             "type"
           ],
@@ -3049,6 +3057,10 @@
           "properties": {
             "call_id": {
               "description": "Identifier for the collab tool call.",
+              "type": "string"
+            },
+            "model": {
+              "description": "Model requested for the spawned agent.",
               "type": "string"
             },
             "new_agent_nickname": {
@@ -3080,6 +3092,14 @@
               "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
               "type": "string"
             },
+            "reasoning_effort": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ReasoningEffort"
+                }
+              ],
+              "description": "Reasoning effort requested for the spawned agent."
+            },
             "sender_thread_id": {
               "allOf": [
                 {
@@ -3106,7 +3126,9 @@
           },
           "required": [
             "call_id",
+            "model",
             "prompt",
+            "reasoning_effort",
             "sender_thread_id",
             "status",
             "type"
@@ -4044,6 +4066,14 @@
         }
       ]
     },
+    "MacOsContactsPermission": {
+      "enum": [
+        "none",
+        "read_only",
+        "read_write"
+      ],
+      "type": "string"
+    },
     "MacOsPreferencesPermission": {
       "enum": [
         "none",
@@ -4070,6 +4100,18 @@
           "default": false,
           "type": "boolean"
         },
+        "macos_contacts": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MacOsContactsPermission"
+            }
+          ],
+          "default": "none"
+        },
+        "macos_launch_services": {
+          "default": false,
+          "type": "boolean"
+        },
         "macos_preferences": {
           "allOf": [
             {
@@ -4077,6 +4119,10 @@
             }
           ],
           "default": "read_only"
+        },
+        "macos_reminders": {
+          "default": false,
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -4920,6 +4966,11 @@
         "sandbox_approval": {
           "description": "Reject approval prompts related to sandbox escalation.",
           "type": "boolean"
+        },
+        "skill_approval": {
+          "default": false,
+          "description": "Reject approval prompts triggered by skill script execution.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -5249,6 +5300,12 @@
             "name": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "function_call"
@@ -5264,6 +5321,47 @@
             "type"
           ],
           "title": "FunctionCallResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "arguments": true,
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "tool_search_call"
+              ],
+              "title": "ToolSearchCallResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "arguments",
+            "execution",
+            "type"
+          ],
+          "title": "ToolSearchCallResponseItem",
           "type": "object"
         },
         {
@@ -5353,6 +5451,41 @@
             "type"
           ],
           "title": "CustomToolCallOutputResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tools": {
+              "items": true,
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "tool_search_output"
+              ],
+              "title": "ToolSearchOutputResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "execution",
+            "status",
+            "tools",
+            "type"
+          ],
+          "title": "ToolSearchOutputResponseItem",
           "type": "object"
         },
         {
@@ -9115,9 +9248,15 @@
           "description": "Identifier for the collab tool call.",
           "type": "string"
         },
+        "model": {
+          "type": "string"
+        },
         "prompt": {
           "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
           "type": "string"
+        },
+        "reasoning_effort": {
+          "$ref": "#/definitions/ReasoningEffort"
         },
         "sender_thread_id": {
           "allOf": [
@@ -9137,7 +9276,9 @@
       },
       "required": [
         "call_id",
+        "model",
         "prompt",
+        "reasoning_effort",
         "sender_thread_id",
         "type"
       ],
@@ -9149,6 +9290,10 @@
       "properties": {
         "call_id": {
           "description": "Identifier for the collab tool call.",
+          "type": "string"
+        },
+        "model": {
+          "description": "Model requested for the spawned agent.",
           "type": "string"
         },
         "new_agent_nickname": {
@@ -9180,6 +9325,14 @@
           "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
           "type": "string"
         },
+        "reasoning_effort": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            }
+          ],
+          "description": "Reasoning effort requested for the spawned agent."
+        },
         "sender_thread_id": {
           "allOf": [
             {
@@ -9206,7 +9359,9 @@
       },
       "required": [
         "call_id",
+        "model",
         "prompt",
+        "reasoning_effort",
         "sender_thread_id",
         "status",
         "type"

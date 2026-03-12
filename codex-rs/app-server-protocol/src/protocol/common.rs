@@ -44,15 +44,15 @@ pub enum AuthMode {
 
 macro_rules! experimental_reason_expr {
     // If a request variant is explicitly marked experimental, that reason wins.
-    (#[experimental($reason:expr)] $params:ident $(, $inspect_params:tt)?) => {
+    (variant $variant:ident, #[experimental($reason:expr)] $params:ident $(, $inspect_params:tt)?) => {
         Some($reason)
     };
     // `inspect_params: true` is used when a method is mostly stable but needs
     // field-level gating from its params type (for example, ThreadStart).
-    ($params:ident, true) => {
+    (variant $variant:ident, $params:ident, true) => {
         crate::experimental_api::ExperimentalApi::experimental_reason($params)
     };
-    ($params:ident $(, $inspect_params:tt)?) => {
+    (variant $variant:ident, $params:ident $(, $inspect_params:tt)?) => {
         None
     };
 }
@@ -136,6 +136,7 @@ macro_rules! client_request_definitions {
                     $(
                         Self::$variant { params: _params, .. } => {
                             experimental_reason_expr!(
+                                variant $variant,
                                 $(#[experimental($reason)])?
                                 _params
                                 $(, $inspect_params)?
@@ -954,7 +955,7 @@ mod tests {
                 capabilities: Some(v1::InitializeCapabilities {
                     experimental_api: true,
                     opt_out_notification_methods: Some(vec![
-                        "codex/event/session_configured".to_string(),
+                        "thread/started".to_string(),
                         "item/agentMessage/delta".to_string(),
                     ]),
                 }),
@@ -974,7 +975,7 @@ mod tests {
                     "capabilities": {
                         "experimentalApi": true,
                         "optOutNotificationMethods": [
-                            "codex/event/session_configured",
+                            "thread/started",
                             "item/agentMessage/delta"
                         ]
                     }
@@ -999,7 +1000,7 @@ mod tests {
                 "capabilities": {
                     "experimentalApi": true,
                     "optOutNotificationMethods": [
-                        "codex/event/session_configured",
+                        "thread/started",
                         "item/agentMessage/delta"
                     ]
                 }
@@ -1019,7 +1020,7 @@ mod tests {
                     capabilities: Some(v1::InitializeCapabilities {
                         experimental_api: true,
                         opt_out_notification_methods: Some(vec![
-                            "codex/event/session_configured".to_string(),
+                            "thread/started".to_string(),
                             "item/agentMessage/delta".to_string(),
                         ]),
                     }),

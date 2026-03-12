@@ -4,7 +4,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::client_common::tools::ToolSpec;
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::memories::usage::emit_metric_for_tool_read;
 use crate::protocol::SandboxPolicy;
@@ -40,6 +39,7 @@ pub trait ToolHandler: Send + Sync {
         matches!(
             (self.kind(), payload),
             (ToolKind::Function, ToolPayload::Function { .. })
+                | (ToolKind::Function, ToolPayload::ToolSearch { .. })
                 | (ToolKind::Mcp, ToolPayload::Mcp { .. })
         )
     }
@@ -121,6 +121,14 @@ where
     }
 }
 
+pub(crate) fn tool_handler_key(tool_name: &str, namespace: Option<&str>) -> String {
+    if let Some(namespace) = namespace {
+        format!("{namespace}:{tool_name}")
+    } else {
+        tool_name.to_string()
+    }
+}
+
 pub struct ToolRegistry {
     handlers: HashMap<String, Arc<dyn AnyToolHandler>>,
 }
@@ -130,8 +138,15 @@ impl ToolRegistry {
         Self { handlers }
     }
 
-    fn handler(&self, name: &str) -> Option<Arc<dyn AnyToolHandler>> {
-        self.handlers.get(name).map(Arc::clone)
+    fn handler(&self, name: &str, namespace: Option<&str>) -> Option<Arc<dyn AnyToolHandler>> {
+        self.handlers
+            .get(&tool_handler_key(name, namespace))
+            .map(Arc::clone)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_handler(&self, name: &str, namespace: Option<&str>) -> bool {
+        self.handler(name, namespace).is_some()
     }
 
     // TODO(jif) for dynamic tools.
@@ -147,6 +162,7 @@ impl ToolRegistry {
         invocation: ToolInvocation,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
+        let tool_namespace = invocation.tool_namespace.clone();
         let call_id_owned = invocation.call_id.clone();
         let otel = invocation.turn.session_telemetry.clone();
         let payload_for_response = invocation.payload.clone();
@@ -157,10 +173,6 @@ impl ToolRegistry {
                 sandbox_tag(
                     &invocation.turn.sandbox_policy,
                     invocation.turn.windows_sandbox_level,
-                    invocation
-                        .turn
-                        .features
-                        .enabled(Feature::UseLinuxSandboxBwrap),
                 ),
             ),
             (
@@ -192,11 +204,14 @@ impl ToolRegistry {
             }
         }
 
-        let handler = match self.handler(tool_name.as_ref()) {
+        let handler = match self.handler(tool_name.as_ref(), tool_namespace.as_deref()) {
             Some(handler) => handler,
             None => {
-                let message =
-                    unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
+                let message = unsupported_tool_call_message(
+                    &invocation.payload,
+                    tool_name.as_ref(),
+                    tool_namespace.as_deref(),
+                );
                 otel.tool_result_with_tags(
                     tool_name.as_ref(),
                     &call_id_owned,
@@ -377,7 +392,12 @@ impl ToolRegistryBuilder {
     }
 }
 
-fn unsupported_tool_call_message(payload: &ToolPayload, tool_name: &str) -> String {
+fn unsupported_tool_call_message(
+    payload: &ToolPayload,
+    tool_name: &str,
+    namespace: Option<&str>,
+) -> String {
+    let tool_name = tool_handler_key(tool_name, namespace);
     match payload {
         ToolPayload::Custom { .. } => format!("unsupported custom tool call: {tool_name}"),
         _ => format!("unsupported call: {tool_name}"),
@@ -400,6 +420,13 @@ impl From<&ToolPayload> for HookToolInput {
         match payload {
             ToolPayload::Function { arguments } => HookToolInput::Function {
                 arguments: arguments.clone(),
+            },
+            ToolPayload::ToolSearch { arguments } => HookToolInput::Function {
+                arguments: serde_json::json!({
+                    "query": arguments.query,
+                    "limit": arguments.limit,
+                })
+                .to_string(),
             },
             ToolPayload::Custom { input } => HookToolInput::Custom {
                 input: input.clone(),
@@ -470,12 +497,8 @@ async fn dispatch_after_tool_use_hook(
                     success: dispatch.success,
                     duration_ms: u64::try_from(dispatch.duration.as_millis()).unwrap_or(u64::MAX),
                     mutating: dispatch.mutating,
-                    sandbox: sandbox_tag(
-                        &turn.sandbox_policy,
-                        turn.windows_sandbox_level,
-                        turn.features.enabled(Feature::UseLinuxSandboxBwrap),
-                    )
-                    .to_string(),
+                    sandbox: sandbox_tag(&turn.sandbox_policy, turn.windows_sandbox_level)
+                        .to_string(),
                     sandbox_policy: sandbox_policy_tag(&turn.sandbox_policy).to_string(),
                     output_preview: dispatch.output_preview.clone(),
                 },
@@ -512,4 +535,61 @@ async fn dispatch_after_tool_use_hook(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::context::ToolInvocation;
+    use async_trait::async_trait;
+    use pretty_assertions::assert_eq;
+
+    struct TestHandler;
+
+    #[async_trait]
+    impl ToolHandler for TestHandler {
+        type Output = crate::tools::context::FunctionToolOutput;
+
+        fn kind(&self) -> ToolKind {
+            ToolKind::Function
+        }
+
+        async fn handle(
+            &self,
+            _invocation: ToolInvocation,
+        ) -> Result<Self::Output, FunctionCallError> {
+            unreachable!("test handler should not be invoked")
+        }
+    }
+
+    #[test]
+    fn handler_looks_up_namespaced_aliases_explicitly() {
+        let plain_handler = Arc::new(TestHandler) as Arc<dyn AnyToolHandler>;
+        let namespaced_handler = Arc::new(TestHandler) as Arc<dyn AnyToolHandler>;
+        let namespace = "mcp__codex_apps__gmail";
+        let tool_name = "gmail_get_recent_emails";
+        let namespaced_name = tool_handler_key(tool_name, Some(namespace));
+        let registry = ToolRegistry::new(HashMap::from([
+            (tool_name.to_string(), Arc::clone(&plain_handler)),
+            (namespaced_name, Arc::clone(&namespaced_handler)),
+        ]));
+
+        let plain = registry.handler(tool_name, None);
+        let namespaced = registry.handler(tool_name, Some(namespace));
+        let missing_namespaced = registry.handler(tool_name, Some("mcp__codex_apps__calendar"));
+
+        assert_eq!(plain.is_some(), true);
+        assert_eq!(namespaced.is_some(), true);
+        assert_eq!(missing_namespaced.is_none(), true);
+        assert!(
+            plain
+                .as_ref()
+                .is_some_and(|handler| Arc::ptr_eq(handler, &plain_handler))
+        );
+        assert!(
+            namespaced
+                .as_ref()
+                .is_some_and(|handler| Arc::ptr_eq(handler, &namespaced_handler))
+        );
+    }
 }

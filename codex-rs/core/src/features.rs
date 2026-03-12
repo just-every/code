@@ -108,8 +108,9 @@ pub enum Feature {
     WebSearchCached,
     /// Legacy search-tool feature flag kept for backward compatibility.
     SearchTool,
-    /// Use the bubblewrap-based Linux sandbox pipeline.
-    UseLinuxSandboxBwrap,
+    /// Use the legacy Landlock Linux sandbox fallback instead of the default
+    /// bubblewrap pipeline.
+    UseLegacyLandlock,
     /// Allow the model to request approval and propose exec rules.
     RequestRule,
     /// Enable Windows sandbox (restricted token) on Windows.
@@ -130,7 +131,7 @@ pub enum Feature {
     MemoryTool,
     /// Append additional AGENTS.md guidance to user instructions.
     ChildAgentsMd,
-    /// Allow `detail: "original"` image outputs on supported models.
+    /// Allow the model to request `detail: "original"` image outputs on supported models.
     ImageDetailOriginal,
     /// Enforce UTF8 output in Powershell.
     PowershellUtf8,
@@ -138,8 +139,12 @@ pub enum Feature {
     EnableRequestCompression,
     /// Enable collab tools.
     Collab,
+    /// Enable CSV-backed agent job tools.
+    SpawnCsv,
     /// Enable apps.
     Apps,
+    /// Enable discoverable tool suggestions for apps.
+    ToolSuggest,
     /// Enable plugins.
     Plugins,
     /// Allow the model to invoke the built-in image generation tool.
@@ -280,6 +285,10 @@ impl Features {
         self.enabled(Feature::Apps) && auth.is_some_and(CodexAuth::is_chatgpt_auth)
     }
 
+    pub fn use_legacy_landlock(&self) -> bool {
+        self.enabled(Feature::UseLegacyLandlock)
+    }
+
     pub fn enable(&mut self, f: Feature) -> &mut Self {
         self.enabled.insert(f);
         self
@@ -414,6 +423,9 @@ impl Features {
     }
 
     pub(crate) fn normalize_dependencies(&mut self) {
+        if self.enabled(Feature::SpawnCsv) && !self.enabled(Feature::Collab) {
+            self.enable(Feature::Collab);
+        }
         if self.enabled(Feature::JsReplToolsOnly) && !self.enabled(Feature::JsRepl) {
             tracing::warn!("js_repl_tools_only requires js_repl; disabling js_repl_tools_only");
             self.disable(Feature::JsReplToolsOnly);
@@ -629,16 +641,9 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::UseLinuxSandboxBwrap,
-        key: "use_linux_sandbox_bwrap",
-        #[cfg(target_os = "linux")]
-        stage: Stage::Experimental {
-            name: "Bubblewrap sandbox",
-            menu_description: "Try the new linux sandbox based on bubblewrap.",
-            announcement: "NEW: Linux bubblewrap sandbox offers stronger filesystem and network controls than Landlock alone, including keeping .git and .codex read-only inside writable workspaces. Enable it in /experimental and restart Codex to try it.",
-        },
-        #[cfg(not(target_os = "linux"))]
-        stage: Stage::UnderDevelopment,
+        id: Feature::UseLegacyLandlock,
+        key: "use_legacy_landlock",
+        stage: Stage::Stable,
         default_enabled: false,
     },
     FeatureSpec {
@@ -694,6 +699,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::SpawnCsv,
+        key: "spawn_csv",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::Apps,
         key: "apps",
         stage: Stage::Experimental {
@@ -701,6 +712,12 @@ pub const FEATURES: &[FeatureSpec] = &[
             menu_description: "Use a connected ChatGPT App using \"$\". Install Apps via /apps command. Restart Codex after enabling.",
             announcement: "NEW: Use ChatGPT Apps (Connectors) in Codex via $ mentions. Enable in /experimental and restart Codex!",
         },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ToolSuggest,
+        key: "tool_suggest",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -913,24 +930,10 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn use_linux_sandbox_bwrap_is_experimental_on_linux() {
-        assert!(matches!(
-            Feature::UseLinuxSandboxBwrap.stage(),
-            Stage::Experimental { .. }
-        ));
-        assert_eq!(Feature::UseLinuxSandboxBwrap.default_enabled(), false);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn use_linux_sandbox_bwrap_is_under_development_off_linux() {
-        assert_eq!(
-            Feature::UseLinuxSandboxBwrap.stage(),
-            Stage::UnderDevelopment
-        );
-        assert_eq!(Feature::UseLinuxSandboxBwrap.default_enabled(), false);
+    fn use_legacy_landlock_is_stable_and_disabled_by_default() {
+        assert_eq!(Feature::UseLegacyLandlock.stage(), Stage::Stable);
+        assert_eq!(Feature::UseLegacyLandlock.default_enabled(), false);
     }
 
     #[test]
@@ -986,15 +989,51 @@ mod tests {
     }
 
     #[test]
+    fn tool_suggest_is_under_development() {
+        assert_eq!(Feature::ToolSuggest.stage(), Stage::UnderDevelopment);
+        assert_eq!(Feature::ToolSuggest.default_enabled(), false);
+    }
+
+    #[test]
     fn image_generation_is_under_development() {
         assert_eq!(Feature::ImageGeneration.stage(), Stage::UnderDevelopment);
         assert_eq!(Feature::ImageGeneration.default_enabled(), false);
     }
 
     #[test]
+    fn image_detail_original_feature_is_under_development() {
+        assert_eq!(
+            Feature::ImageDetailOriginal.stage(),
+            Stage::UnderDevelopment
+        );
+        assert_eq!(Feature::ImageDetailOriginal.default_enabled(), false);
+    }
+
+    #[test]
     fn collab_is_legacy_alias_for_multi_agent() {
         assert_eq!(feature_for_key("multi_agent"), Some(Feature::Collab));
         assert_eq!(feature_for_key("collab"), Some(Feature::Collab));
+    }
+
+    #[test]
+    fn spawn_csv_is_under_development() {
+        assert_eq!(Feature::SpawnCsv.stage(), Stage::UnderDevelopment);
+        assert_eq!(Feature::SpawnCsv.default_enabled(), false);
+    }
+
+    #[test]
+    fn spawn_csv_normalization_enables_multi_agent_one_way() {
+        let mut spawn_csv_features = Features::with_defaults();
+        spawn_csv_features.enable(Feature::SpawnCsv);
+        spawn_csv_features.normalize_dependencies();
+        assert_eq!(spawn_csv_features.enabled(Feature::SpawnCsv), true);
+        assert_eq!(spawn_csv_features.enabled(Feature::Collab), true);
+
+        let mut collab_features = Features::with_defaults();
+        collab_features.enable(Feature::Collab);
+        collab_features.normalize_dependencies();
+        assert_eq!(collab_features.enabled(Feature::Collab), true);
+        assert_eq!(collab_features.enabled(Feature::SpawnCsv), false);
     }
 
     #[test]

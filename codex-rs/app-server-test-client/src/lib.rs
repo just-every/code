@@ -69,8 +69,8 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::config::Config;
+use codex_otel::OtelProvider;
 use codex_otel::current_span_w3c_trace_context;
-use codex_otel::otel_provider::OtelProvider;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_utils_cli::CliConfigOverrides;
@@ -88,20 +88,6 @@ use url::Url;
 use uuid::Uuid;
 
 const NOTIFICATIONS_TO_OPT_OUT: &[&str] = &[
-    // Legacy codex/event (v1-style) deltas.
-    "codex/event/agent_message_content_delta",
-    "codex/event/agent_message_delta",
-    "codex/event/agent_reasoning_delta",
-    "codex/event/reasoning_content_delta",
-    "codex/event/reasoning_raw_content_delta",
-    "codex/event/exec_command_output_delta",
-    // Other legacy events.
-    "codex/event/exec_approval_request",
-    "codex/event/exec_command_begin",
-    "codex/event/exec_command_end",
-    "codex/event/exec_output",
-    "codex/event/item_started",
-    "codex/event/item_completed",
     // v2 item deltas.
     "command/exec/outputDelta",
     "item/agentMessage/delta",

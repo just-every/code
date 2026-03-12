@@ -533,6 +533,9 @@ pub struct RejectConfig {
     pub sandbox_approval: bool,
     /// Reject prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
+    /// Reject approval prompts triggered by skill script execution.
+    #[serde(default)]
+    pub skill_approval: bool,
     /// Reject approval prompts related to built-in permission requests.
     #[serde(default)]
     pub request_permissions: bool,
@@ -547,6 +550,10 @@ impl RejectConfig {
 
     pub const fn rejects_rules_approval(self) -> bool {
         self.rules
+    }
+
+    pub const fn rejects_skill_approval(self) -> bool {
+        self.skill_approval
     }
 
     pub const fn rejects_request_permissions(self) -> bool {
@@ -3125,6 +3132,8 @@ pub struct CollabAgentSpawnBeginEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
+    pub model: String,
+    pub reasoning_effort: ReasoningEffortConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3170,6 +3179,10 @@ pub struct CollabAgentSpawnEndEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
+    /// Model requested for the spawned agent.
+    pub model: String,
+    /// Reasoning effort requested for the spawned agent.
+    pub reasoning_effort: ReasoningEffortConfig,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
 }
@@ -3457,6 +3470,7 @@ mod tests {
             RejectConfig {
                 sandbox_approval: false,
                 rules: false,
+                skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: true,
             }
@@ -3466,10 +3480,35 @@ mod tests {
             !RejectConfig {
                 sandbox_approval: false,
                 rules: false,
+                skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
             .rejects_mcp_elicitations()
+        );
+    }
+
+    #[test]
+    fn reject_config_skill_approval_flag_is_field_driven() {
+        assert!(
+            RejectConfig {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: true,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }
+            .rejects_skill_approval()
+        );
+        assert!(
+            !RejectConfig {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }
+            .rejects_skill_approval()
         );
     }
 
@@ -3479,6 +3518,7 @@ mod tests {
             RejectConfig {
                 sandbox_approval: false,
                 rules: false,
+                skill_approval: false,
                 request_permissions: true,
                 mcp_elicitations: false,
             }
@@ -3488,6 +3528,7 @@ mod tests {
             !RejectConfig {
                 sandbox_approval: false,
                 rules: false,
+                skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: false,
             }
@@ -3496,7 +3537,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_config_defaults_missing_request_permissions_to_false() {
+    fn reject_config_defaults_missing_optional_flags_to_false() {
         let decoded = serde_json::from_value::<RejectConfig>(serde_json::json!({
             "sandbox_approval": true,
             "rules": false,
@@ -3509,6 +3550,7 @@ mod tests {
             RejectConfig {
                 sandbox_approval: true,
                 rules: false,
+                skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: true,
             }

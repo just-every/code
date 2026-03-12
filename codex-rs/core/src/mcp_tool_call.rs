@@ -26,13 +26,14 @@ use crate::guardian::guardian_approval_request_to_json;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam;
+use crate::mcp_tool_approval_templates::render_mcp_tool_approval_template;
 use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
 use crate::state_db;
 use codex_protocol::mcp::CallToolResult;
-use codex_protocol::models::McpToolOutput;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ReviewDecision;
@@ -59,7 +60,7 @@ pub(crate) async fn handle_mcp_tool_call(
     server: String,
     tool_name: String,
     arguments: String,
-) -> McpToolOutput {
+) -> CallToolResult {
     // Parse the `arguments` as JSON. An empty string is OK, but invalid JSON
     // is not.
     let arguments_value = if arguments.trim().is_empty() {
@@ -69,7 +70,7 @@ pub(crate) async fn handle_mcp_tool_call(
             Ok(value) => Some(value),
             Err(e) => {
                 error!("failed to parse tool call arguments: {e}");
-                return McpToolOutput::from_error_text(format!("err: {e}"));
+                return CallToolResult::from_error_text(format!("err: {e}"));
             }
         }
     };
@@ -113,7 +114,7 @@ pub(crate) async fn handle_mcp_tool_call(
         turn_context
             .session_telemetry
             .counter("codex.mcp.call", 1, &[("status", status)]);
-        return McpToolOutput::from_result(result);
+        return CallToolResult::from_result(result);
     }
 
     if let Some(decision) = maybe_request_mcp_tool_approval(
@@ -217,7 +218,7 @@ pub(crate) async fn handle_mcp_tool_call(
             .session_telemetry
             .counter("codex.mcp.call", 1, &[("status", status)]);
 
-        return McpToolOutput::from_result(result);
+        return CallToolResult::from_result(result);
     }
 
     let tool_call_begin_event = EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
@@ -263,7 +264,7 @@ pub(crate) async fn handle_mcp_tool_call(
         .session_telemetry
         .counter("codex.mcp.call", 1, &[("status", status)]);
 
-    McpToolOutput::from_result(result)
+    CallToolResult::from_result(result)
 }
 
 async fn maybe_mark_thread_memory_mode_polluted(sess: &Session, turn_context: &TurnContext) {
@@ -386,6 +387,16 @@ struct McpToolApprovalPromptOptions {
     allow_persistent_approval: bool,
 }
 
+struct McpToolApprovalElicitationRequest<'a> {
+    server: &'a str,
+    metadata: Option<&'a McpToolApprovalMetadata>,
+    tool_params: Option<&'a serde_json::Value>,
+    tool_params_display: Option<&'a [RenderedMcpToolApprovalParam]>,
+    question: RequestUserInputQuestion,
+    message_override: Option<&'a str>,
+    prompt_options: McpToolApprovalPromptOptions,
+}
+
 const MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX: &str = "mcp_tool_call_approval";
 const MCP_TOOL_APPROVAL_ACCEPT: &str = "Allow";
 const MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION: &str = "Allow for this session";
@@ -404,6 +415,7 @@ const MCP_TOOL_APPROVAL_CONNECTOR_DESCRIPTION_KEY: &str = "connector_description
 const MCP_TOOL_APPROVAL_TOOL_TITLE_KEY: &str = "tool_title";
 const MCP_TOOL_APPROVAL_TOOL_DESCRIPTION_KEY: &str = "tool_description";
 const MCP_TOOL_APPROVAL_TOOL_PARAMS_KEY: &str = "tool_params";
+const MCP_TOOL_APPROVAL_TOOL_PARAMS_DISPLAY_KEY: &str = "tool_params_display";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct McpToolApprovalKey {
@@ -504,14 +516,26 @@ async fn maybe_request_mcp_tool_approval(
         tool_call_mcp_elicitation_enabled,
     );
     let question_id = format!("{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_{call_id}");
+    let rendered_template = render_mcp_tool_approval_template(
+        &invocation.server,
+        metadata.and_then(|metadata| metadata.connector_id.as_deref()),
+        metadata.and_then(|metadata| metadata.connector_name.as_deref()),
+        metadata.and_then(|metadata| metadata.tool_title.as_deref()),
+        invocation.arguments.as_ref(),
+    );
+    let tool_params_display = rendered_template
+        .as_ref()
+        .map(|rendered_template| rendered_template.tool_params_display.clone())
+        .or_else(|| build_mcp_tool_approval_display_params(invocation.arguments.as_ref()));
     let mut question = build_mcp_tool_approval_question(
         question_id.clone(),
         &invocation.server,
         &invocation.tool,
-        metadata.and_then(|metadata| metadata.tool_title.as_deref()),
         metadata.and_then(|metadata| metadata.connector_name.as_deref()),
-        annotations,
         prompt_options,
+        rendered_template
+            .as_ref()
+            .map(|rendered_template| rendered_template.question.as_str()),
     );
     question.question =
         mcp_tool_approval_question_text(question.question, monitor_reason.as_deref());
@@ -522,11 +546,22 @@ async fn maybe_request_mcp_tool_approval(
         let params = build_mcp_tool_approval_elicitation_request(
             sess.as_ref(),
             turn_context.as_ref(),
-            &invocation.server,
-            metadata,
-            invocation.arguments.as_ref(),
-            question.clone(),
-            prompt_options,
+            McpToolApprovalElicitationRequest {
+                server: &invocation.server,
+                metadata,
+                tool_params: rendered_template
+                    .as_ref()
+                    .and_then(|rendered_template| rendered_template.tool_params.as_ref())
+                    .or(invocation.arguments.as_ref()),
+                tool_params_display: tool_params_display.as_deref(),
+                question,
+                message_override: rendered_template.as_ref().and_then(|rendered_template| {
+                    monitor_reason
+                        .is_none()
+                        .then_some(rendered_template.elicitation_message.as_str())
+                }),
+                prompt_options,
+            },
         );
         let decision = parse_mcp_tool_approval_elicitation_response(
             sess.request_mcp_server_elicitation(turn_context.as_ref(), request_id, params)
@@ -675,7 +710,7 @@ async fn lookup_mcp_tool_metadata(
 
     let tool_info = tools
         .into_values()
-        .find(|tool_info| tool_info.server_name == server && tool_info.tool_name == tool_name)?;
+        .find(|tool_info| tool_info.server_name == server && tool_info.tool.name == tool_name)?;
     let connector_description = if server == CODEX_APPS_MCP_SERVER_NAME {
         let connectors = match connectors::list_cached_accessible_connectors_from_mcp_tools(
             turn_context.config.as_ref(),
@@ -724,7 +759,7 @@ async fn lookup_mcp_app_usage_metadata(
         .await;
 
     tools.into_values().find_map(|tool_info| {
-        if tool_info.server_name == server && tool_info.tool_name == tool_name {
+        if tool_info.server_name == server && tool_info.tool.name == tool_name {
             Some(McpAppUsageMetadata {
                 connector_id: tool_info.connector_id,
                 app_name: tool_info.connector_name,
@@ -739,34 +774,16 @@ fn build_mcp_tool_approval_question(
     question_id: String,
     server: &str,
     tool_name: &str,
-    tool_title: Option<&str>,
     connector_name: Option<&str>,
-    annotations: Option<&ToolAnnotations>,
     prompt_options: McpToolApprovalPromptOptions,
+    question_override: Option<&str>,
 ) -> RequestUserInputQuestion {
-    let destructive =
-        annotations.and_then(|annotations| annotations.destructive_hint) == Some(true);
-    let open_world = annotations.and_then(|annotations| annotations.open_world_hint) == Some(true);
-    let reason = match (destructive, open_world) {
-        (true, true) => "may modify data and access external systems",
-        (true, false) => "may modify or delete data",
-        (false, true) => "may access external systems",
-        (false, false) => "may have side effects",
-    };
-
-    let tool_label = tool_title.unwrap_or(tool_name);
-    let app_label = connector_name
-        .map(|name| format!("The {name} app"))
+    let question = question_override
+        .map(ToString::to_string)
         .unwrap_or_else(|| {
-            if server == CODEX_APPS_MCP_SERVER_NAME {
-                "This app".to_string()
-            } else {
-                format!("The {server} MCP server")
-            }
+            build_mcp_tool_approval_fallback_message(server, tool_name, connector_name)
         });
-    let question = format!(
-        "{app_label} wants to run the tool \"{tool_label}\", which {reason}. Allow this action?"
-    );
+    let question = format!("{}?", question.trim_end_matches('?'));
 
     let mut options = vec![RequestUserInputQuestionOption {
         label: MCP_TOOL_APPROVAL_ACCEPT.to_string(),
@@ -799,6 +816,25 @@ fn build_mcp_tool_approval_question(
     }
 }
 
+fn build_mcp_tool_approval_fallback_message(
+    server: &str,
+    tool_name: &str,
+    connector_name: Option<&str>,
+) -> String {
+    let actor = connector_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            if server == CODEX_APPS_MCP_SERVER_NAME {
+                "this app".to_string()
+            } else {
+                format!("the {server} MCP server")
+            }
+        });
+    format!("Allow {actor} to run tool \"{tool_name}\"?")
+}
+
 fn mcp_tool_approval_question_text(question: String, monitor_reason: Option<&str>) -> String {
     match monitor_reason.map(str::trim) {
         Some(reason) if !reason.is_empty() => {
@@ -820,30 +856,24 @@ fn arc_monitor_interrupt_message(reason: &str) -> String {
 fn build_mcp_tool_approval_elicitation_request(
     sess: &Session,
     turn_context: &TurnContext,
-    server: &str,
-    metadata: Option<&McpToolApprovalMetadata>,
-    tool_params: Option<&serde_json::Value>,
-    question: RequestUserInputQuestion,
-    prompt_options: McpToolApprovalPromptOptions,
+    request: McpToolApprovalElicitationRequest<'_>,
 ) -> McpServerElicitationRequestParams {
-    let message = if question.header.trim().is_empty() {
-        question.question
-    } else {
-        let header = question.header;
-        let prompt = question.question;
-        format!("{header}\n\n{prompt}")
-    };
+    let message = request
+        .message_override
+        .map(ToString::to_string)
+        .unwrap_or_else(|| request.question.question.clone());
 
     McpServerElicitationRequestParams {
         thread_id: sess.conversation_id.to_string(),
         turn_id: Some(turn_context.sub_id.clone()),
-        server_name: server.to_string(),
+        server_name: request.server.to_string(),
         request: McpServerElicitationRequest::Form {
             meta: build_mcp_tool_approval_elicitation_meta(
-                server,
-                metadata,
-                tool_params,
-                prompt_options,
+                request.server,
+                request.metadata,
+                request.tool_params,
+                request.tool_params_display,
+                request.prompt_options,
             ),
             message,
             requested_schema: McpElicitationSchema {
@@ -860,6 +890,7 @@ fn build_mcp_tool_approval_elicitation_meta(
     server: &str,
     metadata: Option<&McpToolApprovalMetadata>,
     tool_params: Option<&serde_json::Value>,
+    tool_params_display: Option<&[RenderedMcpToolApprovalParam]>,
     prompt_options: McpToolApprovalPromptOptions,
 ) -> Option<serde_json::Value> {
     let mut meta = serde_json::Map::new();
@@ -942,7 +973,32 @@ fn build_mcp_tool_approval_elicitation_meta(
             tool_params.clone(),
         );
     }
+    if let Some(tool_params_display) = tool_params_display
+        && let Ok(tool_params_display) = serde_json::to_value(tool_params_display)
+    {
+        meta.insert(
+            MCP_TOOL_APPROVAL_TOOL_PARAMS_DISPLAY_KEY.to_string(),
+            tool_params_display,
+        );
+    }
     (!meta.is_empty()).then_some(serde_json::Value::Object(meta))
+}
+
+fn build_mcp_tool_approval_display_params(
+    tool_params: Option<&serde_json::Value>,
+) -> Option<Vec<crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam>> {
+    let tool_params = tool_params?.as_object()?;
+    let mut display_params = tool_params
+        .iter()
+        .map(
+            |(name, value)| crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam {
+                name: name.clone(),
+                value: value.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    display_params.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(display_params)
 }
 
 fn parse_mcp_tool_approval_elicitation_response(
@@ -1281,22 +1337,92 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn approval_elicitation_request_uses_message_override_and_readable_tool_params() {
+        let (session, turn_context) = make_session_and_context().await;
+        let question = build_mcp_tool_approval_question(
+            "q".to_string(),
+            CODEX_APPS_MCP_SERVER_NAME,
+            "create_event",
+            Some("Calendar"),
+            prompt_options(true, true),
+            Some("Allow Calendar to create an event?"),
+        );
+
+        let request = build_mcp_tool_approval_elicitation_request(
+            &session,
+            &turn_context,
+            McpToolApprovalElicitationRequest {
+                server: CODEX_APPS_MCP_SERVER_NAME,
+                metadata: Some(&approval_metadata(
+                    Some("calendar"),
+                    Some("Calendar"),
+                    Some("Manage events and schedules."),
+                    Some("Create Event"),
+                    Some("Create a calendar event."),
+                )),
+                tool_params: Some(&serde_json::json!({
+                    "Calendar": "primary",
+                    "Title": "Roadmap review",
+                })),
+                tool_params_display: None,
+                question,
+                message_override: Some("Allow Calendar to create an event?"),
+                prompt_options: prompt_options(true, true),
+            },
+        );
+
+        assert_eq!(
+            request,
+            McpServerElicitationRequestParams {
+                thread_id: session.conversation_id.to_string(),
+                turn_id: Some(turn_context.sub_id),
+                server_name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                request: McpServerElicitationRequest::Form {
+                    meta: Some(serde_json::json!({
+                        MCP_TOOL_APPROVAL_KIND_KEY: MCP_TOOL_APPROVAL_KIND_MCP_TOOL_CALL,
+                        MCP_TOOL_APPROVAL_PERSIST_KEY: [
+                            MCP_TOOL_APPROVAL_PERSIST_SESSION,
+                            MCP_TOOL_APPROVAL_PERSIST_ALWAYS,
+                        ],
+                        MCP_TOOL_APPROVAL_SOURCE_KEY: MCP_TOOL_APPROVAL_SOURCE_CONNECTOR,
+                        MCP_TOOL_APPROVAL_CONNECTOR_ID_KEY: "calendar",
+                        MCP_TOOL_APPROVAL_CONNECTOR_NAME_KEY: "Calendar",
+                        MCP_TOOL_APPROVAL_CONNECTOR_DESCRIPTION_KEY: "Manage events and schedules.",
+                        MCP_TOOL_APPROVAL_TOOL_TITLE_KEY: "Create Event",
+                        MCP_TOOL_APPROVAL_TOOL_DESCRIPTION_KEY: "Create a calendar event.",
+                        MCP_TOOL_APPROVAL_TOOL_PARAMS_KEY: {
+                            "Calendar": "primary",
+                            "Title": "Roadmap review",
+                        },
+                    })),
+                    message: "Allow Calendar to create an event?".to_string(),
+                    requested_schema: McpElicitationSchema {
+                        schema_uri: None,
+                        type_: McpElicitationObjectType::Object,
+                        properties: BTreeMap::new(),
+                        required: None,
+                    },
+                },
+            }
+        );
+    }
+
     #[test]
     fn custom_mcp_tool_question_mentions_server_name() {
         let question = build_mcp_tool_approval_question(
             "q".to_string(),
             "custom_server",
             "run_action",
-            Some("Run Action"),
             None,
-            Some(&annotations(Some(false), Some(true), None)),
             prompt_options(false, false),
+            None,
         );
 
         assert_eq!(question.header, "Approve app tool call?");
         assert_eq!(
             question.question,
-            "The custom_server MCP server wants to run the tool \"Run Action\", which may modify or delete data. Allow this action?"
+            "Allow the custom_server MCP server to run tool \"run_action\"?"
         );
         assert!(
             !question
@@ -1309,21 +1435,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_apps_tool_question_keeps_legacy_app_label() {
+    fn codex_apps_tool_question_uses_fallback_app_label() {
         let question = build_mcp_tool_approval_question(
             "q".to_string(),
             CODEX_APPS_MCP_SERVER_NAME,
             "run_action",
-            Some("Run Action"),
             None,
-            Some(&annotations(Some(false), Some(true), None)),
             prompt_options(true, true),
+            None,
         );
 
-        assert!(
-            question
-                .question
-                .starts_with("This app wants to run the tool \"Run Action\"")
+        assert_eq!(
+            question.question,
+            "Allow this app to run tool \"run_action\"?"
         );
     }
 
@@ -1333,10 +1457,9 @@ mod tests {
             "q".to_string(),
             CODEX_APPS_MCP_SERVER_NAME,
             "run_action",
-            Some("Run Action"),
             Some("Calendar"),
-            Some(&annotations(Some(false), Some(true), None)),
             prompt_options(true, true),
+            None,
         );
         let options = question.options.expect("options");
 
@@ -1375,10 +1498,9 @@ mod tests {
             "q".to_string(),
             CODEX_APPS_MCP_SERVER_NAME,
             "run_action",
-            Some("Run Action"),
             Some("Calendar"),
-            Some(&annotations(Some(false), Some(true), None)),
             mcp_tool_approval_prompt_options(Some(&session_key), Some(&persistent_key), false),
+            None,
         );
 
         assert_eq!(
@@ -1402,10 +1524,9 @@ mod tests {
             "q".to_string(),
             "custom_server",
             "run_action",
-            Some("Run Action"),
             None,
-            Some(&annotations(Some(false), Some(true), None)),
             prompt_options(true, false),
+            None,
         );
 
         assert_eq!(
@@ -1554,6 +1675,7 @@ mod tests {
                 "custom_server",
                 None,
                 None,
+                None,
                 prompt_options(false, false),
             ),
             Some(serde_json::json!({
@@ -1575,6 +1697,7 @@ mod tests {
                     Some("Runs the selected action."),
                 )),
                 Some(&serde_json::json!({"id": 1})),
+                None,
                 prompt_options(true, false),
             ),
             Some(serde_json::json!({
@@ -1733,6 +1856,7 @@ mod tests {
                 Some(&serde_json::json!({
                     "calendar_id": "primary",
                 })),
+                None,
                 prompt_options(false, false),
             ),
             Some(serde_json::json!({
@@ -1765,6 +1889,7 @@ mod tests {
                 Some(&serde_json::json!({
                     "calendar_id": "primary",
                 })),
+                None,
                 prompt_options(true, true),
             ),
             Some(serde_json::json!({
@@ -1969,7 +2094,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/codex/safety/arc"))
+            .and(path("/codex/safety/arc"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "outcome": "steer-model",
                 "short_reason": "needs approval",

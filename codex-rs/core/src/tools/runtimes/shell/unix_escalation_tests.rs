@@ -1,6 +1,7 @@
 use super::CoreShellActionProvider;
 #[cfg(target_os = "macos")]
 use super::CoreShellCommandExecutor;
+use super::InterceptedExecPolicyContext;
 use super::ParsedShellCommand;
 use super::commands_for_intercepted_exec_policy;
 use super::evaluate_intercepted_exec_policy;
@@ -16,6 +17,7 @@ use crate::config::types::ShellEnvironmentPolicy;
 use crate::exec::SandboxType;
 use crate::protocol::AskForApproval;
 use crate::protocol::ReadOnlyAccess;
+use crate::protocol::RejectConfig;
 use crate::protocol::SandboxPolicy;
 use crate::sandboxing::SandboxPermissions;
 #[cfg(target_os = "macos")]
@@ -35,6 +37,7 @@ use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SkillScope;
 use codex_shell_escalation::EscalationExecution;
@@ -66,6 +69,20 @@ fn starlark_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn read_only_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
+    FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+        path: FileSystemPath::Special {
+            value: FileSystemSpecialPath::Root,
+        },
+        access: FileSystemAccessMode::Read,
+    }])
+}
+
+#[cfg(target_os = "macos")]
+fn unrestricted_file_system_sandbox_policy() -> FileSystemSandboxPolicy {
+    FileSystemSandboxPolicy::unrestricted()
+}
+
 fn test_skill_metadata(permission_profile: Option<PermissionProfile>) -> SkillMetadata {
     SkillMetadata {
         name: "skill".to_string(),
@@ -78,6 +95,90 @@ fn test_skill_metadata(permission_profile: Option<PermissionProfile>) -> SkillMe
         path_to_skills_md: PathBuf::from("/tmp/skill/SKILL.md"),
         scope: SkillScope::User,
     }
+}
+
+#[test]
+fn execve_prompt_rejection_uses_skill_approval_for_skill_scripts() {
+    let decision_source = super::DecisionSource::SkillScript {
+        skill: test_skill_metadata(None),
+    };
+
+    assert_eq!(
+        super::execve_prompt_is_rejected_by_policy(
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: true,
+                rules: true,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }),
+            &decision_source,
+        ),
+        None,
+    );
+    assert_eq!(
+        super::execve_prompt_is_rejected_by_policy(
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: true,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }),
+            &decision_source,
+        ),
+        Some("approval required by skill, but AskForApproval::Reject.skill_approval is set"),
+    );
+}
+
+#[test]
+fn execve_prompt_rejection_keeps_prefix_rules_on_rules_flag() {
+    assert_eq!(
+        super::execve_prompt_is_rejected_by_policy(
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: true,
+                rules: true,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }),
+            &super::DecisionSource::PrefixRule,
+        ),
+        Some("approval required by policy rule, but AskForApproval::Reject.rules is set"),
+    );
+}
+
+#[test]
+fn execve_prompt_rejection_keeps_unmatched_commands_on_sandbox_flag() {
+    assert_eq!(
+        super::execve_prompt_is_rejected_by_policy(
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: false,
+            }),
+            &super::DecisionSource::UnmatchedCommandFallback,
+        ),
+        Some("approval required by policy, but AskForApproval::Reject.sandbox_approval is set"),
+    );
+}
+
+#[test]
+fn approval_sandbox_permissions_only_downgrades_preapproved_additional_permissions() {
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::WithAdditionalPermissions, true),
+        SandboxPermissions::UseDefault,
+    );
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::WithAdditionalPermissions, false),
+        SandboxPermissions::WithAdditionalPermissions,
+    );
+    assert_eq!(
+        super::approval_sandbox_permissions(SandboxPermissions::RequireEscalated, true),
+        SandboxPermissions::RequireEscalated,
+    );
 }
 
 #[test]
@@ -343,10 +444,13 @@ fn evaluate_intercepted_exec_policy_uses_wrapper_command_when_shell_wrapper_pars
             "-lc".to_string(),
             "npm publish".to_string(),
         ],
-        AskForApproval::OnRequest,
-        &SandboxPolicy::new_read_only_policy(),
-        SandboxPermissions::UseDefault,
-        enable_intercepted_exec_policy_shell_wrapper_parsing,
+        InterceptedExecPolicyContext {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            enable_shell_wrapper_parsing: enable_intercepted_exec_policy_shell_wrapper_parsing,
+        },
     );
 
     assert!(
@@ -391,10 +495,13 @@ fn evaluate_intercepted_exec_policy_matches_inner_shell_commands_when_enabled() 
             "-lc".to_string(),
             "npm publish".to_string(),
         ],
-        AskForApproval::OnRequest,
-        &SandboxPolicy::new_read_only_policy(),
-        SandboxPermissions::UseDefault,
-        enable_intercepted_exec_policy_shell_wrapper_parsing,
+        InterceptedExecPolicyContext {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            enable_shell_wrapper_parsing: enable_intercepted_exec_policy_shell_wrapper_parsing,
+        },
     );
 
     assert_eq!(
@@ -430,10 +537,13 @@ host_executable(name = "git", paths = ["{git_path_literal}"])
         &policy,
         &program,
         &["git".to_string(), "status".to_string()],
-        AskForApproval::OnRequest,
-        &SandboxPolicy::new_read_only_policy(),
-        SandboxPermissions::UseDefault,
-        false,
+        InterceptedExecPolicyContext {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            enable_shell_wrapper_parsing: false,
+        },
     );
 
     assert_eq!(
@@ -452,6 +562,47 @@ host_executable(name = "git", paths = ["{git_path_literal}"])
         &evaluation.matched_rules,
         evaluation.decision
     ));
+}
+
+#[test]
+fn intercepted_exec_policy_treats_preapproved_additional_permissions_as_default() {
+    let policy = PolicyParser::new().build();
+    let program = AbsolutePathBuf::try_from(host_absolute_path(&["usr", "bin", "printf"])).unwrap();
+    let argv = ["printf".to_string(), "hello".to_string()];
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::new_workspace_write_policy();
+    let file_system_sandbox_policy = read_only_file_system_sandbox_policy();
+
+    let preapproved = evaluate_intercepted_exec_policy(
+        &policy,
+        &program,
+        &argv,
+        InterceptedExecPolicyContext {
+            approval_policy,
+            sandbox_policy: &sandbox_policy,
+            file_system_sandbox_policy: &file_system_sandbox_policy,
+            sandbox_permissions: super::approval_sandbox_permissions(
+                SandboxPermissions::WithAdditionalPermissions,
+                true,
+            ),
+            enable_shell_wrapper_parsing: false,
+        },
+    );
+    let fresh_request = evaluate_intercepted_exec_policy(
+        &policy,
+        &program,
+        &argv,
+        InterceptedExecPolicyContext {
+            approval_policy,
+            sandbox_policy: &sandbox_policy,
+            file_system_sandbox_policy: &file_system_sandbox_policy,
+            sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
+            enable_shell_wrapper_parsing: false,
+        },
+    );
+
+    assert_eq!(preapproved.decision, Decision::Allow);
+    assert_eq!(fresh_request.decision, Decision::Prompt);
 }
 
 #[test]
@@ -474,10 +625,13 @@ host_executable(name = "git", paths = ["{allowed_git_literal}"])
         &policy,
         &program,
         &["git".to_string(), "status".to_string()],
-        AskForApproval::OnRequest,
-        &SandboxPolicy::new_read_only_policy(),
-        SandboxPermissions::UseDefault,
-        false,
+        InterceptedExecPolicyContext {
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: &SandboxPolicy::new_read_only_policy(),
+            file_system_sandbox_policy: &read_only_file_system_sandbox_policy(),
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            enable_shell_wrapper_parsing: false,
+        },
     );
 
     assert!(matches!(
@@ -502,9 +656,7 @@ async fn prepare_escalated_exec_turn_default_preserves_macos_seatbelt_extensions
         network: None,
         sandbox: SandboxType::None,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
-        file_system_sandbox_policy: FileSystemSandboxPolicy::from(
-            &SandboxPolicy::new_read_only_policy(),
-        ),
+        file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
         network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
         sandbox_permissions: SandboxPermissions::UseDefault,
@@ -516,7 +668,7 @@ async fn prepare_escalated_exec_turn_default_preserves_macos_seatbelt_extensions
             ..Default::default()
         }),
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let prepared = executor
@@ -556,7 +708,7 @@ async fn prepare_escalated_exec_permissions_preserve_macos_seatbelt_extensions()
         network: None,
         sandbox: SandboxType::None,
         sandbox_policy: SandboxPolicy::DangerFullAccess,
-        file_system_sandbox_policy: FileSystemSandboxPolicy::from(&SandboxPolicy::DangerFullAccess),
+        file_system_sandbox_policy: unrestricted_file_system_sandbox_policy(),
         network_sandbox_policy: NetworkSandboxPolicy::Enabled,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
         sandbox_permissions: SandboxPermissions::UseDefault,
@@ -565,15 +717,13 @@ async fn prepare_escalated_exec_permissions_preserve_macos_seatbelt_extensions()
         sandbox_policy_cwd: cwd.to_path_buf(),
         macos_seatbelt_profile_extensions: None,
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let permissions = Permissions {
         approval_policy: Constrained::allow_any(AskForApproval::Never),
         sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
-        file_system_sandbox_policy: codex_protocol::permissions::FileSystemSandboxPolicy::from(
-            &SandboxPolicy::new_read_only_policy(),
-        ),
+        file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
         network_sandbox_policy: codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
         network: None,
         allow_login_shell: true,
@@ -632,7 +782,7 @@ async fn prepare_escalated_exec_permission_profile_unions_turn_and_requested_mac
         network: None,
         sandbox: SandboxType::None,
         sandbox_policy: sandbox_policy.clone(),
-        file_system_sandbox_policy: FileSystemSandboxPolicy::from(&sandbox_policy),
+        file_system_sandbox_policy: read_only_file_system_sandbox_policy(),
         network_sandbox_policy: NetworkSandboxPolicy::from(&sandbox_policy),
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
         sandbox_permissions: SandboxPermissions::UseDefault,
@@ -644,7 +794,7 @@ async fn prepare_escalated_exec_permission_profile_unions_turn_and_requested_mac
             ..Default::default()
         }),
         codex_linux_sandbox_exe: None,
-        use_linux_sandbox_bwrap: false,
+        use_legacy_landlock: false,
     };
 
     let prepared = executor
@@ -657,6 +807,7 @@ async fn prepare_escalated_exec_permission_profile_unions_turn_and_requested_mac
                 PermissionProfile {
                     macos: Some(MacOsSeatbeltProfileExtensions {
                         macos_calendar: true,
+                        macos_reminders: false,
                         ..Default::default()
                     }),
                     ..Default::default()
