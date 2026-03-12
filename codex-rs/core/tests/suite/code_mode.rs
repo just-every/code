@@ -20,9 +20,11 @@ use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 use wiremock::MockServer;
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
@@ -50,12 +52,11 @@ fn text_item(items: &[Value], index: usize) -> &str {
         .expect("content item should be input_text")
 }
 
-fn extract_running_session_id(text: &str) -> i32 {
-    text.strip_prefix("Script running with session ID ")
+fn extract_running_cell_id(text: &str) -> String {
+    text.strip_prefix("Script running with cell ID ")
         .and_then(|rest| rest.split('\n').next())
-        .expect("running header should contain a session ID")
-        .parse()
-        .expect("session ID should parse as i32")
+        .expect("running header should contain a cell ID")
+        .to_string()
 }
 
 fn wait_for_file_source(path: &Path) -> Result<String> {
@@ -89,10 +90,12 @@ async fn run_code_mode_turn(
     code: &str,
     include_apply_patch: bool,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-        config.include_apply_patch_tool = include_apply_patch;
-    });
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            config.include_apply_patch_tool = include_apply_patch;
+        });
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -124,39 +127,41 @@ async fn run_code_mode_turn_with_rmcp(
     code: &str,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
 
-        let mut servers = config.mcp_servers.get().clone();
-        servers.insert(
-            "rmcp".to_string(),
-            McpServerConfig {
-                transport: McpServerTransportConfig::Stdio {
-                    command: rmcp_test_server_bin,
-                    args: Vec::new(),
-                    env: Some(HashMap::from([(
-                        "MCP_TEST_VALUE".to_string(),
-                        "propagated-env".to_string(),
-                    )])),
-                    env_vars: Vec::new(),
-                    cwd: None,
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                "rmcp".to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: Some(HashMap::from([(
+                            "MCP_TEST_VALUE".to_string(),
+                            "propagated-env".to_string(),
+                        )])),
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    required: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                    oauth_resource: None,
                 },
-                enabled: true,
-                required: false,
-                disabled_reason: None,
-                startup_timeout_sec: Some(Duration::from_secs(10)),
-                tool_timeout_sec: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                oauth_resource: None,
-            },
-        );
-        config
-            .mcp_servers
-            .set(servers)
-            .expect("test mcp servers should accept any configuration");
-    });
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        });
     let test = builder.build(server).await?;
 
     responses::mount_sse_once(
@@ -224,6 +229,50 @@ add_content(JSON.stringify(await exec_command({ cmd: "printf code_mode_exec_mark
     assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
     assert!(parsed.get("wall_time_seconds").is_some());
     assert!(parsed.get("session_id").is_none());
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "flaky on windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_nested_tool_calls_can_run_in_parallel() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+import { test_sync_tool } from "tools.js";
+
+const args = {
+  sleep_after_ms: 300,
+  barrier: {
+    id: "code-mode-parallel-tools",
+    participants: 2,
+    timeout_ms: 1_000,
+  },
+};
+
+const results = await Promise.all([
+  test_sync_tool(args),
+  test_sync_tool(args),
+]);
+
+add_content(JSON.stringify(results));
+"#;
+
+    let start = Instant::now();
+    let (_test, second_mock) =
+        run_code_mode_turn(&server, "run nested tools in parallel", code, false).await?;
+    let duration = start.elapsed();
+
+    assert!(
+        duration < Duration::from_millis(1_600),
+        "expected nested tools to finish in parallel, got {duration:?}",
+    );
+
+    let req = second_mock.single_request();
+    let items = custom_tool_output_items(&req, "call-1");
+    assert_eq!(items.len(), 2);
+    assert_eq!(text_item(&items, 1), "[\"ok\",\"ok\"]");
 
     Ok(())
 }
@@ -372,12 +421,12 @@ output_text("phase 3");
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script running with session ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
         text_item(&first_items, 0),
     );
     assert_eq!(text_item(&first_items, 1), "phase 1");
-    let session_id = extract_running_session_id(text_item(&first_items, 0));
+    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
 
     responses::mount_sse_once(
         &server,
@@ -387,7 +436,7 @@ output_text("phase 3");
                 "call-2",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_id,
+                    "cell_id": cell_id.clone(),
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -413,13 +462,13 @@ output_text("phase 3");
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script running with session ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
         text_item(&second_items, 0),
     );
     assert_eq!(
-        extract_running_session_id(text_item(&second_items, 0)),
-        session_id
+        extract_running_cell_id(text_item(&second_items, 0)),
+        cell_id
     );
     assert_eq!(text_item(&second_items, 1), "phase 2");
 
@@ -431,7 +480,7 @@ output_text("phase 3");
                 "call-3",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_id,
+                    "cell_id": cell_id.clone(),
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -462,6 +511,103 @@ output_text("phase 3");
         text_item(&third_items, 0),
     );
     assert_eq!(text_item(&third_items, 1), "phase 3");
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_yield_timeout_works_for_busy_loop() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+
+    let code = r#"
+import { output_text, set_yield_time } from "@openai/code_mode";
+
+output_text("phase 1");
+set_yield_time(10);
+while (true) {}
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        test.submit_turn("start the busy loop"),
+    )
+    .await??;
+
+    let first_request = first_completion.single_request();
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&first_items, 0),
+    );
+    assert_eq!(text_item(&first_items, 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                "exec_wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id.clone(),
+                    "terminate": true,
+                }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "terminated"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("terminate it").await?;
+
+    let second_request = second_completion.single_request();
+    let second_items = function_tool_output_items(&second_request, "call-2");
+    assert_eq!(second_items.len(), 1);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&second_items, 0),
+    );
 
     Ok(())
 }
@@ -527,7 +673,7 @@ output_text("session b done");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let session_a_id = extract_running_session_id(text_item(&first_items, 0));
+    let session_a_id = extract_running_cell_id(text_item(&first_items, 0));
     assert_eq!(text_item(&first_items, 1), "session a start");
 
     responses::mount_sse_once(
@@ -553,7 +699,7 @@ output_text("session b done");
     let second_request = second_completion.single_request();
     let second_items = custom_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    let session_b_id = extract_running_session_id(text_item(&second_items, 0));
+    let session_b_id = extract_running_cell_id(text_item(&second_items, 0));
     assert_eq!(text_item(&second_items, 1), "session b start");
     assert_ne!(session_a_id, session_b_id);
 
@@ -566,7 +712,7 @@ output_text("session b done");
                 "call-3",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_a_id,
+                    "cell_id": session_a_id.clone(),
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -606,7 +752,7 @@ output_text("session b done");
                 "call-4",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_b_id,
+                    "cell_id": session_b_id.clone(),
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -688,7 +834,7 @@ output_text("phase 2");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let session_id = extract_running_session_id(text_item(&first_items, 0));
+    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
     assert_eq!(text_item(&first_items, 1), "phase 1");
 
     responses::mount_sse_once(
@@ -699,7 +845,7 @@ output_text("phase 2");
                 "call-2",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_id,
+                    "cell_id": cell_id.clone(),
                     "terminate": true,
                 }))?,
             ),
@@ -790,7 +936,7 @@ async fn code_mode_exec_wait_returns_error_for_unknown_session() -> Result<()> {
                 "call-1",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": 999_999,
+                    "cell_id": "999999",
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -807,7 +953,7 @@ async fn code_mode_exec_wait_returns_error_for_unknown_session() -> Result<()> {
     )
     .await;
 
-    test.submit_turn("wait on an unknown exec session").await?;
+    test.submit_turn("wait on an unknown exec cell").await?;
 
     let request = completion.single_request();
     let (_, success) = request
@@ -826,7 +972,7 @@ async fn code_mode_exec_wait_returns_error_for_unknown_session() -> Result<()> {
     );
     assert_eq!(
         text_item(&items, 1),
-        "Script error:\nexec session 999999 not found"
+        "Script error:\nexec cell 999999 not found"
     );
 
     Ok(())
@@ -834,7 +980,7 @@ async fn code_mode_exec_wait_returns_error_for_unknown_session() -> Result<()> {
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_wait_terminate_returns_completed_session_if_it_finished_in_background()
+async fn code_mode_exec_wait_terminate_returns_completed_session_if_it_finished_after_yield_control()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -845,8 +991,12 @@ async fn code_mode_exec_wait_terminate_returns_completed_session_if_it_finished_
     let test = builder.build(&server).await?;
     let session_a_gate = test.workspace_path("code-mode-session-a-finished.ready");
     let session_b_gate = test.workspace_path("code-mode-session-b-blocked.ready");
+    let session_a_done_marker = test.workspace_path("code-mode-session-a-done.txt");
     let session_a_wait = wait_for_file_source(&session_a_gate)?;
     let session_b_wait = wait_for_file_source(&session_b_gate)?;
+    let session_a_done_marker_quoted =
+        shlex::try_join([session_a_done_marker.to_string_lossy().as_ref()])?;
+    let session_a_done_command = format!("printf done > {session_a_done_marker_quoted}");
 
     let session_a_code = format!(
         r#"
@@ -857,6 +1007,7 @@ output_text("session a start");
 set_yield_time(10);
 {session_a_wait}
 output_text("session a done");
+await exec_command({{ cmd: {session_a_done_command:?} }});
 "#
     );
     let session_b_code = format!(
@@ -894,7 +1045,7 @@ output_text("session b done");
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
-    let session_a_id = extract_running_session_id(text_item(&first_items, 0));
+    let session_a_id = extract_running_cell_id(text_item(&first_items, 0));
     assert_eq!(text_item(&first_items, 1), "session a start");
 
     responses::mount_sse_once(
@@ -920,7 +1071,7 @@ output_text("session b done");
     let second_request = second_completion.single_request();
     let second_items = custom_tool_output_items(&second_request, "call-2");
     assert_eq!(second_items.len(), 2);
-    let session_b_id = extract_running_session_id(text_item(&second_items, 0));
+    let session_b_id = extract_running_cell_id(text_item(&second_items, 0));
     assert_eq!(text_item(&second_items, 1), "session b start");
 
     fs::write(&session_a_gate, "ready")?;
@@ -932,7 +1083,7 @@ output_text("session b done");
                 "call-3",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_b_id,
+                    "cell_id": session_b_id.clone(),
                     "yield_time_ms": 1_000,
                 }))?,
             ),
@@ -957,14 +1108,22 @@ output_text("session b done");
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script running with session ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
         text_item(&third_items, 0),
     );
     assert_eq!(
-        extract_running_session_id(text_item(&third_items, 0)),
+        extract_running_cell_id(text_item(&third_items, 0)),
         session_b_id
     );
+
+    for _ in 0..100 {
+        if session_a_done_marker.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(session_a_done_marker.exists());
 
     responses::mount_sse_once(
         &server,
@@ -974,7 +1133,7 @@ output_text("session b done");
                 "call-4",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_a_id,
+                    "cell_id": session_a_id.clone(),
                     "terminate": true,
                 }))?,
             ),
@@ -995,14 +1154,124 @@ output_text("session b done");
 
     let fourth_request = fourth_completion.single_request();
     let fourth_items = function_tool_output_items(&fourth_request, "call-4");
-    assert_eq!(fourth_items.len(), 1);
+    match fourth_items.len() {
+        1 => {
+            assert_regex_match(
+                concat!(
+                    r"(?s)\A",
+                    r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
+                ),
+                text_item(&fourth_items, 0),
+            );
+        }
+        2 => {
+            assert_regex_match(
+                concat!(
+                    r"(?s)\A",
+                    r"Script (?:completed|terminated)\nWall time \d+\.\d seconds\nOutput:\n\z"
+                ),
+                text_item(&fourth_items, 0),
+            );
+            assert_eq!(text_item(&fourth_items, 1), "session a done");
+        }
+        other => panic!("unexpected number of content items: {other}"),
+    }
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_background_keeps_running_on_later_turn_without_exec_wait() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+    let resumed_file = test.workspace_path("code-mode-yield-resumed.txt");
+    let resumed_file_quoted = shlex::try_join([resumed_file.to_string_lossy().as_ref()])?;
+    let write_file_command = format!("printf resumed > {resumed_file_quoted}");
+    let wait_for_file_command =
+        format!("while [ ! -f {resumed_file_quoted} ]; do sleep 0.01; done; printf ready");
+    let code = format!(
+        r#"
+import {{ yield_control, output_text }} from "@openai/code_mode";
+import {{ exec_command }} from "tools.js";
+
+output_text("before yield");
+yield_control();
+await exec_command({{ cmd: {write_file_command:?} }});
+output_text("after yield");
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", &code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "exec yielded"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start yielded exec").await?;
+
+    let first_request = first_completion.single_request();
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2);
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        text_item(&fourth_items, 0),
+        text_item(&first_items, 0),
     );
+    assert_eq!(text_item(&first_items, 1), "before yield");
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                "exec_command",
+                &serde_json::to_string(&serde_json::json!({
+                    "cmd": wait_for_file_command,
+                }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "file appeared"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait for resumed file").await?;
+
+    let second_request = second_completion.single_request();
+    assert!(
+        second_request
+            .function_call_output_text("call-2")
+            .is_some_and(|output| output.ends_with("ready"))
+    );
+    assert_eq!(fs::read_to_string(&resumed_file)?, "resumed");
 
     Ok(())
 }
@@ -1057,7 +1326,7 @@ output_text("token one token two token three token four token five token six tok
     let first_items = custom_tool_output_items(&first_request, "call-1");
     assert_eq!(first_items.len(), 2);
     assert_eq!(text_item(&first_items, 1), "phase 1");
-    let session_id = extract_running_session_id(text_item(&first_items, 0));
+    let cell_id = extract_running_cell_id(text_item(&first_items, 0));
 
     fs::write(&completion_gate, "ready")?;
     responses::mount_sse_once(
@@ -1068,7 +1337,7 @@ output_text("token one token two token three token four token five token six tok
                 "call-2",
                 "exec_wait",
                 &serde_json::to_string(&serde_json::json!({
-                    "session_id": session_id,
+                    "cell_id": cell_id.clone(),
                     "yield_time_ms": 1_000,
                     "max_tokens": 6,
                 }))?,
@@ -1311,6 +1580,184 @@ env=propagated-env
 isError=false
 contentLength=0"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_dynamically_import_namespaced_mcp_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+const rmcp = await import("tools/mcp/rmcp.js");
+const { content, structuredContent, isError } = await rmcp.echo({
+  message: "ping",
+});
+add_content(
+  `hasEcho=${String(Object.keys(rmcp).includes("echo"))}\n` +
+    `echoType=${typeof rmcp.echo}\n` +
+    `echo=${structuredContent?.echo ?? "missing"}\n` +
+    `isError=${String(isError)}\n` +
+    `contentLength=${content.length}`
+);
+"#;
+
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp(
+        &server,
+        "use exec to dynamically import the rmcp module",
+        code,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec dynamic rmcp import failed unexpectedly: {output}"
+    );
+    assert_eq!(
+        output,
+        "hasEcho=true
+echoType=function
+echo=ECHOING: ping
+isError=false
+contentLength=0"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_normalizes_illegal_namespaced_mcp_tool_identifiers() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+import { echo_tool } from "tools/mcp/rmcp.js";
+
+const result = await echo_tool({ message: "ping" });
+add_content(`echo=${result.structuredContent.echo}`);
+"#;
+
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp(
+        &server,
+        "use exec to import a normalized rmcp tool name",
+        code,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec normalized rmcp import failed unexpectedly: {output}"
+    );
+    assert_eq!(output, "echo=ECHOING: ping");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_lists_global_scope_items() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+add_content(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
+"#;
+
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect global scope", code).await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec global scope inspection failed unexpectedly: {output}"
+    );
+    let globals = serde_json::from_str::<Vec<String>>(&output)?;
+    let globals = globals.into_iter().collect::<HashSet<_>>();
+    let expected = [
+        "AggregateError",
+        "Array",
+        "ArrayBuffer",
+        "AsyncDisposableStack",
+        "Atomics",
+        "BigInt",
+        "BigInt64Array",
+        "BigUint64Array",
+        "Boolean",
+        "DataView",
+        "Date",
+        "DisposableStack",
+        "Error",
+        "EvalError",
+        "FinalizationRegistry",
+        "Float16Array",
+        "Float32Array",
+        "Float64Array",
+        "Function",
+        "Infinity",
+        "Int16Array",
+        "Int32Array",
+        "Int8Array",
+        "Intl",
+        "Iterator",
+        "JSON",
+        "Map",
+        "Math",
+        "NaN",
+        "Number",
+        "Object",
+        "Promise",
+        "Proxy",
+        "RangeError",
+        "ReferenceError",
+        "Reflect",
+        "RegExp",
+        "Set",
+        "SharedArrayBuffer",
+        "String",
+        "SuppressedError",
+        "Symbol",
+        "SyntaxError",
+        "TypeError",
+        "URIError",
+        "Uint16Array",
+        "Uint32Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "WeakMap",
+        "WeakRef",
+        "WeakSet",
+        "WebAssembly",
+        "__codexContentItems",
+        "add_content",
+        "console",
+        "decodeURI",
+        "decodeURIComponent",
+        "encodeURI",
+        "encodeURIComponent",
+        "escape",
+        "eval",
+        "globalThis",
+        "isFinite",
+        "isNaN",
+        "parseFloat",
+        "parseInt",
+        "undefined",
+        "unescape",
+    ];
+    for g in &globals {
+        assert!(
+            expected.contains(&g.as_str()),
+            "unexpected global {g} in {globals:?}"
+        );
+    }
 
     Ok(())
 }

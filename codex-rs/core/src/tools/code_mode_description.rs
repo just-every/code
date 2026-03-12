@@ -75,13 +75,15 @@ fn append_code_mode_sample(
     output_type: String,
 ) -> String {
     let reference = code_mode_tool_reference(tool_name);
-    format!(
-        "{description}\n\nCode mode declaration:\n```ts\nimport {{ {} }} from \"{}\";\ndeclare function {}({input_name}: {input_type}): Promise<{output_type}>;\n```",
-        reference.tool_key, reference.module_path, reference.tool_key
-    )
+    let local_name = normalize_code_mode_identifier(&reference.tool_key);
+    let declaration = format!(
+        "import {{ {local_name} }} from \"{}\";\ndeclare function {local_name}({input_name}: {input_type}): Promise<{output_type}>;",
+        reference.module_path
+    );
+    format!("{description}\n\nCode mode declaration:\n```ts\n{declaration}\n```")
 }
 
-fn code_mode_local_name(tool_key: &str) -> String {
+pub(crate) fn normalize_code_mode_identifier(tool_key: &str) -> String {
     let mut identifier = String::new();
 
     for (index, ch) in tool_key.chars().enumerate() {
@@ -98,7 +100,11 @@ fn code_mode_local_name(tool_key: &str) -> String {
         }
     }
 
-    identifier
+    if identifier.is_empty() {
+        "_".to_string()
+    } else {
+        identifier
+    }
 }
 
 fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
@@ -279,7 +285,7 @@ fn render_json_schema_object(map: &serde_json::Map<String, JsonValue>, indent: u
 }
 
 fn render_json_schema_property_name(name: &str) -> String {
-    if code_mode_local_name(name) == name {
+    if normalize_code_mode_identifier(name) == name {
         name.to_string()
     } else {
         serde_json::to_string(name).unwrap_or_else(|_| format!("\"{}\"", name.replace('"', "\\\"")))
@@ -291,80 +297,5 @@ fn render_json_schema_literal(value: &JsonValue) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::render_json_schema_to_typescript;
-    use pretty_assertions::assert_eq;
-    use serde_json::json;
-
-    #[test]
-    fn render_json_schema_to_typescript_renders_object_properties() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "recursive": {"type": "boolean"}
-            },
-            "required": ["path"],
-            "additionalProperties": false
-        });
-
-        assert_eq!(
-            render_json_schema_to_typescript(&schema),
-            "{\n  path: string;\n  recursive?: boolean;\n}"
-        );
-    }
-
-    #[test]
-    fn render_json_schema_to_typescript_renders_anyof_unions() {
-        let schema = json!({
-            "anyOf": [
-                {"const": "pending"},
-                {"const": "done"},
-                {"type": "number"}
-            ]
-        });
-
-        assert_eq!(
-            render_json_schema_to_typescript(&schema),
-            "\"pending\" | \"done\" | number"
-        );
-    }
-
-    #[test]
-    fn render_json_schema_to_typescript_renders_additional_properties() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                }
-            },
-            "additionalProperties": {"type": "integer"}
-        });
-
-        assert_eq!(
-            render_json_schema_to_typescript(&schema),
-            "{\n  tags?: Array<string>;\n  [key: string]: number;\n}"
-        );
-    }
-
-    #[test]
-    fn render_json_schema_to_typescript_sorts_object_properties() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "structuredContent": {"type": "string"},
-                "_meta": {"type": "string"},
-                "isError": {"type": "boolean"},
-                "content": {"type": "array", "items": {"type": "string"}}
-            },
-            "required": ["content"]
-        });
-
-        assert_eq!(
-            render_json_schema_to_typescript(&schema),
-            "{\n  _meta?: string;\n  content: Array<string>;\n  isError?: boolean;\n  structuredContent?: string;\n}"
-        );
-    }
-}
+#[path = "code_mode_description_tests.rs"]
+mod tests;
