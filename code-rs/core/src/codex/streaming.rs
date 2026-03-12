@@ -11471,6 +11471,10 @@ fn consume_pending_screenshots(sess: &Session) -> Vec<ResponseInputItem> {
         .collect()
 }
 
+fn custom_tool_event_result_text(output: &FunctionCallOutputPayload) -> String {
+    output.body.to_text().unwrap_or_else(|| output.to_string())
+}
+
 /// Helper function to wrap custom tool calls with events
 async fn execute_custom_tool<F, Fut>(
     sess: &Session,
@@ -11504,7 +11508,7 @@ where
     // Extract success/failure from result. Prefer explicit success flag when available.
     let (success, message) = match &result {
         ResponseInputItem::FunctionCallOutput { output, .. } => {
-            let content = output.to_string();
+            let content = custom_tool_event_result_text(output);
             let success_flag = output.success;
             (success_flag.unwrap_or(true), content)
         }
@@ -13831,6 +13835,7 @@ mod tests {
         AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
         auto_context_judge_models,
         choose_larger_context_model_from_candidates,
+        custom_tool_event_result_text,
         ContextFallbackCandidate,
         format_exec_output_with_limit,
         is_context_overflow_stream_error,
@@ -13840,6 +13845,8 @@ mod tests {
     };
     use crate::exec::{ExecToolCallOutput, StreamOutput};
     use crate::protocol::TokenUsage;
+    use code_protocol::models::FunctionCallOutputContentItem;
+    use code_protocol::models::FunctionCallOutputPayload;
     use serde_json::Value;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -13892,6 +13899,24 @@ mod tests {
 
         assert!(!content.contains(TRUNCATION_MARKER));
         assert!(content.contains("line"));
+    }
+
+    #[test]
+    fn custom_tool_event_result_text_omits_image_data_urls() {
+        let payload = FunctionCallOutputPayload::from_content_items(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "[image: hero]".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,BASE64".to_string(),
+                detail: None,
+            },
+        ]);
+
+        let text = custom_tool_event_result_text(&payload);
+
+        assert_eq!(text, "[image: hero]");
+        assert!(!text.contains("base64"));
     }
 
     #[test]
