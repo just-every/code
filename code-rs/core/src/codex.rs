@@ -189,6 +189,7 @@ fn to_proto_approval_policy(policy: AskForApproval) -> ProtoAskForApproval {
         AskForApproval::Reject(config) => ProtoAskForApproval::Reject(ProtoRejectConfig {
             sandbox_approval: config.sandbox_approval,
             rules: config.rules,
+            request_permissions: config.request_permissions,
             mcp_elicitations: config.mcp_elicitations,
         }),
         AskForApproval::Never => ProtoAskForApproval::Never,

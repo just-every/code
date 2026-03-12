@@ -1336,6 +1336,8 @@ const AUTO_REVIEW_SCOPE_MAX_LISTED_PATHS: usize = 40;
 const AUTO_REVIEW_DIFF_EXCERPT_CHARS: usize = 24_000;
 const AUTO_REVIEW_MAX_CHANGED_PATHS: usize = 120;
 const AUTO_REVIEW_MAX_RAW_DIFF_CHARS: usize = 120_000;
+const AUTO_REVIEW_ESTIMATED_BYTES_PER_TOKEN: u64 = 4;
+const AUTO_REVIEW_PROMPT_TOKEN_LIMIT_DIVISOR: u64 = 2;
 const AUTO_REVIEW_SCOPE_EXCLUDED_PREFIXES: [&str; 5] = [
     "codex-rs/",
     "node_modules/",
@@ -1441,38 +1443,206 @@ fn build_background_review_prompt(
     scope_note: Option<&str>,
     diff_excerpt: Option<&str>,
     turn_context: Option<&str>,
+    max_prompt_tokens: Option<u64>,
 ) -> String {
-    let mut prompt = String::from(
+    fn assemble_background_review_prompt(
+        snapshot_id: &str,
+        scope_note: Option<&str>,
+        diff_excerpt: Option<&str>,
+        turn_context: Option<&str>,
+    ) -> String {
+        let mut prompt = String::from(
         "/review Review only the provided code change scope. Identify critical bugs, regressions, security/performance/concurrency risks, or incorrect assumptions. Provide actionable feedback and references to the changed code; ignore minor style or formatting nits.",
+        );
+
+        prompt.push_str("\n\nSnapshot: ");
+        prompt.push_str(snapshot_id);
+        prompt.push('.');
+
+        if let Some(scope_note) = scope_note
+            && !scope_note.trim().is_empty()
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(scope_note.trim());
+        }
+
+        if let Some(diff_excerpt) = diff_excerpt
+            && !diff_excerpt.trim().is_empty()
+        {
+            prompt.push_str("\n\nReview only this diff excerpt unless additional inspection is absolutely necessary:\n```diff\n");
+            prompt.push_str(diff_excerpt.trim());
+            prompt.push_str("\n```");
+        }
+
+        if let Some(context) = turn_context
+            && !context.trim().is_empty()
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(context.trim());
+        }
+
+        prompt
+    }
+
+    fn trim_optional_prompt_section_to_budget<F>(
+        text: Option<String>,
+        budget_tokens: u64,
+        mut build_prompt: F,
+    ) -> Option<String>
+    where
+        F: FnMut(Option<&str>) -> String,
+    {
+        let text = text?;
+        if estimate_auto_review_prompt_tokens(&build_prompt(Some(text.as_str()))) <= budget_tokens {
+            return Some(text);
+        }
+        if estimate_auto_review_prompt_tokens(&build_prompt(None)) > budget_tokens {
+            return None;
+        }
+
+        let mut low = 0usize;
+        let mut high = text.len();
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let candidate = truncate_to_byte_limit_with_ellipsis(&text, mid);
+            if estimate_auto_review_prompt_tokens(&build_prompt(Some(candidate.as_str())))
+                <= budget_tokens
+            {
+                low = mid;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+
+        let candidate = truncate_to_byte_limit_with_ellipsis(&text, low);
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    let mut scope_note = scope_note
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned);
+    let mut diff_excerpt = diff_excerpt
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned);
+    let mut turn_context = turn_context
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned);
+
+    let mut prompt = assemble_background_review_prompt(
+        snapshot_id,
+        scope_note.as_deref(),
+        diff_excerpt.as_deref(),
+        turn_context.as_deref(),
     );
+    let Some(max_prompt_tokens) = max_prompt_tokens else {
+        return prompt;
+    };
 
-    prompt.push_str("\n\nSnapshot: ");
-    prompt.push_str(snapshot_id);
-    prompt.push('.');
-
-    if let Some(scope_note) = scope_note
-        && !scope_note.trim().is_empty()
-    {
-        prompt.push_str("\n\n");
-        prompt.push_str(scope_note.trim());
+    if estimate_auto_review_prompt_tokens(&prompt) <= max_prompt_tokens {
+        return prompt;
     }
 
-    if let Some(diff_excerpt) = diff_excerpt
-        && !diff_excerpt.trim().is_empty()
-    {
-        prompt.push_str("\n\nReview only this diff excerpt unless additional inspection is absolutely necessary:\n```diff\n");
-        prompt.push_str(diff_excerpt.trim());
-        prompt.push_str("\n```");
+    turn_context = trim_optional_prompt_section_to_budget(turn_context, max_prompt_tokens, |ctx| {
+        assemble_background_review_prompt(
+            snapshot_id,
+            scope_note.as_deref(),
+            diff_excerpt.as_deref(),
+            ctx,
+        )
+    });
+    prompt = assemble_background_review_prompt(
+        snapshot_id,
+        scope_note.as_deref(),
+        diff_excerpt.as_deref(),
+        turn_context.as_deref(),
+    );
+    if estimate_auto_review_prompt_tokens(&prompt) <= max_prompt_tokens {
+        return prompt;
     }
 
-    if let Some(context) = turn_context
-        && !context.trim().is_empty()
-    {
-        prompt.push_str("\n\n");
-        prompt.push_str(context.trim());
+    diff_excerpt = trim_optional_prompt_section_to_budget(diff_excerpt, max_prompt_tokens, |diff| {
+        assemble_background_review_prompt(
+            snapshot_id,
+            scope_note.as_deref(),
+            diff,
+            turn_context.as_deref(),
+        )
+    });
+    prompt = assemble_background_review_prompt(
+        snapshot_id,
+        scope_note.as_deref(),
+        diff_excerpt.as_deref(),
+        turn_context.as_deref(),
+    );
+    if estimate_auto_review_prompt_tokens(&prompt) <= max_prompt_tokens {
+        return prompt;
     }
 
-    prompt
+    scope_note = trim_optional_prompt_section_to_budget(scope_note, max_prompt_tokens, |scope| {
+        assemble_background_review_prompt(
+            snapshot_id,
+            scope,
+            diff_excerpt.as_deref(),
+            turn_context.as_deref(),
+        )
+    });
+
+    assemble_background_review_prompt(
+        snapshot_id,
+        scope_note.as_deref(),
+        diff_excerpt.as_deref(),
+        turn_context.as_deref(),
+    )
+}
+
+fn estimate_auto_review_prompt_tokens(text: &str) -> u64 {
+    let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    bytes
+        .saturating_add(AUTO_REVIEW_ESTIMATED_BYTES_PER_TOKEN - 1)
+        / AUTO_REVIEW_ESTIMATED_BYTES_PER_TOKEN
+}
+
+fn truncate_to_byte_limit_with_ellipsis(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    if max_bytes == 1 {
+        return "…".to_string();
+    }
+
+    let keep_bytes = max_bytes.saturating_sub('…'.len_utf8());
+    let mut out = String::with_capacity(max_bytes);
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let len = ch.len_utf8();
+        if used.saturating_add(len) > keep_bytes {
+            break;
+        }
+        out.push(ch);
+        used = used.saturating_add(len);
+    }
+    out.push('…');
+    out
+}
+
+fn auto_review_prompt_token_budget(review_model: &str, fallback_context_window: Option<u64>) -> Option<u64> {
+    let normalized = review_model.strip_prefix("code-").unwrap_or(review_model);
+    let review_context_window = find_family_for_model(normalized).and_then(|family| family.context_window);
+    review_context_window
+        .or(fallback_context_window)
+        .map(|window| window / AUTO_REVIEW_PROMPT_TOKEN_LIMIT_DIVISOR)
+        .filter(|budget| *budget > 0)
 }
 
 #[derive(Clone, Copy)]
@@ -1795,6 +1965,7 @@ pub(crate) struct ChatWidget<'a> {
     background_review: Option<BackgroundReviewState>,
     auto_review_status: Option<AutoReviewStatus>,
     auto_review_notice: Option<AutoReviewNotice>,
+    deferred_auto_review_notice_lines: Option<Vec<String>>,
     last_auto_review_failure: Option<AutoReviewFailureRecord>,
     auto_review_baseline: Option<GhostCommit>,
     auto_review_reviewed_marker: Option<GhostCommit>,
@@ -4002,7 +4173,35 @@ impl ChatWidget<'_> {
         {
             self.bottom_pane.set_task_running(false);
             self.bottom_pane.update_status_text(String::new());
+            self.auto_on_turn_complete();
+            self.flush_deferred_auto_review_notice_if_idle();
         }
+    }
+
+    fn foreground_activity_running_excluding_auto_review(&self) -> bool {
+        let wait_running = self.wait_running();
+        let wait_blocks = self.wait_blocking_enabled();
+
+        self.terminal_is_running()
+            || !self.exec.running_commands.is_empty()
+            || !self.tools_state.running_custom_tools.is_empty()
+            || !self.tools_state.web_search_sessions.is_empty()
+            || !self.active_task_ids.is_empty()
+            || self.stream.is_write_cycle_active()
+            || self.agents_are_actively_running()
+            || (wait_running && wait_blocks)
+    }
+
+    fn flush_deferred_auto_review_notice_if_idle(&mut self) {
+        if self.foreground_activity_running_excluding_auto_review() {
+            return;
+        }
+
+        let Some(lines) = self.deferred_auto_review_notice_lines.take() else {
+            return;
+        };
+
+        self.insert_auto_review_notice_lines(lines);
     }
 
     fn last_answer_is_mid_turn(&self) -> bool {
@@ -4989,6 +5188,8 @@ impl ChatWidget<'_> {
         } else if !self.history_cell_ids.is_empty() {
             self.history_cell_ids.clear();
         }
+
+        self.flush_deferred_auto_review_notice_if_idle();
 
         // Send a redraw event to trigger UI update
         self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -6751,6 +6952,7 @@ impl ChatWidget<'_> {
             background_review: None,
             auto_review_status: None,
             auto_review_notice: None,
+            deferred_auto_review_notice_lines: None,
             last_auto_review_failure: None,
             auto_review_baseline: None,
             auto_review_reviewed_marker: None,
@@ -7137,6 +7339,7 @@ impl ChatWidget<'_> {
             background_review: None,
             auto_review_status: None,
             auto_review_notice: None,
+            deferred_auto_review_notice_lines: None,
             last_auto_review_failure: None,
             auto_review_baseline: None,
             auto_review_reviewed_marker: None,
@@ -14023,6 +14226,7 @@ impl ChatWidget<'_> {
                 // Final re-check for idle state
                 self.maybe_hide_spinner();
                 self.maybe_trigger_auto_review();
+                self.auto_on_turn_complete();
                 self.emit_turn_complete_notification(last_agent_message);
                 self.suppress_next_agent_hint = false;
                 self.mark_needs_redraw();
@@ -15653,6 +15857,7 @@ impl ChatWidget<'_> {
     }
 
     fn request_redraw(&mut self) {
+        self.flush_deferred_auto_review_notice_if_idle();
         self.app_event_tx.send(AppEvent::RequestRedraw);
     }
 
@@ -20399,6 +20604,25 @@ Have we met every part of this goal and is there no further work to do?"#
         if !self.auto_state.is_active() || !self.auto_state.is_waiting_for_response() {
             return;
         }
+        self.auto_state.current_summary = Some(String::new());
+        self.auto_state.current_status_sent_to_user = None;
+        self.auto_state.current_status_title = None;
+        self.auto_state.current_summary_index = None;
+        self.auto_state.placeholder_phrase = None;
+        self.auto_state.thinking_prefix_stripped = false;
+
+        self.auto_rebuild_live_ring();
+        self.request_redraw();
+    }
+
+    fn auto_on_turn_complete(&mut self) {
+        if !self.auto_state.is_active() || !self.auto_state.is_waiting_for_response() {
+            return;
+        }
+        if self.auto_state.is_coordinator_waiting() {
+            return;
+        }
+
         self.auto_state.on_resume_from_manual();
         self.auto_state.reset_countdown();
         self.auto_state.current_summary = Some(String::new());
@@ -28937,6 +29161,8 @@ Have we met every part of this goal and is there no further work to do?"#
                             transport,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
+                            enabled_tools: None,
+                            disabled_tools: None,
                         };
                         match code_core::config::add_mcp_server(&home, &name, cfg.clone()) {
                             Ok(()) => {
@@ -30272,6 +30498,8 @@ async fn run_background_review(
         }
 
         let review_model = ensure_code_prefix(&config.auto_review_model);
+        let prompt_token_budget =
+            auto_review_prompt_token_budget(&config.auto_review_model, config.model_context_window);
 
         // Allow the spawned agent to reuse the parent's review lock without blocking.
         let mut env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -30295,6 +30523,7 @@ async fn run_background_review(
             review_scope.0.as_deref(),
             review_scope.1.as_deref(),
             turn_context.as_deref(),
+            prompt_token_budget,
         );
 
         let mut manager = code_core::AGENT_MANAGER.write().await;
@@ -30453,21 +30682,6 @@ use code_core::protocol::OrderMeta;
         code_op_rx
     }
 
-    fn expect_post_turn_developer_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
-        loop {
-            match code_op_rx.try_recv().expect("post-turn developer op") {
-                Op::AddPostTurnDeveloperInput { text } => return text,
-                Op::UserInput {
-                    final_output_json_schema: None,
-                    ..
-                }
-                | Op::QueueUserInput { .. }
-                | Op::AddToHistory { .. } => continue,
-                other => panic!("expected AddPostTurnDeveloperInput, got {other:?}"),
-            }
-        }
-    }
-
     fn expect_immediate_user_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
         loop {
             match code_op_rx.try_recv().expect("user input op") {
@@ -30484,6 +30698,21 @@ use code_core::protocol::OrderMeta;
         }
     }
 
+    fn expect_post_turn_developer_input(code_op_rx: &mut UnboundedReceiver<Op>) -> String {
+        loop {
+            match code_op_rx.try_recv().expect("post-turn developer op") {
+                Op::AddPostTurnDeveloperInput { text } => return text,
+                Op::UserInput {
+                    final_output_json_schema: None,
+                    ..
+                }
+                | Op::QueueUserInput { .. }
+                | Op::AddToHistory { .. } => continue,
+                other => panic!("expected AddPostTurnDeveloperInput, got {other:?}"),
+            }
+        }
+    }
+
     fn assert_no_code_ops_pending(code_op_rx: &mut UnboundedReceiver<Op>) {
         assert!(
             matches!(
@@ -30492,6 +30721,16 @@ use code_core::protocol::OrderMeta;
             ),
             "expected no pending code ops"
         );
+    }
+
+    fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {
+        chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains(needle))
+            })
+        })
     }
 
     #[test]
@@ -30535,6 +30774,7 @@ use code_core::protocol::OrderMeta;
             Some("Changed files to prioritize:\n- src/lib.rs"),
             Some("diff --git a/src/lib.rs b/src/lib.rs\n+new line"),
             Some("<context>\n<user>Fix it</user>\n</context>"),
+            None,
         );
 
         assert!(prompt.contains("Review only the provided code change scope"));
@@ -30544,6 +30784,38 @@ use code_core::protocol::OrderMeta;
         assert!(prompt.contains("+new line"));
         assert!(prompt.contains("<context>"));
         assert!(!prompt.contains("Analyze only changes made in commit"));
+    }
+
+    #[test]
+    fn background_review_prompt_respects_token_budget() {
+        let diff = "diff --git a/src/lib.rs b/src/lib.rs\n+new line\n".repeat(400);
+        let context = "<context>\n<user>Fix it</user>\n<assistant>Investigating</assistant>\n</context>\n"
+            .repeat(200);
+        let prompt = build_background_review_prompt(
+            "abc123",
+            Some("Changed files to prioritize:\n- src/lib.rs\n- src/main.rs"),
+            Some(diff.as_str()),
+            Some(context.as_str()),
+            Some(800),
+        );
+
+        assert!(prompt.contains("Review only the provided code change scope"));
+        assert!(prompt.contains("Snapshot: abc123."));
+        assert!(estimate_auto_review_prompt_tokens(&prompt) <= 800);
+        assert!(prompt.contains("```diff") || prompt.contains("Changed files to prioritize"));
+    }
+
+    #[test]
+    fn auto_review_prompt_budget_uses_half_context_window() {
+        assert_eq!(auto_review_prompt_token_budget("o3", None), Some(100_000));
+        assert_eq!(
+            auto_review_prompt_token_budget("code-o3", Some(272_000)),
+            Some(100_000)
+        );
+        assert_eq!(
+            auto_review_prompt_token_budget("unknown-model", Some(272_000)),
+            Some(136_000)
+        );
     }
 
     #[test]
@@ -30609,6 +30881,8 @@ use code_core::protocol::OrderMeta;
                 },
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
             };
             let fail_cfg = McpServerConfig {
                 transport: McpServerTransportConfig::Stdio {
@@ -30618,6 +30892,8 @@ use code_core::protocol::OrderMeta;
                 },
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
             };
 
             let ok_summary = chat.format_mcp_server_summary("alpha", &ok_cfg, true);
@@ -31158,6 +31434,48 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn background_review_findings_render_notice_and_post_turn_input() {
+        let _rt = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.background_review = Some(BackgroundReviewState {
+            worktree_path: PathBuf::from("/tmp/wt"),
+            branch: "auto-review-branch".to_string(),
+            agent_id: Some("agent-visible".to_string()),
+            snapshot: Some("ghost-visible".to_string()),
+            base: None,
+            last_seen: Instant::now(),
+        });
+
+        chat.on_background_review_finished(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            true,
+            1,
+            Some("needs work".to_string()),
+            None,
+            Some("agent-visible".to_string()),
+            Some("ghost-visible".to_string()),
+        );
+
+        let notice_present = chat.history_cells.iter().any(|cell| {
+            cell.display_lines_trimmed().iter().any(|line| {
+                line.spans.iter().any(|span| {
+                    span.content.contains("Auto Review: 1 issue(s) found")
+                        && span.content.contains("needs work")
+                })
+            })
+        });
+        assert!(notice_present, "actionable findings should render a visible auto-review notice");
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
+        assert!(note.contains("Merge the worktree 'auto-review-branch'"));
+        assert_no_code_ops_pending(&mut code_op_rx);
+    }
+
+    #[test]
     fn auto_drive_does_not_wait_for_background_auto_review() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31167,6 +31485,7 @@ use code_core::protocol::OrderMeta;
         chat.auto_state.started_at = Some(Instant::now());
         chat.auto_state.on_prompt_submitted();
         chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.set_coordinator_waiting(false);
         chat.auto_state.review_enabled = true;
 
         chat.pending_auto_turn_config = Some(TurnConfig {
@@ -31175,7 +31494,7 @@ use code_core::protocol::OrderMeta;
             text_format_override: None,
         });
 
-        chat.auto_on_assistant_final();
+        chat.auto_on_turn_complete();
 
         assert!(
             !chat.auto_state.awaiting_review(),
@@ -31188,7 +31507,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn background_review_idle_dispatches_developer_followup_turn() {
+    fn background_review_idle_renders_notice_and_developer_followup() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31214,23 +31533,28 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(
             chat.pending_dispatched_user_messages.is_empty(),
             "auto review notes should not start a synthetic background turn"
         );
         assert!(
-            note.contains("Background auto-review completed and reported 1 issue(s)"),
-            "idle auto-review findings should be sent to core immediately"
+            chat
+                .last_developer_message
+                .as_deref()
+                .is_some_and(|note| note.contains("Background auto-review completed and reported 1 issue(s)")),
+            "idle auto-review findings should remain cached for local diagnostics"
         );
         assert!(
-            note.contains("Auto Review: 1 issue(s) found. needs work Merge /tmp/wt to apply fixes."),
-            "developer follow-up should include the same concise notice shown in the UI"
+            history_contains_text(chat, "Auto Review: 1 issue(s) found. needs work Merge /tmp/wt to apply fixes."),
+            "visible notice should include the concise merge hint"
         );
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
-    fn background_review_clean_dispatches_post_turn_developer_input() {
+    fn background_review_clean_renders_notice_without_developer_followup() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31256,9 +31580,9 @@ use code_core::protocol::OrderMeta;
             Some("ghost-clean".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
-        assert!(note.contains("Background auto-review completed with no findings."));
-        assert!(note.contains("ghost-clean"));
+        assert!(history_contains_text(chat, "Auto Review: no actionable findings in 'auto-review-branch'."));
+        assert!(history_contains_text(chat, "Worktree: /tmp/wt"));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31299,7 +31623,10 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
 
         assert!(note.contains("Background auto-review failed."));
         assert!(note.contains("Failure class: context_budget_exhausted"));
@@ -31322,6 +31649,8 @@ use code_core::protocol::OrderMeta;
                 .is_some_and(|msg| msg.chars().count() <= MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS),
             "cached context should stay bounded"
         );
+        assert!(history_contains_text(chat, "Auto Review: failed during compact."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31351,11 +31680,16 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: exec_missing_path"));
         assert!(note.contains("Phase: exec_run"));
         assert!(note.contains("Retryable: false"));
         assert!(note.contains("Hint: Verify the auto-review worktree path exists"));
+        assert!(history_contains_text(chat, "Auto Review: failed during exec_run."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31385,9 +31719,14 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: unknown"));
         assert!(note.contains("Retryable: true"));
+        assert!(history_contains_text(chat, "Auto Review: failed during exec_run."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31417,10 +31756,15 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: exec_missing_path"));
         assert!(note.contains("Phase: exec_preflight"));
         assert!(note.contains("Retryable: false"));
+        assert!(history_contains_text(chat, "Auto Review: failed during exec_preflight."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31450,11 +31794,16 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: disk_full"));
         assert!(note.contains("Phase: snapshot_capture"));
         assert!(note.contains("Retryable: false"));
         assert!(note.contains("Free space in /tmp"));
+        assert!(history_contains_text(chat, "Auto Review: failed during snapshot_capture."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31483,7 +31832,10 @@ use code_core::protocol::OrderMeta;
             Some("agent-123".to_string()),
             Some("ghost123".to_string()),
         );
-        let first = expect_post_turn_developer_input(&mut code_op_rx);
+        let first = chat
+            .last_developer_message
+            .clone()
+            .expect("cached auto-review note");
         assert!(first.contains("Failure class: disk_full"));
 
         chat.background_review = Some(BackgroundReviewState {
@@ -31506,6 +31858,7 @@ use code_core::protocol::OrderMeta;
         );
 
         assert_no_code_ops_pending(&mut code_op_rx);
+        assert_eq!(chat.last_developer_message.as_deref(), Some(first.as_str()));
     }
 
     #[test]
@@ -31536,12 +31889,17 @@ use code_core::protocol::OrderMeta;
             Some("ghost123".to_string()),
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: disk_full"));
         assert!(
             chat.pending_auto_review_range.is_none(),
             "non-retryable failures should not queue another background review"
         );
+        assert!(history_contains_text(chat, "Auto Review: failed during snapshot_capture."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31571,11 +31929,16 @@ use code_core::protocol::OrderMeta;
             None,
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: worktree_prepare_failed"));
         assert!(note.contains("Phase: worktree_prepare"));
         assert!(note.contains("Worktree: '(unknown)'"));
         assert!(note.contains("Worktree path: (unavailable)"));
+        assert!(history_contains_text(chat, "Auto Review: failed during worktree_prepare."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31605,10 +31968,15 @@ use code_core::protocol::OrderMeta;
             None,
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: worktree_prepare_failed"));
         assert!(note.contains("Phase: worktree_prepare"));
         assert!(note.contains("Retryable: false"));
+        assert!(history_contains_text(chat, "Auto Review: failed during worktree_prepare."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31638,10 +32006,15 @@ use code_core::protocol::OrderMeta;
             None,
         );
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
+        let note = chat
+            .last_developer_message
+            .as_deref()
+            .expect("cached auto-review note");
         assert!(note.contains("Failure class: review_scope_too_large"));
         assert!(note.contains("Phase: prompt_build"));
         assert!(note.contains("Retryable: false"));
+        assert!(history_contains_text(chat, "Auto Review: failed during prompt_build."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
@@ -31686,12 +32059,33 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn background_review_busy_path_enqueues_developer_note_with_merge_hint() {
+    fn background_review_started_does_not_clear_foreground_spinner() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.auto_review_enabled = true;
+        chat.active_task_ids.insert("foreground-task".to_string());
+        chat.bottom_pane.set_task_running(true);
+
+        chat.on_background_review_started(
+            PathBuf::from("/tmp/wt"),
+            "auto-review-branch".to_string(),
+            Some("agent-123".to_string()),
+            Some("ghost123".to_string()),
+        );
+
+        assert!(chat.bottom_pane.is_task_running());
+        assert!(chat.auto_review_notice.is_none());
+    }
+
+    #[test]
+    fn background_review_busy_path_defers_notice_and_preserves_spinner() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
         let mut code_op_rx = replace_code_op_channel(chat);
 
         chat.config.tui.auto_review_enabled = true;
+        chat.active_task_ids.insert("foreground-task".to_string());
         chat.bottom_pane.set_task_running(true); // simulate busy state so note is queued
 
         chat.background_review = Some(BackgroundReviewState {
@@ -31727,8 +32121,11 @@ use code_core::protocol::OrderMeta;
 
         assert!(chat.pending_agent_notes.is_empty());
         assert!(chat.pending_dispatched_user_messages.is_empty());
+        assert!(!history_contains_text(chat, "Merge /tmp/wt to apply fixes."));
         let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(note.contains("Merge the worktree 'auto-review-branch'"));
+        assert!(chat.bottom_pane.is_task_running());
+        assert!(chat.deferred_auto_review_notice_lines.is_some());
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -31742,10 +32139,16 @@ use code_core::protocol::OrderMeta;
             !developer_seen,
             "busy path should not render a [developer] merge-hint message"
         );
+
+        chat.active_task_ids.clear();
+        chat.maybe_hide_spinner();
+
+        assert!(history_contains_text(chat, "Merge /tmp/wt to apply fixes."));
+        assert_no_code_ops_pending(&mut code_op_rx);
     }
 
     #[test]
-    fn background_review_observe_idle_injects_note_from_agent_result() {
+    fn background_review_observe_idle_renders_notice_and_post_turn_input_from_agent_result() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31787,12 +32190,20 @@ use code_core::protocol::OrderMeta;
 
         chat.observe_auto_review_status(&[agent]);
 
-        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(
             chat.pending_dispatched_user_messages.is_empty(),
             "idle observe path should not auto-start a hidden follow-up turn"
         );
+        assert!(history_contains_text(chat, "Auto Review: 1 issue(s) found"));
+        assert!(history_contains_text(chat, "Merge /tmp/wt to apply fixes."));
+        let note = expect_post_turn_developer_input(&mut code_op_rx);
         assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
+        assert!(
+            chat
+                .last_developer_message
+                .as_deref()
+                .is_some_and(|note| note.contains("Background auto-review completed and reported 1 issue(s)"))
+        );
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -31824,6 +32235,7 @@ use code_core::protocol::OrderMeta;
         let chat = harness.chat();
 
         chat.config.tui.auto_review_enabled = true;
+        chat.active_task_ids.insert("foreground-task".to_string());
         chat.bottom_pane.set_task_running(true);
         chat.background_review = Some(BackgroundReviewState {
             worktree_path: PathBuf::from("/tmp/wt"),
@@ -31862,6 +32274,8 @@ use code_core::protocol::OrderMeta;
 
         assert!(chat.pending_agent_notes.is_empty());
         assert!(chat.pending_dispatched_user_messages.is_empty());
+        assert!(!history_contains_text(chat, "Merge /tmp/wt to apply fixes."));
+        assert!(chat.bottom_pane.is_task_running());
         let developer_seen = chat.history_cells.iter().any(|cell| {
             cell.display_lines_trimmed().iter().any(|line| {
                 line.spans.iter().any(|span| {
@@ -31875,6 +32289,27 @@ use code_core::protocol::OrderMeta;
             !developer_seen,
             "busy observe path should not render a [developer] merge-hint message"
         );
+    }
+
+    #[test]
+    fn deferred_auto_review_notice_flushes_on_direct_redraw_request() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.deferred_auto_review_notice_lines = Some(vec![
+            "Auto Review: 1 issue(s) found. summary Merge /tmp/wt to apply fixes. [Ctrl+A] Show"
+                .to_string(),
+        ]);
+        chat.bottom_pane.set_task_running(false);
+        chat.bottom_pane.update_status_text(String::new());
+
+        chat.request_redraw();
+
+        assert!(history_contains_text(
+            chat,
+            "Auto Review: 1 issue(s) found. summary Merge /tmp/wt to apply fixes."
+        ));
+        assert!(chat.deferred_auto_review_notice_lines.is_none());
     }
 
     #[test]
@@ -31924,11 +32359,9 @@ use code_core::protocol::OrderMeta;
             pending_before_review,
             "background review completion should not start a hidden turn"
         );
+        assert!(history_contains_text(chat, "Auto Review: 1 issue(s) found. summary Merge /tmp/wt to apply fixes."));
         let note = expect_post_turn_developer_input(&mut code_op_rx);
-        assert!(
-            note.contains("Background auto-review completed and reported 1 issue(s)"),
-            "auto-review findings should be submitted to core immediately after completion"
-        );
+        assert!(note.contains("Background auto-review completed and reported 1 issue(s)"));
         assert!(!chat.is_task_running(), "background review should not hold task-running state");
 
         chat.submit_text_message("after esc".to_string());
@@ -33690,11 +34123,12 @@ use code_core::protocol::OrderMeta;
         chat.auto_state.review_enabled = true;
         chat.auto_state.on_complete_review();
         chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.set_coordinator_waiting(false);
         chat.pending_turn_descriptor = None;
         chat.pending_auto_turn_config = None;
         chat.auto_resolve_state = Some(make_pending_fix_state(ReviewOutputEvent::default()));
 
-        chat.auto_on_assistant_final();
+        chat.auto_on_turn_complete();
 
         // With cloud-gpt-5.1-codex-max gated off, the review request is still queued but
         // may be processed synchronously; ensure the review slot was populated.
@@ -33717,8 +34151,10 @@ use code_core::protocol::OrderMeta;
         chat.auto_state.review_enabled = true;
         chat.auto_state.on_prompt_submitted();
         chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.set_coordinator_waiting(false);
         chat.auto_state.on_complete_review();
         chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.set_coordinator_waiting(false);
 
         let turn_config = TurnConfig {
             read_only: false,
@@ -33758,7 +34194,7 @@ use code_core::protocol::OrderMeta;
             Ok(Vec::new())
         });
 
-        chat.auto_on_assistant_final();
+        chat.auto_on_turn_complete();
         assert!(
             !chat.auto_state.awaiting_review(),
             "background auto review should not block post-turn progress"
@@ -33800,6 +34236,7 @@ use code_core::protocol::OrderMeta;
         chat.auto_state.on_prompt_submitted();
         chat.auto_state.on_complete_review();
         chat.auto_state.set_waiting_for_response(true);
+        chat.auto_state.set_coordinator_waiting(false);
 
         let turn_config = TurnConfig {
             read_only: false,
@@ -33841,7 +34278,7 @@ use code_core::protocol::OrderMeta;
             Ok(Vec::new())
         });
 
-        chat.auto_on_assistant_final();
+        chat.auto_on_turn_complete();
         assert!(chat.auto_state.awaiting_review(), "auto-resolve should block resume before skip");
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
@@ -34322,6 +34759,48 @@ use code_core::protocol::OrderMeta;
         assert!(message.contains("Timing (blocking)"));
         assert!(message.contains("Launch these agents first"));
         assert!(!message.contains("agent {\"action\""), "message should not include raw agent JSON");
+    }
+
+    #[test]
+    fn auto_drive_waits_for_turn_completion_before_updating_coordinator() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+        chat.auto_state.on_prompt_submitted();
+        chat.auto_state.set_coordinator_waiting(false);
+
+        chat.handle_code_event(Event {
+            id: "turn-1".to_string(),
+            event_seq: 0,
+            msg: EventMsg::TaskStarted,
+            order: None,
+        });
+
+        chat.insert_final_answer_with_id(
+            Some("answer-1".to_string()),
+            vec![Line::from("First assistant update")],
+            "First assistant update".to_string(),
+        );
+
+        assert!(
+            chat.auto_state.is_waiting_for_response(),
+            "auto drive should keep waiting for the turn to finish"
+        );
+
+        chat.handle_code_event(Event {
+            id: "turn-1".to_string(),
+            event_seq: 1,
+            msg: EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: None,
+            }),
+            order: None,
+        });
+
+        assert!(
+            !chat.auto_state.is_waiting_for_response(),
+            "TaskComplete should be the first point that advances Auto Drive"
+        );
     }
 
     #[test]
@@ -37277,55 +37756,71 @@ impl ChatWidget<'_> {
         line
     }
 
-    fn should_record_auto_review_failure_note(
-        &mut self,
-        classification: AutoReviewFailureClassification,
-        worktree_label: &str,
-        worktree_path_label: &str,
-        summarized_error: &str,
-    ) -> bool {
-        let now = Instant::now();
-        let candidate = AutoReviewFailureRecord {
-            failure_class: classification.failure_class,
-            phase: classification.phase,
-            worktree_label: worktree_label.to_string(),
-            worktree_path_label: worktree_path_label.to_string(),
-            summarized_error: summarized_error.to_string(),
-            observed_at: now,
-        };
-
-        let duplicate = self.last_auto_review_failure.as_ref().is_some_and(|last| {
-            last.failure_class == candidate.failure_class
-                && last.phase == candidate.phase
-                && last.worktree_label == candidate.worktree_label
-                && last.worktree_path_label == candidate.worktree_path_label
-                && last.summarized_error == candidate.summarized_error
-                && now.duration_since(last.observed_at).as_secs()
-                    <= AUTO_REVIEW_FAILURE_DEDUPE_WINDOW_SECS
-        });
-
-        self.last_auto_review_failure = Some(candidate);
-        !duplicate
-    }
-
-    fn insert_auto_review_notice(
-        &mut self,
+    fn auto_review_clean_notice_lines(
         branch: &str,
         worktree_path: &std::path::Path,
-        summary: Option<&str>,
-        findings: usize,
-    ) {
-        let line = Self::auto_review_notice_line(branch, worktree_path, summary, findings);
+    ) -> Vec<String> {
+        let mut headline = if branch.trim().is_empty() {
+            "Auto Review: no actionable findings.".to_string()
+        } else {
+            format!("Auto Review: no actionable findings in '{branch}'.")
+        };
+        headline.push_str(" [Ctrl+A] Show");
 
-        let message_lines = vec![MessageLine {
-            kind: MessageLineKind::Paragraph,
-            spans: vec![InlineSpan {
-                text: line,
-                tone: TextTone::Default,
-                emphasis: TextEmphasis::default(),
-                entity: None,
-            }],
-        }];
+        let mut lines = vec![headline];
+        if !worktree_path.as_os_str().is_empty() {
+            lines.push(format!("Worktree: {}", worktree_path.display()));
+        }
+        lines
+    }
+
+    fn auto_review_failure_notice_lines(
+        classification: AutoReviewFailureClassification,
+        summarized_error: &str,
+        worktree_path: &std::path::Path,
+    ) -> Vec<String> {
+        let mut lines = vec![format!(
+            "Auto Review: failed during {}. [Ctrl+A] Show",
+            classification.phase
+        )];
+
+        let summarized = summarized_error.trim();
+        if !summarized.is_empty() {
+            lines.push(summarized.to_string());
+        }
+
+        let hint = classification.remediation_hint.trim();
+        if !hint.is_empty() {
+            lines.push(format!("Hint: {hint}"));
+        }
+
+        if !worktree_path.as_os_str().is_empty() {
+            lines.push(format!("Worktree: {}", worktree_path.display()));
+        }
+
+        lines
+    }
+
+    fn insert_auto_review_notice_lines(&mut self, lines: Vec<String>) {
+        let message_lines = lines
+            .into_iter()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                (!trimmed.is_empty()).then(|| MessageLine {
+                    kind: MessageLineKind::Paragraph,
+                    spans: vec![InlineSpan {
+                        text: trimmed.to_string(),
+                        tone: TextTone::Default,
+                        emphasis: TextEmphasis::default(),
+                        entity: None,
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if message_lines.is_empty() {
+            return;
+        }
 
         let state = PlainMessageState {
             id: HistoryId::ZERO,
@@ -37366,6 +37861,37 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn should_record_auto_review_failure_note(
+        &mut self,
+        classification: AutoReviewFailureClassification,
+        worktree_label: &str,
+        worktree_path_label: &str,
+        summarized_error: &str,
+    ) -> bool {
+        let now = Instant::now();
+        let candidate = AutoReviewFailureRecord {
+            failure_class: classification.failure_class,
+            phase: classification.phase,
+            worktree_label: worktree_label.to_string(),
+            worktree_path_label: worktree_path_label.to_string(),
+            summarized_error: summarized_error.to_string(),
+            observed_at: now,
+        };
+
+        let duplicate = self.last_auto_review_failure.as_ref().is_some_and(|last| {
+            last.failure_class == candidate.failure_class
+                && last.phase == candidate.phase
+                && last.worktree_label == candidate.worktree_label
+                && last.worktree_path_label == candidate.worktree_path_label
+                && last.summarized_error == candidate.summarized_error
+                && now.duration_since(last.observed_at).as_secs()
+                    <= AUTO_REVIEW_FAILURE_DEDUPE_WINDOW_SECS
+        });
+
+        self.last_auto_review_failure = Some(candidate);
+        !duplicate
+    }
+
     pub(crate) fn on_background_review_started(
         &mut self,
         worktree_path: std::path::PathBuf,
@@ -37373,6 +37899,7 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
+        let foreground_active = self.foreground_activity_running_excluding_auto_review();
         if let Some(state) = self.background_review.as_mut() {
             state.worktree_path = worktree_path.clone();
             state.branch = branch.clone();
@@ -37390,9 +37917,11 @@ impl ChatWidget<'_> {
 
         // Ensure the main status spinner is cleared once the foreground turn ends;
         // background auto review should not keep the composer in a "running" state.
-        self.bottom_pane.set_task_running(false);
-        self.bottom_pane.update_status_text(String::new());
-        self.auto_review_notice = None;
+        if !foreground_active {
+            self.bottom_pane.set_task_running(false);
+            self.bottom_pane.update_status_text(String::new());
+            self.auto_review_notice = None;
+        }
         self.request_redraw();
     }
 
@@ -37407,6 +37936,7 @@ impl ChatWidget<'_> {
         agent_id: Option<String>,
         snapshot: Option<String>,
     ) {
+        let foreground_active = self.foreground_activity_running_excluding_auto_review();
         let effective_findings = if has_findings {
             findings.max(1)
         } else {
@@ -37488,7 +38018,7 @@ impl ChatWidget<'_> {
             )
         });
         let mut error_retryable = false;
-        let (indicator_status, developer_note) = if let Some(err) = error {
+        let (indicator_status, developer_note, enqueue_post_turn_note, notice_lines) = if let Some(err) = error {
             let summarized_error = Self::summarize_auto_review_error(&err);
             let classification = Self::classify_auto_review_error(&err);
             error_retryable = classification.retryable;
@@ -37509,7 +38039,16 @@ impl ChatWidget<'_> {
                         err = summarized_error,
                     )
                 });
-            (AutoReviewIndicatorStatus::Failed, note)
+            (
+                AutoReviewIndicatorStatus::Failed,
+                note,
+                false,
+                Self::auto_review_failure_notice_lines(
+                    classification,
+                    &summarized_error,
+                    &resolved_worktree_path,
+                ),
+            )
         } else if has_findings {
             self.last_auto_review_failure = None;
             let mut note = format!(
@@ -37520,7 +38059,15 @@ impl ChatWidget<'_> {
                 note.push('\n');
                 note.push_str(&summary_note);
             }
-            (AutoReviewIndicatorStatus::Fixed, Some(note))
+            (
+                AutoReviewIndicatorStatus::Fixed,
+                Some(note),
+                true,
+                vec![notice_line
+                    .as_deref()
+                    .unwrap_or("Background auto-review found issues.")
+                    .to_string()],
+            )
         } else {
             self.last_auto_review_failure = None;
             (
@@ -37528,6 +38075,8 @@ impl ChatWidget<'_> {
                 Some(format!(
                     "[developer] Background auto-review completed with no findings.\n\nA separate LLM ran /review in an isolated git worktree and did not report actionable issues.\n\nWorktree path: {worktree_path_label}\n{snapshot_note}\n{agent_note}"
                 )),
+                false,
+                Self::auto_review_clean_notice_lines(&worktree_label, &resolved_worktree_path),
             )
         };
 
@@ -37538,22 +38087,22 @@ impl ChatWidget<'_> {
             .map(|s| s.phase)
             .unwrap_or(AutoReviewPhase::Reviewing);
         self.set_auto_review_indicator(indicator_status, findings_for_indicator, phase);
-        if matches!(indicator_status, AutoReviewIndicatorStatus::Fixed) {
-            self.insert_auto_review_notice(
-                &worktree_label,
-                &resolved_worktree_path,
-                summary.as_deref(),
-                effective_findings,
-            );
+        if foreground_active {
+            self.deferred_auto_review_notice_lines = Some(notice_lines);
+        } else {
+            self.deferred_auto_review_notice_lines = None;
+            self.insert_auto_review_notice_lines(notice_lines);
         }
 
         if let Some(note) = developer_note {
-            self.record_background_review_note(note);
+            self.record_background_review_note(note, enqueue_post_turn_note);
         }
 
         // Auto review completion should never leave the composer spinner active.
-        self.bottom_pane.set_task_running(false);
-        self.bottom_pane.update_status_text(String::new());
+        if !foreground_active {
+            self.bottom_pane.set_task_running(false);
+            self.bottom_pane.update_status_text(String::new());
+        }
 
         self.handle_auto_review_completion_state(
             has_findings,
@@ -37574,7 +38123,7 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
 
-    fn record_background_review_note(&mut self, note: String) {
+    fn record_background_review_note(&mut self, note: String, enqueue_post_turn_note: bool) {
         let trimmed = note.trim();
         if trimmed.is_empty() {
             return;
@@ -37587,9 +38136,10 @@ impl ChatWidget<'_> {
                 Some(Self::truncate_with_ellipsis(&cleaned, MAX_AUTO_REVIEW_NOTE_CONTEXT_CHARS));
         }
 
-        if let Err(err) = self
-            .code_op_tx
-            .send(Op::AddPostTurnDeveloperInput { text: bounded_note })
+        if enqueue_post_turn_note
+            && let Err(err) = self
+                .code_op_tx
+                .send(Op::AddPostTurnDeveloperInput { text: bounded_note })
         {
             tracing::error!("failed to send AddPostTurnDeveloperInput op: {err}");
         }
@@ -43838,9 +44388,3 @@ impl ChatWidget<'_> {
         }
     }
 }
-                            enabled_tools: None,
-                            disabled_tools: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                enabled_tools: None,
-                disabled_tools: None,

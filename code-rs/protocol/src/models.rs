@@ -438,12 +438,14 @@ impl DeveloperInstructions {
                 let on_request_instructions = on_request_instructions();
                 let sandbox_approval = reject_config.sandbox_approval;
                 let rules = reject_config.rules;
+                let request_permissions = reject_config.request_permissions;
                 let mcp_elicitations = reject_config.mcp_elicitations;
                 format!(
                     "{on_request_instructions}\n\n\
                      Approval policy is `reject`.\n\
                      - `sandbox_approval`: {sandbox_approval}\n\
                      - `rules`: {rules}\n\
+                     - `request_permissions`: {request_permissions}\n\
                      - `mcp_elicitations`: {mcp_elicitations}\n\
                      When a category is `true`, requests in that category are auto-rejected instead of prompting the user."
                 )
@@ -1294,6 +1296,26 @@ mod tests {
         PolicyParser::new("#test", &source)
             .parse()
             .expect("policy with programs")
+    }
+
+    #[test]
+    fn reject_policy_instructions_include_request_permissions_status() {
+        let instructions = DeveloperInstructions::from_permissions_with_network(
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Enabled,
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                request_permissions: true,
+                mcp_elicitations: false,
+            }),
+            &empty_exec_policy(),
+            None,
+            false,
+        )
+        .into_text();
+
+        assert!(instructions.contains("- `request_permissions`: true"));
     }
 
     #[test]
