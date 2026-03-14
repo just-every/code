@@ -3,6 +3,7 @@ use crate::workflow_validation::maybe_run_actionlint;
 use code_apply_patch::{ApplyPatchAction, ApplyPatchFileChange};
 use serde_json as json;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,20 @@ pub struct HarnessFinding {
     pub tool: String,
     pub file: Option<PathBuf>,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedExternalTool {
+    executable: PathBuf,
+    env_updates: Vec<(OsString, OsString)>,
+}
+
+impl ResolvedExternalTool {
+    fn apply_to_command(&self, cmd: &mut std::process::Command) {
+        for (key, value) in &self.env_updates {
+            cmd.env(key, value);
+        }
+    }
 }
 
 /// Run fast validations on the files touched by a patch. Returns `None` when the
@@ -465,13 +480,14 @@ pub fn run_patch_harness(
         .cloned()
         .collect();
     if functional_enabled && cfg.tools.mypy.unwrap_or(true) && !py_files.is_empty() && is_allowed("mypy") {
-        if let Some(exe) = which(Path::new("mypy")) {
+        if let Some(tool) = resolve_python_tool(cwd, &py_files, "mypy") {
             record_ran("mypy");
             let mypy_timeout = timeout.max(20);
             match WorkspaceOverlay::apply(action) {
                 Ok(_overlay) => {
-                    let mut cmd = std::process::Command::new(&exe);
+                    let mut cmd = std::process::Command::new(&tool.executable);
                     cmd.current_dir(cwd);
+                    tool.apply_to_command(&mut cmd);
                     cmd.args(["--no-color-output", "--hide-error-context"]);
                     for path in &py_files {
                         cmd.arg(path);
@@ -505,13 +521,14 @@ pub fn run_patch_harness(
     }
 
     if functional_enabled && cfg.tools.pyright.unwrap_or(true) && !py_files.is_empty() && is_allowed("pyright") {
-        if let Some(exe) = which(Path::new("pyright")) {
+        if let Some(tool) = resolve_python_tool(cwd, &py_files, "pyright") {
             record_ran("pyright");
             let pyright_timeout = timeout.max(20);
             match WorkspaceOverlay::apply(action) {
                 Ok(_overlay) => {
-                    let mut cmd = std::process::Command::new(&exe);
+                    let mut cmd = std::process::Command::new(&tool.executable);
                     cmd.current_dir(cwd);
+                    tool.apply_to_command(&mut cmd);
                     cmd.arg("--warnings");
                     for path in &py_files {
                         cmd.arg(path);
@@ -712,6 +729,77 @@ fn which(exe: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn resolve_python_tool(cwd: &Path, files: &[PathBuf], tool: &str) -> Option<ResolvedExternalTool> {
+    if let Some(resolved) = find_virtualenv_tool(cwd, files, tool) {
+        return Some(resolved);
+    }
+    which(Path::new(tool)).map(|executable| ResolvedExternalTool {
+        executable,
+        env_updates: Vec::new(),
+    })
+}
+
+fn find_virtualenv_tool(cwd: &Path, files: &[PathBuf], tool: &str) -> Option<ResolvedExternalTool> {
+    for search_dir in python_search_dirs(cwd, files) {
+        if let Some((virtualenv_root, executable)) = find_virtualenv_tool_in_dir(&search_dir, tool) {
+            let mut env_updates: Vec<(OsString, OsString)> = Vec::new();
+            if let Some(bin_dir) = executable.parent() {
+                env_updates.push((OsString::from("PATH"), prepend_path(bin_dir)));
+            }
+            env_updates.push((OsString::from("VIRTUAL_ENV"), virtualenv_root.into_os_string()));
+            return Some(ResolvedExternalTool { executable, env_updates });
+        }
+    }
+    None
+}
+
+fn python_search_dirs(cwd: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut search_dirs: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for relative in files {
+        let Some(mut current) = cwd.join(relative).parent().map(Path::to_path_buf) else { continue };
+        loop {
+            if seen.insert(current.clone()) {
+                search_dirs.push(current.clone());
+            }
+            if current == cwd {
+                break;
+            }
+            let Some(parent) = current.parent() else { break };
+            current = parent.to_path_buf();
+        }
+    }
+    if seen.insert(cwd.to_path_buf()) {
+        search_dirs.push(cwd.to_path_buf());
+    }
+    search_dirs
+}
+
+fn find_virtualenv_tool_in_dir(dir: &Path, tool: &str) -> Option<(PathBuf, PathBuf)> {
+    for env_dir_name in [".venv", "venv"] {
+        let virtualenv_root = dir.join(env_dir_name);
+        let unix_tool = virtualenv_root.join("bin").join(tool);
+        if unix_tool.is_file() {
+            return Some((virtualenv_root, unix_tool));
+        }
+        let windows_tool = virtualenv_root.join("Scripts").join(format!("{tool}.exe"));
+        if windows_tool.is_file() {
+            return Some((virtualenv_root, windows_tool));
+        }
+    }
+    None
+}
+
+fn prepend_path(bin_dir: &Path) -> OsString {
+    let path_entries = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<PathBuf>>())
+        .unwrap_or_default();
+    let mut combined: Vec<PathBuf> = Vec::with_capacity(path_entries.len() + 1);
+    combined.push(bin_dir.to_path_buf());
+    combined.extend(path_entries);
+    std::env::join_paths(combined).unwrap_or_else(|_| bin_dir.as_os_str().to_os_string())
 }
 
 fn run_with_timeout(mut cmd: std::process::Command, timeout_secs: u64) -> Option<CommandCapture> {
@@ -1098,4 +1186,68 @@ struct CommandCapture {
     status: Option<ExitStatus>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_virtualenv_tool, python_search_dirs, resolve_python_tool};
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn python_search_dirs_prefers_nearest_directory_first() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path();
+        let file = Path::new("packages/app/src/main.py");
+
+        let search_dirs = python_search_dirs(cwd, &[file.to_path_buf()]);
+
+        assert_eq!(search_dirs[0], cwd.join("packages/app/src"));
+        assert_eq!(search_dirs[1], cwd.join("packages/app"));
+        assert!(search_dirs.contains(&cwd.to_path_buf()));
+    }
+
+    #[test]
+    fn resolves_nearest_virtualenv_tool_before_path() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path();
+        let nested_root = cwd.join("packages/app");
+        let nested_bin = nested_root.join(".venv/bin");
+        fs::create_dir_all(&nested_bin).expect("create venv bin");
+        write_executable(&nested_bin.join("mypy"));
+
+        let resolved = find_virtualenv_tool(cwd, &[Path::new("packages/app/src/main.py").to_path_buf()], "mypy")
+            .expect("resolve local mypy");
+
+        assert_eq!(resolved.executable, nested_bin.join("mypy"));
+        assert!(resolved
+            .env_updates
+            .iter()
+            .any(|(key, value)| key == "VIRTUAL_ENV" && value == nested_root.join(".venv").as_os_str()));
+    }
+
+    #[test]
+    fn resolve_python_tool_falls_back_when_virtualenv_is_missing() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path();
+
+        let resolved = resolve_python_tool(cwd, &[Path::new("script.py").to_path_buf()], "sh")
+            .expect("find fallback tool");
+
+        assert!(resolved.executable.ends_with("sh"));
+        assert!(resolved.env_updates.is_empty());
+    }
+
+    fn write_executable(path: &Path) {
+        fs::write(path, "#!/bin/sh\nexit 0\n").expect("write executable");
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("chmod");
+        }
+    }
 }
