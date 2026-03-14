@@ -1,5 +1,7 @@
 use super::*;
 use super::session::{HookGuard, RunningExecMeta};
+use crate::util::is_shell_like_executable;
+use std::ffi::OsString;
 
 fn synthetic_exec_end_payload(cancelled: bool) -> (i32, String) {
     if cancelled {
@@ -237,6 +239,8 @@ pub struct ExecInvokeArgs<'a> {
 }
 
 pub(super) fn maybe_run_with_user_profile(mut params: ExecParams, sess: &Session) -> ExecParams {
+    maybe_apply_python_runtime_env(&mut params);
+
     if sess.shell_environment_policy.use_profile {
         let maybe_command = sess
             .user_shell
@@ -249,6 +253,123 @@ pub(super) fn maybe_run_with_user_profile(mut params: ExecParams, sess: &Session
     suppress_bash_job_control(&mut params.command);
 
     params
+}
+
+fn maybe_apply_python_runtime_env(params: &mut ExecParams) {
+    if !command_needs_python_runtime(&params.command) {
+        return;
+    }
+
+    let Some(virtualenv_root) = find_virtualenv_root(&params.cwd) else {
+        return;
+    };
+    let Some(bin_dir) = virtualenv_bin_dir(&virtualenv_root) else {
+        return;
+    };
+
+    params.env.insert(
+        "PATH".to_string(),
+        prepend_path_for_env(params.env.get("PATH"), &bin_dir),
+    );
+    params.env.insert(
+        "VIRTUAL_ENV".to_string(),
+        virtualenv_root.to_string_lossy().to_string(),
+    );
+}
+
+fn command_needs_python_runtime(command: &[String]) -> bool {
+    let Some(program) = extract_primary_command_token(command) else {
+        return false;
+    };
+
+    let normalized = std::path::Path::new(&program)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(program.as_str())
+        .to_ascii_lowercase();
+
+    normalized == "python"
+        || normalized == "python3"
+        || normalized == "python2"
+        || normalized == "pip"
+        || normalized == "pip3"
+        || normalized == "pytest"
+        || normalized == "mypy"
+        || normalized == "pyright"
+        || normalized == "ruff"
+}
+
+fn extract_primary_command_token(command: &[String]) -> Option<String> {
+    match command {
+        [program, flag, script] if is_shell_like_executable(program) && (flag == "-lc" || flag == "-c") => {
+            let tokens = shlex::split(script)?;
+            first_non_assignment_token(&tokens)
+        }
+        _ => first_non_assignment_token(command),
+    }
+}
+
+fn first_non_assignment_token<T>(tokens: &[T]) -> Option<String>
+where
+    T: AsRef<str>,
+{
+    tokens
+        .iter()
+        .map(AsRef::as_ref)
+        .find(|token| !is_env_assignment_token(token))
+        .map(str::to_string)
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    if token.is_empty() || token.starts_with('-') {
+        return false;
+    }
+    let Some((name, _value)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn find_virtualenv_root(cwd: &Path) -> Option<PathBuf> {
+    for dir in cwd.ancestors() {
+        for candidate_name in [".venv", "venv"] {
+            let candidate = dir.join(candidate_name);
+            if virtualenv_bin_dir(&candidate).is_some() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn virtualenv_bin_dir(virtualenv_root: &Path) -> Option<PathBuf> {
+    let unix_bin = virtualenv_root.join("bin");
+    if unix_bin.is_dir() {
+        return Some(unix_bin);
+    }
+    let windows_bin = virtualenv_root.join("Scripts");
+    if windows_bin.is_dir() {
+        return Some(windows_bin);
+    }
+    None
+}
+
+fn prepend_path_for_env(existing_path: Option<&String>, bin_dir: &Path) -> String {
+    let existing = existing_path
+        .map(OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+    let mut parts: Vec<PathBuf> = Vec::new();
+    parts.push(bin_dir.to_path_buf());
+    if let Some(existing) = existing {
+        parts.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(parts)
+        .unwrap_or_else(|_| bin_dir.as_os_str().to_os_string())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn suppress_bash_job_control(command: &mut [String]) {
@@ -893,5 +1014,87 @@ impl Session {
                 )
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        command_needs_python_runtime, extract_primary_command_token, maybe_apply_python_runtime_env,
+    };
+    use crate::exec::ExecParams;
+    use std::collections::HashMap;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn detects_python_family_commands() {
+        assert!(command_needs_python_runtime(&["python".to_string(), "script.py".to_string()]));
+        assert!(command_needs_python_runtime(&["pytest".to_string()]));
+        assert!(command_needs_python_runtime(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "PYTHONPATH=src python script.py".to_string(),
+        ]));
+        assert!(!command_needs_python_runtime(&["node".to_string(), "app.js".to_string()]));
+        assert!(!command_needs_python_runtime(&[
+            "bash".to_string(),
+            "-lc".to_string(),
+            "npm test".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn extracts_primary_command_from_shell_script() {
+        let command = vec!["bash".to_string(), "-lc".to_string(), "FOO=1 pytest -q".to_string()];
+        assert_eq!(extract_primary_command_token(&command), Some("pytest".to_string()));
+    }
+
+    #[test]
+    fn adds_virtualenv_path_for_python_commands() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path().join("packages/app");
+        let venv_bin = cwd.join(".venv/bin");
+        fs::create_dir_all(&venv_bin).expect("create venv");
+
+        let mut params = ExecParams {
+            command: vec!["python".to_string(), "script.py".to_string()],
+            cwd: cwd.clone(),
+            timeout_ms: None,
+            env: HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+            with_escalated_permissions: Some(false),
+            justification: None,
+        };
+
+        maybe_apply_python_runtime_env(&mut params);
+
+        assert_eq!(
+            params.env.get("VIRTUAL_ENV").map(String::as_str),
+            Some(cwd.join(".venv").to_string_lossy().as_ref())
+        );
+        let path = params.env.get("PATH").expect("PATH set");
+        assert!(path.starts_with(venv_bin.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn leaves_non_python_commands_unchanged() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path().join("packages/app");
+        let venv_bin = cwd.join(".venv/bin");
+        fs::create_dir_all(&venv_bin).expect("create venv");
+
+        let original_env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+        let mut params = ExecParams {
+            command: vec!["node".to_string(), "app.js".to_string()],
+            cwd,
+            timeout_ms: None,
+            env: original_env.clone(),
+            with_escalated_permissions: Some(false),
+            justification: None,
+        };
+
+        maybe_apply_python_runtime_env(&mut params);
+
+        assert_eq!(params.env, original_env);
     }
 }
