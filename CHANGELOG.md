@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.83] - 2026-03-23
+
+- CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, keeping release jobs running in restricted environments. (7fd302e2)
+- Release Workflows: apply the BuildBuddy fallback path to both `rusty-v8-release` and `v8-canary` for consistent publish reliability. (7fd302e2)
+
 ## [0.6.82] - 2026-03-23
 
 - CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, preventing release pipeline failures in restricted environments. (c6eddcc3)
