@@ -25,7 +25,7 @@ fmt:
 fix *args:
     cargo clippy --fix --tests --allow-dirty "$@"
 
-clippy:
+clippy *args:
     cargo clippy --tests "$@"
 
 install:
