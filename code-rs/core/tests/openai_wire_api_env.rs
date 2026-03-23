@@ -31,7 +31,7 @@ fn set_env_guarded(key: &str, value: Option<&str>) {
 }
 
 fn openai_provider_wire_api() -> WireApi {
-    let providers = built_in_model_providers();
+    let providers = built_in_model_providers(None);
     providers
         .get("openai")
         .unwrap_or_else(|| panic!("missing built-in openai provider"))

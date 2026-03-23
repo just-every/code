@@ -1315,7 +1315,7 @@ impl std::fmt::Display for FunctionCallOutputPayload {
 mod tests {
     use super::*;
     use crate::config_types::SandboxMode;
-    use crate::protocol::AskForApproval;
+    use crate::protocol::{AskForApproval, RejectConfig};
     use anyhow::Result;
     use codex_execpolicy::PolicyParser;
     use codex_execpolicy::Policy;

@@ -70,7 +70,7 @@ event: response.completed\ndata: {completed}\n\n",
     config.sandbox_policy = SandboxPolicy::DangerFullAccess;
     config.model = "gpt-5.1-codex".to_string();
 
-    let mut provider = built_in_model_providers()["openai"].clone();
+    let mut provider = built_in_model_providers(None)["openai"].clone();
     provider.base_url = Some(format!("{}/v1", server.uri()));
     config.model_provider = provider;
 
