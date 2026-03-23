@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.82] - 2026-03-23
+
+- CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, preventing release pipeline failures in restricted environments. (c6eddcc3)
+- Release Workflows: apply the BuildBuddy fallback path to both `rusty-v8-release` and `v8-canary` jobs for consistent publish reliability. (c6eddcc3)
+
 ## [0.6.80] - 2026-03-23
 
 - TUI/App Server: complete the app-server-backed TUI migration with restored composer history and remote resume/fork history. (db89b73a, 334164a6, 78e8ee45)
