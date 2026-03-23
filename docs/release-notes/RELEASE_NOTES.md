@@ -1,18 +1,17 @@
-## @just-every/code v0.6.80
+## @just-every/code v0.6.82
 
-This release improves day-to-day reliability and workflows across the TUI, plugins, approvals, and realtime sessions.
+This release improves release pipeline resilience when remote BuildBuddy credentials are not available.
 
 ### Changes
-- TUI/App Server: complete the app-server-backed TUI migration with restored composer history and remote resume/fork history.
-- Plugins: add the first `/plugins` TUI menu and expand featured/product-scoped plugin install and sync flows.
-- Approvals/Sandbox: introduce `request_permissions`, persist its decisions across turns, and improve Linux sandbox defaults and split-filesystem handling.
-- Multi-agent: switch agent identifiers to path-like IDs and add graph-style network visibility for agent runs.
-- Core/Realtime: reduce startup hangs and stabilize realtime/websocket session shutdown and error delivery.
+
+- CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, preventing release pipeline failures in restricted environments.
+- Release Workflows: apply the BuildBuddy fallback path to both `rusty-v8-release` and `v8-canary` jobs for consistent publish reliability.
 
 ### Install
+
 ```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.79...v0.6.80
+Compare: https://github.com/just-every/code/compare/v0.6.81...v0.6.82
