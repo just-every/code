@@ -19,6 +19,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::user_instructions::USER_INSTRUCTIONS_PREFIX;
+
 use crate::Prompt;
 use crate::RolloutRecorder;
 use crate::codex::Session;
@@ -723,11 +725,35 @@ fn phase2_output_schema() -> Value {
 fn serialize_memory_relevant_rollout(items: &[code_protocol::protocol::RolloutItem]) -> anyhow::Result<String> {
     let mut out = Vec::new();
     for item in items {
-        if crate::rollout::policy::should_persist_response_item_for_memories(item) {
+        if crate::rollout::policy::should_persist_response_item_for_memories(item)
+            && !is_memory_excluded_instruction_item(item)
+        {
             out.push(serde_json::to_string(item)?);
         }
     }
     Ok(out.join("\n"))
+}
+
+fn is_memory_excluded_instruction_item(item: &RolloutItem) -> bool {
+    let RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. }) = item else {
+        return false;
+    };
+    if role != "user" {
+        return false;
+    }
+
+    matches!(content.as_slice(), [ContentItem::InputText { text }] if is_memory_excluded_instruction_text(text))
+}
+
+fn is_memory_excluded_instruction_text(text: &str) -> bool {
+    if text.starts_with(USER_INSTRUCTIONS_PREFIX) {
+        return true;
+    }
+
+    text.starts_with("<skill>\n")
+        && text.contains("</skill>")
+        && text.contains("<path>")
+        && text.contains("SKILL.md")
 }
 
 fn rollout_uses_mcp_or_web_search(item: &RolloutItem) -> bool {
@@ -1000,6 +1026,54 @@ mod tests {
         let item = RolloutItem::EventMsg(event);
 
         assert!(rollout_uses_mcp_or_web_search(&item));
+    }
+
+    #[test]
+    fn serialize_memory_relevant_rollout_excludes_agents_instructions() {
+        let items = vec![RolloutItem::ResponseItem(ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>"
+                    .to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        })];
+
+        assert_eq!(serialize_memory_relevant_rollout(&items).unwrap(), "");
+    }
+
+    #[test]
+    fn serialize_memory_relevant_rollout_excludes_skill_payloads() {
+        let items = vec![RolloutItem::ResponseItem(ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>"
+                    .to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        })];
+
+        assert_eq!(serialize_memory_relevant_rollout(&items).unwrap(), "");
+    }
+
+    #[test]
+    fn serialize_memory_relevant_rollout_keeps_regular_user_messages() {
+        let items = vec![RolloutItem::ResponseItem(ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "normal user request".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        })];
+
+        let serialized = serialize_memory_relevant_rollout(&items).unwrap();
+        assert!(serialized.contains("normal user request"));
     }
 
     #[tokio::test]

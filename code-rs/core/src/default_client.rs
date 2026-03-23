@@ -157,7 +157,7 @@ pub fn create_client(originator: &str) -> reqwest::Client {
     headers.insert("originator", originator_value);
     let ua = get_code_user_agent(Some(originator.value.as_str()));
 
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::http_client::apply_extra_root_certificates(reqwest::Client::builder())
         // Set UA via dedicated helper to avoid header validation pitfalls
         .user_agent(ua)
         .default_headers(headers);

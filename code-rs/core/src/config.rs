@@ -64,6 +64,8 @@ mod validation;
 
 use defaults::{default_responses_originator, default_review_model, default_true_local};
 
+const OPENAI_BASE_URL_ENV_VAR: &str = "OPENAI_BASE_URL";
+
 pub use builder::ConfigBuilder;
 pub use defaults::set_default_originator;
 pub use sources::{
@@ -700,6 +702,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Optional base URL override for the built-in OpenAI provider.
+    pub openai_base_url: Option<String>,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: Option<usize>,
 
@@ -1076,7 +1081,25 @@ impl Config {
 
         // (removed placeholder) sandbox_policy computed below after resolving project overrides.
 
-        let mut model_providers = built_in_model_providers();
+        let openai_base_url = cfg.openai_base_url.clone().filter(|url| !url.trim().is_empty());
+        let openai_base_url_from_env = std::env::var(OPENAI_BASE_URL_ENV_VAR)
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if openai_base_url_from_env.is_some() {
+            if openai_base_url.is_some() {
+                tracing::warn!(
+                    env_var = OPENAI_BASE_URL_ENV_VAR,
+                    "deprecated env var is ignored because `openai_base_url` is set in config.toml"
+                );
+            } else {
+                tracing::warn!(
+                    "`{OPENAI_BASE_URL_ENV_VAR}` is deprecated. Set `openai_base_url` in config.toml instead."
+                );
+            }
+        }
+        let effective_openai_base_url = openai_base_url.or(openai_base_url_from_env);
+
+        let mut model_providers = built_in_model_providers(effective_openai_base_url);
         // Merge user-defined providers into the built-in list.
         for (key, provider) in cfg.model_providers.into_iter() {
             model_providers.entry(key).or_insert(provider);
@@ -2359,7 +2382,7 @@ model_verbosity = "high"
             openrouter: None,
         };
         let model_provider_map = {
-            let mut model_provider_map = built_in_model_providers();
+            let mut model_provider_map = built_in_model_providers(None);
             model_provider_map.insert(
                 "openai-chat-completions".to_string(),
                 openai_chat_completions_provider.clone(),
