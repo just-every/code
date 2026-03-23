@@ -5,6 +5,7 @@
 
 use crate::config_loader::RequirementSource;
 pub use codex_protocol::config_types::AltScreenMode;
+pub use codex_protocol::config_types::ApprovalsReviewer;
 pub use codex_protocol::config_types::ModeKind;
 pub use codex_protocol::config_types::Personality;
 pub use codex_protocol::config_types::ServiceTier;
@@ -41,6 +42,9 @@ pub enum WindowsSandboxModeToml {
 #[schemars(deny_unknown_fields)]
 pub struct WindowsToml {
     pub sandbox: Option<WindowsSandboxModeToml>,
+    /// Defaults to `true`. Set to `false` to launch the final sandboxed child
+    /// process on `Winsta0\\Default` instead of a private desktop.
+    pub sandbox_private_desktop: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +370,28 @@ pub struct AnalyticsConfigToml {
 pub struct FeedbackConfigToml {
     /// When `false`, disables the feedback flow across Codex product surfaces.
     pub enabled: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSuggestDiscoverableType {
+    Connector,
+    Plugin,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ToolSuggestDiscoverable {
+    #[serde(rename = "type")]
+    pub kind: ToolSuggestDiscoverableType,
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ToolSuggestConfig {
+    #[serde(default)]
+    pub discoverables: Vec<ToolSuggestDiscoverable>,
 }
 
 /// Memories settings loaded from config.toml.
@@ -725,6 +751,13 @@ pub struct Tui {
     /// `current-dir`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Ordered list of terminal title item identifiers.
+    ///
+    /// When set, the TUI renders the selected items into the terminal window/tab title.
+    /// When unset, the TUI defaults to: `spinner` and `project`.
+    #[serde(default)]
+    pub terminal_title: Option<Vec<String>>,
 
     /// Syntax highlighting theme name (kebab-case).
     ///

@@ -4,11 +4,12 @@ use crate::codex::SteerInputError;
 use crate::config::ConstraintResult;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
-use crate::features::Feature;
 use crate::file_watcher::WatchRegistration;
 use crate::protocol::Event;
 use crate::protocol::Op;
 use crate::protocol::Submission;
+use codex_features::Feature;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ContentItem;
@@ -33,6 +34,7 @@ pub struct ThreadConfigSnapshot {
     pub model_provider_id: String,
     pub service_tier: Option<ServiceTier>,
     pub approval_policy: AskForApproval,
+    pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox_policy: SandboxPolicy,
     pub cwd: PathBuf,
     pub ephemeral: bool,
@@ -171,7 +173,7 @@ impl CodexThread {
         if was_zero {
             self.codex
                 .session
-                .set_out_of_band_elicitation_pause_state(true);
+                .set_out_of_band_elicitation_pause_state(/*paused*/ true);
         }
 
         Ok(*guard)
@@ -190,7 +192,7 @@ impl CodexThread {
         if now_zero {
             self.codex
                 .session
-                .set_out_of_band_elicitation_pause_state(false);
+                .set_out_of_band_elicitation_pause_state(/*paused*/ false);
         }
 
         Ok(*guard)

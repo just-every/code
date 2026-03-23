@@ -7,16 +7,26 @@ This crate is responsible for producing:
   - the `codex-exec` CLI can check if its arg0 is `codex-linux-sandbox` and, if so, execute as if it were `codex-linux-sandbox`
   - this should also be true of the `codex` multitool CLI
 
-On Linux, the bubblewrap pipeline uses the vendored bubblewrap path compiled
-into this binary.
+On Linux, the bubblewrap pipeline prefers the system `/usr/bin/bwrap` whenever
+it is available. If `/usr/bin/bwrap` is missing, the helper still falls back to
+the vendored bubblewrap path compiled into this binary.
+Codex also surfaces a startup warning when `/usr/bin/bwrap` is missing so users
+know it is falling back to the vendored helper.
 
 **Current Behavior**
-- Bubblewrap is the default filesystem sandbox pipeline and is standardized on
-  the vendored path.
+- Legacy `SandboxPolicy` / `sandbox_mode` configs remain supported.
+- Bubblewrap is the default filesystem sandbox pipeline.
+- If `/usr/bin/bwrap` is present, the helper uses it.
+- If `/usr/bin/bwrap` is missing, the helper falls back to the vendored
+  bubblewrap path.
+- If `/usr/bin/bwrap` is missing, Codex also surfaces a startup warning instead
+  of printing directly from the sandbox helper.
 - Legacy Landlock + mount protections remain available as an explicit legacy
   fallback path.
 - Set `features.use_legacy_landlock = true` (or CLI `-c use_legacy_landlock=true`)
   to force the legacy Landlock fallback.
+- The legacy Landlock fallback is used only when the split filesystem policy is
+  sandbox-equivalent to the legacy model after `cwd` resolution.
 - Split-only filesystem policies that do not round-trip through the legacy
   `SandboxPolicy` model stay on bubblewrap so nested read-only or denied
   carveouts are preserved.
@@ -27,9 +37,12 @@ into this binary.
 - When the default bubblewrap pipeline is active, protected subpaths under writable roots (for
   example `.git`,
   resolved `gitdir:`, and `.codex`) are re-applied as read-only via `--ro-bind`.
-- When the default bubblewrap pipeline is active, overlapping split-policy entries are applied in
-  path-specificity order so narrower writable children can reopen broader
-  read-only parents while narrower denied subpaths still win.
+- When the default bubblewrap pipeline is active, overlapping split-policy
+  entries are applied in path-specificity order so narrower writable children
+  can reopen broader read-only or denied parents while narrower denied subpaths
+  still win. For example, `/repo = write`, `/repo/a = none`, `/repo/a/b = write`
+  keeps `/repo` writable, denies `/repo/a`, and reopens `/repo/a/b` as
+  writable again.
 - When the default bubblewrap pipeline is active, symlink-in-path and non-existent protected paths inside
   writable roots are blocked by mounting `/dev/null` on the symlink or first
   missing component.

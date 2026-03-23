@@ -9,6 +9,8 @@ use chrono::Datelike;
 use chrono::Local;
 use chrono::Utc;
 use codex_async_utils::CancelErr;
+pub use codex_login::auth::RefreshTokenFailedError;
+pub use codex_login::auth::RefreshTokenFailedReason;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -261,30 +263,6 @@ impl std::fmt::Display for ResponseStreamFailed {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("{message}")]
-pub struct RefreshTokenFailedError {
-    pub reason: RefreshTokenFailedReason,
-    pub message: String,
-}
-
-impl RefreshTokenFailedError {
-    pub fn new(reason: RefreshTokenFailedReason, message: impl Into<String>) -> Self {
-        Self {
-            reason,
-            message: message.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshTokenFailedReason {
-    Expired,
-    Exhausted,
-    Revoked,
-    Other,
-}
-
 #[derive(Debug)]
 pub struct UnexpectedResponseError {
     pub status: StatusCode,
@@ -292,6 +270,8 @@ pub struct UnexpectedResponseError {
     pub url: Option<String>,
     pub cf_ray: Option<String>,
     pub request_id: Option<String>,
+    pub identity_authorization_error: Option<String>,
+    pub identity_error_code: Option<String>,
 }
 
 const CLOUDFLARE_BLOCKED_MESSAGE: &str =
@@ -346,6 +326,12 @@ impl UnexpectedResponseError {
         if let Some(id) = &self.request_id {
             message.push_str(&format!(", request id: {id}"));
         }
+        if let Some(auth_error) = &self.identity_authorization_error {
+            message.push_str(&format!(", auth error: {auth_error}"));
+        }
+        if let Some(error_code) = &self.identity_error_code {
+            message.push_str(&format!(", auth error code: {error_code}"));
+        }
 
         Some(message)
     }
@@ -367,6 +353,12 @@ impl std::fmt::Display for UnexpectedResponseError {
             }
             if let Some(id) = &self.request_id {
                 message.push_str(&format!(", request id: {id}"));
+            }
+            if let Some(auth_error) = &self.identity_authorization_error {
+                message.push_str(&format!(", auth error: {auth_error}"));
+            }
+            if let Some(error_code) = &self.identity_error_code {
+                message.push_str(&format!(", auth error code: {error_code}"));
             }
             write!(f, "{message}")
         }

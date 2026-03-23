@@ -403,6 +403,7 @@ pub(crate) struct ChatComposer {
     config: ChatComposerConfig,
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     connectors_enabled: bool,
+    plugins_command_enabled: bool,
     fast_command_enabled: bool,
     personality_command_enabled: bool,
     realtime_conversation_enabled: bool,
@@ -441,6 +442,7 @@ impl ChatComposer {
         BuiltinCommandFlags {
             collaboration_modes_enabled: self.collaboration_modes_enabled,
             connectors_enabled: self.connectors_enabled,
+            plugins_command_enabled: self.plugins_command_enabled,
             fast_command_enabled: self.fast_command_enabled,
             personality_command_enabled: self.personality_command_enabled,
             realtime_conversation_enabled: self.realtime_conversation_enabled,
@@ -525,6 +527,7 @@ impl ChatComposer {
             config,
             collaboration_mode_indicator: None,
             connectors_enabled: false,
+            plugins_command_enabled: false,
             fast_command_enabled: false,
             personality_command_enabled: false,
             realtime_conversation_enabled: false,
@@ -557,6 +560,10 @@ impl ChatComposer {
     pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
         self.plugins = plugins;
         self.sync_popups();
+    }
+
+    pub fn set_plugins_command_enabled(&mut self, enabled: bool) {
+        self.plugins_command_enabled = enabled;
     }
 
     /// Toggle composer-side image paste handling.
@@ -674,7 +681,12 @@ impl ChatComposer {
         };
         let [composer_rect, popup_rect] =
             Layout::vertical([Constraint::Min(3), popup_constraint]).areas(area);
-        let mut textarea_rect = composer_rect.inset(Insets::tlbr(1, LIVE_PREFIX_COLS, 1, 1));
+        let mut textarea_rect = composer_rect.inset(Insets::tlbr(
+            /*top*/ 1,
+            LIVE_PREFIX_COLS,
+            /*bottom*/ 1,
+            /*right*/ 1,
+        ));
         let remote_images_height = self
             .remote_images_lines(textarea_rect.width)
             .len()
@@ -1037,7 +1049,7 @@ impl ChatComposer {
         self.bind_mentions_from_snapshot(mention_bindings);
         self.relabel_attached_images_and_update_placeholders();
         self.selected_remote_image_index = None;
-        self.textarea.set_cursor(0);
+        self.textarea.set_cursor(/*pos*/ 0);
         self.sync_popups();
     }
 
@@ -2092,14 +2104,14 @@ impl ChatComposer {
     ///
     /// The returned string **does not** include the leading `@`.
     fn current_at_token(textarea: &TextArea) -> Option<String> {
-        Self::current_prefixed_token(textarea, '@', false)
+        Self::current_prefixed_token(textarea, '@', /*allow_empty*/ false)
     }
 
     fn current_mention_token(&self) -> Option<String> {
         if !self.mentions_enabled() {
             return None;
         }
-        Self::current_prefixed_token(&self.textarea, '$', true)
+        Self::current_prefixed_token(&self.textarea, '$', /*allow_empty*/ true)
     }
 
     /// Replace the active `@token` (the one under the cursor) with `path`.
@@ -2329,7 +2341,7 @@ impl ChatComposer {
                         r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
                     );
                     self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_info_event(message, None),
+                        history_cell::new_info_event(message, /*hint*/ None),
                     )));
                     self.set_text_content_with_mention_bindings(
                         original_input.clone(),
@@ -2481,7 +2493,9 @@ impl ChatComposer {
             return (result, true);
         }
 
-        if let Some((text, text_elements)) = self.prepare_submission_text(true) {
+        if let Some((text, text_elements)) =
+            self.prepare_submission_text(/*record_history*/ true)
+        {
             if should_queue {
                 (
                     InputResult::Queued {
@@ -2788,7 +2802,7 @@ impl ChatComposer {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } => self.handle_submission(false),
+            } => self.handle_submission(/*should_queue*/ false),
             input => self.handle_input_basic(input),
         }
     }
@@ -3470,6 +3484,7 @@ impl ChatComposer {
                 if is_editing_slash_command_name {
                     let collaboration_modes_enabled = self.collaboration_modes_enabled;
                     let connectors_enabled = self.connectors_enabled;
+                    let plugins_command_enabled = self.plugins_command_enabled;
                     let fast_command_enabled = self.fast_command_enabled;
                     let personality_command_enabled = self.personality_command_enabled;
                     let realtime_conversation_enabled = self.realtime_conversation_enabled;
@@ -3479,6 +3494,7 @@ impl ChatComposer {
                         CommandPopupFlags {
                             collaboration_modes_enabled,
                             connectors_enabled,
+                            plugins_command_enabled,
                             fast_command_enabled,
                             personality_command_enabled,
                             realtime_conversation_enabled,
@@ -4160,7 +4176,7 @@ impl Renderable for ChatComposer {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        self.render_with_mask(area, buf, None);
+        self.render_with_mask(area, buf, /*mask_char*/ None);
     }
 }
 
@@ -4254,7 +4270,10 @@ impl ChatComposer {
                 let right_line = if status_line_active {
                     let full =
                         mode_indicator_line(self.collaboration_mode_indicator, show_cycle_hint);
-                    let compact = mode_indicator_line(self.collaboration_mode_indicator, false);
+                    let compact = mode_indicator_line(
+                        self.collaboration_mode_indicator,
+                        /*show_cycle_hint*/ false,
+                    );
                     let full_width = full.as_ref().map(|l| l.width() as u16).unwrap_or(0);
                     if can_show_left_with_context(hint_rect, left_width, full_width) {
                         full
@@ -5294,6 +5313,44 @@ mod tests {
     }
 
     #[test]
+    fn set_connector_mentions_skips_disabled_connectors() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_connectors_enabled(true);
+        composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
+        assert!(matches!(composer.active_popup, ActivePopup::None));
+
+        let connectors = vec![AppInfo {
+            id: "connector_1".to_string(),
+            name: "Notion".to_string(),
+            description: Some("Workspace docs".to_string()),
+            logo_url: None,
+            logo_url_dark: None,
+            distribution_channel: None,
+            branding: None,
+            app_metadata: None,
+            labels: None,
+            install_url: Some("https://example.test/notion".to_string()),
+            is_accessible: true,
+            is_enabled: false,
+            plugin_display_names: Vec::new(),
+        }];
+        composer.set_connector_mentions(Some(ConnectorsSnapshot { connectors }));
+
+        assert!(
+            matches!(composer.active_popup, ActivePopup::None),
+            "disabled connectors should not appear in the mention popup"
+        );
+    }
+
+    #[test]
     fn set_plugin_mentions_refreshes_open_mention_popup() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -5366,6 +5423,7 @@ mod tests {
                 dependencies: None,
                 policy: None,
                 permission_profile: None,
+                managed_network_override: None,
                 path_to_skills_md: PathBuf::from("/tmp/repo/google-calendar/SKILL.md"),
                 scope: codex_protocol::protocol::SkillScope::Repo,
             }]));
@@ -7204,6 +7262,7 @@ mod tests {
             vec![FileMatch {
                 score: 1,
                 path: PathBuf::from("src/main.rs"),
+                match_type: codex_file_search::MatchType::File,
                 root: PathBuf::from("/tmp"),
                 indices: None,
             }],

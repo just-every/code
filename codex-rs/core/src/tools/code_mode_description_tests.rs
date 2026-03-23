@@ -17,7 +17,7 @@ fn render_json_schema_to_typescript_renders_object_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{\n  path: string;\n  recursive?: boolean;\n}"
+        "{ path: string; recursive?: boolean; }"
     );
 }
 
@@ -52,7 +52,7 @@ fn render_json_schema_to_typescript_renders_additional_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{\n  tags?: Array<string>;\n  [key: string]: number;\n}"
+        "{ tags?: Array<string>; [key: string]: number; }"
     );
 }
 
@@ -71,12 +71,12 @@ fn render_json_schema_to_typescript_sorts_object_properties() {
 
     assert_eq!(
         render_json_schema_to_typescript(&schema),
-        "{\n  _meta?: string;\n  content: Array<string>;\n  isError?: boolean;\n  structuredContent?: string;\n}"
+        "{ _meta?: string; content: Array<string>; isError?: boolean; structuredContent?: string; }"
     );
 }
 
 #[test]
-fn append_code_mode_sample_uses_static_import_for_valid_identifiers() {
+fn append_code_mode_sample_uses_global_tools_for_valid_identifiers() {
     assert_eq!(
         append_code_mode_sample(
             "desc",
@@ -85,12 +85,12 @@ fn append_code_mode_sample_uses_static_import_for_valid_identifiers() {
             "{ foo: string }".to_string(),
             "unknown".to_string(),
         ),
-        "desc\n\nCode mode declaration:\n```ts\nimport { get_profile } from \"tools/mcp/ologs.js\";\ndeclare function get_profile(args: { foo: string }): Promise<unknown>;\n```"
+        "desc\n\nexec tool declaration:\n```ts\ndeclare const tools: { mcp__ologs__get_profile(args: { foo: string }): Promise<unknown>; };\n```"
     );
 }
 
 #[test]
-fn append_code_mode_sample_normalizes_non_identifier_tool_names() {
+fn append_code_mode_sample_normalizes_invalid_identifiers() {
     assert_eq!(
         append_code_mode_sample(
             "desc",
@@ -99,6 +99,6 @@ fn append_code_mode_sample_normalizes_non_identifier_tool_names() {
             "{ foo: string }".to_string(),
             "unknown".to_string(),
         ),
-        "desc\n\nCode mode declaration:\n```ts\nimport { echo_tool } from \"tools/mcp/rmcp.js\";\ndeclare function echo_tool(args: { foo: string }): Promise<unknown>;\n```"
+        "desc\n\nexec tool declaration:\n```ts\ndeclare const tools: { mcp__rmcp__echo_tool(args: { foo: string }): Promise<unknown>; };\n```"
     );
 }

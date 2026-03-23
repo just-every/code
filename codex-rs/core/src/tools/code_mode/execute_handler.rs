@@ -1,7 +1,5 @@
 use async_trait::async_trait;
 
-use crate::codex::Session;
-use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -9,66 +7,49 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 
-use super::CodeModeSessionProgress;
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::build_enabled_tools;
-use super::handle_node_message;
-use super::protocol::HostToNodeMessage;
-use super::protocol::build_source;
+use super::handle_runtime_response;
 
 pub struct CodeModeExecuteHandler;
 
 impl CodeModeExecuteHandler {
     async fn execute(
         &self,
-        session: std::sync::Arc<Session>,
-        turn: std::sync::Arc<TurnContext>,
+        session: std::sync::Arc<crate::codex::Session>,
+        turn: std::sync::Arc<crate::codex::TurnContext>,
+        call_id: String,
         code: String,
     ) -> Result<FunctionToolOutput, FunctionCallError> {
+        let args =
+            codex_code_mode::parse_exec_source(&code).map_err(FunctionCallError::RespondToModel)?;
         let exec = ExecContext { session, turn };
         let enabled_tools = build_enabled_tools(&exec).await;
-        let service = &exec.session.services.code_mode_service;
-        let stored_values = service.stored_values().await;
-        let source =
-            build_source(&code, &enabled_tools).map_err(FunctionCallError::RespondToModel)?;
-        let cell_id = service.allocate_cell_id().await;
-        let request_id = service.allocate_request_id().await;
-        let process_slot = service
-            .ensure_started()
-            .await
-            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+        let stored_values = exec
+            .session
+            .services
+            .code_mode_service
+            .stored_values()
+            .await;
         let started_at = std::time::Instant::now();
-        let message = HostToNodeMessage::Start {
-            request_id: request_id.clone(),
-            cell_id: cell_id.clone(),
-            default_yield_time_ms: super::DEFAULT_EXEC_YIELD_TIME_MS,
-            enabled_tools,
-            stored_values,
-            source,
-        };
-        let result = {
-            let mut process_slot = process_slot;
-            let Some(process) = process_slot.as_mut() else {
-                return Err(FunctionCallError::RespondToModel(format!(
-                    "{PUBLIC_TOOL_NAME} runner failed to start"
-                )));
-            };
-            let message = process
-                .send(&request_id, &message)
-                .await
-                .map_err(|err| err.to_string());
-            let message = match message {
-                Ok(message) => message,
-                Err(error) => return Err(FunctionCallError::RespondToModel(error)),
-            };
-            handle_node_message(&exec, cell_id, message, None, started_at).await
-        };
-        match result {
-            Ok(CodeModeSessionProgress::Finished(output))
-            | Ok(CodeModeSessionProgress::Yielded { output }) => Ok(output),
-            Err(error) => Err(FunctionCallError::RespondToModel(error)),
-        }
+        let response = exec
+            .session
+            .services
+            .code_mode_service
+            .execute(codex_code_mode::ExecuteRequest {
+                tool_call_id: call_id,
+                enabled_tools,
+                source: args.code,
+                stored_values,
+                yield_time_ms: args.yield_time_ms,
+                max_output_tokens: args.max_output_tokens,
+            })
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
+        handle_runtime_response(&exec, response, args.max_output_tokens, started_at)
+            .await
+            .map_err(FunctionCallError::RespondToModel)
     }
 }
 
@@ -88,6 +69,7 @@ impl ToolHandler for CodeModeExecuteHandler {
         let ToolInvocation {
             session,
             turn,
+            call_id,
             tool_name,
             payload,
             ..
@@ -95,7 +77,7 @@ impl ToolHandler for CodeModeExecuteHandler {
 
         match payload {
             ToolPayload::Custom { input } if tool_name == PUBLIC_TOOL_NAME => {
-                self.execute(session, turn, input).await
+                self.execute(session, turn, call_id, input).await
             }
             _ => Err(FunctionCallError::RespondToModel(format!(
                 "{PUBLIC_TOOL_NAME} expects raw JavaScript source text"

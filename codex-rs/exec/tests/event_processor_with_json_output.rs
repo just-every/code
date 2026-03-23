@@ -96,6 +96,7 @@ fn session_configured_produces_thread_started_event() {
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: None,
@@ -748,6 +749,7 @@ fn agent_message_produces_item_completed_agent_message() {
         EventMsg::AgentMessage(AgentMessageEvent {
             message: "hello".to_string(),
             phase: None,
+            memory_citation: None,
         }),
     );
     let out = ep.collect_thread_events(&ev);

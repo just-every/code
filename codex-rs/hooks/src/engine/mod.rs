@@ -14,6 +14,8 @@ use crate::events::session_start::SessionStartOutcome;
 use crate::events::session_start::SessionStartRequest;
 use crate::events::stop::StopOutcome;
 use crate::events::stop::StopRequest;
+use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
+use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommandShell {
@@ -21,7 +23,7 @@ pub(crate) struct CommandShell {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConfiguredHandler {
     pub event_name: codex_protocol::protocol::HookEventName,
     pub matcher: Option<String>,
@@ -45,6 +47,7 @@ impl ConfiguredHandler {
     fn event_name_label(&self) -> &'static str {
         match self.event_name {
             codex_protocol::protocol::HookEventName::SessionStart => "session-start",
+            codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
             codex_protocol::protocol::HookEventName::Stop => "stop",
         }
     }
@@ -67,6 +70,17 @@ impl ClaudeHooksEngine {
             return Self {
                 handlers: Vec::new(),
                 warnings: Vec::new(),
+                shell,
+            };
+        }
+
+        if cfg!(windows) {
+            return Self {
+                handlers: Vec::new(),
+                warnings: vec![
+                    "Disabled `codex_hooks` for this session because `hooks.json` lifecycle hooks are not supported on Windows yet."
+                        .to_string(),
+                ],
                 shell,
             };
         }
@@ -97,6 +111,20 @@ impl ClaudeHooksEngine {
         turn_id: Option<String>,
     ) -> SessionStartOutcome {
         crate::events::session_start::run(&self.handlers, &self.shell, request, turn_id).await
+    }
+
+    pub(crate) fn preview_user_prompt_submit(
+        &self,
+        request: &UserPromptSubmitRequest,
+    ) -> Vec<HookRunSummary> {
+        crate::events::user_prompt_submit::preview(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_user_prompt_submit(
+        &self,
+        request: UserPromptSubmitRequest,
+    ) -> UserPromptSubmitOutcome {
+        crate::events::user_prompt_submit::run(&self.handlers, &self.shell, request).await
     }
 
     pub(crate) fn preview_stop(&self, request: &StopRequest) -> Vec<HookRunSummary> {

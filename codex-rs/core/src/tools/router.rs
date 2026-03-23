@@ -4,11 +4,9 @@ use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::sandboxing::SandboxPermissions;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::context::ToolSearchOutput;
 use crate::tools::discoverable::DiscoverableTool;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ConfiguredToolSpec;
@@ -17,7 +15,6 @@ use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::build_specs_with_discoverable_tools;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::LocalShellAction;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SearchToolCallParams;
 use codex_protocol::models::ShellToolCallParams;
@@ -39,6 +36,7 @@ pub struct ToolCall {
 pub struct ToolRouter {
     registry: ToolRegistry,
     specs: Vec<ConfiguredToolSpec>,
+    model_visible_specs: Vec<ToolSpec>,
 }
 
 pub(crate) struct ToolRouterParams<'a> {
@@ -64,8 +62,29 @@ impl ToolRouter {
             dynamic_tools,
         );
         let (specs, registry) = builder.build();
+        let model_visible_specs = if config.code_mode_only_enabled {
+            specs
+                .iter()
+                .filter_map(|configured_tool| {
+                    if !codex_code_mode::is_code_mode_nested_tool(configured_tool.spec.name()) {
+                        Some(configured_tool.spec.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            specs
+                .iter()
+                .map(|configured_tool| configured_tool.spec.clone())
+                .collect()
+        };
 
-        Self { registry, specs }
+        Self {
+            registry,
+            specs,
+            model_visible_specs,
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -73,6 +92,17 @@ impl ToolRouter {
             .iter()
             .map(|config| config.spec.clone())
             .collect()
+    }
+
+    pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
+        self.model_visible_specs.clone()
+    }
+
+    pub fn find_spec(&self, tool_name: &str) -> Option<ToolSpec> {
+        self.specs
+            .iter()
+            .find(|config| config.spec.name() == tool_name)
+            .map(|config| config.spec.clone())
     }
 
     pub fn tool_supports_parallel(&self, tool_name: &str) -> bool {
@@ -181,21 +211,6 @@ impl ToolRouter {
     }
 
     #[instrument(level = "trace", skip_all, err)]
-    pub async fn dispatch_tool_call(
-        &self,
-        session: Arc<Session>,
-        turn: Arc<TurnContext>,
-        tracker: SharedTurnDiffTracker,
-        call: ToolCall,
-        source: ToolCallSource,
-    ) -> Result<ResponseInputItem, FunctionCallError> {
-        Ok(self
-            .dispatch_tool_call_with_code_mode_result(session, turn, tracker, call, source)
-            .await?
-            .into_response())
-    }
-
-    #[instrument(level = "trace", skip_all, err)]
     pub async fn dispatch_tool_call_with_code_mode_result(
         &self,
         session: Arc<Session>,
@@ -210,23 +225,14 @@ impl ToolRouter {
             call_id,
             payload,
         } = call;
-        let payload_outputs_custom = matches!(payload, ToolPayload::Custom { .. });
-        let payload_outputs_tool_search = matches!(payload, ToolPayload::ToolSearch { .. });
-        let failure_call_id = call_id.clone();
 
         if source == ToolCallSource::Direct
             && turn.tools_config.js_repl_tools_only
             && !matches!(tool_name.as_str(), "js_repl" | "js_repl_reset")
         {
-            let err = FunctionCallError::RespondToModel(
+            return Err(FunctionCallError::RespondToModel(
                 "direct tool calls are disabled; use js_repl and codex.tool(...) instead"
                     .to_string(),
-            );
-            return Ok(Self::failure_result(
-                failure_call_id,
-                payload_outputs_custom,
-                payload_outputs_tool_search,
-                err,
             ));
         }
 
@@ -240,53 +246,7 @@ impl ToolRouter {
             payload,
         };
 
-        match self.registry.dispatch_any(invocation).await {
-            Ok(response) => Ok(response),
-            Err(FunctionCallError::Fatal(message)) => Err(FunctionCallError::Fatal(message)),
-            Err(err) => Ok(Self::failure_result(
-                failure_call_id,
-                payload_outputs_custom,
-                payload_outputs_tool_search,
-                err,
-            )),
-        }
-    }
-
-    fn failure_result(
-        call_id: String,
-        payload_outputs_custom: bool,
-        payload_outputs_tool_search: bool,
-        err: FunctionCallError,
-    ) -> AnyToolResult {
-        let message = err.to_string();
-        if payload_outputs_tool_search {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::ToolSearch {
-                    arguments: SearchToolCallParams {
-                        query: String::new(),
-                        limit: None,
-                    },
-                },
-                result: Box::new(ToolSearchOutput { tools: Vec::new() }),
-            }
-        } else if payload_outputs_custom {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::Custom {
-                    input: String::new(),
-                },
-                result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-            }
-        } else {
-            AnyToolResult {
-                call_id,
-                payload: ToolPayload::Function {
-                    arguments: "{}".to_string(),
-                },
-                result: Box::new(FunctionToolOutput::from_text(message, Some(false))),
-            }
-        }
+        self.registry.dispatch_any(invocation).await
     }
 }
 #[cfg(test)]

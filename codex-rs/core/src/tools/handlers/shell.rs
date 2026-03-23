@@ -5,10 +5,10 @@ use codex_protocol::models::ShellToolCallParams;
 use std::sync::Arc;
 
 use crate::codex::TurnContext;
+use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
 use crate::exec_env::create_env;
 use crate::exec_policy::ExecApprovalRequest;
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::is_safe_command::is_known_safe_command;
 use crate::protocol::ExecCommandSource;
@@ -21,6 +21,7 @@ use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::handlers::apply_granted_turn_permissions;
 use crate::tools::handlers::apply_patch::intercept_apply_patch;
+use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
@@ -32,6 +33,7 @@ use crate::tools::runtimes::shell::ShellRuntime;
 use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::spec::ShellCommandBackendConfig;
+use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 
 pub struct ShellHandler;
@@ -69,10 +71,15 @@ impl ShellHandler {
             command: params.command.clone(),
             cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
+            capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
             network: turn_context.network.clone(),
             sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
             windows_sandbox_level: turn_context.windows_sandbox_level,
+            windows_sandbox_private_desktop: turn_context
+                .config
+                .permissions
+                .windows_sandbox_private_desktop,
             justification: params.justification.clone(),
             arg0: None,
         }
@@ -119,10 +126,15 @@ impl ShellCommandHandler {
             command,
             cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
+            capture_policy: ExecCapturePolicy::ShellTool,
             env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
             network: turn_context.network.clone(),
             sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
             windows_sandbox_level: turn_context.windows_sandbox_level,
+            windows_sandbox_private_desktop: turn_context
+                .config
+                .permissions
+                .windows_sandbox_private_desktop,
             justification: params.justification.clone(),
             arg0: None,
         })
@@ -335,20 +347,35 @@ impl ShellHandler {
             }
         }
 
-        let request_permission_enabled = session.features().enabled(Feature::RequestPermissions);
+        let exec_permission_approvals_enabled =
+            session.features().enabled(Feature::ExecPermissionApprovals);
+        let requested_additional_permissions = additional_permissions.clone();
         let effective_additional_permissions = apply_granted_turn_permissions(
             session.as_ref(),
             exec_params.sandbox_permissions,
             additional_permissions,
         )
         .await;
-        let normalized_additional_permissions = normalize_and_validate_additional_permissions(
-            request_permission_enabled,
-            turn.approval_policy.value(),
-            effective_additional_permissions.sandbox_permissions,
-            effective_additional_permissions.additional_permissions,
-            effective_additional_permissions.permissions_preapproved,
-            &exec_params.cwd,
+        let additional_permissions_allowed = exec_permission_approvals_enabled
+            || (session.features().enabled(Feature::RequestPermissionsTool)
+                && effective_additional_permissions.permissions_preapproved);
+        let normalized_additional_permissions = implicit_granted_permissions(
+            exec_params.sandbox_permissions,
+            requested_additional_permissions.as_ref(),
+            &effective_additional_permissions,
+        )
+        .map_or_else(
+            || {
+                normalize_and_validate_additional_permissions(
+                    additional_permissions_allowed,
+                    turn.approval_policy.value(),
+                    effective_additional_permissions.sandbox_permissions,
+                    effective_additional_permissions.additional_permissions,
+                    effective_additional_permissions.permissions_preapproved,
+                    &exec_params.cwd,
+                )
+            },
+            |permissions| Ok(Some(permissions)),
         )
         .map_err(FunctionCallError::RespondToModel)?;
 
@@ -393,7 +420,12 @@ impl ShellHandler {
             source,
             freeform,
         );
-        let event_ctx = ToolEventCtx::new(session.as_ref(), turn.as_ref(), &call_id, None);
+        let event_ctx = ToolEventCtx::new(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            /*turn_diff_tracker*/ None,
+        );
         emitter.begin(event_ctx).await;
 
         let exec_approval_requirement = session
@@ -454,7 +486,12 @@ impl ShellHandler {
             )
             .await
             .map(|result| result.output);
-        let event_ctx = ToolEventCtx::new(session.as_ref(), turn.as_ref(), &call_id, None);
+        let event_ctx = ToolEventCtx::new(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            /*turn_diff_tracker*/ None,
+        );
         let content = emitter.finish(event_ctx, out).await?;
         Ok(FunctionToolOutput::from_text(content, Some(true)))
     }

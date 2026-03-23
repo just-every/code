@@ -782,7 +782,7 @@ fn truncate_exec_snippet(full_cmd: &str) -> String {
         Some((first, _)) => format!("{first} ..."),
         None => full_cmd.to_string(),
     };
-    snippet = truncate_text(&snippet, 80);
+    snippet = truncate_text(&snippet, /*max_graphemes*/ 80);
     snippet
 }
 
@@ -794,6 +794,7 @@ fn exec_snippet(command: &[String]) -> String {
 pub fn new_approval_decision_cell(
     command: Vec<String>,
     decision: codex_protocol::protocol::ReviewDecision,
+    actor: ApprovalDecisionActor,
 ) -> Box<dyn HistoryCell> {
     use codex_protocol::protocol::NetworkPolicyRuleAction;
     use codex_protocol::protocol::ReviewDecision::*;
@@ -804,7 +805,7 @@ pub fn new_approval_decision_cell(
             (
                 "✔ ".green(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "approved".bold(),
                     " codex to run ".into(),
                     snippet,
@@ -819,7 +820,7 @@ pub fn new_approval_decision_cell(
             (
                 "✔ ".green(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "approved".bold(),
                     " codex to always run commands that start with ".into(),
                     snippet,
@@ -831,7 +832,7 @@ pub fn new_approval_decision_cell(
             (
                 "✔ ".green(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "approved".bold(),
                     " codex to run ".into(),
                     snippet,
@@ -845,7 +846,7 @@ pub fn new_approval_decision_cell(
             NetworkPolicyRuleAction::Allow => (
                 "✔ ".green(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "persisted".bold(),
                     " Codex network access to ".into(),
                     Span::from(network_policy_amendment.host).dim(),
@@ -854,7 +855,7 @@ pub fn new_approval_decision_cell(
             NetworkPolicyRuleAction::Deny => (
                 "✗ ".red(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "denied".bold(),
                     " codex network access to ".into(),
                     Span::from(network_policy_amendment.host).dim(),
@@ -864,22 +865,28 @@ pub fn new_approval_decision_cell(
         },
         Denied => {
             let snippet = Span::from(exec_snippet(&command)).dim();
-            (
-                "✗ ".red(),
-                vec![
-                    "You ".into(),
+            let summary = match actor {
+                ApprovalDecisionActor::User => vec![
+                    actor.subject().into(),
                     "did not approve".bold(),
                     " codex to run ".into(),
                     snippet,
                 ],
-            )
+                ApprovalDecisionActor::Guardian => vec![
+                    "Request ".into(),
+                    "denied".bold(),
+                    " for codex to run ".into(),
+                    snippet,
+                ],
+            };
+            ("✗ ".red(), summary)
         }
         Abort => {
             let snippet = Span::from(exec_snippet(&command)).dim();
             (
                 "✗ ".red(),
                 vec![
-                    "You ".into(),
+                    actor.subject().into(),
                     "canceled".bold(),
                     " the request to run ".into(),
                     snippet,
@@ -893,6 +900,66 @@ pub fn new_approval_decision_cell(
         symbol,
         "  ",
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecisionActor {
+    User,
+    Guardian,
+}
+
+impl ApprovalDecisionActor {
+    fn subject(self) -> &'static str {
+        match self {
+            Self::User => "You ",
+            Self::Guardian => "Auto-reviewer ",
+        }
+    }
+}
+
+pub fn new_guardian_denied_patch_request(
+    files: Vec<String>,
+    change_count: usize,
+) -> Box<dyn HistoryCell> {
+    let mut summary = vec![
+        "Request ".into(),
+        "denied".bold(),
+        " for codex to apply ".into(),
+    ];
+    if files.len() == 1 {
+        summary.push("a patch touching ".into());
+        summary.push(Span::from(files[0].clone()).dim());
+    } else {
+        summary.push(format!("a patch touching {change_count} changes across ").into());
+        summary.push(Span::from(files.len().to_string()).dim());
+        summary.push(" files".into());
+    }
+
+    Box::new(PrefixedWrappedHistoryCell::new(
+        Line::from(summary),
+        "✗ ".red(),
+        "  ",
+    ))
+}
+
+pub fn new_guardian_denied_action_request(summary: String) -> Box<dyn HistoryCell> {
+    let line = Line::from(vec![
+        "Request ".into(),
+        "denied".bold(),
+        " for ".into(),
+        Span::from(summary).dim(),
+    ]);
+    Box::new(PrefixedWrappedHistoryCell::new(line, "✗ ".red(), "  "))
+}
+
+pub fn new_guardian_approved_action_request(summary: String) -> Box<dyn HistoryCell> {
+    let line = Line::from(vec![
+        "Request ".into(),
+        "approved".bold(),
+        " for ".into(),
+        Span::from(summary).dim(),
+    ]);
+    Box::new(PrefixedWrappedHistoryCell::new(line, "✔ ".green(), "  "))
 }
 
 /// Cyan history cell line showing the current review status.
@@ -936,7 +1003,7 @@ pub(crate) fn card_inner_width(width: u16, max_inner_width: usize) -> Option<usi
 
 /// Render `lines` inside a border sized to the widest span in the content.
 pub(crate) fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    with_border_internal(lines, None)
+    with_border_internal(lines, /*forced_inner_width*/ None)
 }
 
 /// Render `lines` inside a border whose inner width is at least `inner_width`.
@@ -1593,7 +1660,7 @@ pub(crate) fn new_active_web_search_call(
     query: String,
     animations_enabled: bool,
 ) -> WebSearchCell {
-    WebSearchCell::new(call_id, query, None, animations_enabled)
+    WebSearchCell::new(call_id, query, /*action*/ None, animations_enabled)
 }
 
 pub(crate) fn new_web_search_call(
@@ -1601,7 +1668,12 @@ pub(crate) fn new_web_search_call(
     query: String,
     action: WebSearchAction,
 ) -> WebSearchCell {
-    let mut cell = WebSearchCell::new(call_id, query, Some(action), false);
+    let mut cell = WebSearchCell::new(
+        call_id,
+        query,
+        Some(action),
+        /*animations_enabled*/ false,
+    );
     cell.complete();
     cell
 }
@@ -1745,7 +1817,7 @@ pub(crate) fn new_mcp_tools_output(
     }
 
     let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(config.codex_home.clone())));
-    let effective_servers = mcp_manager.effective_servers(config, None);
+    let effective_servers = mcp_manager.effective_servers(config, /*auth*/ None);
     let mut servers: Vec<_> = effective_servers.iter().collect();
     servers.sort_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -2238,7 +2310,7 @@ pub(crate) fn new_view_image_tool_call(path: PathBuf, cwd: &Path) -> PlainHistor
 pub(crate) fn new_image_generation_call(
     call_id: String,
     revised_prompt: Option<String>,
-    saved_to: Option<String>,
+    saved_path: Option<String>,
 ) -> PlainHistoryCell {
     let detail = revised_prompt.unwrap_or_else(|| call_id.clone());
 
@@ -2246,8 +2318,8 @@ pub(crate) fn new_image_generation_call(
         vec!["• ".dim(), "Generated Image:".bold()].into(),
         vec!["  └ ".dim(), detail.dim()].into(),
     ];
-    if let Some(saved_to) = saved_to {
-        lines.push(vec!["  └ ".dim(), format!("Saved to: {saved_to}").dim()].into());
+    if let Some(saved_path) = saved_path {
+        lines.push(vec!["  └ ".dim(), "Saved to: ".dim(), saved_path.into()].into());
     }
 
     PlainHistoryCell { lines }
@@ -2278,7 +2350,7 @@ pub(crate) fn new_reasoning_summary_block(
                     header_buffer,
                     summary_buffer,
                     &cwd,
-                    false,
+                    /*transcript_only*/ false,
                 ));
             }
         }
@@ -2287,7 +2359,7 @@ pub(crate) fn new_reasoning_summary_block(
         "".to_string(),
         full_reasoning_buffer.to_string(),
         &cwd,
-        true,
+        /*transcript_only*/ true,
     ))
 }
 
@@ -2552,6 +2624,25 @@ mod tests {
         .expect("resource link content should serialize")
     }
 
+    #[test]
+    fn image_generation_call_renders_saved_path() {
+        let saved_path = "file:///tmp/generated-image.png".to_string();
+        let cell = new_image_generation_call(
+            "call-image-generation".to_string(),
+            Some("A tiny blue square".to_string()),
+            Some(saved_path.clone()),
+        );
+
+        assert_eq!(
+            render_lines(&cell.display_lines(80)),
+            vec![
+                "• Generated Image:".to_string(),
+                "  └ A tiny blue square".to_string(),
+                format!("  └ Saved to: {saved_path}"),
+            ],
+        );
+    }
+
     fn session_configured_event(model: &str) -> SessionConfiguredEvent {
         SessionConfiguredEvent {
             session_id: ThreadId::new(),
@@ -2561,6 +2652,7 @@ mod tests {
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/tmp/project"),
             reasoning_effort: None,

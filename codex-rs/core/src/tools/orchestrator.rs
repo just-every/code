@@ -60,7 +60,6 @@ impl ToolOrchestrator {
         let network_approval = begin_network_approval(
             &tool_ctx.session,
             &tool_ctx.turn.sub_id,
-            &tool_ctx.call_id,
             has_managed_network_requirements,
             tool.network_approval_spec(req, tool_ctx),
         )
@@ -113,6 +112,7 @@ impl ToolOrchestrator {
         let otel_tn = &tool_ctx.tool_name;
         let otel_ci = &tool_ctx.call_id;
         let otel_user = ToolDecisionSource::User;
+        let otel_automated_reviewer = ToolDecisionSource::AutomatedReviewer;
         let otel_cfg = ToolDecisionSource::Config;
 
         // 1) Approval
@@ -137,8 +137,13 @@ impl ToolOrchestrator {
                     network_approval_context: None,
                 };
                 let decision = tool.start_approval_async(req, approval_ctx).await;
+                let otel_source = if routes_approval_to_guardian(turn_ctx) {
+                    otel_automated_reviewer.clone()
+                } else {
+                    otel_user.clone()
+                };
 
-                otel.tool_decision(otel_tn, otel_ci, &decision, otel_user.clone());
+                otel.tool_decision(otel_tn, otel_ci, &decision, otel_source);
 
                 match decision {
                     ReviewDecision::Denied | ReviewDecision::Abort => {
@@ -197,6 +202,10 @@ impl ToolOrchestrator {
             codex_linux_sandbox_exe: turn_ctx.codex_linux_sandbox_exe.as_ref(),
             use_legacy_landlock,
             windows_sandbox_level: turn_ctx.windows_sandbox_level,
+            windows_sandbox_private_desktop: turn_ctx
+                .config
+                .permissions
+                .windows_sandbox_private_desktop,
         };
 
         let (first_result, first_deferred_network_approval) = Self::run_attempt(
@@ -283,7 +292,12 @@ impl ToolOrchestrator {
                     };
 
                     let decision = tool.start_approval_async(req, approval_ctx).await;
-                    otel.tool_decision(otel_tn, otel_ci, &decision, otel_user);
+                    let otel_source = if routes_approval_to_guardian(turn_ctx) {
+                        otel_automated_reviewer
+                    } else {
+                        otel_user
+                    };
+                    otel.tool_decision(otel_tn, otel_ci, &decision, otel_source);
 
                     match decision {
                         ReviewDecision::Denied | ReviewDecision::Abort => {
@@ -319,6 +333,10 @@ impl ToolOrchestrator {
                     codex_linux_sandbox_exe: None,
                     use_legacy_landlock,
                     windows_sandbox_level: turn_ctx.windows_sandbox_level,
+                    windows_sandbox_private_desktop: turn_ctx
+                        .config
+                        .permissions
+                        .windows_sandbox_private_desktop,
                 };
 
                 // Second attempt.

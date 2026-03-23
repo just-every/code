@@ -4,6 +4,7 @@
 //! decision to avoid re-prompting, builds the self-invocation command for
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
+use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
@@ -53,8 +54,12 @@ impl ApplyPatchRuntime {
         Self
     }
 
-    fn build_guardian_review_request(req: &ApplyPatchRequest) -> GuardianApprovalRequest {
+    fn build_guardian_review_request(
+        req: &ApplyPatchRequest,
+        call_id: &str,
+    ) -> GuardianApprovalRequest {
         GuardianApprovalRequest::ApplyPatch {
+            id: call_id.to_string(),
             cwd: req.action.cwd.clone(),
             files: req.file_paths.clone(),
             change_count: req.changes.len(),
@@ -89,6 +94,7 @@ impl ApplyPatchRuntime {
             ],
             cwd: req.action.cwd.clone(),
             expiration: req.timeout_ms.into(),
+            capture_policy: ExecCapturePolicy::ShellTool,
             // Run apply_patch with a minimal environment for determinism and to avoid leaks.
             env: HashMap::new(),
             sandbox_permissions: req.sandbox_permissions,
@@ -135,7 +141,7 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let changes = req.changes.clone();
         Box::pin(async move {
             if routes_approval_to_guardian(turn) {
-                let action = ApplyPatchRuntime::build_guardian_review_request(req);
+                let action = ApplyPatchRuntime::build_guardian_review_request(req, ctx.call_id);
                 return review_approval_request(session, turn, action, retry_reason).await;
             }
             if req.permissions_preapproved && retry_reason.is_none() {
@@ -143,7 +149,13 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
             }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
-                    .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
+                    .request_patch_approval(
+                        turn,
+                        call_id,
+                        changes.clone(),
+                        Some(reason),
+                        /*grant_root*/ None,
+                    )
                     .await;
                 return rx_approve.await.unwrap_or_default();
             }
@@ -154,7 +166,9 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                 approval_keys,
                 || async move {
                     let rx_approve = session
-                        .request_patch_approval(turn, call_id, changes, None, None)
+                        .request_patch_approval(
+                            turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
+                        )
                         .await;
                     rx_approve.await.unwrap_or_default()
                 },
@@ -166,7 +180,7 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
         match policy {
             AskForApproval::Never => false,
-            AskForApproval::Reject(reject_config) => !reject_config.rejects_sandbox_approval(),
+            AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
             AskForApproval::OnFailure => true,
             AskForApproval::OnRequest => true,
             AskForApproval::UnlessTrusted => true,
@@ -194,7 +208,7 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
     ) -> Result<ExecToolCallOutput, ToolError> {
         let spec = Self::build_command_spec(req, &ctx.turn.config.codex_home)?;
         let env = attempt
-            .env_for(spec, None)
+            .env_for(spec, /*network*/ None)
             .map_err(|err| ToolError::Codex(err.into()))?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await

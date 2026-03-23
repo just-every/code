@@ -1,4 +1,3 @@
-use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
 use crate::is_safe_command::is_known_safe_command;
 use crate::protocol::EventMsg;
@@ -12,17 +11,20 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::apply_granted_turn_permissions;
 use crate::tools::handlers::apply_patch::intercept_apply_patch;
+use crate::tools::handlers::implicit_granted_permissions;
 use crate::tools::handlers::normalize_and_validate_additional_permissions;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::tools::spec::UnifiedExecShellMode;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
 use async_trait::async_trait;
+use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -106,6 +108,7 @@ impl ToolHandler for UnifiedExecHandler {
         let command = match get_command(
             &params,
             invocation.session.user_shell(),
+            &invocation.turn.tools_config.unified_exec_shell_mode,
             invocation.turn.tools_config.allow_login_shell,
         ) {
             Ok(command) => command,
@@ -153,9 +156,11 @@ impl ToolHandler for UnifiedExecHandler {
                 let command = get_command(
                     &args,
                     session.user_shell(),
+                    &turn.tools_config.unified_exec_shell_mode,
                     turn.tools_config.allow_login_shell,
                 )
                 .map_err(FunctionCallError::RespondToModel)?;
+                let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
 
                 let ExecCommandArgs {
                     workdir,
@@ -169,14 +174,18 @@ impl ToolHandler for UnifiedExecHandler {
                     ..
                 } = args;
 
-                let request_permission_enabled =
-                    session.features().enabled(Feature::RequestPermissions);
+                let exec_permission_approvals_enabled =
+                    session.features().enabled(Feature::ExecPermissionApprovals);
+                let requested_additional_permissions = additional_permissions.clone();
                 let effective_additional_permissions = apply_granted_turn_permissions(
                     context.session.as_ref(),
                     sandbox_permissions,
                     additional_permissions,
                 )
                 .await;
+                let additional_permissions_allowed = exec_permission_approvals_enabled
+                    || (session.features().enabled(Feature::RequestPermissionsTool)
+                        && effective_additional_permissions.permissions_preapproved);
 
                 // Sticky turn permissions have already been approved, so they should
                 // continue through the normal exec approval flow for the command.
@@ -200,21 +209,30 @@ impl ToolHandler for UnifiedExecHandler {
 
                 let workdir = workdir.map(|dir| context.turn.resolve_path(Some(dir)));
                 let cwd = workdir.clone().unwrap_or(cwd);
-                let normalized_additional_permissions =
-                    match normalize_and_validate_additional_permissions(
-                        request_permission_enabled,
-                        context.turn.approval_policy.value(),
-                        effective_additional_permissions.sandbox_permissions,
-                        effective_additional_permissions.additional_permissions,
-                        effective_additional_permissions.permissions_preapproved,
-                        &cwd,
-                    ) {
-                        Ok(normalized) => normalized,
-                        Err(err) => {
-                            manager.release_process_id(process_id).await;
-                            return Err(FunctionCallError::RespondToModel(err));
-                        }
-                    };
+                let normalized_additional_permissions = match implicit_granted_permissions(
+                    sandbox_permissions,
+                    requested_additional_permissions.as_ref(),
+                    &effective_additional_permissions,
+                )
+                .map_or_else(
+                    || {
+                        normalize_and_validate_additional_permissions(
+                            additional_permissions_allowed,
+                            context.turn.approval_policy.value(),
+                            effective_additional_permissions.sandbox_permissions,
+                            effective_additional_permissions.additional_permissions,
+                            effective_additional_permissions.permissions_preapproved,
+                            &cwd,
+                        )
+                    },
+                    |permissions| Ok(Some(permissions)),
+                ) {
+                    Ok(normalized) => normalized,
+                    Err(err) => {
+                        manager.release_process_id(process_id).await;
+                        return Err(FunctionCallError::RespondToModel(err));
+                    }
+                };
 
                 if let Some(output) = intercept_apply_patch(
                     &command,
@@ -264,7 +282,9 @@ impl ToolHandler for UnifiedExecHandler {
                     )
                     .await
                     .map_err(|err| {
-                        FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
+                        FunctionCallError::RespondToModel(format!(
+                            "exec_command failed for `{command_for_display}`: {err:?}"
+                        ))
                     })?
             }
             "write_stdin" => {
@@ -306,15 +326,9 @@ impl ToolHandler for UnifiedExecHandler {
 pub(crate) fn get_command(
     args: &ExecCommandArgs,
     session_shell: Arc<Shell>,
+    shell_mode: &UnifiedExecShellMode,
     allow_login_shell: bool,
 ) -> Result<Vec<String>, String> {
-    let model_shell = args.shell.as_ref().map(|shell_str| {
-        let mut shell = get_shell_by_model_provided_path(&PathBuf::from(shell_str));
-        shell.shell_snapshot = crate::shell::empty_shell_snapshot_receiver();
-        shell
-    });
-
-    let shell = model_shell.as_ref().unwrap_or(session_shell.as_ref());
     let use_login_shell = match args.login {
         Some(true) if !allow_login_shell => {
             return Err(
@@ -325,7 +339,22 @@ pub(crate) fn get_command(
         None => allow_login_shell,
     };
 
-    Ok(shell.derive_exec_args(&args.cmd, use_login_shell))
+    match shell_mode {
+        UnifiedExecShellMode::Direct => {
+            let model_shell = args.shell.as_ref().map(|shell_str| {
+                let mut shell = get_shell_by_model_provided_path(&PathBuf::from(shell_str));
+                shell.shell_snapshot = crate::shell::empty_shell_snapshot_receiver();
+                shell
+            });
+            let shell = model_shell.as_ref().unwrap_or(session_shell.as_ref());
+            Ok(shell.derive_exec_args(&args.cmd, use_login_shell))
+        }
+        UnifiedExecShellMode::ZshFork(zsh_fork_config) => Ok(vec![
+            zsh_fork_config.shell_zsh_path.to_string_lossy().to_string(),
+            if use_login_shell { "-lc" } else { "-c" }.to_string(),
+            args.cmd.clone(),
+        ]),
+    }
 }
 
 #[cfg(test)]

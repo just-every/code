@@ -12,7 +12,9 @@ fn custom_tool_calls_should_roundtrip_as_custom_outputs() {
         .to_response_item("call-42", &payload);
 
     match response {
-        ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+        ResponseInputItem::CustomToolCallOutput {
+            call_id, output, ..
+        } => {
             assert_eq!(call_id, "call-42");
             assert_eq!(output.content_items(), None);
             assert_eq!(output.body.to_text().as_deref(), Some("patched"));
@@ -106,7 +108,9 @@ fn custom_tool_calls_can_derive_text_from_content_items() {
     .to_response_item("call-99", &payload);
 
     match response {
-        ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+        ResponseInputItem::CustomToolCallOutput {
+            call_id, output, ..
+        } => {
             let expected = vec![
                 FunctionCallOutputContentItem::InputText {
                     text: "line 1".to_string(),
@@ -245,7 +249,11 @@ fn exec_command_tool_output_formats_truncated_response() {
         process_id: None,
         exit_code: Some(0),
         original_token_count: Some(10),
-        session_command: None,
+        session_command: Some(vec![
+            "/bin/zsh".to_string(),
+            "-lc".to_string(),
+            "rm -rf /tmp/example.sqlite".to_string(),
+        ]),
     }
     .to_response_item("call-42", &payload);
 
@@ -259,7 +267,8 @@ fn exec_command_tool_output_formats_truncated_response() {
                 .expect("exec output should serialize as text");
             assert_regex_match(
                 r#"(?sx)
-                    ^Chunk\ ID:\ abc123
+                    ^Command:\ /bin/zsh\ -lc\ 'rm\ -rf\ /tmp/example\.sqlite'
+                    \nChunk\ ID:\ abc123
                     \nWall\ time:\ \d+\.\d{4}\ seconds
                     \nProcess\ exited\ with\ code\ 0
                     \nOriginal\ token\ count:\ 10

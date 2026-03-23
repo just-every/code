@@ -77,6 +77,8 @@ mod exec_policy;
 mod fork_thread;
 mod grep_files;
 mod hierarchical_agents;
+#[cfg(not(target_os = "windows"))]
+mod hooks;
 mod image_rollout;
 mod items;
 mod js_repl;
@@ -101,6 +103,7 @@ mod prompt_caching;
 mod quota_exceeded;
 mod read_file;
 mod realtime_conversation;
+mod remote_env;
 mod remote_models;
 mod request_compression;
 #[cfg(not(target_os = "windows"))]
