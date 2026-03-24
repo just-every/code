@@ -49,6 +49,7 @@ use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::user_input::UserInput;
+use codex_git_utils::GitSha;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -518,6 +519,7 @@ pub struct InterAgentCommunication {
     #[serde(default)]
     pub other_recipients: Vec<AgentPath>,
     pub content: String,
+    pub trigger_turn: bool,
 }
 
 impl InterAgentCommunication {
@@ -526,12 +528,14 @@ impl InterAgentCommunication {
         recipient: AgentPath,
         other_recipients: Vec<AgentPath>,
         content: String,
+        trigger_turn: bool,
     ) -> Self {
         Self {
             author,
             recipient,
             other_recipients,
             content,
+            trigger_turn,
         }
     }
 
@@ -548,7 +552,7 @@ impl InterAgentCommunication {
         Self::from_message_content(content).is_some()
     }
 
-    fn from_message_content(content: &[ContentItem]) -> Option<Self> {
+    pub fn from_message_content(content: &[ContentItem]) -> Option<Self> {
         match content {
             [ContentItem::InputText { text }] | [ContentItem::OutputText { text }] => {
                 serde_json::from_str(text).ok()
@@ -2636,7 +2640,7 @@ pub struct RolloutLine {
 pub struct GitInfo {
     /// Current commit hash (SHA)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit_hash: Option<String>,
+    pub commit_hash: Option<GitSha>,
     /// Current branch name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,

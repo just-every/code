@@ -1,5 +1,5 @@
 [package]
-name = "codex-git"
+name = "codex-git-utils"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,15 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
+codex-utils-absolute-path = { workspace = true }
+futures = { workspace = true, features = ["alloc"] }
 once_cell = { workspace = true }
 regex = "1"
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "rt", "time"] }
 ts-rs = { workspace = true, features = [
     "uuid-impl",
     "serde-json-impl",
