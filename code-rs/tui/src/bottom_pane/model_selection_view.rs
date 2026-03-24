@@ -922,30 +922,34 @@ impl ModelSelectionView {
     fn model_rank(model: &str) -> u8 {
         if model.eq_ignore_ascii_case("gpt-5.4") {
             0
-        } else if model.eq_ignore_ascii_case("gpt-5.3-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.4-mini") {
             1
-        } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
+        } else if model.eq_ignore_ascii_case("gpt-5.3-codex") {
             2
-        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
             3
-        } else if model.eq_ignore_ascii_case("gpt-5.2") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2-codex") {
             4
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
+        } else if model.eq_ignore_ascii_case("gpt-5.2") {
             5
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-max") {
             6
-        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex") {
             7
-        } else if model.eq_ignore_ascii_case("gpt-5.1") {
+        } else if model.eq_ignore_ascii_case("gpt-5.1-codex-mini") {
             8
-        } else {
+        } else if model.eq_ignore_ascii_case("gpt-5.1") {
             9
+        } else {
+            10
         }
     }
 
     fn model_description(model: &str) -> Option<&'static str> {
         if model.eq_ignore_ascii_case("gpt-5.4") {
             Some("Brings together flagship reasoning, coding, and tool use in a single frontier model.")
+        } else if model.eq_ignore_ascii_case("gpt-5.4-mini") {
+            Some("Smaller GPT-5.4 variant tuned for faster coding loops.")
         } else if model.eq_ignore_ascii_case("gpt-5.3-codex") {
             Some("Frontier agentic coding, 25% faster than previous models.")
         } else if model.eq_ignore_ascii_case("gpt-5.3-codex-spark") {
@@ -1257,7 +1261,24 @@ mod tests {
             },
         ];
 
-        let presets = vec![make_preset("gpt-5.3-codex"), make_preset("gpt-5.3-codex-spark"), gpt_5_4];
+        let mut gpt_5_4_mini = make_preset("gpt-5.4-mini");
+        gpt_5_4_mini.supported_reasoning_efforts = vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Low.into(),
+                description: "Fast responses with lighter reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::High.into(),
+                description: "Maximizes reasoning depth".to_string(),
+            },
+        ];
+
+        let presets = vec![
+            make_preset("gpt-5.3-codex"),
+            make_preset("gpt-5.3-codex-spark"),
+            gpt_5_4_mini,
+            gpt_5_4,
+        ];
         let (tx, _rx) = mpsc::channel::<AppEvent>();
         let view = ModelSelectionView::new(
             presets,
@@ -1290,11 +1311,15 @@ mod tests {
         let gpt_5_4_idx = visible
             .find("GPT-5.4")
             .expect("gpt-5.4 header");
+        let gpt_5_4_mini_idx = visible
+            .find("GPT-5.4-Mini")
+            .expect("gpt-5.4-mini header");
         let gpt_5_3_idx = visible
             .find("GPT-5.3-Codex")
             .expect("gpt-5.3-codex header");
 
-        assert!(gpt_5_4_idx < gpt_5_3_idx);
+        assert!(gpt_5_4_idx < gpt_5_4_mini_idx);
+        assert!(gpt_5_4_mini_idx < gpt_5_3_idx);
         assert!(visible.contains("Mode Settings"));
         assert!(visible.contains("Fast Mode: enabled"));
         assert!(visible.contains("1M Context: enabled"));

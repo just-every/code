@@ -188,43 +188,29 @@ impl CodexAuth {
     pub async fn get_token_data(&self) -> Result<TokenData, std::io::Error> {
         let auth_dot_json: Option<AuthDotJson> = self.get_current_auth_json();
         match auth_dot_json {
-            Some(AuthDotJson {
-                tokens: Some(mut tokens),
-                last_refresh: Some(last_refresh),
-                ..
-            }) => {
+            Some(auth_dot_json) => {
+                let mut tokens = auth_dot_json
+                    .tokens
+                    .clone()
+                    .ok_or(std::io::Error::other("Token data is not available."))?;
                 if self.mode == AuthMode::ChatgptAuthTokens {
                     return Ok(tokens);
                 }
-                if last_refresh < Utc::now() - chrono::Duration::days(28) {
-                    let refresh_response = tokio::time::timeout(
-                        Duration::from_secs(60),
-                        try_refresh_token(tokens.refresh_token.clone(), &self.client),
-                    )
-                    .await
-        .map_err(|_| {
-            std::io::Error::other("timed out while refreshing OpenAI API key")
-        })?
-        .map_err(|err| std::io::Error::other(err))?;
+                if should_proactively_refresh_auth(auth_dot_json.last_refresh) {
+                    tokio::time::timeout(Duration::from_secs(60), self.refresh_token())
+                        .await
+                        .map_err(|_| {
+                            std::io::Error::other(
+                                "timed out while refreshing OpenAI API key",
+                            )
+                        })?
+                        .map_err(std::io::Error::other)?;
 
-                    let updated_auth_dot_json = update_tokens(
-                        &self.auth_file,
-                        refresh_response.id_token,
-                        refresh_response.access_token,
-                        refresh_response.refresh_token,
-                    )
-                    .await?;
-
-                    tokens = updated_auth_dot_json
-                        .tokens
-                        .clone()
+                    tokens = self
+                        .get_current_token_data()
                         .ok_or(std::io::Error::other(
                             "Token data is not available after refresh.",
                         ))?;
-
-                    #[expect(clippy::unwrap_used)]
-                    let mut auth_lock = self.auth_dot_json.lock().unwrap();
-                    *auth_lock = Some(updated_auth_dot_json);
                 }
 
                 Ok(tokens)
@@ -344,6 +330,12 @@ impl CodexAuth {
             client: crate::default_client::create_client(originator),
         }
     }
+}
+
+fn should_proactively_refresh_auth(last_refresh: Option<DateTime<Utc>>) -> bool {
+    last_refresh.is_some_and(|last_refresh| {
+        last_refresh < Utc::now() - chrono::Duration::days(28)
+    })
 }
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
@@ -1305,6 +1297,16 @@ mod tests {
 
         assert_eq!(updated.refresh_token, rotated_tokens.refresh_token);
         assert_eq!(updated.access_token, rotated_access);
+    }
+
+    #[test]
+    fn proactive_refresh_only_triggers_for_stale_chatgpt_auth() {
+        let fresh = Utc::now() - chrono::Duration::days(1);
+        let stale = Utc::now() - chrono::Duration::days(29);
+
+        assert!(!should_proactively_refresh_auth(Some(fresh)));
+        assert!(should_proactively_refresh_auth(Some(stale)));
+        assert!(!should_proactively_refresh_auth(None));
     }
 
     struct AuthFileParams {
