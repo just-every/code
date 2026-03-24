@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.85] - 2026-03-24
+
+- TUI/App Server: open ChatGPT login in the local browser, cancel active login on Ctrl+C, and always restore terminal state on early exit. (1b863776, c023e9d9, 989e5139)
+- Plugins: improve `/plugins` UX with clearer labels/wording, better ordering, cleaner disabled rows, and less OAuth URL console noise during install. (66edc347, 2d5a3bfe, 3ba0e85e, 363b3739, b364faf4, 4b91a7b3)
+- Plugin Listing: surface marketplace loading errors, stop filtering plugin/list results, and refresh mentions after install/uninstall. (621862a7, c8506071, 0f90a346)
+- Auth: use access-token expiration consistently for proactive refresh and prevent repeated refresh storms after permanent token failures. (7dc2cd2e, b8dde290, 88694e84)
+- Core/App Server: add back-pressure and batching to `command/exec` and complete codex exec migration to the app server for more stable execution under load. (d61c03ca, 45f68843)
+
 ## [0.6.84] - 2026-03-24
 
 - Models: add `gpt-5.4-mini` support and simplify auth refresh handling for smoother model access. (124314eb, f55f5c25)
