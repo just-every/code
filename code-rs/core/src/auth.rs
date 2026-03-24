@@ -1406,7 +1406,7 @@ mod tests {
             "OPENAI_API_KEY": params.openai_api_key,
             "tokens": {
                 "id_token": fake_jwt,
-                "access_token": build_jwt(serde_json::json!({ "exp": Utc::now().timestamp() + 3600 })),
+                "access_token": "test-access-token",
                 "refresh_token": "test-refresh-token"
             },
             "last_refresh": LAST_REFRESH,
