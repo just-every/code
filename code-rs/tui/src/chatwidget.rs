@@ -22774,8 +22774,9 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn curated_model_presets(presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
-        const MODEL_PICKER_ORDER: [&str; 3] = [
+        const MODEL_PICKER_ORDER: [&str; 4] = [
             "gpt-5.4",
+            "gpt-5.4-mini",
             "gpt-5.3-codex",
             "gpt-5.3-codex-spark",
         ];
@@ -31023,6 +31024,23 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn curated_model_presets_includes_gpt_5_4_mini_when_present() {
+        let presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
+            .into_iter()
+            .filter(|preset| {
+                matches!(
+                    preset.id.as_str(),
+                    "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex"
+                )
+            })
+            .collect();
+
+        let curated = ChatWidget::curated_model_presets(presets);
+        let ids: Vec<&str> = curated.iter().map(|preset| preset.id.as_str()).collect();
+        assert_eq!(ids, vec!["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]);
+    }
+
+    #[test]
     fn model_command_accepts_supported_non_curated_builtin_model() {
         let _runtime_guard = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
@@ -31554,7 +31572,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn background_review_clean_renders_notice_without_developer_followup() {
+    fn background_review_clean_suppresses_history_notice() {
         let _rt = enter_test_runtime_guard();
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
@@ -31580,8 +31598,14 @@ use code_core::protocol::OrderMeta;
             Some("ghost-clean".to_string()),
         );
 
-        assert!(history_contains_text(chat, "Auto Review: no actionable findings in 'auto-review-branch'."));
-        assert!(history_contains_text(chat, "Worktree: /tmp/wt"));
+        assert!(
+            !history_contains_text(chat, "Auto Review: no actionable findings"),
+            "clean auto-review should not add a visible history notice"
+        );
+        assert!(
+            !history_contains_text(chat, "Worktree: /tmp/wt"),
+            "clean auto-review should not emit worktree follow-up lines"
+        );
         assert_no_code_ops_pending(&mut code_op_rx);
     }
 
@@ -37760,18 +37784,9 @@ impl ChatWidget<'_> {
         branch: &str,
         worktree_path: &std::path::Path,
     ) -> Vec<String> {
-        let mut headline = if branch.trim().is_empty() {
-            "Auto Review: no actionable findings.".to_string()
-        } else {
-            format!("Auto Review: no actionable findings in '{branch}'.")
-        };
-        headline.push_str(" [Ctrl+A] Show");
-
-        let mut lines = vec![headline];
-        if !worktree_path.as_os_str().is_empty() {
-            lines.push(format!("Worktree: {}", worktree_path.display()));
-        }
-        lines
+        let _ = branch;
+        let _ = worktree_path;
+        Vec::new()
     }
 
     fn auto_review_failure_notice_lines(
