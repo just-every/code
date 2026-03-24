@@ -1,4 +1,7 @@
 use base64::Engine;
+use chrono::DateTime;
+use chrono::Utc;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -93,6 +96,12 @@ struct AuthClaims {
     chatgpt_plan_type: Option<PlanType>,
 }
 
+#[derive(Deserialize)]
+struct StandardJwtClaims {
+    #[serde(default)]
+    exp: Option<i64>,
+}
+
 #[derive(Debug, Error)]
 pub enum IdTokenInfoError {
     #[error("invalid ID token format")]
@@ -103,16 +112,28 @@ pub enum IdTokenInfoError {
     Json(#[from] serde_json::Error),
 }
 
-pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+fn decode_jwt_payload<T: DeserializeOwned>(jwt: &str) -> Result<T, IdTokenInfoError> {
     // JWT format: header.payload.signature
-    let mut parts = id_token.split('.');
+    let mut parts = jwt.split('.');
     let (_header_b64, payload_b64, _sig_b64) = match (parts.next(), parts.next(), parts.next()) {
         (Some(h), Some(p), Some(s)) if !h.is_empty() && !p.is_empty() && !s.is_empty() => (h, p, s),
         _ => return Err(IdTokenInfoError::InvalidFormat),
     };
 
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64)?;
-    let claims: IdClaims = serde_json::from_slice(&payload_bytes)?;
+    let claims = serde_json::from_slice(&payload_bytes)?;
+    Ok(claims)
+}
+
+pub fn parse_jwt_expiration(jwt: &str) -> Result<Option<DateTime<Utc>>, IdTokenInfoError> {
+    let claims: StandardJwtClaims = decode_jwt_payload(jwt)?;
+    Ok(claims
+        .exp
+        .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0)))
+}
+
+pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+    let claims: IdClaims = decode_jwt_payload(id_token)?;
     if tracing::enabled!(Level::DEBUG) {
         let plan = claims
             .auth
@@ -211,5 +232,34 @@ mod tests {
         let info = parse_id_token(&fake_jwt).expect("should parse");
         assert!(info.email.is_none());
         assert!(info.get_chatgpt_plan_type().is_none());
+    }
+
+    #[test]
+    fn parse_jwt_expiration_reads_exp_claim() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+        let exp = Utc::now().timestamp() + 3600;
+        let payload = serde_json::json!({ "exp": exp });
+        let fake_jwt = format!(
+            "{}.{}.{}",
+            b64url_no_pad(&serde_json::to_vec(&header).unwrap()),
+            b64url_no_pad(&serde_json::to_vec(&payload).unwrap()),
+            b64url_no_pad(b"sig")
+        );
+
+        let parsed = parse_jwt_expiration(&fake_jwt).expect("expiration should parse");
+        assert_eq!(parsed.map(|value| value.timestamp()), Some(exp));
     }
 }
