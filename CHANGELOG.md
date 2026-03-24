@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.84] - 2026-03-24
+
+- Models: add `gpt-5.4-mini` support and simplify auth refresh handling for smoother model access. (124314eb, f55f5c25)
+- TUI: refresh curated model choices and suppress clean auto-review notices to reduce chat noise. (12b37afd)
+- Plugins: add install/uninstall flows in the TUI and better plugin labeling/filtering in listings. (b5d0a551, 54801634)
+- Multi-agent: ship structured agent communication/output and custom watcher support for v2 runs. (37ac0c09, 191fd9fd, 52724491)
+- Core: improve command/runtime stability with safer PATH construction, vendored bubblewrap fallback, and unified realtime stop handling. (84fb180e, d1088158, 7b92a906)
+
 ## [0.6.83] - 2026-03-23
 
 - CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, keeping release jobs running in restricted environments. (7fd302e2)

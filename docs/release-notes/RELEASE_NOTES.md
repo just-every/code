@@ -1,11 +1,14 @@
-## @just-every/code v0.6.83
+## @just-every/code v0.6.84
 
-This release improves release pipeline reliability when BuildBuddy credentials are unavailable.
+This release improves model access, multi-agent workflows, and day-to-day TUI reliability.
 
 ### Changes
 
-- CI: fall back to local Bazel execution when the BuildBuddy API key is unavailable, keeping release jobs running in restricted environments.
-- Release Workflows: apply the BuildBuddy fallback path to both `rusty-v8-release` and `v8-canary` for consistent publish reliability.
+- Models: add `gpt-5.4-mini` support and simplify auth refresh handling for smoother model access.
+- TUI: refresh curated model choices and suppress clean auto-review notices to reduce chat noise.
+- Plugins: add install/uninstall flows in the TUI and better plugin labeling/filtering in listings.
+- Multi-agent: ship structured agent communication/output and custom watcher support for v2 runs.
+- Core: improve command/runtime stability with safer PATH construction, vendored bubblewrap fallback, and unified realtime stop handling.
 
 ### Install
 
@@ -14,4 +17,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.82...v0.6.83
+Compare: https://github.com/just-every/code/compare/v0.6.83...v0.6.84
