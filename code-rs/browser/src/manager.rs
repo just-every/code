@@ -139,6 +139,14 @@ fn should_ignore_handler_error(message_lower: &str) -> bool {
         return true;
     }
 
+    // Chromium can emit occasional CDP payloads that chromiumoxide fails to
+    // deserialize into its internal Message enum. These do not necessarily mean
+    // the browser session is unhealthy; treating them as fatal causes the
+    // manager to discard a perfectly good page right after navigation.
+    if message_lower.contains("data did not match any variant of untagged enum message") {
+        return true;
+    }
+
     // These can happen for individual targets/tabs while the overall CDP
     // connection is still healthy (e.g. tabs closing, navigations, reloads).
     const TRANSIENT_SUBSTRINGS: &[&str] = &[
@@ -2586,6 +2594,20 @@ mod tests {
             let should_stop = should_stop_handler(
                 "[test]",
                 Err(TestError("oneshot error")),
+                &mut consecutive_errors,
+            );
+            assert!(!should_stop);
+            assert_eq!(consecutive_errors, 0);
+        }
+    }
+
+    #[test]
+    fn handler_ignores_message_deserialize_errors() {
+        let mut consecutive_errors = 0u32;
+        for _ in 0..10 {
+            let should_stop = should_stop_handler(
+                "[test]",
+                Err(TestError("data did not match any variant of untagged enum Message")),
                 &mut consecutive_errors,
             );
             assert!(!should_stop);
