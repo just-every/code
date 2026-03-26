@@ -1,5 +1,6 @@
 use code_browser::BrowserConfig;
 use code_browser::BrowserManager;
+use std::env;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
@@ -80,6 +81,14 @@ async fn assert_manager_can_open_local_http_server(headless: bool) {
     let _ = manager.stop().await;
 }
 
+fn can_run_headed_browser_test() -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+
+    env::var_os("DISPLAY").is_some() || env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn internal_browser_can_open_local_http_server() {
     assert_manager_can_open_local_http_server(true).await;
@@ -87,5 +96,12 @@ async fn internal_browser_can_open_local_http_server() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn headed_internal_browser_can_open_local_http_server() {
+    if !can_run_headed_browser_test() {
+        eprintln!(
+            "skipping headed browser regression test: no DISPLAY or WAYLAND_DISPLAY available"
+        );
+        return;
+    }
+
     assert_manager_can_open_local_http_server(false).await;
 }
