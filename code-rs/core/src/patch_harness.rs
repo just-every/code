@@ -2,7 +2,8 @@ use crate::config_types::{validation_tool_category, GithubConfig, ValidationCate
 use crate::workflow_validation::maybe_run_actionlint;
 use code_apply_patch::{ApplyPatchAction, ApplyPatchFileChange};
 use serde_json as json;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,33 @@ pub struct HarnessFinding {
     pub tool: String,
     pub file: Option<PathBuf>,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedExternalTool {
+    executable: PathBuf,
+    env_updates: Vec<(OsString, OsString)>,
+}
+
+impl ResolvedExternalTool {
+    fn apply_to_command(&self, cmd: &mut std::process::Command) {
+        for (key, value) in &self.env_updates {
+            cmd.env(key, value);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProjectFileGroup {
+    project_root: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct TypeScriptProjectGroup {
+    project_root: PathBuf,
+    config: Option<PathBuf>,
+    files: Vec<PathBuf>,
 }
 
 /// Run fast validations on the files touched by a patch. Returns `None` when the
@@ -164,6 +192,36 @@ pub fn run_patch_harness(
             }],
         }
     };
+    let run_overlay_tool = |tool: &str, args: &[&str], files: &[PathBuf], group_enabled: bool| -> Vec<HarnessFinding> {
+        if !group_enabled || files.is_empty() || !is_allowed(tool) {
+            return Vec::new();
+        }
+        let Some(exe) = which(Path::new(tool)) else { return Vec::new() };
+        match WorkspaceOverlay::apply(action) {
+            Ok(_overlay) => {
+                let mut cmd = std::process::Command::new(exe);
+                cmd.current_dir(cwd);
+                cmd.args(args);
+                cmd.args(files);
+                match run_with_timeout(cmd, timeout) {
+                    Some(output) => collect_output_lines(&output.stdout, &output.stderr)
+                        .into_iter()
+                        .map(|message| HarnessFinding { tool: tool.to_string(), file: None, message })
+                        .collect(),
+                    None => vec![HarnessFinding {
+                        tool: tool.to_string(),
+                        file: None,
+                        message: format!("{tool} timed out after {timeout} second(s)"),
+                    }],
+                }
+            }
+            Err(err) => vec![HarnessFinding {
+                tool: tool.to_string(),
+                file: None,
+                message: format!("failed to stage workspace for {tool}: {err}"),
+            }],
+        }
+    };
 
     let shell_scripts: Vec<PathBuf> = changed_paths
         .iter()
@@ -190,9 +248,9 @@ pub fn run_patch_harness(
         if which(Path::new("markdownlint")).is_some() || which(Path::new("markdownlint-cli2")).is_some() {
             record_ran("markdownlint");
         }
-        let mut lines = run_tool("markdownlint", &[], &markdown_files, markdownlint_group_enabled);
+        let mut lines = run_overlay_tool("markdownlint", &[], &markdown_files, markdownlint_group_enabled);
         if lines.is_empty() {
-            lines = run_tool("markdownlint-cli2", &[], &markdown_files, markdownlint_group_enabled);
+            lines = run_overlay_tool("markdownlint-cli2", &[], &markdown_files, markdownlint_group_enabled);
         }
         findings.extend(lines);
     }
@@ -222,7 +280,7 @@ pub fn run_patch_harness(
         if which(Path::new("yamllint")).is_some() {
             record_ran("yamllint");
         }
-        findings.extend(run_tool("yamllint", &["-f", "parsable"], &yaml_files, yamllint_group_enabled));
+        findings.extend(run_overlay_tool("yamllint", &["-f", "parsable"], &yaml_files, yamllint_group_enabled));
     }
 
     let rust_files: Vec<PathBuf> = changed_paths
@@ -240,25 +298,37 @@ pub fn run_patch_harness(
         findings.extend(run_tool("shfmt", &["-d"], &shell_scripts, shfmt_group_enabled));
     }
 
-    let prettier_exts = [
-        "js", "jsx", "ts", "tsx", "json", "css", "scss", "less", "html", "yml", "yaml",
-    ];
     let prettier_files: Vec<PathBuf> = changed_paths
         .iter()
-        .filter(|path| path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| prettier_exts.contains(&ext))
-            .unwrap_or(false))
+        .filter(|path| is_prettier_path(path))
         .cloned()
         .collect();
     let prettier_group = validation_tool_category("prettier");
     let prettier_group_enabled = category_enabled(prettier_group);
     if prettier_group_enabled && cfg.tools.prettier.unwrap_or(true) && !prettier_files.is_empty() {
-        if which(Path::new("prettier")).is_some() {
+        let prettier_groups = group_files_by_project_root(cwd, &prettier_files, |relative| {
+            find_nearest_prettier_root_for_file(cwd, relative)
+        });
+        if prettier_groups
+            .iter()
+            .any(|group| resolve_node_tool(&group.project_root, "prettier").is_some())
+        {
             record_ran("prettier");
         }
-        findings.extend(run_tool("prettier", &["--check"], &prettier_files, prettier_group_enabled));
+        for group in prettier_groups {
+            let Some(tool) = resolve_node_tool(&group.project_root, "prettier") else {
+                continue;
+            };
+            findings.extend(run_overlay_command(
+                action,
+                &group.project_root,
+                "prettier",
+                &tool,
+                &[OsString::from("--check")],
+                &group.files,
+                timeout,
+            ));
+        }
     }
 
     let ts_files: Vec<PathBuf> = changed_paths
@@ -267,50 +337,38 @@ pub fn run_patch_harness(
         .cloned()
         .collect();
     if functional_enabled && cfg.tools.tsc.unwrap_or(true) && !ts_files.is_empty() && is_allowed("tsc") {
-        if let Some(exe) = which(Path::new("tsc")) {
+        let ts_projects = group_typescript_files_by_project(cwd, &ts_files);
+        if ts_projects
+            .iter()
+            .any(|group| resolve_node_tool(&group.project_root, "tsc").is_some())
+        {
             record_ran("tsc");
-            let ts_timeout = timeout.max(20);
-            let project = find_nearest_config(cwd, &ts_files, &["tsconfig.json", "tsconfig.base.json", "tsconfig.app.json", "tsconfig.build.json", "tsconfig.lib.json"]);
-            match WorkspaceOverlay::apply(action) {
-                Ok(_overlay) => {
-                    let mut cmd = std::process::Command::new(&exe);
-                    cmd.current_dir(cwd);
-                    cmd.arg("--noEmit");
-                    cmd.arg("--pretty");
-                    cmd.arg("false");
-                    if let Some(config) = project {
-                        cmd.arg("--project");
-                        cmd.arg(config);
-                    } else {
-                        for path in &ts_files {
-                            cmd.arg(path);
-                        }
-                    }
-                    match run_with_timeout(cmd, ts_timeout) {
-                        Some(output) => {
-                            if output.status.map_or(true, |status| !status.success()) {
-                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
-                                if lines.is_empty() {
-                                    lines.push("tsc failed (no output)".to_string());
-                                }
-                                for line in lines.into_iter().take(24) {
-                                    findings.push(HarnessFinding { tool: "tsc".to_string(), file: None, message: line });
-                                }
-                            }
-                        }
-                        None => findings.push(HarnessFinding {
-                            tool: "tsc".to_string(),
-                            file: None,
-                            message: format!("tsc timed out after {ts_timeout} second(s)"),
-                        }),
-                    }
-                }
-                Err(err) => findings.push(HarnessFinding {
-                    tool: "tsc".to_string(),
-                    file: None,
-                    message: format!("failed to stage workspace for tsc: {err}"),
-                }),
+        }
+        let ts_timeout = timeout.max(20);
+        for project in ts_projects {
+            let Some(tool) = resolve_node_tool(&project.project_root, "tsc") else {
+                continue;
+            };
+            let mut args = vec![
+                OsString::from("--noEmit"),
+                OsString::from("--pretty"),
+                OsString::from("false"),
+            ];
+            if let Some(config) = &project.config {
+                args.push(OsString::from("--project"));
+                args.push(config.clone().into_os_string());
+            } else {
+                args.extend(project.files.iter().cloned().map(PathBuf::into_os_string));
             }
+            findings.extend(run_overlay_command(
+                action,
+                &project.project_root,
+                "tsc",
+                &tool,
+                &args,
+                &[],
+                ts_timeout,
+            ));
         }
     }
 
@@ -325,42 +383,33 @@ pub fn run_patch_harness(
         && is_allowed("eslint")
         && has_eslint_config(cwd, &eslint_files)
     {
-        if let Some(exe) = which(Path::new("eslint")) {
+        let eslint_groups = group_files_by_project_root(cwd, &eslint_files, |relative| {
+            find_nearest_eslint_root_for_file(cwd, relative)
+        });
+        if eslint_groups
+            .iter()
+            .any(|group| resolve_node_tool(&group.project_root, "eslint").is_some())
+        {
             record_ran("eslint");
-            let lint_timeout = timeout.max(15);
-            match WorkspaceOverlay::apply(action) {
-                Ok(_overlay) => {
-                    let mut cmd = std::process::Command::new(&exe);
-                    cmd.current_dir(cwd);
-                    cmd.args(["--max-warnings", "0", "--format", "unix"]);
-                    for path in &eslint_files {
-                        cmd.arg(path);
-                    }
-                    match run_with_timeout(cmd, lint_timeout) {
-                        Some(output) => {
-                            if output.status.map_or(true, |status| !status.success()) {
-                                let mut lines = collect_output_lines(&output.stdout, &output.stderr);
-                                if lines.is_empty() {
-                                    lines.push("eslint failed (no output)".to_string());
-                                }
-                                for line in lines.into_iter().take(24) {
-                                    findings.push(HarnessFinding { tool: "eslint".to_string(), file: None, message: line });
-                                }
-                            }
-                        }
-                        None => findings.push(HarnessFinding {
-                            tool: "eslint".to_string(),
-                            file: None,
-                            message: format!("eslint timed out after {lint_timeout} second(s)"),
-                        }),
-                    }
-                }
-                Err(err) => findings.push(HarnessFinding {
-                    tool: "eslint".to_string(),
-                    file: None,
-                    message: format!("failed to stage workspace for eslint: {err}"),
-                }),
+        }
+        let lint_timeout = timeout.max(15);
+        for group in eslint_groups {
+            let relative_files = relativize_paths(&group.project_root, &group.files);
+            if !has_eslint_config(&group.project_root, &relative_files) {
+                continue;
             }
+            let Some(tool) = resolve_node_tool(&group.project_root, "eslint") else {
+                continue;
+            };
+            findings.extend(run_overlay_command(
+                action,
+                &group.project_root,
+                "eslint",
+                &tool,
+                &[OsString::from("--max-warnings"), OsString::from("0")],
+                &group.files,
+                lint_timeout,
+            ));
         }
     }
 
@@ -697,6 +746,37 @@ fn is_dockerfile(path: &Path) -> bool {
     name.eq_ignore_ascii_case("Dockerfile") || name.starts_with("Dockerfile.")
 }
 
+fn is_prettier_path(path: &Path) -> bool {
+    let prettier_exts = [
+        "js", "jsx", "ts", "tsx", "json", "css", "scss", "less", "html", "yml", "yaml", "md", "mdx",
+    ];
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| prettier_exts.contains(&ext))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else { return false };
+    matches!(
+        name,
+        ".prettierrc"
+            | ".prettierrc.json"
+            | ".prettierrc.json5"
+            | ".prettierrc.yml"
+            | ".prettierrc.yaml"
+            | ".prettierrc.js"
+            | ".prettierrc.cjs"
+            | ".prettierrc.mjs"
+            | ".prettierrc.ts"
+            | "prettier.config.js"
+            | "prettier.config.cjs"
+            | "prettier.config.mjs"
+            | "prettier.config.ts"
+    )
+}
+
 fn which(exe: &Path) -> Option<PathBuf> {
     if exe.is_absolute() {
         return exe.exists().then(|| exe.to_path_buf());
@@ -712,6 +792,176 @@ fn which(exe: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn resolve_node_tool(project_root: &Path, tool: &str) -> Option<ResolvedExternalTool> {
+    if let Some(executable) = find_node_tool_in_dir(project_root, tool) {
+        let mut env_updates: Vec<(OsString, OsString)> = Vec::new();
+        if let Some(bin_dir) = executable.parent() {
+            env_updates.push((OsString::from("PATH"), prepend_path(bin_dir)));
+        }
+        return Some(ResolvedExternalTool {
+            executable,
+            env_updates,
+        });
+    }
+    which(Path::new(tool)).map(|executable| ResolvedExternalTool {
+        executable,
+        env_updates: Vec::new(),
+    })
+}
+
+fn find_node_tool_in_dir(project_root: &Path, tool: &str) -> Option<PathBuf> {
+    for candidate in [
+        project_root.join("node_modules").join(".bin").join(tool),
+        project_root.join("node_modules").join(".bin").join(format!("{tool}.cmd")),
+        project_root.join("node_modules").join(".bin").join(format!("{tool}.ps1")),
+        project_root.join("node_modules").join(".bin").join(format!("{tool}.exe")),
+    ] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn group_files_by_key<F>(cwd: &Path, files: &[PathBuf], mut key_for_file: F) -> Vec<(PathBuf, Vec<PathBuf>)>
+where
+    F: FnMut(&PathBuf) -> PathBuf,
+{
+    let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+    for relative in files {
+        let key = key_for_file(relative);
+        groups.entry(key).or_default().push(cwd.join(relative));
+    }
+    groups.into_iter().collect()
+}
+
+fn find_nearest_config_for_file(cwd: &Path, relative: &Path, candidates: &[&str]) -> Option<PathBuf> {
+    let mut current = cwd.join(relative).parent().map(Path::to_path_buf);
+    while let Some(dir) = current {
+        for candidate in candidates {
+            let candidate_path = dir.join(candidate);
+            if candidate_path.exists() {
+                return Some(candidate_path);
+            }
+        }
+        if dir == cwd {
+            break;
+        }
+        current = dir.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn find_nearest_package_root_for_file(cwd: &Path, relative: &Path) -> Option<PathBuf> {
+    find_nearest_config_for_file(cwd, relative, &["package.json"])
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+fn find_nearest_eslint_root_for_file(cwd: &Path, relative: &Path) -> PathBuf {
+    let config_candidates = [
+        ".eslintrc",
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.mjs",
+        ".eslintrc.json",
+        ".eslintrc.yml",
+        ".eslintrc.yaml",
+        "eslint.config.js",
+        "eslint.config.cjs",
+        "eslint.config.mjs",
+        "eslint.config.ts",
+    ];
+    if let Some(config) = find_nearest_config_for_file(cwd, relative, &config_candidates) {
+        return config.parent().unwrap_or(cwd).to_path_buf();
+    }
+    if let Some(package_json) = find_nearest_config_for_file(cwd, relative, &["package.json"])
+        && package_json_has_key(&package_json, "eslintConfig")
+    {
+        return package_json.parent().unwrap_or(cwd).to_path_buf();
+    }
+    find_nearest_package_root_for_file(cwd, relative).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+fn find_nearest_prettier_root_for_file(cwd: &Path, relative: &Path) -> PathBuf {
+    let config_candidates = [
+        ".prettierrc",
+        ".prettierrc.json",
+        ".prettierrc.json5",
+        ".prettierrc.yml",
+        ".prettierrc.yaml",
+        ".prettierrc.js",
+        ".prettierrc.cjs",
+        ".prettierrc.mjs",
+        ".prettierrc.ts",
+        "prettier.config.js",
+        "prettier.config.cjs",
+        "prettier.config.mjs",
+        "prettier.config.ts",
+    ];
+    if let Some(config) = find_nearest_config_for_file(cwd, relative, &config_candidates) {
+        return config.parent().unwrap_or(cwd).to_path_buf();
+    }
+    find_nearest_package_root_for_file(cwd, relative).unwrap_or_else(|| cwd.to_path_buf())
+}
+
+fn group_files_by_project_root<F>(cwd: &Path, files: &[PathBuf], root_for_file: F) -> Vec<ProjectFileGroup>
+where
+    F: FnMut(&PathBuf) -> PathBuf,
+{
+    group_files_by_key(cwd, files, root_for_file)
+        .into_iter()
+        .map(|(project_root, files)| ProjectFileGroup { project_root, files })
+        .collect()
+}
+
+fn group_typescript_files_by_project(cwd: &Path, files: &[PathBuf]) -> Vec<TypeScriptProjectGroup> {
+    let ts_config_candidates = [
+        "tsconfig.json",
+        "tsconfig.base.json",
+        "tsconfig.app.json",
+        "tsconfig.build.json",
+        "tsconfig.lib.json",
+    ];
+    let mut groups: BTreeMap<(PathBuf, Option<PathBuf>), Vec<PathBuf>> = BTreeMap::new();
+    for relative in files {
+        let config = find_nearest_config_for_file(cwd, relative, &ts_config_candidates);
+        let project_root = config
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .or_else(|| find_nearest_package_root_for_file(cwd, relative))
+            .unwrap_or_else(|| cwd.to_path_buf());
+        groups
+            .entry((project_root, config))
+            .or_default()
+            .push(cwd.join(relative));
+    }
+    groups
+        .into_iter()
+        .map(|((project_root, config), files)| TypeScriptProjectGroup {
+            project_root,
+            config,
+            files,
+        })
+        .collect()
+}
+
+fn relativize_paths(base: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(base).ok().map(Path::to_path_buf))
+        .collect()
+}
+
+fn prepend_path(bin_dir: &Path) -> OsString {
+    let path_entries = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<PathBuf>>())
+        .unwrap_or_default();
+    let mut combined = Vec::with_capacity(path_entries.len().saturating_add(1));
+    combined.push(bin_dir.to_path_buf());
+    combined.extend(path_entries);
+    std::env::join_paths(combined).unwrap_or_else(|_| bin_dir.as_os_str().to_os_string())
 }
 
 fn run_with_timeout(mut cmd: std::process::Command, timeout_secs: u64) -> Option<CommandCapture> {
@@ -773,6 +1023,56 @@ fn collect_output_lines(stdout: &[u8], stderr: &[u8]) -> Vec<String> {
     }
     lines.retain(|line| !line.trim().is_empty());
     lines
+}
+
+fn run_overlay_command(
+    action: &ApplyPatchAction,
+    run_dir: &Path,
+    tool_name: &str,
+    tool: &ResolvedExternalTool,
+    args: &[OsString],
+    files: &[PathBuf],
+    timeout_secs: u64,
+) -> Vec<HarnessFinding> {
+    match WorkspaceOverlay::apply(action) {
+        Ok(_overlay) => {
+            let mut cmd = std::process::Command::new(&tool.executable);
+            cmd.current_dir(run_dir);
+            tool.apply_to_command(&mut cmd);
+            cmd.args(args);
+            cmd.args(files);
+            match run_with_timeout(cmd, timeout_secs) {
+                Some(output) => {
+                    if output.status.is_some_and(|status| status.success()) {
+                        return Vec::new();
+                    }
+                    let mut lines = collect_output_lines(&output.stdout, &output.stderr);
+                    if lines.is_empty() {
+                        lines.push(format!("{tool_name} failed (no output)"));
+                    }
+                    lines
+                        .into_iter()
+                        .take(24)
+                        .map(|message| HarnessFinding {
+                            tool: tool_name.to_string(),
+                            file: None,
+                            message,
+                        })
+                        .collect()
+                }
+                None => vec![HarnessFinding {
+                    tool: tool_name.to_string(),
+                    file: None,
+                    message: format!("{tool_name} timed out after {timeout_secs} second(s)"),
+                }],
+            }
+        }
+        Err(err) => vec![HarnessFinding {
+            tool: tool_name.to_string(),
+            file: None,
+            message: format!("failed to stage workspace for {tool_name}: {err}"),
+        }],
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -1098,4 +1398,268 @@ struct CommandCapture {
     status: Option<ExitStatus>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_prettier_path, resolve_node_tool, run_patch_harness, which};
+    use crate::config_types::{GithubConfig, ValidationConfig, ValidationGroups, ValidationTools};
+    use code_apply_patch::ApplyPatchAction;
+    use std::ffi::OsString;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::path::Path;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    #[test]
+    fn prettier_matches_markdown_and_dot_config_files() {
+        assert!(is_prettier_path(Path::new("README.md")));
+        assert!(is_prettier_path(Path::new(".prettierrc")));
+        assert!(is_prettier_path(Path::new("prettier.config.ts")));
+        assert!(is_prettier_path(Path::new(".eslintrc.js")));
+        assert!(!is_prettier_path(Path::new("README.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_node_tool_prefers_valid_symlinked_local_bin() {
+        let repo = TempDir::new().expect("tempdir");
+        let project_root = repo.path().join("every-code-webui");
+        let bin_dir = project_root.join("node_modules/.bin");
+        let tool_impls = project_root.join("tool-impls");
+        fs::create_dir_all(&bin_dir).expect("create local bin dir");
+        fs::create_dir_all(&tool_impls).expect("create tool impl dir");
+        write_shell_tool(&tool_impls.join("prettier-local"), "#!/bin/sh\nexit 0\n");
+        symlink("../../tool-impls/prettier-local", bin_dir.join("prettier"))
+            .expect("create symlinked prettier shim");
+
+        let resolved = resolve_node_tool(&project_root, "prettier").expect("resolve local prettier");
+
+        assert_eq!(resolved.executable, bin_dir.join("prettier"));
+        assert!(resolved.executable.is_file(), "symlinked local bin should resolve to a valid file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn nested_package_validators_prefer_local_node_tooling() {
+        let repo = TempDir::new().expect("tempdir");
+        let cwd = repo.path();
+        let global_bin = cwd.join("global-bin");
+        let app_root = cwd.join("every-code-webui");
+        let app_bin = app_root.join("node_modules/.bin");
+        let tool_impls = app_root.join("tool-impls");
+        let src_dir = app_root.join("src");
+
+        fs::create_dir_all(&global_bin).expect("create global bin");
+        fs::create_dir_all(&app_bin).expect("create app bin");
+        fs::create_dir_all(&tool_impls).expect("create tool impls");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+
+        fs::write(app_root.join("package.json"), "{\"name\":\"every-code-webui\",\"type\":\"module\"}\n")
+            .expect("write package json");
+        fs::write(app_root.join(".prettierrc"), "{}\n").expect("write prettier config");
+        fs::write(app_root.join("eslint.config.js"), "export default [];\n")
+            .expect("write eslint config");
+        fs::write(
+            app_root.join("tsconfig.json"),
+            "{\"compilerOptions\":{\"rewriteRelativeImportExtensions\":true}}\n",
+        )
+        .expect("write tsconfig");
+
+        write_shell_tool(
+            &global_bin.join("prettier"),
+            "#!/bin/sh\necho global prettier used\nexit 1\n",
+        );
+        write_shell_tool(
+            &global_bin.join("eslint"),
+            "#!/bin/sh\necho global eslint used\nexit 1\n",
+        );
+        write_shell_tool(
+            &global_bin.join("tsc"),
+            "#!/bin/sh\necho unknown compiler option rewriteRelativeImportExtensions\nexit 1\n",
+        );
+
+        write_shell_tool(
+            &tool_impls.join("prettier-local"),
+            "#!/bin/sh\n[ -f package.json ] || { echo missing package.json; exit 1; }\n[ -f .prettierrc ] || { echo missing prettier config; exit 1; }\nexit 0\n",
+        );
+        write_shell_tool(
+            &tool_impls.join("eslint-local"),
+            "#!/bin/sh\n[ -f package.json ] || { echo missing package.json; exit 1; }\n[ -f eslint.config.js ] || { echo missing eslint config; exit 1; }\nfor arg in \"$@\"; do\n  [ \"$arg\" = \"unix\" ] && { echo unexpected unix formatter; exit 1; }\ndone\nexit 0\n",
+        );
+        write_shell_tool(
+            &tool_impls.join("tsc-local"),
+            &format!(
+                "#!/bin/sh\nfor arg in \"$@\"; do\n  [ \"$arg\" = \"{}\" ] && exit 0\ndone\necho missing local tsconfig\nexit 1\n",
+                app_root.join("tsconfig.json").display()
+            ),
+        );
+
+        symlink("../../tool-impls/prettier-local", app_bin.join("prettier"))
+            .expect("symlink local prettier");
+        symlink("../../tool-impls/eslint-local", app_bin.join("eslint"))
+            .expect("symlink local eslint");
+        symlink("../../tool-impls/tsc-local", app_bin.join("tsc"))
+            .expect("symlink local tsc");
+
+        let path_guard = ScopedEnvVar::set("PATH", Some(global_bin.into_os_string()));
+
+        let prettier_action = ApplyPatchAction::new_add_for_test(
+            &src_dir.join("prettier.ts"),
+            "export const prettierValue = 1;\n".to_string(),
+        );
+        let (prettier_findings, prettier_ran) = run_patch_harness(
+            &prettier_action,
+            cwd,
+            &validator_config("prettier", false, true),
+            &GithubConfig::default(),
+        )
+        .expect("prettier harness result");
+        assert!(prettier_findings.is_empty(), "unexpected prettier findings: {prettier_findings:?}");
+        assert_eq!(prettier_ran, vec!["prettier".to_string()]);
+
+        let eslint_action = ApplyPatchAction::new_add_for_test(
+            &src_dir.join("eslint.ts"),
+            "export const eslintValue = 2;\n".to_string(),
+        );
+        let (eslint_findings, eslint_ran) = run_patch_harness(
+            &eslint_action,
+            cwd,
+            &validator_config("eslint", true, false),
+            &GithubConfig::default(),
+        )
+        .expect("eslint harness result");
+        assert!(eslint_findings.is_empty(), "unexpected eslint findings: {eslint_findings:?}");
+        assert_eq!(eslint_ran, vec!["eslint".to_string()]);
+
+        let tsc_action = ApplyPatchAction::new_add_for_test(
+            &src_dir.join("tsc.ts"),
+            "export const tscValue = 3;\n".to_string(),
+        );
+        let (tsc_findings, tsc_ran) = run_patch_harness(
+            &tsc_action,
+            cwd,
+            &validator_config("tsc", true, false),
+            &GithubConfig::default(),
+        )
+        .expect("tsc harness result");
+        drop(path_guard);
+
+        assert!(tsc_findings.is_empty(), "unexpected tsc findings: {tsc_findings:?}");
+        assert_eq!(tsc_ran, vec!["tsc".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn prettier_runs_from_repo_root_so_repo_config_is_visible() {
+        let repo = TempDir::new().expect("tempdir");
+        let bin_dir = repo.path().join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_shell_tool(
+            &bin_dir.join("prettier"),
+            "#!/bin/sh\n[ -f .prettierrc ] || { echo missing prettier config; exit 1; }\nexit 0\n",
+        );
+        fs::write(repo.path().join(".prettierrc"), "{}\n").expect("write config");
+
+        let path_guard = ScopedEnvVar::set("PATH", Some(bin_dir.into_os_string()));
+        assert!(which(Path::new("prettier")).is_some(), "fake prettier not found on PATH");
+        let action = ApplyPatchAction::new_add_for_test(&repo.path().join("src/index.ts"), "const x = 1;\n".to_string());
+        let (findings, ran) = run_patch_harness(&action, repo.path(), &stylistic_config("prettier", false), &GithubConfig::default())
+            .expect("prettier harness result");
+        drop(path_guard);
+
+        assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+        assert_eq!(ran, vec!["prettier".to_string()]);
+    }
+
+    fn validator_config(tool: &str, functional: bool, stylistic: bool) -> ValidationConfig {
+        ValidationConfig {
+            tools_allowlist: Some(vec![tool.to_string()]),
+            groups: ValidationGroups {
+                functional,
+                stylistic,
+            },
+            ..ValidationConfig::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn markdownlint_runs_from_repo_root_so_repo_config_is_visible() {
+        let repo = TempDir::new().expect("tempdir");
+        let bin_dir = repo.path().join("bin");
+        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_shell_tool(
+            &bin_dir.join("markdownlint"),
+            "#!/bin/sh\n[ -f .markdownlint.json ] || { echo missing markdownlint config; exit 1; }\nexit 0\n",
+        );
+        fs::write(repo.path().join(".markdownlint.json"), "{}\n").expect("write config");
+
+        let path_guard = ScopedEnvVar::set("PATH", Some(bin_dir.into_os_string()));
+        assert!(which(Path::new("markdownlint")).is_some(), "fake markdownlint not found on PATH");
+        let action = ApplyPatchAction::new_add_for_test(&repo.path().join("README.md"), "# Title\n".to_string());
+        let (findings, ran) = run_patch_harness(&action, repo.path(), &stylistic_config("markdownlint", true), &GithubConfig::default())
+            .expect("markdownlint harness result");
+        drop(path_guard);
+
+        assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+        assert_eq!(ran, vec!["markdownlint".to_string()]);
+    }
+
+    fn stylistic_config(tool: &str, disable_prettier: bool) -> ValidationConfig {
+        ValidationConfig {
+            tools_allowlist: Some(vec![tool.to_string()]),
+            groups: ValidationGroups { functional: false, stylistic: true },
+            tools: ValidationTools {
+                prettier: disable_prettier.then_some(false),
+                ..ValidationTools::default()
+            },
+            ..ValidationConfig::default()
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_shell_tool(path: &Path, script: &str) {
+        fs::write(path, script).expect("write shell tool");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    #[cfg(unix)]
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    #[cfg(unix)]
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: Option<OsString>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                match &value {
+                    Some(current) => std::env::set_var(key, current),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(previous) => std::env::set_var(self.key, previous),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 }
