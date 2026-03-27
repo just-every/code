@@ -144,6 +144,11 @@ pub(crate) struct ModelSelectionView {
     current_effort: ReasoningEffort,
     current_service_tier: Option<ServiceTier>,
     current_context_mode: Option<ContextMode>,
+    baseline_service_tier: Option<ServiceTier>,
+    baseline_context_mode: Option<ContextMode>,
+    defer_session_mode_toggles_until_close: bool,
+    staged_service_tier: Option<Option<ServiceTier>>,
+    staged_context_mode: Option<Option<ContextMode>>,
     use_chat_model: bool,
     app_event_tx: AppEventSender,
     is_complete: bool,
@@ -191,11 +196,45 @@ impl ModelSelectionView {
             current_effort,
             current_service_tier,
             current_context_mode,
+            baseline_service_tier: current_service_tier,
+            baseline_context_mode: current_context_mode,
+            defer_session_mode_toggles_until_close: false,
+            staged_service_tier: None,
+            staged_context_mode: None,
             use_chat_model,
             app_event_tx,
             is_complete: false,
             target,
         }
+    }
+
+    pub(crate) fn defer_session_mode_toggles_until_close(&mut self) {
+        self.defer_session_mode_toggles_until_close = true;
+    }
+
+    pub(crate) fn flush_deferred_session_updates(&mut self) {
+        if let Some(service_tier) = self.staged_service_tier.take() {
+            if service_tier != self.baseline_service_tier {
+                let _ = self
+                    .app_event_tx
+                    .send(AppEvent::UpdateServiceTierSelection { service_tier });
+                self.baseline_service_tier = service_tier;
+            }
+        }
+
+        if let Some(context_mode) = self.staged_context_mode.take() {
+            if context_mode != self.baseline_context_mode {
+                let _ = self
+                    .app_event_tx
+                    .send(AppEvent::UpdateSessionContextModeSelection { context_mode });
+                self.baseline_context_mode = context_mode;
+            }
+        }
+    }
+
+    fn should_defer_session_mode_toggles(&self) -> bool {
+        self.defer_session_mode_toggles_until_close
+            && matches!(self.target, ModelSelectionTarget::Session)
     }
 
     pub(crate) fn update_presets(&mut self, presets: Vec<ModelPreset>) {
@@ -439,9 +478,13 @@ impl ModelSelectionView {
                         Some(ServiceTier::Fast)
                     };
                     self.current_service_tier = next_service_tier;
-                    let _ = self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
-                        service_tier: next_service_tier,
-                    });
+                    if self.should_defer_session_mode_toggles() {
+                        self.staged_service_tier = Some(next_service_tier);
+                    } else {
+                        let _ = self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
+                            service_tier: next_service_tier,
+                        });
+                    }
                     return;
                 }
                 EntryKind::ContextMode => {
@@ -451,9 +494,13 @@ impl ModelSelectionView {
                         Some(ContextMode::Auto) => Some(ContextMode::Disabled),
                     };
                     self.current_context_mode = next_context_mode;
-                    let _ = self.app_event_tx.send(AppEvent::UpdateSessionContextModeSelection {
-                        context_mode: next_context_mode,
-                    });
+                    if self.should_defer_session_mode_toggles() {
+                        self.staged_context_mode = Some(next_context_mode);
+                    } else {
+                        let _ = self.app_event_tx.send(AppEvent::UpdateSessionContextModeSelection {
+                            context_mode: next_context_mode,
+                        });
+                    }
                     return;
                 }
                 EntryKind::FollowChat => {
@@ -1410,6 +1457,97 @@ mod tests {
             }
         ));
         assert!(!view.is_complete());
+    }
+
+    #[test]
+    fn deferred_context_mode_waits_until_close() {
+        let presets = vec![make_preset("gpt-5.4")];
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let mut view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            None,
+            Some(ContextMode::Auto),
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+        view.defer_session_mode_toggles_until_close();
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(rx.try_recv().is_err(), "event should wait until close");
+
+        view.flush_deferred_session_updates();
+
+        let event = rx.try_recv().expect("context mode event after close");
+        assert!(matches!(
+            event,
+            AppEvent::UpdateSessionContextModeSelection {
+                context_mode: Some(ContextMode::Disabled)
+            }
+        ));
+        assert!(!view.is_complete());
+    }
+
+    #[test]
+    fn deferred_fast_mode_waits_until_close() {
+        let presets = vec![make_preset("gpt-5.4")];
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let mut view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            None,
+            None,
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+        view.defer_session_mode_toggles_until_close();
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(rx.try_recv().is_err(), "event should wait until close");
+
+        view.flush_deferred_session_updates();
+
+        let event = rx.try_recv().expect("service tier event after close");
+        assert!(matches!(
+            event,
+            AppEvent::UpdateServiceTierSelection {
+                service_tier: Some(ServiceTier::Fast)
+            }
+        ));
+        assert!(!view.is_complete());
+    }
+
+    #[test]
+    fn deferred_context_mode_skips_event_when_restored_before_close() {
+        let presets = vec![make_preset("gpt-5.4")];
+        let (tx, rx) = mpsc::channel::<AppEvent>();
+        let mut view = ModelSelectionView::new(
+            presets,
+            "gpt-5.4".to_string(),
+            ReasoningEffort::Low,
+            None,
+            Some(ContextMode::Auto),
+            false,
+            ModelSelectionTarget::Session,
+            AppEventSender::new(tx),
+        );
+        view.defer_session_mode_toggles_until_close();
+
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = view.handle_key_event_direct(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        view.flush_deferred_session_updates();
+
+        assert!(rx.try_recv().is_err(), "restoring the original mode should emit nothing");
     }
 
     #[test]

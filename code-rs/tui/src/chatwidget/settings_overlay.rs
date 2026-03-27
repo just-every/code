@@ -176,6 +176,8 @@ pub(crate) struct ModelSettingsContent {
 
 impl ModelSettingsContent {
     pub(crate) fn new(view: ModelSelectionView) -> Self {
+        let mut view = view;
+        view.defer_session_mode_toggles_until_close();
         Self { view }
     }
 }
@@ -191,6 +193,10 @@ impl SettingsContent for ModelSettingsContent {
 
     fn is_complete(&self) -> bool {
         self.view.is_complete()
+    }
+
+    fn on_close(&mut self) {
+        self.view.flush_deferred_session_updates();
     }
 }
 
@@ -2442,33 +2448,78 @@ impl SettingsOverlayView {
     }
 
     pub(crate) fn notify_close(&mut self) {
-        match self.active_section() {
-            SettingsSection::Model => {
-                if let Some(content) = self.model_content.as_mut() {
-                    content.on_close();
-                }
-            }
-            SettingsSection::Theme => {
-                if let Some(content) = self.theme_content.as_mut() {
-                    content.on_close();
-                }
-            }
-            SettingsSection::Notifications => {
-                if let Some(content) = self.notifications_content.as_mut() {
-                    content.on_close();
-                }
-            }
-            SettingsSection::Mcp => {
-                if let Some(content) = self.mcp_content.as_mut() {
-                    content.on_close();
-                }
-            }
-            SettingsSection::Chrome => {
-                if let Some(content) = self.chrome_content.as_mut() {
-                    content.on_close();
-                }
-            }
-            _ => {}
+        if let Some(content) = self.model_content.as_mut() {
+            content.on_close();
         }
+
+        if let Some(content) = self.theme_content.as_mut() {
+            content.on_close();
+        }
+
+        if let Some(content) = self.notifications_content.as_mut() {
+            content.on_close();
+        }
+
+        if let Some(content) = self.mcp_content.as_mut() {
+            content.on_close();
+        }
+
+        if let Some(content) = self.chrome_content.as_mut() {
+            content.on_close();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_common::model_presets::builtin_model_presets;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc;
+
+    #[test]
+    fn overlay_notify_close_flushes_deferred_model_updates_after_section_change() {
+        let presets = builtin_model_presets(None, false);
+        let current_model = presets
+            .first()
+            .expect("at least one builtin model preset")
+            .model
+            .clone();
+
+        let (tx, rx) = mpsc::channel::<crate::app_event::AppEvent>();
+        let app_event_tx = crate::app_event_sender::AppEventSender::new(tx);
+
+        let view = ModelSelectionView::new(
+            presets,
+            current_model,
+            ReasoningEffort::Low,
+            None,
+            None,
+            false,
+            crate::bottom_pane::ModelSelectionTarget::Session,
+            app_event_tx,
+        );
+
+        let mut content = ModelSettingsContent::new(view);
+        let _ = content.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(rx.try_recv().is_err(), "deferred update should wait until close");
+
+        let mut overlay = SettingsOverlayView::new(SettingsSection::Model);
+        overlay.set_model_content(content);
+
+        overlay.set_mode_section(SettingsSection::Theme);
+        overlay.notify_close();
+
+        let event = rx
+            .try_recv()
+            .expect("closing overlay from non-model section should flush deferred model updates");
+
+        assert!(matches!(
+            event,
+            crate::app_event::AppEvent::UpdateServiceTierSelection {
+                service_tier: Some(code_core::config_types::ServiceTier::Fast),
+            }
+        ));
     }
 }
