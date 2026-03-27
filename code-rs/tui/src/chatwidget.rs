@@ -1892,6 +1892,7 @@ pub(crate) struct ChatWidget<'a> {
     rate_limit_secondary_next_reset_at: Option<DateTime<Utc>>,
     rate_limit_refresh_scheduled_for: Option<DateTime<Utc>>,
     rate_limit_refresh_schedule_id: Arc<AtomicU64>,
+    rate_limit_refresh_task: Option<task::JoinHandle<()>>,
     content_buffer: String,
     // Buffer for streaming assistant answer text; we do not surface partial
     // We wait for the final AgentMessage event and then emit the full text
@@ -6890,6 +6891,7 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             rate_limit_refresh_scheduled_for: None,
             rate_limit_refresh_schedule_id: Arc::new(AtomicU64::new(0)),
+            rate_limit_refresh_task: None,
             content_buffer: String::new(),
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
@@ -7260,6 +7262,7 @@ impl ChatWidget<'_> {
             rate_limit_secondary_next_reset_at: None,
             rate_limit_refresh_scheduled_for: None,
             rate_limit_refresh_schedule_id: Arc::new(AtomicU64::new(0)),
+            rate_limit_refresh_task: None,
             content_buffer: String::new(),
             last_assistant_message: None,
             last_answer_stream_id_in_turn: None,
@@ -16669,10 +16672,17 @@ impl ChatWidget<'_> {
         self.maybe_schedule_rate_limit_refresh();
     }
 
+    fn cancel_rate_limit_refresh_task(&mut self) {
+        if let Some(handle) = self.rate_limit_refresh_task.take() {
+            handle.abort();
+        }
+    }
+
     fn maybe_schedule_rate_limit_refresh(&mut self) {
         let Some(reset_at) = self.rate_limit_secondary_next_reset_at else {
             self.rate_limit_refresh_scheduled_for = None;
             self.rate_limit_refresh_schedule_id.fetch_add(1, Ordering::SeqCst);
+            self.cancel_rate_limit_refresh_task();
             return;
         };
 
@@ -16680,6 +16690,7 @@ impl ChatWidget<'_> {
             return;
         }
 
+        self.cancel_rate_limit_refresh_task();
         self.rate_limit_refresh_scheduled_for = Some(reset_at);
         let schedule_id = self
             .rate_limit_refresh_schedule_id
@@ -16699,47 +16710,54 @@ impl ChatWidget<'_> {
             return;
         }
 
+        let Some(account) = account else {
+            return;
+        };
+
+        let now = Utc::now();
+        let delay = reset_at.signed_duration_since(now) + ChronoDuration::seconds(1);
+        let delay = delay.to_std().ok();
+
+        if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
+            self.rate_limit_refresh_task = Some(runtime_handle.spawn(async move {
+                if let Some(delay) = delay {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+
+                maybe_run_rate_limit_refresh(
+                    schedule_token,
+                    schedule_id,
+                    reset_at,
+                    app_event_tx,
+                    config,
+                    debug_enabled,
+                    account,
+                );
+            }));
+            return;
+        }
+
+        tracing::warn!(
+            "rate reset refresh scheduled without Tokio runtime; falling back to lightweight thread"
+        );
         if thread_spawner::spawn_lightweight("rate-reset-refresh", move || {
-            let now = Utc::now();
-            let delay = reset_at.signed_duration_since(now) + ChronoDuration::seconds(1);
-            if let Ok(delay) = delay.to_std() {
+            if let Some(delay) = delay {
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
                 }
             }
 
-            if schedule_token.load(Ordering::SeqCst) != schedule_id {
-                return;
-            }
-
-            let Some(account) = account else {
-                return;
-            };
-
-            let plan = account
-                .tokens
-                .as_ref()
-                .and_then(|tokens| tokens.id_token.get_chatgpt_plan_type());
-            let should_refresh = account_usage::mark_rate_limit_refresh_attempt_if_due(
-                &config.code_home,
-                &account.id,
-                plan.as_deref(),
-                Some(reset_at),
-                Utc::now(),
-                account_usage::rate_limit_refresh_stale_interval(),
-            )
-            .unwrap_or(false);
-
-            if should_refresh {
-                start_rate_limit_refresh_for_account(
-                    app_event_tx,
-                    config,
-                    debug_enabled,
-                    account,
-                    true,
-                    false,
-                );
-            }
+            maybe_run_rate_limit_refresh(
+                schedule_token,
+                schedule_id,
+                reset_at,
+                app_event_tx,
+                config,
+                debug_enabled,
+                account,
+            );
         })
         .is_none()
         {
@@ -30587,6 +30605,51 @@ fn release_background_lock(agent_id: &Option<String>) {
     }
 }
 
+fn maybe_run_rate_limit_refresh(
+    schedule_token: Arc<AtomicU64>,
+    schedule_id: u64,
+    reset_at: DateTime<Utc>,
+    app_event_tx: AppEventSender,
+    config: Config,
+    debug_enabled: bool,
+    account: StoredAccount,
+) {
+    if schedule_token.load(Ordering::SeqCst) != schedule_id {
+        return;
+    }
+
+    let plan = account
+        .tokens
+        .as_ref()
+        .and_then(|tokens| tokens.id_token.get_chatgpt_plan_type());
+    let should_refresh = account_usage::mark_rate_limit_refresh_attempt_if_due(
+        &config.code_home,
+        &account.id,
+        plan.as_deref(),
+        Some(reset_at),
+        Utc::now(),
+        account_usage::rate_limit_refresh_stale_interval(),
+    )
+    .unwrap_or(false);
+
+    if should_refresh {
+        start_rate_limit_refresh_for_account(
+            app_event_tx,
+            config,
+            debug_enabled,
+            account,
+            true,
+            false,
+        );
+    }
+}
+
+impl Drop for ChatWidget<'_> {
+    fn drop(&mut self) {
+        self.cancel_rate_limit_refresh_task();
+    }
+}
+
 #[cfg(test)]
 static AUTO_REVIEW_STUB: once_cell::sync::Lazy<std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
@@ -31159,6 +31222,66 @@ use code_core::protocol::OrderMeta;
 
         assert_eq!(reloaded.active_profile.as_deref(), Some("work"));
         assert_eq!(reloaded.service_tier, None);
+    }
+
+    #[test]
+    fn repeated_rate_limit_reschedules_do_not_consume_lightweight_threads() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let code_home = tempdir().expect("temp code home");
+        auth_accounts::upsert_api_key_account(
+            code_home.path(),
+            "sk-test".to_string(),
+            Some("Test Account".to_string()),
+            true,
+        )
+        .expect("active account");
+
+        let mut config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )
+        .expect("config");
+        config.code_home = code_home.path().to_path_buf();
+
+        let (tx_raw, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_event_tx = crate::app_event_sender::AppEventSender::new(tx_raw);
+        let terminal_info = crate::tui::TerminalInfo {
+            picker: None,
+            font_size: (8, 16),
+        };
+        let mut chat = ChatWidget::new(
+            config,
+            app_event_tx,
+            None,
+            Vec::new(),
+            false,
+            terminal_info,
+            false,
+            None,
+        );
+
+        let baseline = crate::thread_spawner::active_thread_count();
+        for offset_minutes in 10..18 {
+            chat.rate_limit_secondary_next_reset_at =
+                Some(Utc::now() + ChronoDuration::minutes(offset_minutes));
+            chat.maybe_schedule_rate_limit_refresh();
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        assert!(
+            chat.rate_limit_refresh_task.is_some(),
+            "expected rate-limit refresh to use a tracked async task"
+        );
+        assert_eq!(
+            crate::thread_spawner::active_thread_count(),
+            baseline,
+            "rate-limit refresh reschedules should not consume lightweight threads"
+        );
+
+        chat.rate_limit_secondary_next_reset_at = None;
+        chat.maybe_schedule_rate_limit_refresh();
     }
 
     #[test]
