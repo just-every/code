@@ -166,6 +166,7 @@ pub struct CodexMessageProcessor {
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
     // Queue of pending interrupt requests per conversation. We reply when TurnAborted arrives.
     pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
+    conversation_configs: Arc<Mutex<HashMap<ConversationId, Config>>>,
     resumed_conversation_aliases: Arc<Mutex<HashMap<ConversationId, ConversationId>>>,
     #[allow(dead_code)]
     pending_fuzzy_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -188,6 +189,7 @@ impl CodexMessageProcessor {
             conversation_listeners: HashMap::new(),
             active_login: Arc::new(Mutex::new(None)),
             pending_interrupts: Arc::new(Mutex::new(HashMap::new())),
+            conversation_configs: Arc::new(Mutex::new(HashMap::new())),
             resumed_conversation_aliases: Arc::new(Mutex::new(HashMap::new())),
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -203,6 +205,21 @@ impl CodexMessageProcessor {
             .get(&conversation_id)
             .copied()
             .unwrap_or(conversation_id)
+    }
+
+    async fn conversation_config(&self, conversation_id: ConversationId) -> Option<Config> {
+        self.conversation_configs
+            .lock()
+            .await
+            .get(&conversation_id)
+            .cloned()
+    }
+
+    async fn remember_conversation_config(&self, conversation_id: ConversationId, config: &Config) {
+        self.conversation_configs
+            .lock()
+            .await
+            .insert(conversation_id, config.clone());
     }
 
     pub async fn process_request(&mut self, request: ClientRequest) {
@@ -596,13 +613,17 @@ impl CodexMessageProcessor {
             }
         };
 
-        match self.conversation_manager.new_conversation(config).await {
-            Ok(conversation_id) => {
-                let NewConversation {
-                    conversation_id,
-                    session_configured,
-                    ..
-                } = conversation_id;
+        match self
+            .conversation_manager
+            .new_conversation(config.clone())
+            .await
+        {
+            Ok(NewConversation {
+                conversation_id,
+                session_configured,
+                ..
+            }) => {
+                self.remember_conversation_config(conversation_id, &config).await;
                 let response = NewConversationResponse {
                     conversation_id,
                     model: session_configured.model,
@@ -967,7 +988,7 @@ impl CodexMessageProcessor {
         match self
             .conversation_manager
             .resume_conversation_from_rollout(
-                config,
+                config.clone(),
                 params.path,
                 Arc::clone(&self.auth_manager),
             )
@@ -978,6 +999,7 @@ impl CodexMessageProcessor {
                 session_configured,
                 ..
             }) => {
+                self.remember_conversation_config(conversation_id, &config).await;
                 self.outgoing
                     .send_response(
                         request_id,
@@ -1017,9 +1039,16 @@ impl CodexMessageProcessor {
         }
 
         let thread_id = params.thread_id.clone();
+        let catalog_thread_id = match ConversationId::from_string(&thread_id) {
+            Ok(conversation_id) => self
+                .resolve_conversation_id_alias(conversation_id)
+                .await
+                .to_string(),
+            Err(_) => thread_id.clone(),
+        };
         let catalog = SessionCatalog::new(self.config.code_home.clone());
 
-        let catalog_entry = match catalog.find_by_id(&thread_id).await {
+        let catalog_entry = match catalog.find_by_id(&catalog_thread_id).await {
             Ok(entry) => entry,
             Err(err) => {
                 let error = JSONRPCErrorError {
@@ -1096,6 +1125,7 @@ impl CodexMessageProcessor {
                 session_configured: _,
                 ..
             }) => {
+                self.remember_conversation_config(conversation_id, &config).await;
                 let canonical_thread_id =
                     thread_resume_canonical_thread_id(conversation_id, &rollout_path, catalog_entry.as_ref());
                 let thread = thread_resume_response_thread(
@@ -1310,32 +1340,38 @@ impl CodexMessageProcessor {
                     .await;
             }
             code_app_server_protocol::ReviewDelivery::Detached => {
+                let source_config = self.conversation_config(resolved_thread_id).await;
                 let catalog = SessionCatalog::new(self.config.code_home.clone());
-                let catalog_entry = match catalog.find_by_id(&thread_id).await {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        self.outgoing
-                            .send_error(
-                                request_id,
-                                JSONRPCErrorError {
-                                    code: INTERNAL_ERROR_CODE,
-                                    message: format!(
-                                        "failed to resolve detached review thread: {err}"
-                                    ),
-                                    data: None,
-                                },
-                            )
-                            .await;
-                        return;
+                let catalog_entry = if source_config.is_none() {
+                    match catalog.find_by_id(&resolved_thread_id.to_string()).await {
+                        Ok(entry) => entry,
+                        Err(err) => {
+                            self.outgoing
+                                .send_error(
+                                    request_id,
+                                    JSONRPCErrorError {
+                                        code: INTERNAL_ERROR_CODE,
+                                        message: format!(
+                                            "failed to resolve detached review thread: {err}"
+                                        ),
+                                        data: None,
+                                    },
+                                )
+                                .await;
+                            return;
+                        }
                     }
+                } else {
+                    None
                 };
-                if catalog_entry.is_none()
-                    && self
+                let source_thread_exists = source_config.is_some()
+                    || catalog_entry.is_some()
+                    || self
                         .conversation_manager
                         .get_conversation(resolved_thread_id)
                         .await
-                        .is_err()
-                {
+                        .is_ok();
+                if !source_thread_exists {
                     self.outgoing
                         .send_error(
                             request_id,
@@ -1349,7 +1385,7 @@ impl CodexMessageProcessor {
                     return;
                 }
 
-                let mut config = (*self.config).clone();
+                let mut config = source_config.clone().unwrap_or_else(|| (*self.config).clone());
                 if let Some(entry) = catalog_entry {
                     config.cwd = entry.cwd_real;
                 }
@@ -1357,7 +1393,7 @@ impl CodexMessageProcessor {
                 let NewConversation {
                     conversation_id,
                     ..
-                } = match self.conversation_manager.new_conversation(config).await {
+                } = match self.conversation_manager.new_conversation(config.clone()).await {
                     Ok(conversation) => conversation,
                     Err(err) => {
                         self.outgoing
@@ -1373,6 +1409,7 @@ impl CodexMessageProcessor {
                         return;
                     }
                 };
+                self.remember_conversation_config(conversation_id, &config).await;
                 let conversation = match self
                     .conversation_manager
                     .get_conversation(conversation_id)
