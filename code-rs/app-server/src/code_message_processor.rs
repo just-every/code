@@ -563,7 +563,7 @@ impl CodexMessageProcessor {
     }
 
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
-        let config = match derive_config_from_params(params, self.code_linux_sandbox_exe.clone()) {
+        let config = match derive_config_from_params(params, None, self.code_linux_sandbox_exe.clone()) {
             Ok(config) => config,
             Err(err) => {
                 let error = JSONRPCErrorError {
@@ -927,7 +927,7 @@ impl CodexMessageProcessor {
 
     async fn resume_conversation(&self, request_id: RequestId, params: ResumeConversationParams) {
         let overrides = params.overrides.unwrap_or_default();
-        let config = match derive_config_from_params(overrides, self.code_linux_sandbox_exe.clone()) {
+        let config = match derive_config_from_params(overrides, None, self.code_linux_sandbox_exe.clone()) {
             Ok(config) => config,
             Err(err) => {
                 let error = JSONRPCErrorError {
@@ -982,27 +982,32 @@ impl CodexMessageProcessor {
         params: ThreadResumeParams,
     ) {
         let unsupported_history = params.history.is_some();
-        let thread_id = params.thread_id.clone();
+        let requested_thread_id = params.thread_id.clone();
         let catalog = SessionCatalog::new(self.config.code_home.clone());
 
-        let catalog_entry = match catalog.find_by_id(&thread_id).await {
-            Ok(entry) => entry,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to resolve thread: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
+        let requested_catalog_entry = if params.path.is_some() {
+            None
+        } else {
+            match catalog.find_by_id(&requested_thread_id).await {
+                Ok(entry) => entry,
+                Err(err) => {
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to resolve thread: {err}"),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
             }
         };
 
-        let rollout_path = match catalog_entry
-            .as_ref()
-            .map(|entry| catalog.entry_rollout_path(entry))
-            .or_else(|| params.path.clone())
-        {
+        let rollout_path = match thread_resume_rollout_path(
+            params.path.clone(),
+            requested_catalog_entry
+                .as_ref()
+                .map(|entry| catalog.entry_rollout_path(entry)),
+        ) {
             Some(path) => path,
             None => {
                 let message = if unsupported_history {
@@ -1019,6 +1024,11 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        let canonical_thread_id = thread_resume_canonical_thread_id(
+            &requested_thread_id,
+            &rollout_path,
+            requested_catalog_entry.as_ref(),
+        );
 
         let overrides = NewConversationParams {
             model: params.model.clone(),
@@ -1035,7 +1045,11 @@ impl CodexMessageProcessor {
             dynamic_tools: None,
             include_apply_patch_tool: None,
         };
-        let config = match derive_config_from_params(overrides, self.code_linux_sandbox_exe.clone()) {
+        let config = match derive_config_from_params(
+            overrides,
+            params.model_provider.clone(),
+            self.code_linux_sandbox_exe.clone(),
+        ) {
             Ok(config) => config,
             Err(err) => {
                 let error = JSONRPCErrorError {
@@ -1062,8 +1076,20 @@ impl CodexMessageProcessor {
                 session_configured: _,
                 ..
             }) => {
+                let catalog_entry = match catalog.find_by_id(&canonical_thread_id).await {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        let error = JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: format!("failed to resolve resumed thread: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return;
+                    }
+                };
                 let thread = thread_resume_response_thread(
-                    &thread_id,
+                    &canonical_thread_id,
                     catalog_entry.as_ref(),
                     &config,
                     rollout_path,
@@ -1083,7 +1109,8 @@ impl CodexMessageProcessor {
                     )
                     .await;
 
-                if let Ok(requested_conversation_id) = ConversationId::from_string(&thread_id)
+                if let Ok(requested_conversation_id) =
+                    ConversationId::from_string(&requested_thread_id)
                     && requested_conversation_id != conversation_id
                 {
                     self.resumed_conversation_aliases
@@ -1569,6 +1596,24 @@ fn parse_rfc3339_timestamp_seconds(value: &str) -> i64 {
         .unwrap_or_default()
 }
 
+fn thread_resume_rollout_path(
+    requested_path: Option<PathBuf>,
+    catalog_rollout_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    requested_path.or(catalog_rollout_path)
+}
+
+fn thread_resume_canonical_thread_id(
+    requested_thread_id: &str,
+    rollout_path: &std::path::Path,
+    catalog_entry: Option<&code_core::SessionIndexEntry>,
+) -> String {
+    conversation_id_from_rollout_path(rollout_path)
+        .map(|conversation_id| conversation_id.to_string())
+        .or_else(|| catalog_entry.map(|entry| entry.session_id.to_string()))
+        .unwrap_or_else(|| requested_thread_id.to_string())
+}
+
 fn thread_resume_response_thread(
     thread_id: &str,
     entry: Option<&code_core::SessionIndexEntry>,
@@ -1583,13 +1628,13 @@ fn thread_resume_response_thread(
         .unwrap_or(created_at);
 
     Thread {
-        id: thread_id.to_string(),
+        id: entry
+            .map(|item| item.session_id.to_string())
+            .unwrap_or_else(|| thread_id.to_string()),
         preview: entry
             .and_then(|item| item.last_user_snippet.clone())
             .unwrap_or_default(),
-        model_provider: entry
-            .and_then(|item| item.model_provider.clone())
-            .unwrap_or_else(|| config.model_provider_id.clone()),
+        model_provider: config.model_provider_id.clone(),
         created_at,
         updated_at,
         path: Some(rollout_path),
@@ -1821,6 +1866,7 @@ async fn apply_bespoke_event_handling(
 
 fn derive_config_from_params(
     params: NewConversationParams,
+    model_provider: Option<String>,
     code_linux_sandbox_exe: Option<PathBuf>,
 ) -> std::io::Result<Config> {
     let NewConversationParams {
@@ -1842,7 +1888,7 @@ fn derive_config_from_params(
         cwd: cwd.map(PathBuf::from),
         approval_policy: approval_policy.map(map_ask_for_approval_from_wire),
         sandbox_mode,
-        model_provider: None,
+        model_provider,
         code_linux_sandbox_exe,
         base_instructions,
         include_plan_tool,
@@ -2422,6 +2468,128 @@ mod tests {
         assert_eq!(thread.created_at, 1_775_210_400);
         assert_eq!(thread.updated_at, 1_775_210_700);
     }
+
+    #[test]
+    fn thread_resume_rollout_path_prefers_explicit_path() {
+        let explicit_path = std::path::PathBuf::from("/tmp/explicit.jsonl");
+        let catalog_path = std::path::PathBuf::from("/tmp/catalog.jsonl");
+
+        let rollout_path =
+            thread_resume_rollout_path(Some(explicit_path.clone()), Some(catalog_path));
+
+        assert_eq!(rollout_path, Some(explicit_path));
+    }
+
+    #[test]
+    fn thread_resume_response_thread_uses_canonical_thread_id() {
+        let config =
+            Config::load_with_cli_overrides(Vec::new(), ConfigOverrides::default())
+                .expect("load default config");
+        let entry = SessionIndexEntry {
+            session_id: Uuid::new_v4(),
+            rollout_path: std::path::PathBuf::from("sessions/test.jsonl"),
+            snapshot_path: None,
+            created_at: "2026-04-03T10:00:00.000Z".to_string(),
+            last_event_at: "2026-04-03T10:05:00.000Z".to_string(),
+            cwd_real: std::path::PathBuf::from("/tmp/test-thread"),
+            cwd_display: "/tmp/test-thread".to_string(),
+            git_project_root: None,
+            git_branch: Some("main".to_string()),
+            model_provider: Some("openai".to_string()),
+            session_source: SessionSource::Mcp,
+            message_count: 3,
+            user_message_count: 1,
+            last_user_snippet: Some("resume me".to_string()),
+            nickname: None,
+            sync_origin_device: None,
+            sync_version: 0,
+            archived: false,
+            deleted: false,
+        };
+
+        let thread = thread_resume_response_thread(
+            "placeholder-thread-id",
+            Some(&entry),
+            &config,
+            std::path::PathBuf::from("/tmp/test.jsonl"),
+        );
+
+        assert_eq!(thread.id, entry.session_id.to_string());
+    }
+
+    #[test]
+    fn thread_resume_canonical_thread_id_prefers_rollout_path() {
+        let entry = SessionIndexEntry {
+            session_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111")
+                .expect("valid uuid"),
+            rollout_path: std::path::PathBuf::from("sessions/wrong.jsonl"),
+            snapshot_path: None,
+            created_at: "2026-04-03T10:00:00.000Z".to_string(),
+            last_event_at: "2026-04-03T10:05:00.000Z".to_string(),
+            cwd_real: std::path::PathBuf::from("/tmp/test-thread"),
+            cwd_display: "/tmp/test-thread".to_string(),
+            git_project_root: None,
+            git_branch: Some("main".to_string()),
+            model_provider: Some("openai".to_string()),
+            session_source: SessionSource::Mcp,
+            message_count: 3,
+            user_message_count: 1,
+            last_user_snippet: Some("resume me".to_string()),
+            nickname: None,
+            sync_origin_device: None,
+            sync_version: 0,
+            archived: false,
+            deleted: false,
+        };
+
+        let canonical_thread_id = thread_resume_canonical_thread_id(
+            &entry.session_id.to_string(),
+            std::path::Path::new(
+                "/tmp/rollout-2026-04-03T09-10-00Z-22222222-2222-4222-8222-222222222222.jsonl",
+            ),
+            Some(&entry),
+        );
+
+        assert_eq!(canonical_thread_id, "22222222-2222-4222-8222-222222222222");
+    }
+
+    #[test]
+    fn derive_config_from_params_applies_model_provider_override() {
+        let params = NewConversationParams {
+            model: None,
+            profile: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            config: None,
+            base_instructions: None,
+            include_plan_tool: None,
+            include_apply_patch_tool: None,
+            dynamic_tools: None,
+        };
+
+        let config = derive_config_from_params(
+            params,
+            Some("oss".to_string()),
+            None,
+        )
+        .expect("derive config with model provider override");
+
+        assert_eq!(config.model_provider_id, "oss");
+    }
+
+    #[test]
+    fn conversation_id_from_rollout_path_parses_hyphenated_uuid_suffix() {
+        let conversation_id = conversation_id_from_rollout_path(std::path::Path::new(
+            "/tmp/rollout-2026-04-03T09-10-00Z-22222222-2222-4222-8222-222222222222.jsonl",
+        ))
+        .expect("conversation id should parse from rollout path");
+
+        assert_eq!(
+            conversation_id.to_string(),
+            "22222222-2222-4222-8222-222222222222"
+        );
+    }
 }
 
 impl IntoWireAuthMode for code_protocol::mcp_protocol::AuthMode {
@@ -2613,8 +2781,10 @@ fn rate_limit_snapshot_from_event(
 
 fn conversation_id_from_rollout_path(path: &std::path::Path) -> Option<ConversationId> {
     let stem = path.file_stem()?.to_str()?;
-    let (_, id) = stem.rsplit_once('-')?;
-    ConversationId::from_string(id).ok()
+
+    stem.match_indices('-')
+        .rev()
+        .find_map(|(index, _)| ConversationId::from_string(&stem[index + 1..]).ok())
 }
 
 fn snippet_from_rollout_tail(tail: &[serde_json::Value]) -> Option<String> {
