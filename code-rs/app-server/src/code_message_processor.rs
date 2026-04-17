@@ -1039,6 +1039,7 @@ impl CodexMessageProcessor {
         }
 
         let thread_id = params.thread_id.clone();
+        let explicit_path = params.path.clone();
         let catalog_thread_id = match ConversationId::from_string(&thread_id) {
             Ok(conversation_id) => self
                 .resolve_conversation_id_alias(conversation_id)
@@ -1048,21 +1049,25 @@ impl CodexMessageProcessor {
         };
         let catalog = SessionCatalog::new(self.config.code_home.clone());
 
-        let catalog_entry = match catalog.find_by_id(&catalog_thread_id).await {
-            Ok(entry) => entry,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INTERNAL_ERROR_CODE,
-                    message: format!("failed to resolve thread: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
+        let catalog_entry = if thread_resume_should_lookup_catalog(explicit_path.as_deref()) {
+            match catalog.find_by_id(&catalog_thread_id).await {
+                Ok(entry) => entry,
+                Err(err) => {
+                    let error = JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to resolve thread: {err}"),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
             }
+        } else {
+            None
         };
 
         let rollout_path = match thread_resume_rollout_path(
-            params.path.clone(),
+            explicit_path.clone(),
             catalog_entry
                 .as_ref()
                 .map(|entry| catalog.entry_rollout_path(entry)),
@@ -1150,7 +1155,11 @@ impl CodexMessageProcessor {
                     .await;
 
                 if let Ok(requested_conversation_id) = ConversationId::from_string(&thread_id)
-                    && requested_conversation_id != conversation_id
+                    && thread_resume_should_record_alias(
+                        explicit_path.as_deref(),
+                        &requested_conversation_id,
+                        &conversation_id,
+                    )
                 {
                     self.resumed_conversation_aliases
                         .lock()
@@ -1931,6 +1940,18 @@ fn thread_resume_rollout_path(
     catalog_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
     explicit_path.or(catalog_path)
+}
+
+fn thread_resume_should_lookup_catalog(explicit_path: Option<&std::path::Path>) -> bool {
+    explicit_path.is_none()
+}
+
+fn thread_resume_should_record_alias(
+    explicit_path: Option<&std::path::Path>,
+    requested_conversation_id: &ConversationId,
+    resumed_conversation_id: &ConversationId,
+) -> bool {
+    explicit_path.is_none() && requested_conversation_id != resumed_conversation_id
 }
 
 fn thread_resume_canonical_thread_id(
@@ -3028,6 +3049,55 @@ mod tests {
             thread_resume_rollout_path(Some(explicit_path.clone()), Some(catalog_path));
 
         assert_eq!(rollout_path, Some(explicit_path));
+    }
+
+    #[test]
+    fn thread_resume_skips_catalog_lookup_when_path_is_explicit() {
+        assert!(!thread_resume_should_lookup_catalog(Some(std::path::Path::new(
+            "/tmp/explicit.jsonl",
+        ))));
+        assert!(thread_resume_should_lookup_catalog(None));
+    }
+
+    #[test]
+    fn thread_resume_does_not_record_alias_for_explicit_path() {
+        let requested_conversation_id = ConversationId::from_string(
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .expect("valid uuid");
+        let resumed_conversation_id = ConversationId::from_string(
+            "22222222-2222-4222-8222-222222222222",
+        )
+        .expect("valid uuid");
+
+        assert!(!thread_resume_should_record_alias(
+            Some(std::path::Path::new("/tmp/explicit.jsonl")),
+            &requested_conversation_id,
+            &resumed_conversation_id,
+        ));
+    }
+
+    #[test]
+    fn thread_resume_records_alias_for_thread_id_resume() {
+        let requested_conversation_id = ConversationId::from_string(
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .expect("valid uuid");
+        let resumed_conversation_id = ConversationId::from_string(
+            "22222222-2222-4222-8222-222222222222",
+        )
+        .expect("valid uuid");
+
+        assert!(thread_resume_should_record_alias(
+            None,
+            &requested_conversation_id,
+            &resumed_conversation_id,
+        ));
+        assert!(!thread_resume_should_record_alias(
+            None,
+            &resumed_conversation_id,
+            &resumed_conversation_id,
+        ));
     }
 
     #[test]
