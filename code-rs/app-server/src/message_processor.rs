@@ -8,19 +8,20 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use crate::code_message_processor::CodexMessageProcessor;
-use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::external_agent_config_api::ExternalAgentConfigApi;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
+use code_app_server_protocol::AskForApproval as V2AskForApproval;
 use code_app_server_protocol::AuthMode;
-use code_app_server_protocol::ConfigRequirements;
 use code_app_server_protocol::CancelLoginAccountParams;
 use code_app_server_protocol::Config as V2Config;
 use code_app_server_protocol::ConfigBatchWriteParams;
 use code_app_server_protocol::ConfigEdit;
 use code_app_server_protocol::ConfigReadParams;
 use code_app_server_protocol::ConfigReadResponse;
+use code_app_server_protocol::ConfigRequirements;
 use code_app_server_protocol::ConfigRequirementsReadResponse;
 use code_app_server_protocol::ConfigValueWriteParams;
 use code_app_server_protocol::ConfigWriteErrorCode;
@@ -34,26 +35,26 @@ use code_app_server_protocol::ModelListParams;
 use code_app_server_protocol::ReviewStartParams;
 use code_app_server_protocol::ThreadResumeParams;
 use code_app_server_protocol::ToolsV2;
-use code_app_server_protocol::AskForApproval as V2AskForApproval;
+use code_app_server_protocol::TurnStartParams;
 use code_app_server_protocol::WriteStatus;
-use code_protocol::config_types::Verbosity;
-use code_protocol::config_types::WebSearchMode;
 use code_core::AuthManager;
 use code_core::ConversationManager;
 use code_core::config::Config;
 use code_core::default_client::get_code_user_agent_with_suffix;
+use code_protocol::config_types::Verbosity;
+use code_protocol::config_types::WebSearchMode;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::ClientRequest::Initialize;
 use code_protocol::mcp_protocol::GetUserAgentResponse;
 use code_protocol::mcp_protocol::InitializeResponse;
 use code_protocol::protocol::SessionSource;
+use code_utils_absolute_path::AbsolutePathBuf;
+use code_utils_json_to_toml::json_to_toml;
 use mcp_types::JSONRPCError;
 use mcp_types::JSONRPCErrorError;
 use mcp_types::JSONRPCNotification;
 use mcp_types::JSONRPCRequest;
 use mcp_types::JSONRPCResponse;
-use code_utils_absolute_path::AbsolutePathBuf;
-use code_utils_json_to_toml::json_to_toml;
 use serde_json::json;
 use sha1::Digest;
 use sha1::Sha1;
@@ -103,8 +104,7 @@ impl MessageProcessor {
             code_linux_sandbox_exe,
             config_for_processor.clone(),
         );
-        let external_agent_config_api =
-            ExternalAgentConfigApi::new(config.code_home.clone());
+        let external_agent_config_api = ExternalAgentConfigApi::new(config.code_home.clone());
 
         Self {
             outgoing,
@@ -157,7 +157,8 @@ impl MessageProcessor {
                         .unwrap_or_default();
                     session.opted_out_notification_methods =
                         opted_out_notification_methods.into_iter().collect();
-                    session.user_agent_suffix = Some(format!("{}; {}", client_info.name, client_info.version));
+                    session.user_agent_suffix =
+                        Some(format!("{}; {}", client_info.name, client_info.version));
 
                     if let Ok(mut methods) = outbound_opted_out_notification_methods.write() {
                         *methods = session.opted_out_notification_methods.clone();
@@ -277,6 +278,7 @@ impl MessageProcessor {
             request.method.as_str(),
             "config/read"
                 | "review/start"
+                | "turn/start"
                 | "model/list"
                 | "thread/resume"
                 | "configRequirements/read"
@@ -338,6 +340,26 @@ impl MessageProcessor {
 
                 self.code_message_processor
                     .model_list_v2(request_id, params)
+                    .await;
+                true
+            }
+            "turn/start" => {
+                let params_value = request.params.clone().unwrap_or_else(|| json!({}));
+                let params: TurnStartParams = match serde_json::from_value(params_value) {
+                    Ok(params) => params,
+                    Err(err) => {
+                        let error = JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("Invalid turn/start params: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return true;
+                    }
+                };
+
+                self.code_message_processor
+                    .turn_start_v2(request_id, params)
                     .await;
                 true
             }
@@ -566,8 +588,7 @@ impl MessageProcessor {
             }
             "account/login/cancel" => {
                 let params_value = request.params.clone().unwrap_or_else(|| json!({}));
-                let params: CancelLoginAccountParams = match serde_json::from_value(params_value)
-                {
+                let params: CancelLoginAccountParams = match serde_json::from_value(params_value) {
                     Ok(params) => params,
                     Err(err) => {
                         let error = JSONRPCErrorError {
@@ -580,7 +601,11 @@ impl MessageProcessor {
                     }
                 };
 
-                match self.code_message_processor.cancel_login_account_v2(params).await {
+                match self
+                    .code_message_processor
+                    .cancel_login_account_v2(params)
+                    .await
+                {
                     Ok(response) => self.outgoing.send_response(request_id, response).await,
                     Err(error) => self.outgoing.send_error(request_id, error).await,
                 }
@@ -818,14 +843,16 @@ impl MessageProcessor {
 }
 
 fn paths_match(expected: &Path, provided: &Path) -> bool {
-    let expected = expected.canonicalize().unwrap_or_else(|_| expected.to_path_buf());
-    let provided = provided.canonicalize().unwrap_or_else(|_| provided.to_path_buf());
+    let expected = expected
+        .canonicalize()
+        .unwrap_or_else(|_| expected.to_path_buf());
+    let provided = provided
+        .canonicalize()
+        .unwrap_or_else(|_| provided.to_path_buf());
     expected == provided
 }
 
-fn map_approval_policy_to_v2(
-    policy: code_core::protocol::AskForApproval,
-) -> V2AskForApproval {
+fn map_approval_policy_to_v2(policy: code_core::protocol::AskForApproval) -> V2AskForApproval {
     match policy {
         code_core::protocol::AskForApproval::UnlessTrusted => V2AskForApproval::UnlessTrusted,
         code_core::protocol::AskForApproval::OnFailure => V2AskForApproval::OnFailure,
@@ -853,8 +880,15 @@ fn apply_toml_edit(
     }
 }
 
-fn set_toml_path(root: &mut TomlValue, key_path: &str, value: TomlValue) -> Result<(), JSONRPCErrorError> {
-    let segments: Vec<&str> = key_path.split('.').filter(|segment| !segment.is_empty()).collect();
+fn set_toml_path(
+    root: &mut TomlValue,
+    key_path: &str,
+    value: TomlValue,
+) -> Result<(), JSONRPCErrorError> {
+    let segments: Vec<&str> = key_path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.is_empty() {
         return Err(config_write_error(
             ConfigWriteErrorCode::ConfigPathNotFound,
@@ -897,7 +931,10 @@ fn upsert_toml_path(
     key_path: &str,
     value: TomlValue,
 ) -> Result<(), JSONRPCErrorError> {
-    let segments: Vec<&str> = key_path.split('.').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = key_path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.is_empty() {
         return Err(config_write_error(
             ConfigWriteErrorCode::ConfigPathNotFound,
@@ -966,9 +1003,7 @@ fn to_absolute_path_buf(path: &Path) -> std::io::Result<AbsolutePathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     };
-    absolute_path
-        .try_into()
-        .map_err(std::io::Error::other)
+    absolute_path.try_into().map_err(std::io::Error::other)
 }
 
 fn config_write_error(code: ConfigWriteErrorCode, message: impl Into<String>) -> JSONRPCErrorError {
@@ -997,8 +1032,11 @@ mod tests {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(8);
         let outgoing = Arc::new(OutgoingMessageSender::new_with_routed_sender(outgoing_tx));
         let config = Arc::new(
-            Config::load_with_cli_overrides(Vec::new(), code_core::config::ConfigOverrides::default())
-                .expect("load default config"),
+            Config::load_with_cli_overrides(
+                Vec::new(),
+                code_core::config::ConfigOverrides::default(),
+            )
+            .expect("load default config"),
         );
         let mut processor = MessageProcessor::new(outgoing, None, config, Vec::new(), Vec::new());
         let mut session = ConnectionSessionState::default();
@@ -1044,7 +1082,10 @@ mod tests {
         assert!(opted_out.contains("codex/event/session_configured"));
 
         // Drain initialize response envelope to ensure processing completed.
-        let envelope = outgoing_rx.recv().await.expect("initialize response envelope");
+        let envelope = outgoing_rx
+            .recv()
+            .await
+            .expect("initialize response envelope");
         match envelope {
             OutgoingEnvelope::Broadcast { .. } => {}
             _ => panic!("expected initialize response to be emitted"),
@@ -1056,8 +1097,11 @@ mod tests {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(8);
         let outgoing = Arc::new(OutgoingMessageSender::new_with_routed_sender(outgoing_tx));
         let config = Arc::new(
-            Config::load_with_cli_overrides(Vec::new(), code_core::config::ConfigOverrides::default())
-                .expect("load default config"),
+            Config::load_with_cli_overrides(
+                Vec::new(),
+                code_core::config::ConfigOverrides::default(),
+            )
+            .expect("load default config"),
         );
         let mut processor = MessageProcessor::new(outgoing, None, config, Vec::new(), Vec::new());
         let mut session = ConnectionSessionState::default();
@@ -1103,9 +1147,11 @@ mod tests {
         let (outgoing_tx, _outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(8);
         let outgoing = Arc::new(OutgoingMessageSender::new_with_routed_sender(outgoing_tx));
 
-        let mut config =
-            Config::load_with_cli_overrides(Vec::new(), code_core::config::ConfigOverrides::default())
-                .expect("load default config");
+        let mut config = Config::load_with_cli_overrides(
+            Vec::new(),
+            code_core::config::ConfigOverrides::default(),
+        )
+        .expect("load default config");
         let temp_code_home = std::env::temp_dir().join(format!(
             "code-app-server-message-processor-{}",
             Uuid::new_v4()
@@ -1115,13 +1161,8 @@ mod tests {
         std::fs::create_dir_all(&config_toml_path).expect("create unreadable config path");
         config.code_home = temp_code_home.clone();
 
-        let processor = MessageProcessor::new(
-            outgoing,
-            None,
-            Arc::new(config),
-            Vec::new(),
-            Vec::new(),
-        );
+        let processor =
+            MessageProcessor::new(outgoing, None, Arc::new(config), Vec::new(), Vec::new());
         let result = processor.apply_config_value_write(ConfigValueWriteParams {
             key_path: "model".to_string(),
             value: json!("o3"),

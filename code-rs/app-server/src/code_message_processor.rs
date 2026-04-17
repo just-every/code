@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use chrono::DateTime;
 use code_app_server_protocol::Account as V2Account;
+use code_app_server_protocol::AuthMode;
 use code_app_server_protocol::CancelLoginAccountParams;
 use code_app_server_protocol::CancelLoginAccountResponse;
 use code_app_server_protocol::CancelLoginAccountStatus;
@@ -24,23 +26,24 @@ use code_app_server_protocol::Thread;
 use code_app_server_protocol::ThreadItem;
 use code_app_server_protocol::ThreadResumeParams;
 use code_app_server_protocol::ThreadResumeResponse;
-use code_app_server_protocol::Turn;
-use code_app_server_protocol::TurnStatus;
-use code_app_server_protocol::UserInput as V2UserInput;
 use code_app_server_protocol::ToolRequestUserInputOption;
 use code_app_server_protocol::ToolRequestUserInputParams;
 use code_app_server_protocol::ToolRequestUserInputQuestion;
 use code_app_server_protocol::ToolRequestUserInputResponse;
+use code_app_server_protocol::Turn;
+use code_app_server_protocol::TurnStartParams;
+use code_app_server_protocol::TurnStartResponse;
+use code_app_server_protocol::TurnStatus;
+use code_app_server_protocol::UserInput as V2UserInput;
 use code_common::model_presets::all_model_presets;
 use code_common::model_presets::model_preset_available_for_auth;
-use code_app_server_protocol::AuthMode;
 use code_core::AuthManager;
 use code_core::CodexConversation;
 use code_core::ConversationManager;
+use code_core::Cursor;
 use code_core::NewConversation;
 use code_core::RolloutRecorder;
 use code_core::SessionCatalog;
-use code_core::Cursor;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
 use code_core::config::ConfigToml;
@@ -53,36 +56,33 @@ use code_core::protocol::ApplyPatchApprovalRequestEvent;
 use code_core::protocol::Event;
 use code_core::protocol::EventMsg;
 use code_core::protocol::ExecApprovalRequestEvent;
+use code_login::CLIENT_ID;
+use code_login::ServerOptions;
+use code_login::ShutdownHandle;
+use code_login::run_login_server;
 use code_protocol::mcp_protocol::FuzzyFileSearchParams;
 use code_protocol::mcp_protocol::FuzzyFileSearchResponse;
 use code_protocol::protocol::ReviewDecision;
 use code_protocol::protocol::ReviewTarget as CoreReviewTarget;
 use mcp_types::JSONRPCErrorError;
 use mcp_types::RequestId;
-use code_login::CLIENT_ID;
-use code_login::ServerOptions;
-use code_login::ShutdownHandle;
-use code_login::run_login_server;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tokio::time::timeout;
 use tracing::error;
 use uuid::Uuid;
-use chrono::DateTime;
 
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
-use code_utils_json_to_toml::json_to_toml;
+use crate::fuzzy_file_search::run_fuzzy_file_search;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::OutgoingNotification;
-use crate::fuzzy_file_search::run_fuzzy_file_search;
-use code_protocol::protocol::TurnAbortReason;
-use code_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
+use code_core::protocol as core_protocol;
 use code_core::protocol::InputItem as CoreInputItem;
 use code_core::protocol::Op;
-use code_core::protocol as core_protocol;
+use code_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
 use code_protocol::mcp_protocol::APPLY_PATCH_APPROVAL_METHOD;
 use code_protocol::mcp_protocol::AddConversationListenerParams;
 use code_protocol::mcp_protocol::AddConversationSubscriptionResponse;
@@ -90,54 +90,57 @@ use code_protocol::mcp_protocol::ApplyPatchApprovalParams;
 use code_protocol::mcp_protocol::ApplyPatchApprovalResponse;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::ConversationId;
+use code_protocol::mcp_protocol::DYNAMIC_TOOL_CALL_METHOD;
 use code_protocol::mcp_protocol::DynamicToolCallParams;
 use code_protocol::mcp_protocol::DynamicToolCallResponse;
 use code_protocol::mcp_protocol::EXEC_COMMAND_APPROVAL_METHOD;
-use code_protocol::mcp_protocol::DYNAMIC_TOOL_CALL_METHOD;
-use code_protocol::request_user_input::RequestUserInputAnswer;
-use code_protocol::request_user_input::RequestUserInputResponse;
 use code_protocol::mcp_protocol::ExecCommandApprovalParams;
 use code_protocol::mcp_protocol::ExecCommandApprovalResponse;
 use code_protocol::mcp_protocol::InputItem as WireInputItem;
 use code_protocol::mcp_protocol::InterruptConversationParams;
 use code_protocol::mcp_protocol::InterruptConversationResponse;
+use code_protocol::protocol::TurnAbortReason;
+use code_protocol::request_user_input::RequestUserInputAnswer;
+use code_protocol::request_user_input::RequestUserInputResponse;
+use code_utils_json_to_toml::json_to_toml;
 // Unused login-related and diff param imports removed
-use code_protocol::mcp_protocol::GitDiffToRemoteResponse;
+use code_protocol::account::PlanType;
+use code_protocol::config_types::ModeKind;
+use code_protocol::mcp_protocol::ArchiveConversationParams;
+use code_protocol::mcp_protocol::ArchiveConversationResponse;
+use code_protocol::mcp_protocol::CancelLoginChatGptParams;
+use code_protocol::mcp_protocol::CancelLoginChatGptResponse;
+use code_protocol::mcp_protocol::ConversationSummary;
+use code_protocol::mcp_protocol::ExecArbitraryCommandResponse;
+use code_protocol::mcp_protocol::ExecOneOffCommandParams;
 use code_protocol::mcp_protocol::GetAuthStatusParams;
 use code_protocol::mcp_protocol::GetAuthStatusResponse;
 use code_protocol::mcp_protocol::GetUserAgentResponse;
 use code_protocol::mcp_protocol::GetUserSavedConfigResponse;
+use code_protocol::mcp_protocol::GitDiffToRemoteResponse;
 use code_protocol::mcp_protocol::ListConversationsParams;
 use code_protocol::mcp_protocol::ListConversationsResponse;
 use code_protocol::mcp_protocol::LoginApiKeyParams;
 use code_protocol::mcp_protocol::LoginApiKeyResponse;
+use code_protocol::mcp_protocol::LoginChatGptResponse;
+use code_protocol::mcp_protocol::LogoutChatGptResponse;
 use code_protocol::mcp_protocol::NewConversationParams;
 use code_protocol::mcp_protocol::NewConversationResponse;
-use code_protocol::mcp_protocol::ResumeConversationParams;
-use code_protocol::mcp_protocol::ResumeConversationResponse;
-use code_protocol::mcp_protocol::ArchiveConversationParams;
-use code_protocol::mcp_protocol::ArchiveConversationResponse;
+use code_protocol::mcp_protocol::Profile;
 use code_protocol::mcp_protocol::RemoveConversationListenerParams;
 use code_protocol::mcp_protocol::RemoveConversationSubscriptionResponse;
-use code_protocol::mcp_protocol::SetDefaultModelParams;
-use code_protocol::mcp_protocol::SetDefaultModelResponse;
+use code_protocol::mcp_protocol::ResumeConversationParams;
+use code_protocol::mcp_protocol::ResumeConversationResponse;
+use code_protocol::mcp_protocol::SandboxSettings;
 use code_protocol::mcp_protocol::SendUserMessageParams;
 use code_protocol::mcp_protocol::SendUserMessageResponse;
 use code_protocol::mcp_protocol::SendUserTurnParams;
 use code_protocol::mcp_protocol::SendUserTurnResponse;
-use code_protocol::mcp_protocol::UserInfoResponse;
-use code_protocol::mcp_protocol::ExecOneOffCommandParams;
-use code_protocol::mcp_protocol::ExecArbitraryCommandResponse;
-use code_protocol::mcp_protocol::ConversationSummary;
-use code_protocol::mcp_protocol::UserSavedConfig;
-use code_protocol::mcp_protocol::Profile;
-use code_protocol::mcp_protocol::SandboxSettings;
+use code_protocol::mcp_protocol::SetDefaultModelParams;
+use code_protocol::mcp_protocol::SetDefaultModelResponse;
 use code_protocol::mcp_protocol::Tools;
-use code_protocol::mcp_protocol::LoginChatGptResponse;
-use code_protocol::mcp_protocol::CancelLoginChatGptParams;
-use code_protocol::mcp_protocol::CancelLoginChatGptResponse;
-use code_protocol::mcp_protocol::LogoutChatGptResponse;
-use code_protocol::account::PlanType;
+use code_protocol::mcp_protocol::UserInfoResponse;
+use code_protocol::mcp_protocol::UserSavedConfig;
 use code_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use code_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 
@@ -394,7 +397,9 @@ impl CodexMessageProcessor {
                     });
                 }
 
-                if let Err(err) = code_core::auth::login_with_api_key(&self.config.code_home, api_key) {
+                if let Err(err) =
+                    code_core::auth::login_with_api_key(&self.config.code_home, api_key)
+                {
                     return Err(JSONRPCErrorError {
                         code: INTERNAL_ERROR_CODE,
                         message: format!("failed to persist api key: {err}"),
@@ -512,7 +517,9 @@ impl CodexMessageProcessor {
         }
     }
 
-    pub(crate) async fn logout_account_v2(&self) -> Result<LogoutAccountResponse, JSONRPCErrorError> {
+    pub(crate) async fn logout_account_v2(
+        &self,
+    ) -> Result<LogoutAccountResponse, JSONRPCErrorError> {
         {
             let mut active_login = self.active_login.lock().await;
             if let Some(existing) = active_login.take() {
@@ -520,11 +527,13 @@ impl CodexMessageProcessor {
             }
         }
 
-        self.auth_manager.logout().map_err(|err| JSONRPCErrorError {
-            code: INTERNAL_ERROR_CODE,
-            message: format!("logout failed: {err}"),
-            data: None,
-        })?;
+        self.auth_manager
+            .logout()
+            .map_err(|err| JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("logout failed: {err}"),
+                data: None,
+            })?;
         Ok(LogoutAccountResponse {})
     }
 
@@ -553,13 +562,14 @@ impl CodexMessageProcessor {
                 message: format!("failed to read rate limit snapshots: {err}"),
                 data: None,
             })?;
-        let selected = select_rate_limit_snapshot(auth.get_account_id(), snapshots).ok_or_else(|| {
-            JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: "no rate limit snapshot available".to_string(),
-                data: None,
-            }
-        })?;
+        let selected =
+            select_rate_limit_snapshot(auth.get_account_id(), snapshots).ok_or_else(|| {
+                JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "no rate limit snapshot available".to_string(),
+                    data: None,
+                }
+            })?;
 
         let snapshot = selected.snapshot.clone().ok_or_else(|| JSONRPCErrorError {
             code: INVALID_REQUEST_ERROR_CODE,
@@ -567,7 +577,10 @@ impl CodexMessageProcessor {
             data: None,
         })?;
 
-        let plan_type = selected.plan.clone().map(|value| parse_plan_type(Some(value)));
+        let plan_type = selected
+            .plan
+            .clone()
+            .map(|value| parse_plan_type(Some(value)));
         let rate_limits = rate_limit_snapshot_from_event(&snapshot, plan_type);
         let mut rate_limits_by_limit_id = HashMap::new();
         rate_limits_by_limit_id.insert(selected.account_id, rate_limits.clone().into());
@@ -579,22 +592,19 @@ impl CodexMessageProcessor {
     }
 
     async fn process_new_conversation(&self, request_id: RequestId, params: NewConversationParams) {
-        let config = match derive_config_from_params(
-            params,
-            None,
-            self.code_linux_sandbox_exe.clone(),
-        ) {
-            Ok(config) => config,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("error deriving config: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
+        let config =
+            match derive_config_from_params(params, None, self.code_linux_sandbox_exe.clone()) {
+                Ok(config) => config,
+                Err(err) => {
+                    let error = JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: format!("error deriving config: {err}"),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
 
         match self.conversation_manager.new_conversation(config).await {
             Ok(conversation_id) => {
@@ -739,7 +749,9 @@ impl CodexMessageProcessor {
 
         // Submit the interrupt and respond immediately (core does not emit a dedicated event).
         let _ = conversation.submit(Op::Interrupt).await;
-        let response = InterruptConversationResponse { abort_reason: TurnAbortReason::Interrupted };
+        let response = InterruptConversationResponse {
+            abort_reason: TurnAbortReason::Interrupted,
+        };
         self.outgoing.send_response(request_id, response).await;
     }
 
@@ -878,18 +890,20 @@ impl CodexMessageProcessor {
     async fn list_conversations(&self, request_id: RequestId, params: ListConversationsParams) {
         let page_size = params.page_size.unwrap_or(50).min(200);
         let cursor: Option<Cursor> = match params.cursor {
-            Some(cursor) => match serde_json::from_value::<Cursor>(serde_json::Value::String(cursor)) {
-                Ok(cursor) => Some(cursor),
-                Err(_) => {
-                    let error = JSONRPCErrorError {
-                        code: INVALID_REQUEST_ERROR_CODE,
-                        message: "invalid cursor".to_string(),
-                        data: None,
-                    };
-                    self.outgoing.send_error(request_id, error).await;
-                    return;
+            Some(cursor) => {
+                match serde_json::from_value::<Cursor>(serde_json::Value::String(cursor)) {
+                    Ok(cursor) => Some(cursor),
+                    Err(_) => {
+                        let error = JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: "invalid cursor".to_string(),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return;
+                    }
                 }
-            },
+            }
             None => None,
         };
 
@@ -947,30 +961,23 @@ impl CodexMessageProcessor {
 
     async fn resume_conversation(&self, request_id: RequestId, params: ResumeConversationParams) {
         let overrides = params.overrides.unwrap_or_default();
-        let config = match derive_config_from_params(
-            overrides,
-            None,
-            self.code_linux_sandbox_exe.clone(),
-        ) {
-            Ok(config) => config,
-            Err(err) => {
-                let error = JSONRPCErrorError {
-                    code: INVALID_REQUEST_ERROR_CODE,
-                    message: format!("error deriving config: {err}"),
-                    data: None,
-                };
-                self.outgoing.send_error(request_id, error).await;
-                return;
-            }
-        };
+        let config =
+            match derive_config_from_params(overrides, None, self.code_linux_sandbox_exe.clone()) {
+                Ok(config) => config,
+                Err(err) => {
+                    let error = JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: format!("error deriving config: {err}"),
+                        data: None,
+                    };
+                    self.outgoing.send_error(request_id, error).await;
+                    return;
+                }
+            };
 
         match self
             .conversation_manager
-            .resume_conversation_from_rollout(
-                config,
-                params.path,
-                Arc::clone(&self.auth_manager),
-            )
+            .resume_conversation_from_rollout(config, params.path, Arc::clone(&self.auth_manager))
             .await
         {
             Ok(NewConversation {
@@ -1000,11 +1007,7 @@ impl CodexMessageProcessor {
         }
     }
 
-    pub(crate) async fn thread_resume_v2(
-        &self,
-        request_id: RequestId,
-        params: ThreadResumeParams,
-    ) {
+    pub(crate) async fn thread_resume_v2(&self, request_id: RequestId, params: ThreadResumeParams) {
         if params.history.is_some() {
             let error = JSONRPCErrorError {
                 code: INVALID_REQUEST_ERROR_CODE,
@@ -1096,8 +1099,11 @@ impl CodexMessageProcessor {
                 session_configured: _,
                 ..
             }) => {
-                let canonical_thread_id =
-                    thread_resume_canonical_thread_id(conversation_id, &rollout_path, catalog_entry.as_ref());
+                let canonical_thread_id = thread_resume_canonical_thread_id(
+                    conversation_id,
+                    &rollout_path,
+                    catalog_entry.as_ref(),
+                );
                 let thread = thread_resume_response_thread(
                     &canonical_thread_id,
                     catalog_entry.as_ref(),
@@ -1112,8 +1118,10 @@ impl CodexMessageProcessor {
                             model: config.model.clone(),
                             model_provider: config.model_provider_id.clone(),
                             cwd: config.cwd.clone(),
-                            approval_policy: map_ask_for_approval_to_wire(config.approval_policy).into(),
-                            sandbox: map_sandbox_policy_to_wire(config.sandbox_policy.clone()).into(),
+                            approval_policy: map_ask_for_approval_to_wire(config.approval_policy)
+                                .into(),
+                            sandbox: map_sandbox_policy_to_wire(config.sandbox_policy.clone())
+                                .into(),
                             reasoning_effort: Some(config.model_reasoning_effort.into()),
                         },
                     )
@@ -1355,8 +1363,7 @@ impl CodexMessageProcessor {
                 }
 
                 let NewConversation {
-                    conversation_id,
-                    ..
+                    conversation_id, ..
                 } = match self.conversation_manager.new_conversation(config).await {
                     Ok(conversation) => conversation,
                     Err(err) => {
@@ -1365,7 +1372,9 @@ impl CodexMessageProcessor {
                                 request_id,
                                 JSONRPCErrorError {
                                     code: INTERNAL_ERROR_CODE,
-                                    message: format!("failed to create detached review thread: {err}"),
+                                    message: format!(
+                                        "failed to create detached review thread: {err}"
+                                    ),
                                     data: None,
                                 },
                             )
@@ -1385,7 +1394,9 @@ impl CodexMessageProcessor {
                                 request_id,
                                 JSONRPCErrorError {
                                     code: INTERNAL_ERROR_CODE,
-                                    message: format!("failed to load detached review thread: {err}"),
+                                    message: format!(
+                                        "failed to load detached review thread: {err}"
+                                    ),
                                     data: None,
                                 },
                             )
@@ -1423,11 +1434,130 @@ impl CodexMessageProcessor {
         }
     }
 
-    async fn archive_conversation(
-        &self,
-        request_id: RequestId,
-        params: ArchiveConversationParams,
-    ) {
+    pub(crate) async fn turn_start_v2(&self, request_id: RequestId, params: TurnStartParams) {
+        let TurnStartParams {
+            thread_id,
+            mut input,
+            cwd: _,
+            approval_policy: _,
+            sandbox_policy: _,
+            model: _,
+            effort: _,
+            summary: _,
+            personality: _,
+            output_schema,
+            collaboration_mode,
+        } = params;
+        let resolved_thread_id = match ConversationId::from_string(&thread_id) {
+            Ok(conversation_id) => self.resolve_conversation_id_alias(conversation_id).await,
+            Err(_) => {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("invalid thread id: {thread_id}"),
+                            data: None,
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        let conversation = match self
+            .conversation_manager
+            .get_conversation(resolved_thread_id)
+            .await
+        {
+            Ok(conversation) => conversation,
+            Err(_) => {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("thread not found: {thread_id}"),
+                            data: None,
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        let is_plan_mode = collaboration_mode
+            .as_ref()
+            .is_some_and(|mode| mode.mode == ModeKind::Plan);
+        if is_plan_mode {
+            let Some(first_text_index) = input
+                .iter()
+                .position(|item| matches!(item, V2UserInput::Text { .. }))
+            else {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: "turn/start plan mode requires text input".to_string(),
+                            data: None,
+                        },
+                    )
+                    .await;
+                return;
+            };
+
+            let V2UserInput::Text {
+                text,
+                text_elements: _,
+            } = &input[first_text_index]
+            else {
+                unreachable!("first text index is known to reference text input")
+            };
+            input[first_text_index] = V2UserInput::Text {
+                text: format_turn_start_plan_input(text),
+                text_elements: Vec::new(),
+            };
+        }
+        let core_input = input
+            .clone()
+            .into_iter()
+            .map(v2_user_input_to_core_input)
+            .collect();
+        let turn_id = match conversation
+            .submit(Op::UserInput {
+                items: core_input,
+                final_output_json_schema: output_schema,
+            })
+            .await
+        {
+            Ok(turn_id) => turn_id,
+            Err(err) => {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: format!("failed to start turn: {err}"),
+                            data: None,
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        self.outgoing
+            .send_response(
+                request_id,
+                TurnStartResponse {
+                    turn: build_user_turn(turn_id, input),
+                },
+            )
+            .await;
+    }
+
+    async fn archive_conversation(&self, request_id: RequestId, params: ArchiveConversationParams) {
         let ArchiveConversationParams {
             conversation_id,
             rollout_path,
@@ -1633,16 +1763,17 @@ impl CodexMessageProcessor {
         let config = UserSavedConfig {
             approval_policy: cfg.approval_policy.map(map_ask_for_approval_to_wire),
             sandbox_mode: cfg.sandbox_mode,
-            sandbox_settings: cfg.sandbox_workspace_write.as_ref().map(|s| SandboxSettings {
-                writable_roots: s.writable_roots.clone(),
-                network_access: Some(s.network_access),
-                exclude_tmpdir_env_var: Some(s.exclude_tmpdir_env_var),
-                exclude_slash_tmp: Some(s.exclude_slash_tmp),
-            }),
+            sandbox_settings: cfg
+                .sandbox_workspace_write
+                .as_ref()
+                .map(|s| SandboxSettings {
+                    writable_roots: s.writable_roots.clone(),
+                    network_access: Some(s.network_access),
+                    exclude_tmpdir_env_var: Some(s.exclude_tmpdir_env_var),
+                    exclude_slash_tmp: Some(s.exclude_slash_tmp),
+                }),
             model: cfg.model,
-            model_reasoning_effort: cfg
-                .model_reasoning_effort
-                .map(map_reasoning_effort_to_wire),
+            model_reasoning_effort: cfg.model_reasoning_effort.map(map_reasoning_effort_to_wire),
             model_reasoning_summary: cfg
                 .model_reasoning_summary
                 .map(map_reasoning_summary_to_wire),
@@ -2104,17 +2235,48 @@ fn build_review_turn(turn_id: String, display_text: &str) -> Turn {
     }
 }
 
+fn build_user_turn(turn_id: String, input: Vec<V2UserInput>) -> Turn {
+    Turn {
+        id: turn_id.clone(),
+        items: vec![ThreadItem::UserMessage {
+            id: turn_id,
+            content: input,
+        }],
+        error: None,
+        status: TurnStatus::InProgress,
+    }
+}
+
+fn format_turn_start_plan_input(task: &str) -> String {
+    format!(
+        "Please propose a plan for the task below.\n\nPlan mode requirements:\n- Do not edit files or make repository changes.\n- Do not start subagents unless the user explicitly asks for multi-agent planning.\n- You may inspect repository context with read-only commands if needed.\n- Keep the plan focused, include validation, and call out risks or open questions.\n- Wait for confirmation before implementation.\n\nTask:\n{task}"
+    )
+}
+
+fn v2_user_input_to_core_input(input: V2UserInput) -> CoreInputItem {
+    match input {
+        V2UserInput::Text {
+            text,
+            text_elements: _,
+        } => CoreInputItem::Text { text },
+        V2UserInput::Image { url } => CoreInputItem::Image { image_url: url },
+        V2UserInput::LocalImage { path } => CoreInputItem::LocalImage { path },
+        V2UserInput::Skill { name, path } => CoreInputItem::Text {
+            text: format!("Skill: {name} ({})", path.display()),
+        },
+        V2UserInput::Mention { name, path } => CoreInputItem::Text {
+            text: format!("Mention: {name} ({path})"),
+        },
+    }
+}
+
 impl CodexMessageProcessor {
     // Minimal compatibility layer: translate SendUserTurn into our current
     // flow by submitting only the user items. We intentionally do not attempt
     // per‑turn reconfiguration here (model, cwd, approval, sandbox) to avoid
     // destabilizing the session. This preserves behavior and acks the request
     // so clients using the new method continue to function.
-    async fn send_user_turn_compat(
-        &self,
-        request_id: RequestId,
-        params: SendUserTurnParams,
-    ) {
+    async fn send_user_turn_compat(&self, request_id: RequestId, params: SendUserTurnParams) {
         let SendUserTurnParams {
             conversation_id,
             items,
@@ -2155,7 +2317,9 @@ impl CodexMessageProcessor {
             .await;
 
         // Acknowledge.
-        self.outgoing.send_response(request_id, SendUserTurnResponse {}).await;
+        self.outgoing
+            .send_response(request_id, SendUserTurnResponse {})
+            .await;
     }
 }
 
@@ -2167,7 +2331,9 @@ async fn apply_bespoke_event_handling(
     outgoing: Arc<OutgoingMessageSender>,
     _pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
 ) {
-    let Event { id: _event_id, msg, .. } = event;
+    let Event {
+        id: _event_id, msg, ..
+    } = event;
     match msg {
         EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
@@ -2184,19 +2350,19 @@ async fn apply_bespoke_event_handling(
                             code_protocol::protocol::FileChange::Add { content }
                         }
                         code_core::protocol::FileChange::Delete => {
-                            code_protocol::protocol::FileChange::Delete { content: String::new() }
+                            code_protocol::protocol::FileChange::Delete {
+                                content: String::new(),
+                            }
                         }
                         code_core::protocol::FileChange::Update {
                             unified_diff,
                             move_path,
                             original_content: _,
                             new_content: _,
-                        } => {
-                            code_protocol::protocol::FileChange::Update {
-                                unified_diff,
-                                move_path,
-                            }
-                        }
+                        } => code_protocol::protocol::FileChange::Update {
+                            unified_diff,
+                            move_path,
+                        },
                     };
                     (p, mapped)
                 })
@@ -2211,7 +2377,11 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request_to_connection(owner_connection_id, APPLY_PATCH_APPROVAL_METHOD, Some(value))
+                .send_request_to_connection(
+                    owner_connection_id,
+                    APPLY_PATCH_APPROVAL_METHOD,
+                    Some(value),
+                )
                 .await;
             // TODO(mbolin): Enforce a timeout so this task does not live indefinitely?
             let approval_id = call_id.clone(); // correlate by call_id, not event_id
@@ -2241,7 +2411,11 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request_to_connection(owner_connection_id, EXEC_COMMAND_APPROVAL_METHOD, Some(value))
+                .send_request_to_connection(
+                    owner_connection_id,
+                    EXEC_COMMAND_APPROVAL_METHOD,
+                    Some(value),
+                )
                 .await;
 
             // TODO(mbolin): Enforce a timeout so this task does not live indefinitely?
@@ -2261,7 +2435,11 @@ async fn apply_bespoke_event_handling(
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing
-                .send_request_to_connection(owner_connection_id, DYNAMIC_TOOL_CALL_METHOD, Some(value))
+                .send_request_to_connection(
+                    owner_connection_id,
+                    DYNAMIC_TOOL_CALL_METHOD,
+                    Some(value),
+                )
                 .await;
 
             tokio::spawn(async move {
@@ -2309,7 +2487,6 @@ async fn apply_bespoke_event_handling(
             });
         }
         // No special handling needed for interrupts; responses are sent immediately.
-
         _ => {}
     }
 }
@@ -2417,9 +2594,11 @@ async fn on_dynamic_tool_call_response(
         Err(err) => {
             error!("request failed: {err:?}");
             let fallback = CoreDynamicToolResponse {
-                content_items: vec![code_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
-                    text: "dynamic tool request failed".to_string(),
-                }],
+                content_items: vec![
+                    code_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                        text: "dynamic tool request failed".to_string(),
+                    },
+                ],
                 success: false,
             };
             if let Err(err) = conversation
@@ -2577,13 +2756,19 @@ async fn on_exec_approval_response(
     }
 }
 
-fn map_review_decision_from_wire(d: code_protocol::protocol::ReviewDecision) -> core_protocol::ReviewDecision {
+fn map_review_decision_from_wire(
+    d: code_protocol::protocol::ReviewDecision,
+) -> core_protocol::ReviewDecision {
     match d {
-        code_protocol::protocol::ReviewDecision::Approved => core_protocol::ReviewDecision::Approved,
+        code_protocol::protocol::ReviewDecision::Approved => {
+            core_protocol::ReviewDecision::Approved
+        }
         code_protocol::protocol::ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
             core_protocol::ReviewDecision::Approved
         }
-        code_protocol::protocol::ReviewDecision::ApprovedForSession => core_protocol::ReviewDecision::ApprovedForSession,
+        code_protocol::protocol::ReviewDecision::ApprovedForSession => {
+            core_protocol::ReviewDecision::ApprovedForSession
+        }
         code_protocol::protocol::ReviewDecision::Denied => core_protocol::ReviewDecision::Denied,
         code_protocol::protocol::ReviewDecision::Abort => core_protocol::ReviewDecision::Abort,
     }
@@ -2615,17 +2800,20 @@ mod tests {
     use code_app_server_protocol::AuthMode;
     use code_app_server_protocol::ReviewDelivery;
     use code_app_server_protocol::ReviewTarget;
+    use code_core::SessionIndexEntry;
     use code_core::auth::CodexAuth;
     use code_core::auth::RefreshTokenError;
     use code_core::config::ConfigOverrides;
-    use code_core::SessionIndexEntry;
     use code_protocol::mcp_protocol::RemoveConversationListenerParams;
     use code_protocol::protocol::SessionSource;
     use mcp_types::RequestId;
     use serde_json::from_value;
     use tokio::sync::mpsc;
 
-    fn make_processor_for_tests() -> (CodexMessageProcessor, mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>) {
+    fn make_processor_for_tests() -> (
+        CodexMessageProcessor,
+        mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>,
+    ) {
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
         let outgoing = Arc::new(OutgoingMessageSender::new(outgoing_tx));
         let config = Arc::new(
@@ -2643,13 +2831,7 @@ mod tests {
         ));
 
         (
-            CodexMessageProcessor::new(
-                auth_manager,
-                conversation_manager,
-                outgoing,
-                None,
-                config,
-            ),
+            CodexMessageProcessor::new(auth_manager, conversation_manager, outgoing, None, config),
             outgoing_rx,
         )
     }
@@ -2672,13 +2854,7 @@ mod tests {
         ));
 
         (
-            CodexMessageProcessor::new(
-                auth_manager,
-                conversation_manager,
-                outgoing,
-                None,
-                config,
-            ),
+            CodexMessageProcessor::new(auth_manager, conversation_manager, outgoing, None, config),
             outgoing_rx,
         )
     }
@@ -2686,7 +2862,10 @@ mod tests {
     async fn expect_error_message(
         outgoing_rx: &mut mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>,
     ) -> String {
-        let message = outgoing_rx.recv().await.expect("error response should be sent");
+        let message = outgoing_rx
+            .recv()
+            .await
+            .expect("error response should be sent");
         match message {
             crate::outgoing_message::OutgoingMessage::Error(err) => err.error.message,
             other => panic!("expected error response, got {other:?}"),
@@ -2728,7 +2907,9 @@ mod tests {
         }
 
         assert!(
-            processor.conversation_listeners.contains_key(&subscription_id),
+            processor
+                .conversation_listeners
+                .contains_key(&subscription_id),
             "listener should remain registered for original owner"
         );
 
@@ -2752,7 +2933,10 @@ mod tests {
         }
 
         assert!(
-            processor.conversation_listeners.get(&subscription_id).is_none(),
+            processor
+                .conversation_listeners
+                .get(&subscription_id)
+                .is_none(),
             "listener should be removed by owner"
         );
         assert_eq!(cancel_rx.try_recv(), Ok(()));
@@ -2849,6 +3033,48 @@ mod tests {
         assert_eq!(message, format!("thread not found: {unknown_thread_id}"));
     }
 
+    #[tokio::test]
+    async fn turn_start_v2_rejects_unknown_thread() {
+        let (processor, mut outgoing_rx) = make_processor_for_tests();
+        let unknown_thread_id = Uuid::new_v4().to_string();
+
+        processor
+            .turn_start_v2(
+                RequestId::Integer(9),
+                TurnStartParams {
+                    thread_id: unknown_thread_id.clone(),
+                    input: vec![V2UserInput::Text {
+                        text: "make a plan".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    cwd: None,
+                    approval_policy: None,
+                    sandbox_policy: None,
+                    model: None,
+                    effort: None,
+                    summary: None,
+                    personality: None,
+                    output_schema: None,
+                    collaboration_mode: None,
+                },
+            )
+            .await;
+
+        let message = expect_error_message(&mut outgoing_rx).await;
+        assert_eq!(message, format!("thread not found: {unknown_thread_id}"));
+    }
+
+    #[test]
+    fn turn_start_plan_formatter_does_not_invoke_subagents() {
+        let prompt = format_turn_start_plan_input("add a README note");
+
+        assert!(prompt.contains("add a README note"));
+        assert!(prompt.contains("Do not edit files"));
+        assert!(prompt.contains("Do not start subagents"));
+        assert!(!prompt.contains("agent {"));
+        assert!(!prompt.contains("Please perform /plan"));
+    }
+
     #[test]
     fn parse_plan_type_is_case_insensitive() {
         assert_eq!(parse_plan_type(Some("Pro".to_string())), PlanType::Pro);
@@ -2856,7 +3082,10 @@ mod tests {
             parse_plan_type(Some("BUSINESS".to_string())),
             PlanType::Business
         );
-        assert_eq!(parse_plan_type(Some("mystery".to_string())), PlanType::Unknown);
+        assert_eq!(
+            parse_plan_type(Some("mystery".to_string())),
+            PlanType::Unknown
+        );
         assert_eq!(parse_plan_type(None), PlanType::Unknown);
     }
 
@@ -2903,7 +3132,10 @@ mod tests {
         let snapshot = rate_limit_snapshot_from_event(&event, Some(PlanType::Pro));
         assert_eq!(snapshot.plan_type, Some(PlanType::Pro));
         assert_eq!(
-            snapshot.primary.as_ref().and_then(|window| window.window_minutes),
+            snapshot
+                .primary
+                .as_ref()
+                .and_then(|window| window.window_minutes),
             Some(60)
         );
         assert_eq!(
@@ -2939,9 +3171,8 @@ mod tests {
 
     #[test]
     fn thread_resume_response_thread_uses_catalog_metadata() {
-        let config =
-            Config::load_with_cli_overrides(Vec::new(), ConfigOverrides::default())
-                .expect("load default config");
+        let config = Config::load_with_cli_overrides(Vec::new(), ConfigOverrides::default())
+            .expect("load default config");
         let entry = SessionIndexEntry {
             session_id: Uuid::new_v4(),
             rollout_path: std::path::PathBuf::from("sessions/test.jsonl"),
@@ -2975,9 +3206,18 @@ mod tests {
         assert_eq!(thread.preview, "resume me");
         assert_eq!(thread.model_provider, "openai");
         assert_eq!(thread.cwd, std::path::PathBuf::from("/tmp/test-thread"));
-        assert_eq!(thread.path, Some(std::path::PathBuf::from("/tmp/test.jsonl")));
-        assert_eq!(thread.source, code_app_server_protocol::SessionSource::AppServer);
-        assert_eq!(thread.git_info.and_then(|info| info.branch), Some("main".to_string()));
+        assert_eq!(
+            thread.path,
+            Some(std::path::PathBuf::from("/tmp/test.jsonl"))
+        );
+        assert_eq!(
+            thread.source,
+            code_app_server_protocol::SessionSource::AppServer
+        );
+        assert_eq!(
+            thread.git_info.and_then(|info| info.branch),
+            Some("main".to_string())
+        );
         assert_eq!(thread.created_at, 1_775_210_400);
         assert_eq!(thread.updated_at, 1_775_210_700);
     }
@@ -2995,10 +3235,9 @@ mod tests {
 
     #[test]
     fn thread_resume_canonical_thread_id_prefers_rollout_path() {
-        let resumed_conversation_id = ConversationId::from_string(
-            "33333333-3333-4333-8333-333333333333",
-        )
-        .expect("valid uuid");
+        let resumed_conversation_id =
+            ConversationId::from_string("33333333-3333-4333-8333-333333333333")
+                .expect("valid uuid");
         let entry = SessionIndexEntry {
             session_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111")
                 .expect("valid uuid"),
@@ -3035,10 +3274,9 @@ mod tests {
 
     #[test]
     fn thread_resume_canonical_thread_id_falls_back_to_resumed_conversation() {
-        let resumed_conversation_id = ConversationId::from_string(
-            "33333333-3333-4333-8333-333333333333",
-        )
-        .expect("valid uuid");
+        let resumed_conversation_id =
+            ConversationId::from_string("33333333-3333-4333-8333-333333333333")
+                .expect("valid uuid");
 
         let canonical_thread_id = thread_resume_canonical_thread_id(
             resumed_conversation_id,
@@ -3113,8 +3351,9 @@ mod tests {
 
     #[test]
     fn review_request_from_target_builds_workspace_prompt() {
-        let (request, display_text) = review_request_from_target(V2ReviewTarget::UncommittedChanges)
-            .expect("workspace review target should be accepted");
+        let (request, display_text) =
+            review_request_from_target(V2ReviewTarget::UncommittedChanges)
+                .expect("workspace review target should be accepted");
 
         assert_eq!(display_text, "current workspace changes");
         assert_eq!(
@@ -3158,11 +3397,19 @@ fn map_auth_mode_to_wire<M: IntoWireAuthMode>(mode: M) -> code_protocol::mcp_pro
     mode.into_wire()
 }
 
-fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) -> core_protocol::AskForApproval {
+fn map_ask_for_approval_from_wire(
+    a: code_protocol::protocol::AskForApproval,
+) -> core_protocol::AskForApproval {
     match a {
-        code_protocol::protocol::AskForApproval::UnlessTrusted => core_protocol::AskForApproval::UnlessTrusted,
-        code_protocol::protocol::AskForApproval::OnFailure => core_protocol::AskForApproval::OnFailure,
-        code_protocol::protocol::AskForApproval::OnRequest => core_protocol::AskForApproval::OnRequest,
+        code_protocol::protocol::AskForApproval::UnlessTrusted => {
+            core_protocol::AskForApproval::UnlessTrusted
+        }
+        code_protocol::protocol::AskForApproval::OnFailure => {
+            core_protocol::AskForApproval::OnFailure
+        }
+        code_protocol::protocol::AskForApproval::OnRequest => {
+            core_protocol::AskForApproval::OnRequest
+        }
         code_protocol::protocol::AskForApproval::Reject(config) => {
             core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
@@ -3176,11 +3423,19 @@ fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) ->
     }
 }
 
-fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protocol::protocol::AskForApproval {
+fn map_ask_for_approval_to_wire(
+    a: core_protocol::AskForApproval,
+) -> code_protocol::protocol::AskForApproval {
     match a {
-        core_protocol::AskForApproval::UnlessTrusted => code_protocol::protocol::AskForApproval::UnlessTrusted,
-        core_protocol::AskForApproval::OnFailure => code_protocol::protocol::AskForApproval::OnFailure,
-        core_protocol::AskForApproval::OnRequest => code_protocol::protocol::AskForApproval::OnRequest,
+        core_protocol::AskForApproval::UnlessTrusted => {
+            code_protocol::protocol::AskForApproval::UnlessTrusted
+        }
+        core_protocol::AskForApproval::OnFailure => {
+            code_protocol::protocol::AskForApproval::OnFailure
+        }
+        core_protocol::AskForApproval::OnRequest => {
+            code_protocol::protocol::AskForApproval::OnRequest
+        }
         core_protocol::AskForApproval::Reject(config) => {
             code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
@@ -3230,11 +3485,15 @@ fn map_reasoning_effort_to_wire(
         code_core::config_types::ReasoningEffort::Minimal => {
             code_protocol::config_types::ReasoningEffort::Minimal
         }
-        code_core::config_types::ReasoningEffort::Low => code_protocol::config_types::ReasoningEffort::Low,
+        code_core::config_types::ReasoningEffort::Low => {
+            code_protocol::config_types::ReasoningEffort::Low
+        }
         code_core::config_types::ReasoningEffort::Medium => {
             code_protocol::config_types::ReasoningEffort::Medium
         }
-        code_core::config_types::ReasoningEffort::High => code_protocol::config_types::ReasoningEffort::High,
+        code_core::config_types::ReasoningEffort::High => {
+            code_protocol::config_types::ReasoningEffort::High
+        }
         code_core::config_types::ReasoningEffort::XHigh => {
             code_protocol::config_types::ReasoningEffort::XHigh
         }
@@ -3248,14 +3507,18 @@ fn map_reasoning_summary_to_wire(
     summary: code_core::config_types::ReasoningSummary,
 ) -> code_protocol::config_types::ReasoningSummary {
     match summary {
-        code_core::config_types::ReasoningSummary::Auto => code_protocol::config_types::ReasoningSummary::Auto,
+        code_core::config_types::ReasoningSummary::Auto => {
+            code_protocol::config_types::ReasoningSummary::Auto
+        }
         code_core::config_types::ReasoningSummary::Concise => {
             code_protocol::config_types::ReasoningSummary::Concise
         }
         code_core::config_types::ReasoningSummary::Detailed => {
             code_protocol::config_types::ReasoningSummary::Detailed
         }
-        code_core::config_types::ReasoningSummary::None => code_protocol::config_types::ReasoningSummary::None,
+        code_core::config_types::ReasoningSummary::None => {
+            code_protocol::config_types::ReasoningSummary::None
+        }
     }
 }
 
@@ -3267,7 +3530,9 @@ fn map_verbosity_to_wire(
         code_core::config_types::TextVerbosity::Medium => {
             code_protocol::config_types::Verbosity::Medium
         }
-        code_core::config_types::TextVerbosity::High => code_protocol::config_types::Verbosity::High,
+        code_core::config_types::TextVerbosity::High => {
+            code_protocol::config_types::Verbosity::High
+        }
     }
 }
 
@@ -3345,10 +3610,11 @@ fn conversation_id_from_rollout_path(path: &std::path::Path) -> Option<Conversat
 
 fn snippet_from_rollout_tail(tail: &[serde_json::Value]) -> Option<String> {
     for value in tail.iter().rev() {
-        let item = match serde_json::from_value::<code_protocol::protocol::RolloutItem>(value.clone()) {
-            Ok(item) => item,
-            Err(_) => continue,
-        };
+        let item =
+            match serde_json::from_value::<code_protocol::protocol::RolloutItem>(value.clone()) {
+                Ok(item) => item,
+                Err(_) => continue,
+            };
         if let code_protocol::protocol::RolloutItem::ResponseItem(
             code_protocol::models::ResponseItem::Message { role, content, .. },
         ) = item
