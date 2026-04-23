@@ -31,6 +31,7 @@ const PERSONALITY_PRAGMATIC: &str =
     include_str!("../templates/personalities/gpt-5.2-codex_pragmatic.md");
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
+const CONTEXT_WINDOW_400K: u64 = 400_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
 const CONTEXT_WINDOW_128K: u64 = 128_000;
 const CONTEXT_WINDOW_96K: u64 = 96_000;
@@ -413,7 +414,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             default_reasoning_effort: Some(ReasoningEffort::Medium),
             supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: Some(CONTEXT_WINDOW_400K),
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )

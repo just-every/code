@@ -3499,6 +3499,30 @@ context_mode = "1m"
     }
 
     #[test]
+    fn context_mode_auto_preserves_gpt_5_5_codex_limits() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.5"
+context_mode = "auto"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Auto));
+        assert_eq!(config.model_context_window, Some(400_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(360_000));
+        Ok(())
+    }
+
+    #[test]
     fn context_mode_auto_expands_gpt_5_4_context() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let cfg = toml::from_str::<ConfigToml>(
