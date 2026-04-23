@@ -96,6 +96,8 @@ pub fn supported_reasoning_efforts_for_model(model: &str) -> &'static [Reasoning
         || lower.starts_with("test-gpt-5.2")
         || lower.starts_with("gpt-5.3")
         || lower.starts_with("test-gpt-5.3")
+        || lower.starts_with("gpt-5.5")
+        || lower.starts_with("test-gpt-5.5")
     {
         return GPT5_2_EFFORTS;
     }

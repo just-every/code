@@ -142,9 +142,9 @@ pub use crate::config_constraint::ConstraintResult;
 pub(crate) use defaults::merge_with_default_agents;
 pub(crate) use validation::upgrade_legacy_model_slugs;
 
-pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.4";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.4";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.4";
+pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.5";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.5";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.5";
 pub(crate) const DEFAULT_SUBAGENT_MAX_DEPTH: i32 = 1;
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
@@ -229,7 +229,7 @@ pub struct Config {
     /// Whether planning should inherit the chat model instead of using a dedicated override.
     pub planning_use_chat_model: bool,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5.4".
+    /// Model used specifically for review sessions. Defaults to "gpt-5.5".
     pub review_model: String,
 
     /// Reasoning effort used when running review sessions.

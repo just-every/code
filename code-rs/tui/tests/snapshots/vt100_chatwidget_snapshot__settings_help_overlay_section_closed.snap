@@ -9,14 +9,14 @@ expression: section_closed
  |                                                                                                |
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
- |    Updates            |  Current model: GPT-5.4                                              | |
+ |    Updates            |  Current model: GPT-5.5                                              | |
  |    Accounts           |  Reasoning effort: Medium                                            | |
  |    Agents             |                                                                      | |
  |    Prompts            |  Mode Settings                                                       | |
  |    Memories           |  Fast mode speeds up replies. 1M Context is available on supported m | |
  |    Skills             |  › Fast Mode: disabled                                               | |
  |    Auto Drive         |    1M Context: auto                                                  | |
- |    Review             |  Press Enter to cycle Disabled, Enabled, and Auto.                   | |
+ |    Review             |  Unavailable for this model. Saved settings apply automatically on s | |
  |    Planning           |                                                                      | |
  |    Validation         |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
  |    Chrome             |                                                                      | |

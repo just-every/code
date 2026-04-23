@@ -23021,10 +23021,10 @@ Have we met every part of this goal and is there no further work to do?"#
 
     fn curated_model_presets(presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
         const MODEL_PICKER_ORDER: [&str; 4] = [
+            "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
         ];
 
         let curated: Vec<ModelPreset> = MODEL_PICKER_ORDER
@@ -31268,20 +31268,20 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn curated_model_presets_includes_gpt_5_4_mini_when_present() {
+    fn curated_model_presets_prefers_latest_flagship_when_present() {
         let presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
             .into_iter()
             .filter(|preset| {
                 matches!(
                     preset.id.as_str(),
-                    "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex"
+                    "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex"
                 )
             })
             .collect();
 
         let curated = ChatWidget::curated_model_presets(presets);
         let ids: Vec<&str> = curated.iter().map(|preset| preset.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]);
+        assert_eq!(ids, vec!["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]);
     }
 
     #[test]
@@ -31304,7 +31304,7 @@ use code_core::protocol::OrderMeta;
 
         let remote_presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
             .into_iter()
-            .filter(|preset| preset.id == "gpt-5.4" || preset.id == "gpt-5.2")
+            .filter(|preset| preset.id == "gpt-5.5" || preset.id == "gpt-5.2")
             .collect();
         assert_eq!(remote_presets.len(), 2, "expected remote test presets");
 
