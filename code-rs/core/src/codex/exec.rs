@@ -238,8 +238,12 @@ pub struct ExecInvokeArgs<'a> {
 
 fn materialize_shell_script(user_shell: &crate::shell::Shell, mut params: ExecParams) -> ExecParams {
     if let Some(shell_script) = params.shell_script.take() {
+        let command = match params.command.as_slice() {
+            [command] => command.clone(),
+            _ => shell_script.command,
+        };
         params.command = user_shell
-            .shell_script_invocation_or_default(shell_script.command, shell_script.use_login_shell);
+            .shell_script_invocation_or_default(command, shell_script.use_login_shell);
     }
     params
 }
@@ -976,6 +980,30 @@ mod tests {
                 "/bin/bash".to_string(),
                 "-c".to_string(),
                 "printf hello".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn materialize_shell_script_uses_mutated_command_copy() {
+        let shell = Shell::Bash(BashShell {
+            shell_path: "/bin/bash".to_string(),
+            bashrc_path: "/home/test/.bashrc".to_string(),
+        });
+        let mut params = base_params("git reset --hard HEAD");
+        params.shell_script = Some(DeferredShellScript {
+            command: "confirm: git reset --hard HEAD".to_string(),
+            use_login_shell: true,
+        });
+
+        let materialized = materialize_shell_script(&shell, params);
+
+        assert_eq!(
+            materialized.command,
+            vec![
+                "/bin/bash".to_string(),
+                "-lc".to_string(),
+                "git reset --hard HEAD".to_string(),
             ]
         );
     }
