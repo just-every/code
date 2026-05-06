@@ -2257,7 +2257,33 @@ async fn spawn_user_turn(
     items: Vec<InputItem>,
     final_output_json_schema: Option<serde_json::Value>,
     origin: TaskOriginKind,
-) {
+) -> bool {
+    let attempt_req = sess.current_request_ordinal();
+    let hook_outcome = sess
+        .run_user_prompt_submit_hooks(
+            &sub_id,
+            &items,
+            final_output_json_schema.as_ref(),
+            attempt_req,
+        )
+        .await;
+    if !hook_outcome.additional_contexts.is_empty() {
+        record_project_hook_contexts(&sess, hook_outcome.additional_contexts).await;
+    }
+    if hook_outcome.blocked {
+        let order = sess.next_background_order(&sub_id, attempt_req, None);
+        let message = hook_outcome
+            .block_reason
+            .unwrap_or_else(|| "User prompt blocked by hook.".to_string());
+        sess.notify_background_event_with_order(
+            &sub_id,
+            order,
+            format!("User prompt blocked by hook: {message}"),
+        )
+        .await;
+        return false;
+    }
+
     maybe_run_auto_context_compaction(&sess, &sub_id, &items).await;
     let turn_context = match final_output_json_schema {
         Some(schema) => sess.make_turn_context_with_schema(Some(schema)),
@@ -2265,6 +2291,84 @@ async fn spawn_user_turn(
     };
     let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub_id, items, origin, true);
     sess.set_task(agent);
+    true
+}
+
+async fn record_project_hook_contexts(sess: &Arc<Session>, additional_contexts: Vec<String>) {
+    if additional_contexts.is_empty() {
+        return;
+    }
+
+    let messages = additional_contexts
+        .into_iter()
+        .map(|text| ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText { text }],
+            end_turn: None,
+            phase: None,
+        })
+        .collect::<Vec<_>>();
+    sess.record_conversation_items(&messages).await;
+}
+
+fn build_stop_continuation_item(prompt: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: prompt.to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    }
+}
+
+async fn handle_follow_up_action(sess: Arc<Session>, action: FollowUpTurnAction) {
+    match action {
+        FollowUpTurnAction::PostTurnPendingInput => {
+            sess.start_internal_pending_only_turn(
+                POST_TURN_PENDING_ONLY_SENTINEL,
+                TaskOriginKind::PostTurn,
+                false,
+            )
+            .await;
+        }
+        FollowUpTurnAction::ManualCompact(compact_sub_id) => {
+            let turn_context = sess.make_turn_context();
+            let prompt_text = sess.compact_prompt_text();
+            compact::spawn_compact_task(
+                Arc::clone(&sess),
+                turn_context,
+                compact_sub_id,
+                vec![InputItem::Text { text: prompt_text }],
+            );
+        }
+        FollowUpTurnAction::PendingInput => {
+            sess.start_internal_pending_only_turn(
+                PENDING_ONLY_SENTINEL,
+                TaskOriginKind::PendingInput,
+                false,
+            )
+            .await;
+        }
+        FollowUpTurnAction::QueuedUserInput(queued) => {
+            sess.cleanup_old_status_items().await;
+            let started = spawn_user_turn(
+                Arc::clone(&sess),
+                queued.submission_id,
+                queued.core_items,
+                None,
+                TaskOriginKind::QueuedUser,
+            )
+            .await;
+            if !started
+                && let Some(next_action) = sess.take_follow_up_turn_action()
+            {
+                Box::pin(handle_follow_up_action(sess, next_action)).await;
+            }
+        }
+    }
 }
 
 fn context_window_for_model(model: &str) -> Option<u64> {
@@ -2461,6 +2565,7 @@ async fn run_agent(
     }
 
     let mut last_task_message: Option<String> = None;
+    let mut stop_hook_active = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Agent which contains
     // many turns, from the perspective of the user, it is a single turn.
     let mut turn_diff_tracker = TurnDiffTracker::new();
@@ -2819,6 +2924,40 @@ async fn run_agent(
                     if let Some(m) = last_task_message.as_ref() {
                         tracing::info!("core.turn completed: last_assistant_message.len={}", m.len());
                     }
+                    if visible_to_user && !is_review_mode {
+                        let stop_outcome = sess
+                            .run_stop_hooks(
+                                &sub_id,
+                                last_task_message.as_deref(),
+                                stop_hook_active,
+                                sess.current_request_ordinal(),
+                            )
+                            .await;
+                        if stop_outcome.blocked {
+                            if stop_hook_active {
+                                let order = sess.next_background_order(
+                                    &sub_id,
+                                    sess.current_request_ordinal(),
+                                    None,
+                                );
+                                sess
+                                    .notify_background_event_with_order(
+                                        &sub_id,
+                                        order,
+                                        "Stop hook requested another continuation while one was already active; ignoring to avoid a loop."
+                                            .to_string(),
+                                    )
+                                    .await;
+                            } else if let Some(prompt) = stop_outcome.continuation_prompt {
+                                let continuation_item = build_stop_continuation_item(&prompt);
+                                sess.record_conversation_items(std::slice::from_ref(&continuation_item))
+                                    .await;
+                                initial_response_item = Some(continuation_item);
+                                stop_hook_active = true;
+                                continue;
+                            }
+                        }
+                    }
                     sess.maybe_notify(UserNotification::AgentTurnComplete {
                         turn_id: sub_id.clone(),
                         input_messages: turn_input_messages,
@@ -2884,52 +3023,7 @@ async fn run_agent(
     sess.tx_event.send(event).await.ok();
 
     if let Some(action) = sess.take_follow_up_turn_action() {
-        match action {
-            FollowUpTurnAction::PostTurnPendingInput => {
-                sess.start_internal_pending_only_turn(
-                    POST_TURN_PENDING_ONLY_SENTINEL,
-                    TaskOriginKind::PostTurn,
-                    false,
-                )
-                    .await;
-            }
-            FollowUpTurnAction::ManualCompact(compact_sub_id) => {
-                let turn_context = sess.make_turn_context();
-                let prompt_text = sess.compact_prompt_text();
-                compact::spawn_compact_task(
-                    Arc::clone(&sess),
-                    turn_context,
-                    compact_sub_id,
-                    vec![InputItem::Text {
-                        text: prompt_text,
-                    }],
-                );
-            }
-            FollowUpTurnAction::PendingInput => {
-                sess.start_internal_pending_only_turn(
-                    PENDING_ONLY_SENTINEL,
-                    TaskOriginKind::PendingInput,
-                    false,
-                )
-                    .await;
-            }
-            FollowUpTurnAction::QueuedUserInput(queued) => {
-                let sess_clone = Arc::clone(&sess);
-                tokio::spawn(async move {
-                    sess_clone.cleanup_old_status_items().await;
-                    let submission_id = queued.submission_id;
-                    let items = queued.core_items;
-                    spawn_user_turn(
-                        sess_clone,
-                        submission_id,
-                        items,
-                        None,
-                        TaskOriginKind::QueuedUser,
-                    )
-                    .await;
-                });
-            }
-        }
+        handle_follow_up_action(Arc::clone(&sess), action).await;
     }
 }
 
