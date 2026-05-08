@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.98] - 2026-05-08
+
+- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish. (4b469854, 3b2ebb36, 5e0a4adb, 48402be6)
+- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync. (a9862351, 06e5dfa4, 0d0835dd, eb0462f2)
+- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details. (5119680f, ae153432, 11106016, 40e28284)
+- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently. (9cbd4c03, 07b69519, 1bfc3d97, 9669756b, 78421fac)
+- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux. (26f355b6, a736cb55, 22326e26, 8b95d546, 5b80f87c)
+
 ## [0.6.97] - 2026-05-01
 
 - CLI/TUI: add configurable keymaps, a Vim composer mode, and a dedicated `codex update` command for faster keyboard-driven workflows. (5e737372, b6f81257, b985768d)

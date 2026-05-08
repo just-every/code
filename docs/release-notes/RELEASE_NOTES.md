@@ -1,14 +1,14 @@
-## @just-every/code v0.6.97
+## @just-every/code v0.6.98
 
-This release improves keyboard-driven workflows, hook management, plugin sharing, and sandbox controls across Code.
+This release improves TUI workflows, thread handling, plugin sharing, and Linux portability across Code.
 
 ### Changes
 
-- CLI/TUI: add configurable keymaps, a Vim composer mode, and a dedicated `codex update` command for faster keyboard-driven workflows.
-- Hooks: add a `/hooks` browser, persist hook enablement state, and fix migrated hook path rewriting so hook management is easier and more reliable.
-- Plugins: track local paths for shared plugins, add remote plugin skill reads, sync cached installed bundles, and surface admin-disabled remote plugin status.
-- Sandbox: add explicit sandbox permission profiles and CLI config controls, and ignore dangerous project-level config keys by default.
-- TUI: color the status line from the active theme, format multi-day goal durations clearly, and trim extended history persistence to keep large sessions responsive.
+- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish.
+- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync.
+- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details.
+- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently.
+- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux.
 
 ### Install
 
@@ -19,6 +19,6 @@ code
 
 ### Thanks
 
-Thanks to @owenlin for contributions!
+Thanks to @owenlin0, @alfozan111, and @vincentkoc for contributions!
 
-Compare: https://github.com/just-every/code/compare/v0.6.96...v0.6.97
+Compare: https://github.com/just-every/code/compare/v0.6.97...v0.6.98
