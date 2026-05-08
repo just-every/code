@@ -16,9 +16,11 @@ Notes
 - `/browser`: open internal browser.
 - `/chrome`: connect to your Chrome browser.
 - `/new`: start a new chat during a conversation.
+- `/clear`: clear the terminal and start a new chat.
 - `/resume`: resume a past session for this folder.
 - `/rename <name>`: rename the current session (shown in the resume list).
 - `/quit`: exit Code.
+- `/exit`: exit Code.
 - `/logout`: log out of Code.
 - `/login`: manage Code sign-ins (select, add, or disconnect accounts).
 - `/settings [section]`: open the settings panel. Optional section argument
@@ -29,6 +31,7 @@ Notes
 
 - `/init`: create an `AGENTS.md` file with instructions for Code.
 - `/diff`: show `git diff` (including untracked files).
+- `/copy`: copy the last assistant response as markdown.
 - `/undo`: open a snapshot picker so you can restore workspace files to a
   previous Code snapshot and optionally rewind the conversation to that point.
 - `/branch [task]`: create a worktree branch and switch to it. If a

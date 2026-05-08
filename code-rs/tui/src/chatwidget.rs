@@ -1856,6 +1856,7 @@ pub(crate) struct ChatWidget<'a> {
     login_add_view_state: Option<Weak<RefCell<LoginAddAccountState>>>,
     active_exec_cell: Option<ExecCell>,
     history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
+    clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     history_cell_ids: Vec<Option<HistoryId>>,
     history_live_window: Option<(usize, usize)>,
     history_frozen_width: u16,
@@ -6979,6 +6980,7 @@ impl ChatWidget<'_> {
             login_add_view_state: None,
             active_exec_cell: None,
             history_cells,
+            clipboard_lease: None,
             config: config.clone(),
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
@@ -7354,6 +7356,7 @@ impl ChatWidget<'_> {
             login_add_view_state: None,
             active_exec_cell: None,
             history_cells,
+            clipboard_lease: None,
             config: config.clone(),
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
@@ -17123,6 +17126,43 @@ impl ChatWidget<'_> {
 
         self.submit_op(Op::ListSkills);
         self.show_settings_overlay(Some(SettingsSection::Skills));
+    }
+
+    /// Copy the last assistant response (raw markdown) to the system clipboard.
+    pub(crate) fn copy_last_agent_markdown(&mut self) {
+        self.copy_last_agent_markdown_with(crate::clipboard_copy::copy_to_clipboard);
+    }
+
+    fn copy_last_agent_markdown_with(
+        &mut self,
+        copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
+    ) {
+        let markdown = self.history_cells.iter().rev().find_map(|cell| {
+            cell.as_any()
+                .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                .map(|assistant| assistant.markdown().to_string())
+                .filter(|text| !text.is_empty())
+        });
+
+        match markdown {
+            Some(markdown) => match copy_fn(&markdown) {
+                Ok(lease) => {
+                    self.clipboard_lease = lease;
+                    self.history_push_plain_state(history_cell::plain_message_state_from_lines(
+                        vec![Line::from("Copied last message to clipboard")],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+                }
+                Err(error) => self.history_push_plain_state(history_cell::new_error_event(
+                    format!("Copy failed: {error}"),
+                )),
+            },
+            None => self.history_push_plain_state(history_cell::new_error_event(
+                "No agent response to copy".to_string(),
+            )),
+        }
+
+        self.request_redraw();
     }
 
     #[allow(dead_code)]
