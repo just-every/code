@@ -355,7 +355,7 @@ fn namespaced_model_suffix(model: &str) -> Option<&str> {
     }
     if !namespace
         .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
     {
         return None;
     }
@@ -460,6 +460,7 @@ mod tests {
             supported_in_api: true,
             priority: 0,
             additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
             availability_nux: None,
             upgrade: None,
             base_instructions: String::new(),
@@ -491,6 +492,16 @@ mod tests {
 
         let found = find_remote_model_info(&models, "custom/gpt-5.3-codex")
             .expect("namespaced slug should resolve");
+
+        assert_eq!(found.slug, "gpt-5.3-codex");
+    }
+
+    #[test]
+    fn find_remote_model_info_matches_hyphenated_namespace_suffix() {
+        let models = vec![model("gpt-5.3-codex")];
+
+        let found = find_remote_model_info(&models, "custom-provider/gpt-5.3-codex")
+            .expect("hyphenated provider namespace should resolve");
 
         assert_eq!(found.slug, "gpt-5.3-codex");
     }

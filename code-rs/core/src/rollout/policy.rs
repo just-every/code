@@ -33,6 +33,7 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::CompactionSummary { .. }
+        | ResponseItem::ContextCompaction { .. }
         | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::WebSearchCall { .. }
         | ResponseItem::ImageGenerationCall { .. } => true,
@@ -55,7 +56,8 @@ pub(crate) fn should_persist_response_item_for_memories(item: &RolloutItem) -> b
             | ResponseItem::CustomToolCall { .. }
             | ResponseItem::CustomToolCallOutput { .. }
             | ResponseItem::WebSearchCall { .. }
-            | ResponseItem::CompactionSummary { .. },
+            | ResponseItem::CompactionSummary { .. }
+            | ResponseItem::ContextCompaction { .. },
         ) => true,
         RolloutItem::Event(ev) => event_msg_from_protocol(&ev.msg)
             .is_some_and(|msg| should_persist_event_msg(&msg)),

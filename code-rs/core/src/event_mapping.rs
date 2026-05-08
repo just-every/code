@@ -107,7 +107,9 @@ pub(crate) fn map_response_item_to_event_messages(
             events
         }
 
-        ResponseItem::CompactionSummary { .. } => Vec::new(),
+        ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
+            Vec::new()
+        }
 
         ResponseItem::Reasoning {
             summary, content, ..
