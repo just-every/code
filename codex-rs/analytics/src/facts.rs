@@ -173,6 +173,7 @@ pub struct SkillInvocation {
     pub skill_name: String,
     pub skill_scope: SkillScope,
     pub skill_path: PathBuf,
+    pub plugin_id: Option<String>,
     pub invocation_type: InvocationType,
 }
 
@@ -295,6 +296,7 @@ pub(crate) enum AnalyticsFact {
         request: Box<ServerRequest>,
     },
     ServerResponse {
+        completed_at_ms: u64,
         response: Box<ServerResponse>,
     },
     Notification(Box<ServerNotification>),

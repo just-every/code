@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_arg0::Arg0DispatchPaths;
+use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::thread_store_from_config;
@@ -53,6 +54,8 @@ impl MessageProcessor {
         arg0_paths: Arg0DispatchPaths,
         config: Arc<Config>,
         environment_manager: Arc<EnvironmentManager>,
+        state_db: Option<StateDbHandle>,
+        installation_id: String,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
         let auth_manager = AuthManager::shared_from_config(
@@ -66,7 +69,9 @@ impl MessageProcessor {
             SessionSource::Mcp,
             environment_manager,
             /*analytics_events_client*/ None,
-            thread_store_from_config(config.as_ref()),
+            thread_store_from_config(config.as_ref(), state_db.clone()),
+            state_db.clone(),
+            installation_id,
         ));
         Self {
             outgoing,

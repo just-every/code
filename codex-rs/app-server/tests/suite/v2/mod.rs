@@ -10,7 +10,6 @@ mod config_rpc;
 mod connection_handling_websocket;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
-mod device_key;
 mod dynamic_tools;
 mod experimental_api;
 mod experimental_feature_list;
@@ -35,6 +34,7 @@ mod plugin_list;
 mod plugin_read;
 mod plugin_share;
 mod plugin_uninstall;
+mod process_exec;
 mod rate_limits;
 mod realtime_conversation;
 #[cfg(debug_assertions)]

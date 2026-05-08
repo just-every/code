@@ -120,6 +120,39 @@ fn request_permissions_tool_is_under_development() {
 }
 
 #[test]
+fn remote_compaction_v2_is_under_development() {
+    assert_eq!(Feature::RemoteCompactionV2.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::RemoteCompactionV2.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("remote_compaction_v2"),
+        Some(Feature::RemoteCompactionV2)
+    );
+}
+
+#[test]
+fn responses_websocket_response_processed_is_under_development() {
+    assert_eq!(
+        Feature::ResponsesWebsocketResponseProcessed.stage(),
+        Stage::UnderDevelopment
+    );
+    assert_eq!(
+        Feature::ResponsesWebsocketResponseProcessed.default_enabled(),
+        false
+    );
+    assert_eq!(
+        feature_for_key("responses_websocket_response_processed"),
+        Some(Feature::ResponsesWebsocketResponseProcessed)
+    );
+}
+
+#[test]
+fn builtin_mcp_is_under_development() {
+    assert_eq!(Feature::BuiltInMcp.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::BuiltInMcp.default_enabled(), false);
+    assert_eq!(feature_for_key("builtin_mcp"), Some(Feature::BuiltInMcp));
+}
+
+#[test]
 fn terminal_resize_reflow_is_experimental_and_enabled_by_default() {
     assert_eq!(
         feature_for_key("terminal_resize_reflow"),
@@ -235,6 +268,16 @@ fn js_repl_features_are_removed_feature_keys() {
 fn tool_call_mcp_elicitation_is_stable_and_enabled_by_default() {
     assert_eq!(Feature::ToolCallMcpElicitation.stage(), Stage::Stable);
     assert_eq!(Feature::ToolCallMcpElicitation.default_enabled(), true);
+}
+
+#[test]
+fn auth_elicitation_is_under_development() {
+    assert_eq!(Feature::AuthElicitation.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::AuthElicitation.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("auth_elicitation"),
+        Some(Feature::AuthElicitation)
+    );
 }
 
 #[test]
@@ -488,6 +531,54 @@ usage_hint_enabled = false
             hide_spawn_agent_metadata: None,
         }))
     );
+}
+
+#[test]
+fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config() {
+    let mut features = Features::with_defaults();
+    features.enable(Feature::CodeMode);
+    features.enable(Feature::MultiAgentV2);
+    features.disable(Feature::ToolSearch);
+
+    let mut features_toml = FeaturesToml {
+        multi_agent_v2: Some(FeatureToml::Config(crate::MultiAgentV2ConfigToml {
+            enabled: Some(false),
+            min_wait_timeout_ms: Some(2500),
+            ..Default::default()
+        })),
+        entries: BTreeMap::from([("include_apply_patch_tool".to_string(), true)]),
+        ..Default::default()
+    };
+
+    features_toml.materialize_resolved_enabled(&features);
+
+    let entries = features_toml.entries();
+    assert_eq!(entries.get("include_apply_patch_tool"), None);
+    for spec in crate::FEATURES {
+        assert_eq!(
+            entries.get(spec.key),
+            Some(&features.enabled(spec.id)),
+            "{}",
+            spec.key
+        );
+    }
+    assert_eq!(
+        features_toml.multi_agent_v2,
+        Some(FeatureToml::Config(crate::MultiAgentV2ConfigToml {
+            enabled: Some(true),
+            min_wait_timeout_ms: Some(2500),
+            ..Default::default()
+        }))
+    );
+    let replayed = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+    assert_eq!(replayed.enabled(Feature::ApplyPatchFreeform), false);
 }
 
 #[test]

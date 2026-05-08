@@ -12,10 +12,10 @@ use pretty_assertions::assert_eq;
 async fn submission_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -29,8 +29,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -95,7 +94,7 @@ async fn submission_preserves_text_elements_and_local_images() {
 async fn submission_includes_configured_permission_profile() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let expected_permission_profile: PermissionProfile = AppServerPermissionProfile::Managed {
         network: PermissionProfileNetworkPermissions { enabled: false },
@@ -119,7 +118,7 @@ async fn submission_includes_configured_permission_profile() {
     }
     .into();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -133,8 +132,7 @@ async fn submission_includes_configured_permission_profile() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -161,7 +159,7 @@ async fn submission_includes_configured_permission_profile() {
 async fn submission_keeps_profile_when_legacy_projection_is_external() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let expected_permission_profile: PermissionProfile = AppServerPermissionProfile::Managed {
         network: PermissionProfileNetworkPermissions { enabled: false },
@@ -169,7 +167,7 @@ async fn submission_keeps_profile_when_legacy_projection_is_external() {
     }
     .into();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -183,8 +181,7 @@ async fn submission_keeps_profile_when_legacy_projection_is_external() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -208,10 +205,10 @@ async fn submission_keeps_profile_when_legacy_projection_is_external() {
 async fn submission_with_remote_and_local_images_keeps_local_placeholder_numbering() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -225,8 +222,7 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -302,10 +298,10 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
 async fn enter_with_only_remote_images_submits_user_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -319,8 +315,7 @@ async fn enter_with_only_remote_images_submits_user_turn() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -366,10 +361,10 @@ async fn enter_with_only_remote_images_submits_user_turn() {
 async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -383,8 +378,7 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -405,10 +399,10 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
 async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -422,8 +416,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -444,10 +437,10 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
 async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -461,8 +454,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -486,10 +478,10 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
 async fn submission_prefers_selected_duplicate_skill_path() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -503,8 +495,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -523,6 +514,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             policy: None,
             path_to_skills_md: repo_skill_path,
             scope: crate::test_support::skill_scope_repo(),
+            plugin_id: None,
         },
         SkillMetadata {
             name: "figma".to_string(),
@@ -533,6 +525,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             policy: None,
             path_to_skills_md: user_skill_path.clone(),
             scope: crate::test_support::skill_scope_user(),
+            plugin_id: None,
         },
     ]));
 
@@ -931,6 +924,7 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
         composer: None,
         pending_steers: VecDeque::new(),
         pending_steer_history_records: VecDeque::new(),
+        pending_steer_compare_keys: VecDeque::new(),
         rejected_steers_queue: VecDeque::new(),
         rejected_steer_history_records: VecDeque::new(),
         queued_user_messages: VecDeque::new(),
@@ -1178,6 +1172,68 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
             vec!["https://example.com/remote.png".to_string()],
         )
     );
+}
+
+#[test]
+fn user_message_display_from_inputs_hides_prompt_context() {
+    let raw_message = "# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for Codex:\nAsk $figma";
+    let mention_start = raw_message.find("$figma").expect("mention in raw message");
+    let rendered = ChatWidget::user_message_display_from_inputs(&[UserInput::Text {
+        text: raw_message.to_string(),
+        text_elements: vec![
+            TextElement::new(
+                (mention_start..mention_start + "$figma".len()).into(),
+                Some("$figma".to_string()),
+            )
+            .into(),
+        ],
+    }]);
+
+    assert_eq!(
+        rendered,
+        ChatWidget::user_message_display_from_parts(
+            "Ask $figma".to_string(),
+            vec![TextElement::new((4..10).into(), Some("$figma".to_string()))],
+            Vec::new(),
+            Vec::new(),
+        )
+    );
+}
+
+#[tokio::test]
+async fn committed_user_message_with_hidden_prompt_context_renders_local_images() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let local_image = PathBuf::from("/tmp/context-image.png");
+    let raw_message =
+        "# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for Codex:\n";
+
+    complete_user_message_for_inputs(
+        &mut chat,
+        "user-1",
+        vec![
+            UserInput::Text {
+                text: raw_message.to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::LocalImage {
+                path: local_image.clone(),
+            },
+        ],
+    );
+
+    let mut user_cell = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event
+            && let Some(cell) = cell.as_any().downcast_ref::<UserHistoryCell>()
+        {
+            user_cell = Some((cell.message.clone(), cell.local_image_paths.clone()));
+            break;
+        }
+    }
+
+    let (message, local_images) = user_cell.expect("expected user history cell");
+    assert_eq!(message, "");
+    assert_eq!(local_images, vec![local_image]);
 }
 
 #[tokio::test]

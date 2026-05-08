@@ -14,6 +14,7 @@ use std::time::Duration;
 use strum_macros::EnumIter;
 
 use crate::AgentPath;
+use crate::SessionId;
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
 use crate::config_types::ApprovalsReviewer;
@@ -21,7 +22,6 @@ use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use crate::config_types::ServiceTier;
 use crate::config_types::WindowsSandboxLevel;
 use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::dynamic_tools::DynamicToolCallRequest;
@@ -30,11 +30,7 @@ use crate::dynamic_tools::DynamicToolSpec;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
-use crate::mcp::Resource as McpResource;
-use crate::mcp::ResourceTemplate as McpResourceTemplate;
-use crate::mcp::Tool as McpTool;
 use crate::memory_citation::MemoryCitation;
-use crate::message_history::HistoryEntry;
 use crate::models::ActivePermissionProfile;
 use crate::models::BaseInstructions;
 use crate::models::ContentItem;
@@ -513,7 +509,7 @@ pub enum Op {
         /// Use `Some(Some(_))` to set a specific tier, `Some(None)` to clear the
         /// preference, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
 
         /// EXPERIMENTAL - set a pre-set collaboration mode.
         /// Takes precedence over model, effort, and developer instructions if set.
@@ -574,7 +570,7 @@ pub enum Op {
         /// explicitly clear the tier for this turn, or `None` to keep the existing
         /// session preference.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
 
         // The JSON schema to use for the final assistant message
         final_output_json_schema: Option<Value>,
@@ -651,7 +647,7 @@ pub enum Op {
         /// Use `Some(Some(_))` to set a specific tier, `Some(None)` to clear the
         /// preference, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
 
         /// EXPERIMENTAL - set a pre-set collaboration mode.
         /// Takes precedence over model, effort, and developer instructions if set.
@@ -723,22 +719,6 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
-    /// Append an entry to the persistent cross-session message history.
-    ///
-    /// Note the entry is not guaranteed to be logged if the user has
-    /// history disabled, it matches the list of "sensitive" patterns, etc.
-    AddToHistory {
-        /// The message text to be stored.
-        text: String,
-    },
-
-    /// Request a single history entry identified by `log_id` + `offset`.
-    GetHistoryEntryRequest { offset: usize, log_id: u64 },
-
-    /// Request the list of MCP tools available across all configured servers.
-    /// Reply is delivered via `EventMsg::McpListToolsResponse`.
-    ListMcpTools,
-
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers { config: McpServerRefreshConfig },
 
@@ -748,28 +728,10 @@ pub enum Op {
     /// enable/disable state) without restarting the thread.
     ReloadUserConfig,
 
-    /// Request the list of skills for the provided `cwd` values or the session default.
-    ListSkills {
-        /// Working directories to scope repo skills discovery.
-        ///
-        /// When empty, the session default working directory is used.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        cwds: Vec<PathBuf>,
-
-        /// When true, recompute skills even if a cached result exists.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        force_reload: bool,
-    },
-
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
-
-    /// Set a user-facing thread name in the persisted rollout metadata.
-    /// This is a local-only operation handled by codex-core; it does not
-    /// involve the model.
-    SetThreadName { name: String },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -801,9 +763,6 @@ pub enum Op {
         /// The raw command string after '!'
         command: String,
     },
-
-    /// Request the list of available models.
-    ListModels,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
@@ -896,21 +855,15 @@ impl Op {
             Self::UserInputAnswer { .. } => "user_input_answer",
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
-            Self::AddToHistory { .. } => "add_to_history",
-            Self::GetHistoryEntryRequest { .. } => "get_history_entry_request",
-            Self::ListMcpTools => "list_mcp_tools",
             Self::RefreshMcpServers { .. } => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::ListSkills { .. } => "list_skills",
             Self::Compact => "compact",
-            Self::SetThreadName { .. } => "set_thread_name",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
             Self::Shutdown => "shutdown",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
-            Self::ListModels => "list_models",
         }
     }
 }
@@ -1373,9 +1326,6 @@ pub enum EventMsg {
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
 
-    /// Updated session metadata (e.g., thread name changes).
-    ThreadNameUpdated(ThreadNameUpdatedEvent),
-
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
 
@@ -1448,15 +1398,6 @@ pub enum EventMsg {
 
     TurnDiff(TurnDiffEvent),
 
-    /// Response to GetHistoryEntryRequest.
-    GetHistoryEntryResponse(GetHistoryEntryResponseEvent),
-
-    /// List of MCP tools available to the agent.
-    McpListToolsResponse(McpListToolsResponseEvent),
-
-    /// List of skills available to the agent.
-    ListSkillsResponse(ListSkillsResponseEvent),
-
     /// List of voices supported by realtime conversation streams.
     RealtimeConversationListVoicesResponse(RealtimeConversationListVoicesResponseEvent),
 
@@ -1516,6 +1457,8 @@ pub enum HookEventName {
     PreToolUse,
     PermissionRequest,
     PostToolUse,
+    PreCompact,
+    PostCompact,
     SessionStart,
     UserPromptSubmit,
     Stop,
@@ -1559,19 +1502,13 @@ pub enum HookSource {
     Unknown,
 }
 
-impl HookSource {
-    /// Returns whether hooks from this source are managed and therefore not
-    /// user-configurable.
-    pub fn is_managed(self) -> bool {
-        matches!(
-            self,
-            Self::System
-                | Self::Mdm
-                | Self::CloudRequirements
-                | Self::LegacyManagedConfigFile
-                | Self::LegacyManagedConfigMdm
-        )
-    }
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HookTrustStatus {
+    Managed,
+    Untrusted,
+    Trusted,
+    Modified,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -1828,6 +1765,7 @@ pub struct ItemStartedEvent {
     pub thread_id: ThreadId,
     pub turn_id: String,
     pub item: TurnItem,
+    pub started_at_ms: i64,
 }
 
 impl HasLegacyEvent for ItemStartedEvent {
@@ -1836,11 +1774,14 @@ impl HasLegacyEvent for ItemStartedEvent {
             TurnItem::WebSearch(item) => vec![EventMsg::WebSearchBegin(WebSearchBeginEvent {
                 call_id: item.id.clone(),
             })],
+            TurnItem::ImageView(_) => Vec::new(),
             TurnItem::ImageGeneration(item) => {
                 vec![EventMsg::ImageGenerationBegin(ImageGenerationBeginEvent {
                     call_id: item.id.clone(),
                 })]
             }
+            TurnItem::FileChange(item) => vec![item.as_legacy_begin_event(self.turn_id.clone())],
+            TurnItem::McpToolCall(item) => vec![item.as_legacy_begin_event()],
             _ => Vec::new(),
         }
     }
@@ -1851,6 +1792,15 @@ pub struct ItemCompletedEvent {
     pub thread_id: ThreadId,
     pub turn_id: String,
     pub item: TurnItem,
+    // Old rollout files may contain ItemCompleted events for PlanItem without
+    // this field. Default to 0 so those persisted rollouts still deserialize
+    // after tightening the core event contract.
+    #[serde(default = "default_item_completed_at_ms")]
+    pub completed_at_ms: i64,
+}
+
+const fn default_item_completed_at_ms() -> i64 {
+    0
 }
 
 pub trait HasLegacyEvent {
@@ -1859,7 +1809,13 @@ pub trait HasLegacyEvent {
 
 impl HasLegacyEvent for ItemCompletedEvent {
     fn as_legacy_events(&self, show_raw_agent_reasoning: bool) -> Vec<EventMsg> {
-        self.item.as_legacy_events(show_raw_agent_reasoning)
+        match &self.item {
+            TurnItem::FileChange(item) => item
+                .as_legacy_end_event(self.turn_id.clone())
+                .into_iter()
+                .collect(),
+            _ => self.item.as_legacy_events(show_raw_agent_reasoning),
+        }
     }
 }
 
@@ -2339,6 +2295,8 @@ pub struct DynamicToolCallResponseEvent {
     pub call_id: String,
     /// Turn ID that this dynamic tool call belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Dynamic tool namespace, when one was provided.
     #[serde(default)]
     pub namespace: Option<String>,
@@ -2518,6 +2476,18 @@ impl InitialHistory {
             }),
         }
     }
+
+    pub fn get_resumed_thread_source(&self) -> Option<ThreadSource> {
+        match self {
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+            InitialHistory::Resumed(resumed) => {
+                resumed.history.iter().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line) => meta_line.meta.thread_source,
+                    _ => None,
+                })
+            }
+        }
+    }
 }
 
 fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
@@ -2541,6 +2511,44 @@ pub enum SessionSource {
     SubAgent(SubAgentSource),
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ThreadSource {
+    User,
+    Subagent,
+    MemoryConsolidation,
+}
+
+impl ThreadSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadSource::User => "user",
+            ThreadSource::Subagent => "subagent",
+            ThreadSource::MemoryConsolidation => "memory_consolidation",
+        }
+    }
+}
+
+impl fmt::Display for ThreadSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ThreadSource {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "user" => Ok(ThreadSource::User),
+            "subagent" => Ok(ThreadSource::Subagent),
+            "memory_consolidation" => Ok(ThreadSource::MemoryConsolidation),
+            other => Err(format!("unknown thread source: {other}")),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
@@ -2601,16 +2609,6 @@ impl SessionSource {
             "unknown" => SessionSource::Unknown,
             _ => SessionSource::Custom(normalized),
         })
-    }
-
-    /// Low cardinality thread source label for analytics.
-    pub fn thread_source_name(&self) -> Option<&'static str> {
-        match self {
-            SessionSource::Cli | SessionSource::VSCode | SessionSource::Exec => Some("user"),
-            SessionSource::Internal(_) => Some("internal"),
-            SessionSource::SubAgent(_) => Some("subagent"),
-            SessionSource::Mcp | SessionSource::Custom(_) | SessionSource::Unknown => None,
-        }
     }
 
     pub fn is_internal(&self) -> bool {
@@ -2713,6 +2711,9 @@ pub struct SessionMeta {
     pub cli_version: String,
     #[serde(default)]
     pub source: SessionSource,
+    /// Optional analytics source classification for this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_source: Option<ThreadSource>,
     /// Optional random unique nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
@@ -2743,6 +2744,7 @@ impl Default for SessionMeta {
             originator: String::new(),
             cli_version: String::new(),
             source: SessionSource::default(),
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
@@ -3049,6 +3051,8 @@ pub struct ExecCommandBeginEvent {
     pub process_id: Option<String>,
     /// Turn ID that this command belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3073,6 +3077,8 @@ pub struct ExecCommandEndEvent {
     pub process_id: Option<String>,
     /// Turn ID that this command belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// The command that was executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3233,27 +3239,6 @@ pub struct TurnDiffEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct GetHistoryEntryResponseEvent {
-    pub offset: usize,
-    pub log_id: u64,
-    /// The entry at the requested offset, if available and parseable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry: Option<HistoryEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct McpListToolsResponseEvent {
-    /// Fully qualified tool name -> tool definition.
-    pub tools: std::collections::HashMap<String, McpTool>,
-    /// Known resources grouped by server name.
-    pub resources: std::collections::HashMap<String, Vec<McpResource>>,
-    /// Known resource templates grouped by server name.
-    pub resource_templates: std::collections::HashMap<String, Vec<McpResourceTemplate>>,
-    /// Authentication status for each configured MCP server.
-    pub auth_statuses: std::collections::HashMap<String, McpAuthStatus>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct McpStartupUpdateEvent {
     /// Server name being started.
     pub server: String,
@@ -3304,12 +3289,6 @@ impl fmt::Display for McpAuthStatus {
         };
         f.write_str(text)
     }
-}
-
-/// Response payload for `Op::ListSkills`.
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct ListSkillsResponseEvent {
-    pub skills: Vec<SkillsListEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3421,19 +3400,6 @@ pub struct SkillToolDependency {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct SkillErrorInfo {
-    pub path: PathBuf,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct SkillsListEntry {
-    pub cwd: PathBuf,
-    pub skills: Vec<SkillMetadata>,
-    pub errors: Vec<SkillErrorInfo>,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
 pub struct SessionNetworkProxyRuntime {
     pub http_addr: String,
@@ -3442,9 +3408,13 @@ pub struct SessionNetworkProxyRuntime {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, TS)]
 pub struct SessionConfiguredEvent {
-    pub session_id: ThreadId,
+    pub session_id: SessionId,
+    pub thread_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from_id: Option<ThreadId>,
+    /// Optional analytics source classification for this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_source: Option<ThreadSource>,
 
     /// Optional user-facing thread name (may be unset).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3457,7 +3427,7 @@ pub struct SessionConfiguredEvent {
     pub model_provider_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<ServiceTier>,
+    pub service_tier: Option<String>,
 
     /// When to escalate for approval for execution
     pub approval_policy: AskForApproval,
@@ -3485,12 +3455,6 @@ pub struct SessionConfiguredEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
 
-    /// Identifier of the history log file (inode on Unix, 0 otherwise).
-    pub history_log_id: u64,
-
-    /// Current number of entries in the history log.
-    pub history_entry_count: usize,
-
     /// Optional initial messages (as events) for resumed sessions.
     /// When present, UIs can use these to seed the history.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3513,13 +3477,17 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
     {
         #[derive(Deserialize)]
         struct Wire {
-            session_id: ThreadId,
+            session_id: SessionId,
+            #[serde(default)]
+            thread_id: Option<ThreadId>,
             forked_from_id: Option<ThreadId>,
+            #[serde(default)]
+            thread_source: Option<ThreadSource>,
             #[serde(default)]
             thread_name: Option<String>,
             model: String,
             model_provider_id: String,
-            service_tier: Option<ServiceTier>,
+            service_tier: Option<String>,
             approval_policy: AskForApproval,
             #[serde(default)]
             approvals_reviewer: ApprovalsReviewer,
@@ -3532,8 +3500,6 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             active_permission_profile: Option<ActivePermissionProfile>,
             cwd: AbsolutePathBuf,
             reasoning_effort: Option<ReasoningEffortConfig>,
-            history_log_id: u64,
-            history_entry_count: usize,
             initial_messages: Option<Vec<EventMsg>>,
             network_proxy: Option<SessionNetworkProxyRuntime>,
             rollout_path: Option<PathBuf>,
@@ -3553,7 +3519,9 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
 
         Ok(Self {
             session_id: wire.session_id,
+            thread_id: wire.thread_id.unwrap_or_else(|| wire.session_id.into()),
             forked_from_id: wire.forked_from_id,
+            thread_source: wire.thread_source,
             thread_name: wire.thread_name,
             model: wire.model,
             model_provider_id: wire.model_provider_id,
@@ -3564,21 +3532,11 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             active_permission_profile: wire.active_permission_profile,
             cwd: wire.cwd,
             reasoning_effort: wire.reasoning_effort,
-            history_log_id: wire.history_log_id,
-            history_entry_count: wire.history_entry_count,
             initial_messages: wire.initial_messages,
             network_proxy: wire.network_proxy,
             rollout_path: wire.rollout_path,
         })
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-pub struct ThreadNameUpdatedEvent {
-    pub thread_id: ThreadId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub thread_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3741,6 +3699,8 @@ pub enum TurnAbortReason {
 pub struct CollabAgentSpawnBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
@@ -3780,6 +3740,8 @@ pub struct CollabAgentStatusEntry {
 pub struct CollabAgentSpawnEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the newly spawned agent, if it was created.
@@ -3805,6 +3767,8 @@ pub struct CollabAgentSpawnEndEvent {
 pub struct CollabAgentInteractionBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3818,6 +3782,8 @@ pub struct CollabAgentInteractionBeginEvent {
 pub struct CollabAgentInteractionEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3837,6 +3803,8 @@ pub struct CollabAgentInteractionEndEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct CollabWaitingBeginEvent {
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receivers.
@@ -3854,6 +3822,8 @@ pub struct CollabWaitingEndEvent {
     pub sender_thread_id: ThreadId,
     /// ID of the waiting call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Optional receiver metadata paired with final statuses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_statuses: Vec<CollabAgentStatusEntry>,
@@ -3865,6 +3835,8 @@ pub struct CollabWaitingEndEvent {
 pub struct CollabCloseBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3875,6 +3847,8 @@ pub struct CollabCloseBeginEvent {
 pub struct CollabCloseEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3894,6 +3868,8 @@ pub struct CollabCloseEndEvent {
 pub struct CollabResumeBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3910,6 +3886,8 @@ pub struct CollabResumeBeginEvent {
 pub struct CollabResumeEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3928,9 +3906,13 @@ pub struct CollabResumeEndEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::FileChangeItem;
     use crate::items::ImageGenerationItem;
+    use crate::items::McpToolCallItem;
+    use crate::items::McpToolCallStatus;
     use crate::items::UserMessageItem;
     use crate::items::WebSearchItem;
+    use crate::mcp::CallToolResult;
     use crate::permissions::FileSystemAccessMode;
     use crate::permissions::FileSystemPath;
     use crate::permissions::FileSystemSandboxEntry;
@@ -3946,20 +3928,6 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
-
-    #[test]
-    fn hook_source_managedness_is_source_derived() {
-        assert_eq!(HookSource::System.is_managed(), true);
-        assert_eq!(HookSource::Mdm.is_managed(), true);
-        assert_eq!(HookSource::CloudRequirements.is_managed(), true);
-        assert_eq!(HookSource::LegacyManagedConfigFile.is_managed(), true);
-        assert_eq!(HookSource::LegacyManagedConfigMdm.is_managed(), true);
-        assert_eq!(HookSource::User.is_managed(), false);
-        assert_eq!(HookSource::Project.is_managed(), false);
-        assert_eq!(HookSource::SessionFlags.is_managed(), false);
-        assert_eq!(HookSource::Plugin.is_managed(), false);
-        assert_eq!(HookSource::Unknown.is_managed(), false);
-    }
 
     fn sorted_writable_roots(roots: Vec<WritableRoot>) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut sorted_roots: Vec<(PathBuf, Vec<PathBuf>)> = roots
@@ -4037,28 +4005,6 @@ mod tests {
             SessionSource::from_startup_arg(" Atlas ").unwrap(),
             SessionSource::Custom("atlas".to_string())
         );
-    }
-
-    #[test]
-    fn session_source_thread_source_name_classifies_user_and_subagent_sources() {
-        for (source, expected) in [
-            (SessionSource::Cli, Some("user")),
-            (SessionSource::VSCode, Some("user")),
-            (SessionSource::Exec, Some("user")),
-            (
-                SessionSource::Internal(InternalSessionSource::MemoryConsolidation),
-                Some("internal"),
-            ),
-            (
-                SessionSource::SubAgent(SubAgentSource::Review),
-                Some("subagent"),
-            ),
-            (SessionSource::Mcp, None),
-            (SessionSource::Custom("atlas".to_string()), None),
-            (SessionSource::Unknown, None),
-        ] {
-            assert_eq!(source.thread_source_name(), expected);
-        }
     }
 
     #[test]
@@ -4583,6 +4529,7 @@ mod tests {
                     queries: None,
                 },
             }),
+            started_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4599,6 +4546,7 @@ mod tests {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
             item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            started_at_ms: 0,
         };
 
         assert!(
@@ -4620,6 +4568,7 @@ mod tests {
                 result: String::new(),
                 saved_path: None,
             }),
+            started_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4627,6 +4576,77 @@ mod tests {
         match &legacy_events[0] {
             EventMsg::ImageGenerationBegin(event) => assert_eq!(event.call_id, "ig-1"),
             _ => panic!("expected ImageGenerationBegin event"),
+        }
+    }
+
+    #[test]
+    fn item_started_event_from_file_change_emits_patch_begin_event() {
+        let event = ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            started_at_ms: 0,
+            item: TurnItem::FileChange(FileChangeItem {
+                id: "patch-1".into(),
+                changes: [(
+                    PathBuf::from("new.txt"),
+                    FileChange::Add {
+                        content: "hello".into(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                status: None,
+                auto_approved: Some(true),
+                stdout: None,
+                stderr: None,
+            }),
+        };
+
+        let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert_eq!(legacy_events.len(), 1);
+        match &legacy_events[0] {
+            EventMsg::PatchApplyBegin(event) => {
+                assert_eq!(event.call_id, "patch-1");
+                assert_eq!(event.turn_id, "turn-1");
+                assert!(event.auto_approved);
+                assert!(event.changes.contains_key(&PathBuf::from("new.txt")));
+            }
+            _ => panic!("expected PatchApplyBegin event"),
+        }
+    }
+
+    #[test]
+    fn item_started_event_from_mcp_tool_call_emits_begin_event() {
+        let event = ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            started_at_ms: 0,
+            item: TurnItem::McpToolCall(McpToolCallItem {
+                id: "mcp-1".into(),
+                server: "server".into(),
+                tool: "tool".into(),
+                arguments: json!({"arg": "value"}),
+                mcp_app_resource_uri: Some("app://connector".into()),
+                status: McpToolCallStatus::InProgress,
+                result: None,
+                error: None,
+                duration: None,
+            }),
+        };
+
+        let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert_eq!(legacy_events.len(), 1);
+        match &legacy_events[0] {
+            EventMsg::McpToolCallBegin(event) => {
+                assert_eq!(event.call_id, "mcp-1");
+                assert_eq!(event.invocation.server, "server");
+                assert_eq!(event.invocation.tool, "tool");
+                assert_eq!(
+                    event.mcp_app_resource_uri.as_deref(),
+                    Some("app://connector")
+                );
+            }
+            _ => panic!("expected McpToolCallBegin event"),
         }
     }
 
@@ -4642,6 +4662,7 @@ mod tests {
                 result: "Zm9v".into(),
                 saved_path: Some(test_path_buf("/tmp/ig-1.png").abs()),
             }),
+            completed_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4661,6 +4682,114 @@ mod tests {
         }
     }
 
+    #[test]
+    fn item_completed_event_from_file_change_emits_patch_end_event() {
+        let event = ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            completed_at_ms: 0,
+            item: TurnItem::FileChange(FileChangeItem {
+                id: "patch-1".into(),
+                changes: [(
+                    PathBuf::from("new.txt"),
+                    FileChange::Add {
+                        content: "hello".into(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                status: Some(PatchApplyStatus::Completed),
+                auto_approved: None,
+                stdout: Some("Done!".into()),
+                stderr: Some(String::new()),
+            }),
+        };
+
+        let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert_eq!(legacy_events.len(), 1);
+        match &legacy_events[0] {
+            EventMsg::PatchApplyEnd(event) => {
+                assert_eq!(event.call_id, "patch-1");
+                assert_eq!(event.turn_id, "turn-1");
+                assert_eq!(event.stdout, "Done!");
+                assert!(event.success);
+                assert_eq!(event.status, PatchApplyStatus::Completed);
+                assert!(event.changes.contains_key(&PathBuf::from("new.txt")));
+            }
+            _ => panic!("expected PatchApplyEnd event"),
+        }
+    }
+
+    #[test]
+    fn item_completed_event_from_mcp_tool_call_emits_end_event() {
+        let event = ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            completed_at_ms: 0,
+            item: TurnItem::McpToolCall(McpToolCallItem {
+                id: "mcp-1".into(),
+                server: "server".into(),
+                tool: "tool".into(),
+                arguments: json!({"arg": "value"}),
+                mcp_app_resource_uri: Some("app://connector".into()),
+                status: McpToolCallStatus::Completed,
+                result: Some(CallToolResult {
+                    content: vec![json!({"type": "text", "text": "ok"})],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+                error: None,
+                duration: Some(Duration::from_millis(42)),
+            }),
+        };
+
+        let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert_eq!(legacy_events.len(), 1);
+        match &legacy_events[0] {
+            EventMsg::McpToolCallEnd(event) => {
+                assert_eq!(event.call_id, "mcp-1");
+                assert_eq!(event.invocation.server, "server");
+                assert_eq!(event.invocation.tool, "tool");
+                assert_eq!(
+                    event.mcp_app_resource_uri.as_deref(),
+                    Some("app://connector")
+                );
+                assert_eq!(event.duration, Duration::from_millis(42));
+                assert!(event.is_success());
+            }
+            _ => panic!("expected McpToolCallEnd event"),
+        }
+    }
+
+    #[test]
+    fn item_started_event_requires_started_at_ms() {
+        let mut value = serde_json::to_value(ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            started_at_ms: 123,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("started_at_ms");
+
+        assert!(serde_json::from_value::<ItemStartedEvent>(value).is_err());
+    }
+
+    #[test]
+    fn item_completed_event_defaults_missing_completed_at_ms() {
+        let mut value = serde_json::to_value(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            completed_at_ms: 123,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("completed_at_ms");
+
+        let event = serde_json::from_value::<ItemCompletedEvent>(value).unwrap();
+        assert_eq!(event.completed_at_ms, 0);
+    }
     #[test]
     fn rollback_failed_error_does_not_affect_turn_status() {
         let event = ErrorEvent {
@@ -5111,14 +5240,17 @@ mod tests {
     /// amount of nesting.
     #[test]
     fn serialize_event() -> Result<()> {
-        let conversation_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let session_id = SessionId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c7")?;
+        let thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
         let rollout_file = NamedTempFile::new()?;
         let permission_profile = PermissionProfile::read_only();
         let event = Event {
             id: "1234".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: conversation_id,
+                session_id,
+                thread_id,
                 forked_from_id: None,
+                thread_source: None,
                 thread_name: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
@@ -5129,8 +5261,6 @@ mod tests {
                 active_permission_profile: None,
                 cwd: test_path_buf("/home/user/project").abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
-                history_log_id: 0,
-                history_entry_count: 0,
                 initial_messages: None,
                 network_proxy: None,
                 rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -5141,7 +5271,8 @@ mod tests {
             "id": "1234",
             "msg": {
                 "type": "session_configured",
-                "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                "thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
                 "approval_policy": "never",
@@ -5149,8 +5280,6 @@ mod tests {
                 "permission_profile": permission_profile,
                 "cwd": test_path_buf("/home/user/project"),
                 "reasoning_effort": "medium",
-                "history_log_id": 0,
-                "history_entry_count": 0,
                 "rollout_path": format!("{}", rollout_file.path().display()),
             }
         });
@@ -5171,8 +5300,6 @@ mod tests {
                 "type": "read-only"
             },
             "cwd": cwd,
-            "history_log_id": 0,
-            "history_entry_count": 0,
         });
 
         let event: SessionConfiguredEvent = serde_json::from_value(value)?;

@@ -15,6 +15,7 @@ use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::PluginInstallResponse;
@@ -27,7 +28,6 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
-use codex_protocol::message_history::HistoryEntry;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
@@ -67,7 +67,7 @@ pub(crate) enum ThreadGoalSetMode {
 pub(crate) struct HistoryLookupResponse {
     pub(crate) offset: usize,
     pub(crate) log_id: u64,
-    pub(crate) entry: Option<HistoryEntry>,
+    pub(crate) entry: Option<String>,
 }
 
 impl RealtimeAudioDeviceKind {
@@ -149,12 +149,30 @@ pub(crate) enum AppEvent {
         event: HistoryLookupResponse,
     },
 
+    /// Persist a submitted prompt in the cross-session message history.
+    AppendMessageHistoryEntry {
+        thread_id: ThreadId,
+        text: String,
+    },
+
+    /// Fetch a persistent cross-session message history entry by offset.
+    LookupMessageHistoryEntry {
+        thread_id: ThreadId,
+        offset: usize,
+        log_id: u64,
+    },
+
     /// Start a new session.
     NewSession,
 
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.
     ClearUi,
+
+    /// Re-render the transcript using the selected scrollback rendering mode.
+    RawOutputModeChanged {
+        enabled: bool,
+    },
 
     /// Clear the current context, start a fresh session, and submit an initial user message.
     ///
@@ -354,6 +372,23 @@ pub(crate) enum AppEvent {
         result: Result<MarketplaceRemoveResponse, String>,
     },
 
+    /// Replace the plugins popup with a marketplace-upgrade loading state.
+    OpenMarketplaceUpgradeLoading {
+        marketplace_name: Option<String>,
+    },
+
+    /// Upgrade configured Git marketplaces.
+    FetchMarketplaceUpgrade {
+        cwd: PathBuf,
+        marketplace_name: Option<String>,
+    },
+
+    /// Result of upgrading configured Git marketplaces.
+    MarketplaceUpgradeLoaded {
+        cwd: PathBuf,
+        result: Result<MarketplaceUpgradeResponse, String>,
+    },
+
     /// Replace the plugins popup with a plugin-detail loading state.
     OpenPluginDetailLoading {
         plugin_display_name: String,
@@ -466,6 +501,10 @@ pub(crate) enum AppEvent {
 
     /// Begin buffering initial resume replay rows before they are written to scrollback.
     BeginInitialHistoryReplayBuffer,
+
+    /// Begin buffering thread-switch replay cells so the final scrollback write can reuse the
+    /// resize-reflow tail renderer.
+    BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
@@ -731,10 +770,21 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    /// Trust the current definition for a hook by stable hook key.
+    TrustHook {
+        key: String,
+        current_hash: String,
+    },
+
     /// Result of persisting hook enabled state.
     HookEnabledSet {
         key: String,
         enabled: bool,
+        result: Result<(), String>,
+    },
+
+    /// Result of persisting hook trust state.
+    HookTrusted {
         result: Result<(), String>,
     },
 
@@ -805,6 +855,11 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         branch: Option<String>,
     },
+    /// Async update of Git summary fields for status line rendering.
+    StatusLineGitSummaryUpdated {
+        cwd: PathBuf,
+        summary: crate::chatwidget::StatusLineGitSummary,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
@@ -850,6 +905,9 @@ pub(crate) enum AppEvent {
         action: String,
         intent: KeymapEditIntent,
     },
+
+    /// Open the keymap keypress inspector.
+    OpenKeymapDebug,
 
     /// Apply a captured key to the selected keymap action.
     KeymapCaptured {

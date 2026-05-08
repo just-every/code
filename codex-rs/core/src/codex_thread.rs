@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::file_watcher::WatchRegistration;
+use crate::goals::ExternalGoalSet;
 use crate::goals::GoalRuntimeEvent;
 use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
@@ -10,7 +11,6 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -29,10 +29,13 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
+use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResult;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -49,7 +52,7 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
-    pub service_tier: Option<ServiceTier>,
+    pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub permission_profile: PermissionProfile,
@@ -59,6 +62,7 @@ pub struct ThreadConfigSnapshot {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub personality: Option<Personality>,
     pub session_source: SessionSource,
+    pub thread_source: Option<ThreadSource>,
 }
 
 impl ThreadConfigSnapshot {
@@ -86,7 +90,7 @@ pub struct CodexThreadTurnContextOverrides {
     pub model: Option<String>,
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
-    pub service_tier: Option<Option<ServiceTier>>,
+    pub service_tier: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub personality: Option<Personality>,
 }
@@ -158,11 +162,11 @@ impl CodexThread {
         }
     }
 
-    pub async fn apply_external_goal_set(&self, status: codex_state::ThreadGoalStatus) {
+    pub async fn apply_external_goal_set(&self, external_set: ExternalGoalSet) {
         if let Err(err) = self
             .codex
             .session
-            .goal_runtime_apply(GoalRuntimeEvent::ExternalSet { status })
+            .goal_runtime_apply(GoalRuntimeEvent::ExternalSet { external_set })
             .await
         {
             tracing::warn!("failed to apply external goal status runtime effects: {err}");
@@ -218,9 +222,14 @@ impl CodexThread {
         &self,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        mcp_elicitations_auto_deny: bool,
     ) -> ConstraintResult<()> {
         self.codex
-            .set_app_server_client_info(app_server_client_name, app_server_client_version)
+            .set_app_server_client_info(
+                app_server_client_name,
+                app_server_client_version,
+                mcp_elicitations_auto_deny,
+            )
             .await
     }
 
@@ -381,7 +390,7 @@ impl CodexThread {
         self.rollout_path.clone()
     }
 
-    pub(crate) fn session_configured(&self) -> SessionConfiguredEvent {
+    pub fn session_configured(&self) -> SessionConfiguredEvent {
         self.session_configured.clone()
     }
 
@@ -411,6 +420,38 @@ impl CodexThread {
         live_thread.load_history(include_archived).await
     }
 
+    pub async fn read_thread(
+        &self,
+        include_archived: bool,
+        include_history: bool,
+    ) -> ThreadStoreResult<StoredThread> {
+        let live_thread = self
+            .codex
+            .session
+            .live_thread_for_persistence("read thread")
+            .map_err(|err| ThreadStoreError::Internal {
+                message: err.to_string(),
+            })?;
+        live_thread
+            .read_thread(include_archived, include_history)
+            .await
+    }
+
+    pub async fn update_thread_metadata(
+        &self,
+        patch: ThreadMetadataPatch,
+        include_archived: bool,
+    ) -> ThreadStoreResult<StoredThread> {
+        let live_thread = self
+            .codex
+            .session
+            .live_thread_for_persistence("update thread metadata")
+            .map_err(|err| ThreadStoreError::Internal {
+                message: err.to_string(),
+            })?;
+        live_thread.update_metadata(patch, include_archived).await
+    }
+
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.codex.state_db()
     }
@@ -421,6 +462,13 @@ impl CodexThread {
 
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.codex.session.get_config().await
+    }
+
+    /// Refresh the thread's layer-backed user config state from a caller-supplied
+    /// config snapshot. Thread-scoped layers and session-static settings remain
+    /// unchanged.
+    pub async fn refresh_runtime_config(&self, next_config: crate::config::Config) {
+        self.codex.session.refresh_runtime_config(next_config).await;
     }
 
     pub async fn read_mcp_resource(

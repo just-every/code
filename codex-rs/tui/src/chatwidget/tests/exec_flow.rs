@@ -54,6 +54,7 @@ fn app_server_exec_approval_request_splits_shell_wrapped_command() {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             item_id: "item-1".to_string(),
+            started_at_ms: 0,
             approval_id: Some("approval-1".to_string()),
             reason: None,
             network_approval_context: None,
@@ -941,10 +942,10 @@ async fn user_shell_command_renders_output_not_exploring() {
 #[tokio::test]
 async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
-        thread_id: conversation_id,
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
@@ -958,8 +959,7 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -977,8 +977,8 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
         other => panic!("expected RunUserShellCommand op, got {other:?}"),
     }
     assert_matches!(
-        op_rx.try_recv(),
-        Ok(Op::AddToHistory { text }) if text == "!echo hi"
+        rx.try_recv(),
+        Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) if text == "!echo hi"
     );
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }

@@ -65,6 +65,28 @@ const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
     LMSTUDIO_OSS_PROVIDER_ID,
 ];
 
+pub const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
+
+const fn default_allow_login_shell() -> Option<bool> {
+    Some(true)
+}
+
+fn default_history() -> Option<History> {
+    Some(History::default())
+}
+
+const fn default_project_doc_max_bytes() -> Option<usize> {
+    Some(DEFAULT_PROJECT_DOC_MAX_BYTES)
+}
+
+fn default_project_doc_fallback_filenames() -> Option<Vec<String>> {
+    Some(Vec::new())
+}
+
+const fn default_hide_agent_reasoning() -> Option<bool> {
+    Some(false)
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -106,6 +128,7 @@ pub struct ConfigToml {
     /// If `false`, the model can never use a login shell: `login = true`
     /// requests are rejected, and omitting `login` defaults to a non-login
     /// shell.
+    #[serde(default = "default_allow_login_shell")]
     pub allow_login_shell: Option<bool>,
 
     /// Sandbox mode to use.
@@ -153,7 +176,10 @@ pub struct ConfigToml {
     pub compact_prompt: Option<String>,
 
     /// Optional commit attribution text for commit message co-author trailers.
+    /// This top-level setting only takes effect when `[features].codex_git_commit`
+    /// is enabled.
     ///
+    /// When enabled and unset, Codex uses `Codex <noreply@openai.com>`.
     /// Set to an empty string to disable automatic commit attribution.
     pub commit_attribution: Option<String>,
 
@@ -202,9 +228,11 @@ pub struct ConfigToml {
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
+    #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
 
     /// Ordered list of fallback filenames to look for when AGENTS.md is missing.
+    #[serde(default = "default_project_doc_fallback_filenames")]
     pub project_doc_fallback_filenames: Option<Vec<String>>,
 
     /// Token budget applied when storing tool/function outputs in the context manager.
@@ -233,7 +261,7 @@ pub struct ConfigToml {
     pub profiles: HashMap<String, ConfigProfile>,
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
-    #[serde(default)]
+    #[serde(default = "default_history")]
     pub history: Option<History>,
 
     /// Directory where Codex stores the SQLite state DB.
@@ -244,6 +272,9 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
 
+    /// Debugging and reproducibility settings.
+    pub debug: Option<DebugToml>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -253,6 +284,7 @@ pub struct ConfigToml {
 
     /// When set to `true`, `AgentReasoning` events will be hidden from the
     /// UI/output. Defaults to `false`.
+    #[serde(default = "default_hide_agent_reasoning")]
     pub hide_agent_reasoning: Option<bool>,
 
     /// When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.
@@ -313,13 +345,14 @@ pub struct ConfigToml {
     /// active.
     pub experimental_realtime_start_instructions: Option<String>,
 
-    /// Experimental / do not use. When set, app-server uses a remote thread
-    /// store at this endpoint instead of the local filesystem/SQLite store.
-    pub experimental_thread_store_endpoint: Option<String>,
-
     /// Experimental / do not use. When set, app-server fetches thread-scoped
     /// config from a remote service at this endpoint.
     pub experimental_thread_config_endpoint: Option<String>,
+
+    /// Removed. Former remote thread-store endpoint setting kept only so we can
+    /// fail fast instead of silently falling back to local persistence.
+    #[schemars(skip)]
+    pub experimental_thread_store_endpoint: Option<String>,
 
     /// Experimental / do not use. Selects the thread store implementation.
     pub experimental_thread_store: Option<ThreadStoreToml>,
@@ -420,13 +453,42 @@ pub struct ConfigToml {
     pub oss_provider: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ConfigLockfileToml {
+    pub version: u32,
+    pub codex_version: String,
+
+    /// Replayable effective config captured in the lockfile.
+    pub config: ConfigToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugToml {
+    pub config_lockfile: Option<DebugConfigLockToml>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugConfigLockToml {
+    /// Directory where Codex writes effective session config lock files.
+    pub export_dir: Option<AbsolutePathBuf>,
+
+    /// Lockfile to replay as the authoritative effective config.
+    pub load_path: Option<AbsolutePathBuf>,
+
+    /// Allow replaying a lock generated by a different Codex version.
+    pub allow_codex_version_mismatch: Option<bool>,
+
+    /// Save fields resolved from the model catalog/session configuration.
+    pub save_fields_resolved_from_model_catalog: Option<bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThreadStoreToml {
     Local {},
-    Remote {
-        endpoint: String,
-    },
     #[schemars(skip)]
     InMemory {
         id: String,
