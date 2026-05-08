@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.97] - 2026-05-01
+
+- CLI/TUI: add configurable keymaps, a Vim composer mode, and a dedicated `codex update` command for faster keyboard-driven workflows. (5e737372, b6f81257, b985768d)
+- Hooks: add a `/hooks` browser, persist hook enablement state, and fix migrated hook path rewriting so hook management is easier and more reliable. (93d53f65, 8f3c06cc, 8774229a, d92c909e)
+- Plugins: track local paths for shared plugins, add remote plugin skill reads, sync cached installed bundles, and surface admin-disabled remote plugin status. (48791920, 96d2ea90, 73cd8319, 2686873e, bb60b78c)
+- Sandbox: add explicit sandbox permission profiles and CLI config controls, and ignore dangerous project-level config keys by default. (6ed04406, 55979251, 9ddb267e)
+- TUI: color the status line from the active theme, format multi-day goal durations clearly, and trim extended history persistence to keep large sessions responsive. (a93c89f4, d898cc8f, 5de7992e)
+
 ## [0.6.96] - 2026-04-26
 
 - Goals: add persistent thread goals with `/goal` controls, status UI, pause and unpause actions, token budgets, and automatic continuation across app-server, core, and TUI flows. (0ee737ce, 6c874f9b, 32ace07a, 41676286, f1c963d7)
