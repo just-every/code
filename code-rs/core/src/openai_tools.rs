@@ -189,17 +189,13 @@ impl ToolsConfig {
         // Our fork does not yet enable the experimental streamable shell tool
         // in the tool selection phase. Default to the existing behaviors.
         let use_streamable_shell_tool = false;
-        let mut shell_type = if use_streamable_shell_tool {
-            ConfigShellToolType::StreamableShell
-        } else if model_family.uses_local_shell_tool {
-            ConfigShellToolType::LocalShell
-        } else if model_family.uses_shell_command_tool {
-            ConfigShellToolType::ShellCommand {
-                sandbox_policy: sandbox_policy.clone(),
-            }
-        } else {
-            ConfigShellToolType::DefaultShell
-        };
+        let mut shell_type = select_shell_type_for_platform(
+            model_family,
+            &sandbox_policy,
+            use_streamable_shell_tool,
+            include_apply_patch_tool,
+            cfg!(target_os = "windows"),
+        );
         if matches!(approval_policy, AskForApproval::OnRequest)
             && !use_streamable_shell_tool
             && !matches!(shell_type, ConfigShellToolType::ShellCommand { .. })
@@ -209,23 +205,11 @@ impl ToolsConfig {
             }
         }
 
-        let apply_patch_tool_type = if include_apply_patch_tool {
-            // On Windows, grammar-based apply_patch invocations rely on heredocs
-            // the shell cannot parse. Force the JSON/function variant instead.
-            #[cfg(target_os = "windows")]
-            {
-                model_family
-                    .apply_patch_tool_type
-                    .clone()
-                    .map(|_| ApplyPatchToolType::Function)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                model_family.apply_patch_tool_type.clone()
-            }
-        } else {
-            None
-        };
+        let apply_patch_tool_type = apply_patch_tool_type_for_platform(
+            model_family,
+            include_apply_patch_tool,
+            cfg!(target_os = "windows"),
+        );
 
         Self {
             shell_type,
@@ -255,6 +239,57 @@ impl ToolsConfig {
             p.use_streamable_shell_tool,
             p.include_view_image_tool,
         )
+    }
+}
+
+fn select_shell_type_for_platform(
+    model_family: &ModelFamily,
+    sandbox_policy: &SandboxPolicy,
+    use_streamable_shell_tool: bool,
+    include_apply_patch_tool: bool,
+    is_windows: bool,
+) -> ConfigShellToolType {
+    if use_streamable_shell_tool {
+        return ConfigShellToolType::StreamableShell;
+    }
+
+    if model_family.uses_local_shell_tool {
+        return ConfigShellToolType::LocalShell;
+    }
+
+    // Keep Windows on the argv-style shell path while apply_patch is enabled.
+    // That keeps the dedicated JSON tool as the preferred edit mechanism until
+    // shell_command/apply_patch parity is covered by fork tests.
+    let should_use_shell_command = model_family.uses_shell_command_tool
+        && !(is_windows && include_apply_patch_tool);
+
+    if should_use_shell_command {
+        ConfigShellToolType::ShellCommand {
+            sandbox_policy: sandbox_policy.clone(),
+        }
+    } else {
+        ConfigShellToolType::DefaultShell
+    }
+}
+
+fn apply_patch_tool_type_for_platform(
+    model_family: &ModelFamily,
+    include_apply_patch_tool: bool,
+    is_windows: bool,
+) -> Option<ApplyPatchToolType> {
+    if !include_apply_patch_tool {
+        return None;
+    }
+
+    if is_windows {
+        // Grammar-based apply_patch invocations rely on heredocs the native
+        // Windows shells cannot parse. Force the JSON/function variant.
+        model_family
+            .apply_patch_tool_type
+            .clone()
+            .map(|_| ApplyPatchToolType::Function)
+    } else {
+        model_family.apply_patch_tool_type.clone()
     }
 }
 
@@ -1811,6 +1846,54 @@ mod tests {
                 "code_bridge",
                 "web_search",
             ],
+        );
+    }
+
+    #[test]
+    fn windows_apply_patch_prefers_default_shell_for_shell_command_models() {
+        let model_family =
+            find_family_for_model("gpt-5.4").expect("gpt-5.4 should be a valid model family");
+
+        let shell_type = select_shell_type_for_platform(
+            &model_family,
+            &SandboxPolicy::ReadOnly,
+            false,
+            true,
+            true,
+        );
+
+        assert!(matches!(shell_type, ConfigShellToolType::DefaultShell));
+    }
+
+    #[test]
+    fn windows_without_apply_patch_keeps_shell_command_models_unchanged() {
+        let model_family =
+            find_family_for_model("gpt-5.4").expect("gpt-5.4 should be a valid model family");
+
+        let shell_type = select_shell_type_for_platform(
+            &model_family,
+            &SandboxPolicy::ReadOnly,
+            false,
+            false,
+            true,
+        );
+
+        assert!(matches!(
+            shell_type,
+            ConfigShellToolType::ShellCommand {
+                sandbox_policy: SandboxPolicy::ReadOnly,
+            }
+        ));
+    }
+
+    #[test]
+    fn windows_apply_patch_uses_function_tool() {
+        let model_family =
+            find_family_for_model("gpt-5.4").expect("gpt-5.4 should be a valid model family");
+
+        assert_eq!(
+            apply_patch_tool_type_for_platform(&model_family, true, true),
+            Some(ApplyPatchToolType::Function)
         );
     }
 
