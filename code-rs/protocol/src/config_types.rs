@@ -181,6 +181,31 @@ pub enum ServiceTier {
     Flex,
 }
 
+/// Request/config sentinel for explicit standard routing.
+///
+/// This is not a catalog service tier id. It means the user intentionally
+/// selected no service tier, so model catalog defaults should not apply.
+pub const SERVICE_TIER_DEFAULT_REQUEST_VALUE: &str = "default";
+
+impl ServiceTier {
+    pub const fn request_value(self) -> &'static str {
+        match self {
+            Self::Standard => SERVICE_TIER_DEFAULT_REQUEST_VALUE,
+            Self::Fast => "priority",
+            Self::Flex => "flex",
+        }
+    }
+
+    pub fn from_request_value(value: &str) -> Option<Self> {
+        match value {
+            "default" | "standard" => Some(Self::Standard),
+            "fast" | "priority" => Some(Self::Fast),
+            "flex" => Some(Self::Flex),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]

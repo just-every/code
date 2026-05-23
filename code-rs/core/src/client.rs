@@ -56,7 +56,6 @@ use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::ContextMode;
-use crate::config_types::ServiceTier;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
@@ -782,11 +781,10 @@ impl ModelClient {
                 store: self.provider.is_azure_responses_endpoint(),
                 stream: true,
                 include,
-                service_tier: match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                },
+                service_tier: self
+                    .config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string()),
                 prompt_cache_key: Some(session_id_str.clone()),
             };
 
@@ -1261,11 +1259,10 @@ impl ModelClient {
                 store: azure_workaround,
                 stream: true,
                 include,
-                service_tier: match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                },
+                service_tier: self
+                    .config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string()),
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
             };
@@ -1940,11 +1937,9 @@ impl ModelClient {
             {
                 None
             } else {
-                match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                }
+                self.config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string())
             };
             let payload = CompactHistoryRequest {
                 model: model_slug,
