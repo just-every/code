@@ -1,69 +1,166 @@
 module(name = "codex")
 
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "toolchains_llvm_bootstrapped", version = "0.5.6")
+bazel_dep(name = "llvm", version = "0.7.1")
+# The upstream LLVM archive contains a few unix-only symlink entries and is
+# missing a couple of MinGW compatibility archives that windows-gnullvm needs
+# during extraction and linking, so patch it until upstream grows native support.
 single_version_override(
-    module_name = "toolchains_llvm_bootstrapped",
+    module_name = "llvm",
     patch_strip = 1,
     patches = [
-        "//patches:toolchains_llvm_bootstrapped_resource_dir.patch",
+        "//patches:llvm_windows_symlink_extract.patch",
+    ],
+)
+# Abseil picks a MinGW pthread TLS path that does not match our hermetic
+# windows-gnullvm toolchain; force it onto the portable C++11 thread-local path.
+single_version_override(
+    module_name = "abseil-cpp",
+    patch_strip = 1,
+    patches = [
+        "//patches:abseil_windows_gnullvm_thread_identity.patch",
     ],
 )
 
-register_toolchains("@toolchains_llvm_bootstrapped//toolchain:all")
+register_toolchains("@llvm//toolchain:all")
 
-osx = use_extension("@toolchains_llvm_bootstrapped//extensions:osx.bzl", "osx")
-osx.framework(name = "ApplicationServices")
-osx.framework(name = "AppKit")
-osx.framework(name = "ColorSync")
-osx.framework(name = "CoreFoundation")
-osx.framework(name = "CoreGraphics")
-osx.framework(name = "CoreServices")
-osx.framework(name = "CoreText")
-osx.framework(name = "AudioToolbox")
-osx.framework(name = "CFNetwork")
-osx.framework(name = "FontServices")
-osx.framework(name = "AudioUnit")
-osx.framework(name = "CoreAudio")
-osx.framework(name = "CoreAudioTypes")
-osx.framework(name = "Foundation")
-osx.framework(name = "ImageIO")
-osx.framework(name = "IOKit")
-osx.framework(name = "Kernel")
-osx.framework(name = "OSLog")
-osx.framework(name = "Security")
-osx.framework(name = "SystemConfiguration")
-use_repo(osx, "macosx15.4.sdk")
+osx = use_extension("@llvm//extensions:osx.bzl", "osx")
+osx.from_archive(
+    sha256 = "1bde70c0b1c2ab89ff454acbebf6741390d7b7eb149ca2a3ca24cc9203a408b7",
+    strip_prefix = "Payload/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk",
+    type = "pkg",
+    urls = [
+        "https://swcdn.apple.com/content/downloads/32/53/047-96692-A_OAHIHT53YB/ybtshxmrcju8m2qvw3w5elr4rajtg1x3y3/CLTools_macOSNMOS_SDK.pkg",
+    ],
+)
+osx.frameworks(names = [
+    "ApplicationServices",
+    "AppKit",
+    "ColorSync",
+    "CoreFoundation",
+    "CoreGraphics",
+    "CoreImage",
+    "CoreMedia",
+    "CoreMIDI",
+    "CoreServices",
+    "CoreText",
+    "CoreVideo",
+    "DiskArbitration",
+    "AudioToolbox",
+    "AVFoundation",
+    "AVFAudio",
+    "AVRouting",
+    "CFNetwork",
+    "FontServices",
+    "AudioUnit",
+    "CoreAudio",
+    "CoreAudioTypes",
+    "Foundation",
+    "ImageIO",
+    "IOSurface",
+    "IOKit",
+    "Kernel",
+    "Metal",
+    "MetalKit",
+    "OpenGL",
+    "OSLog",
+    "QuartzCore",
+    "ScreenCaptureKit",
+    "Security",
+    "SystemConfiguration",
+    "UniformTypeIdentifiers",
+    "VideoToolbox",
+])
+use_repo(osx, "macos_sdk")
 
 # Needed to disable xcode...
 bazel_dep(name = "apple_support", version = "2.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.16")
 bazel_dep(name = "rules_platform", version = "0.1.0")
-bazel_dep(name = "rules_rs", version = "0.0.23")
-
-# Special toolchains branch
-archive_override(
+bazel_dep(name = "rules_rs", version = "0.0.58")
+# `rules_rs` still does not model `windows-gnullvm` as a distinct Windows exec
+# platform, so patch it until upstream grows that support for both x86_64 and
+# aarch64.
+single_version_override(
     module_name = "rules_rs",
-    integrity = "sha256-O34UF4H7b1Qacu3vlu2Od4ILGVApzg5j1zl952SFL3w=",
-    strip_prefix = "rules_rs-097123c2aa72672e371e69e7035869f5a45c7b2b",
-    url = "https://github.com/dzbarsky/rules_rs/archive/097123c2aa72672e371e69e7035869f5a45c7b2b.tar.gz",
+    patch_strip = 1,
+    patches = [
+        "//patches:rules_rs_windows_gnullvm_exec.patch",
+        "//patches:rules_rs_windows_exec_linker.patch",
+    ],
+    version = "0.0.58",
 )
 
 rules_rust = use_extension("@rules_rs//rs/experimental:rules_rust.bzl", "rules_rust")
+# Build-script probe binaries inherit CFLAGS/CXXFLAGS from Bazel's C++
+# toolchain. On `windows-gnullvm`, llvm-mingw does not ship
+# `libssp_nonshared`, so strip the forwarded stack-protector flags there.
+rules_rust.patch(
+    patches = [
+        "//patches:rules_rust_windows_gnullvm_build_script.patch",
+        "//patches:rules_rust_windows_exec_msvc_build_script_env.patch",
+        "//patches:rules_rust_windows_bootstrap_process_wrapper_linker.patch",
+        "//patches:rules_rust_windows_build_script_runner_paths.patch",
+        "//patches:rules_rust_windows_msvc_direct_link_args.patch",
+        "//patches:rules_rust_windows_process_wrapper_skip_temp_outputs.patch",
+        "//patches:rules_rust_windows_exec_bin_target.patch",
+        "//patches:rules_rust_windows_exec_std.patch",
+        "//patches:rules_rust_windows_exec_rustc_dev_rlib.patch",
+    ],
+    strip = 1,
+)
 use_repo(rules_rust, "rules_rust")
+
+nightly_rust = use_extension(
+    "@rules_rs//rs/experimental:rules_rust_reexported_extensions.bzl",
+    "rust",
+)
+nightly_rust.toolchain(
+    versions = ["nightly/2025-09-18"],
+    dev_components = True,
+    edition = "2024",
+)
+# Keep Windows exec tools on MSVC so Bazel helper binaries link correctly, but
+# lint crate targets as `windows-gnullvm` to preserve the repo's actual cfgs.
+nightly_rust.repository_set(
+    name = "rust_windows_x86_64",
+    dev_components = True,
+    edition = "2024",
+    exec_triple = "x86_64-pc-windows-msvc",
+    exec_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+        "@rules_rs//rs/experimental/platforms/constraints:windows_msvc",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+        "@rules_rs//rs/experimental/platforms/constraints:windows_msvc",
+    ],
+    target_triple = "x86_64-pc-windows-msvc",
+    versions = ["nightly/2025-09-18"],
+)
+nightly_rust.repository_set(
+    name = "rust_windows_x86_64",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+        "@rules_rs//rs/experimental/platforms/constraints:windows_gnullvm",
+    ],
+    target_triple = "x86_64-pc-windows-gnullvm",
+)
+use_repo(nightly_rust, "rust_toolchains")
 
 toolchains = use_extension("@rules_rs//rs/experimental/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
     version = "1.93.0",
 )
-use_repo(
-    toolchains,
-    "experimental_rust_toolchains_1_93_0",
-    "rust_toolchain_artifacts_macos_aarch64_1_93_0",
-)
+use_repo(toolchains, "default_rust_toolchains")
 
-register_toolchains("@experimental_rust_toolchains_1_93_0//:all")
+register_toolchains("@default_rust_toolchains//:all")
+register_toolchains("@rust_toolchains//:all")
 
 crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
@@ -73,20 +170,54 @@ crate.from_cargo(
         "aarch64-unknown-linux-gnu",
         "aarch64-unknown-linux-musl",
         "aarch64-apple-darwin",
+        # Keep both Windows ABIs in the generated Cargo metadata: the V8
+        # experiment still consumes release assets that only exist under the
+        # MSVC names while targeting the GNU toolchain.
+        "aarch64-pc-windows-msvc",
         "aarch64-pc-windows-gnullvm",
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
         "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
         "x86_64-pc-windows-gnullvm",
     ],
+    use_experimental_platforms = True,
+)
+crate.from_cargo(
+    name = "argument_comment_lint_crates",
+    cargo_lock = "//tools/argument-comment-lint:Cargo.lock",
+    cargo_toml = "//tools/argument-comment-lint:Cargo.toml",
+    platform_triples = [
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+        "aarch64-pc-windows-msvc",
+        "aarch64-pc-windows-gnullvm",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnullvm",
+    ],
+    use_experimental_platforms = True,
 )
 
 bazel_dep(name = "zstd", version = "1.5.7")
 
 crate.annotation(
     crate = "zstd-sys",
-    gen_build_script = "off",
-    deps = ["@zstd"],
+    gen_build_script = "on",
+    patch_args = ["-p1"],
+    patches = [
+        "//patches:zstd-sys_windows_msvc_include_dirs.patch",
+    ],
+)
+crate.annotation(
+    crate = "ring",
+    patch_args = ["-p1"],
+    patches = [
+        "//patches:ring_windows_msvc_include_dirs.patch",
+    ],
 )
 crate.annotation(
     build_script_env = {
@@ -96,13 +227,28 @@ crate.annotation(
     patch_args = ["-p1"],
     patches = [
         "//patches:aws-lc-sys_memcmp_check.patch",
+        "//patches:aws-lc-sys_windows_msvc_prebuilt_nasm.patch",
+        "//patches:aws-lc-sys_windows_msvc_memcmp_probe.patch",
     ],
 )
 
+crate.annotation(
+    # The build script only validates embedded source/version metadata.
+    crate = "rustc_apfloat",
+    gen_build_script = "off",
+)
+
 inject_repo(crate, "zstd")
+use_repo(crate, "argument_comment_lint_crates")
 
 bazel_dep(name = "bzip2", version = "1.0.8.bcr.3")
-bazel_dep(name = "libcap", version = "2.27.bcr.1")
+single_version_override(
+    module_name = "bzip2",
+    patch_strip = 1,
+    patches = [
+        "//patches:bzip2_windows_stack_args.patch",
+    ],
+)
 
 crate.annotation(
     crate = "bzip2-sys",
@@ -116,19 +262,29 @@ bazel_dep(name = "zlib", version = "1.3.1.bcr.8")
 
 crate.annotation(
     crate = "libz-sys",
-    gen_build_script = "off",
-    deps = ["@zlib"],
+    gen_build_script = "on",
 )
 
 inject_repo(crate, "zlib")
 
-# TODO(zbarsky): Enable annotation after fixing windows arm64 builds.
+bazel_dep(name = "xz", version = "5.4.5.bcr.8")
+single_version_override(
+    module_name = "xz",
+    patch_strip = 1,
+    patches = [
+        "//patches:xz_windows_stack_args.patch",
+    ],
+)
+
 crate.annotation(
     crate = "lzma-sys",
-    gen_build_script = "on",
+    gen_build_script = "off",
+    deps = ["@xz//:lzma"],
 )
 
 bazel_dep(name = "openssl", version = "3.5.4.bcr.0")
+
+inject_repo(crate, "xz")
 
 crate.annotation(
     build_script_data = [
@@ -139,11 +295,9 @@ crate.annotation(
         "OPENSSL_NO_VENDOR": "1",
         "OPENSSL_STATIC": "1",
     },
-    crate_features = [
-        "dep:openssl-src",
-    ],
     crate = "openssl-sys",
     data = ["@openssl//:gen_dir"],
+    gen_build_script = "on",
 )
 
 inject_repo(crate, "openssl")
@@ -153,27 +307,86 @@ crate.annotation(
     workspace_cargo_toml = "rust/runfiles/Cargo.toml",
 )
 
-llvm = use_extension("@toolchains_llvm_bootstrapped//extensions:llvm.bzl", "llvm")
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+
+new_local_repository(
+    name = "v8_targets",
+    build_file = "//third_party/v8:BUILD.bazel",
+    path = "third_party/v8",
+)
+
+crate.annotation(
+    build_script_data = [
+        "@v8_targets//:rusty_v8_archive_for_target",
+        "@v8_targets//:rusty_v8_binding_for_target",
+    ],
+    build_script_env = {
+        "RUSTY_V8_ARCHIVE": "$(execpath @v8_targets//:rusty_v8_archive_for_target)",
+        "RUSTY_V8_SRC_BINDING_PATH": "$(execpath @v8_targets//:rusty_v8_binding_for_target)",
+    },
+    crate = "v8",
+    # Keep the Rust feature aligned with the source-built Bazel artifacts.
+    # Windows MSVC still consumes upstream non-sandboxed prebuilts.
+    crate_features_select = {
+        "aarch64-apple-darwin": ["v8_enable_sandbox"],
+        "aarch64-pc-windows-gnullvm": ["v8_enable_sandbox"],
+        "aarch64-unknown-linux-gnu": ["v8_enable_sandbox"],
+        "aarch64-unknown-linux-musl": ["v8_enable_sandbox"],
+        "x86_64-apple-darwin": ["v8_enable_sandbox"],
+        "x86_64-pc-windows-gnullvm": ["v8_enable_sandbox"],
+        "x86_64-unknown-linux-gnu": ["v8_enable_sandbox"],
+        "x86_64-unknown-linux-musl": ["v8_enable_sandbox"],
+    },
+    gen_build_script = "on",
+    patch_args = ["-p1"],
+    patches = [
+        "//patches:rusty_v8_prebuilt_out_dir.patch",
+    ],
+)
+
+inject_repo(crate, "v8_targets")
+
+llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
 use_repo(llvm, "llvm-project")
 
 crate.annotation(
     # Provide the hermetic SDK path so the build script doesn't try to invoke an unhermetic `xcrun --show-sdk-path`.
     build_script_data = [
-        "@macosx15.4.sdk//sysroot",
+        "@macos_sdk//sysroot",
     ],
     build_script_env = {
-        "BINDGEN_EXTRA_CLANG_ARGS": "-isystem $(location @toolchains_llvm_bootstrapped//:builtin_headers)",
-        "COREAUDIO_SDK_PATH": "$(location @macosx15.4.sdk//sysroot)",
-        "LIBCLANG_PATH": "$(location @codex//:clang)",
+        "BINDGEN_EXTRA_CLANG_ARGS": "-Xclang -internal-isystem -Xclang $(location @llvm//:builtin_resource_dir)/include",
+        "COREAUDIO_SDK_PATH": "$(location @macos_sdk//sysroot)",
+        "LIBCLANG_PATH": "$(location @llvm-project//clang:libclang_interface_output)",
     },
     build_script_tools = [
-        "@codex//:clang",
-        "@toolchains_llvm_bootstrapped//:builtin_headers",
+        "@llvm-project//clang:libclang_interface_output",
+        "@llvm//:builtin_resource_dir",
     ],
     crate = "coreaudio-sys",
+    gen_build_script = "on",
 )
 
-inject_repo(crate, "codex", "toolchains_llvm_bootstrapped", "macosx15.4.sdk")
+inject_repo(crate, "llvm", "llvm-project", "macos_sdk")
+
+crate.annotation(
+    # Provide the hermetic SDK path so the build script doesn't try to invoke an unavailable `xcrun --show-sdk-path`.
+    build_script_data = [
+        "@macos_sdk//sysroot",
+    ],
+    build_script_env = {
+        "WEBRTC_SYS_DARWIN_SDK_PATH": "$(location @macos_sdk//sysroot)",
+        "WEBRTC_SYS_LINK_OUT_DIR": "1",
+    },
+    crate = "webrtc-sys",
+    gen_build_script = "on",
+    patch_args = ["-p1"],
+    patches = [
+        "//patches:webrtc-sys_hermetic_darwin_sysroot.patch",
+    ],
+)
 
 # Fix readme inclusions
 crate.annotation(
@@ -182,28 +395,6 @@ crate.annotation(
     patches = [
         "//patches:windows-link.patch",
     ],
-)
-
-WINDOWS_IMPORT_LIB = """
-load("@rules_cc//cc:defs.bzl", "cc_import")
-
-cc_import(
-    name = "windows_import_lib",
-    static_library = glob(["lib/*.a"])[0],
-)
-"""
-
-crate.annotation(
-    additive_build_file_content = WINDOWS_IMPORT_LIB,
-    crate = "windows_x86_64_gnullvm",
-    gen_build_script = "off",
-    deps = [":windows_import_lib"],
-)
-crate.annotation(
-    additive_build_file_content = WINDOWS_IMPORT_LIB,
-    crate = "windows_aarch64_gnullvm",
-    gen_build_script = "off",
-    deps = [":windows_import_lib"],
 )
 
 bazel_dep(name = "alsa_lib", version = "1.2.9.bcr.4")
@@ -216,7 +407,122 @@ crate.annotation(
 
 inject_repo(crate, "alsa_lib")
 
+bazel_dep(name = "v8", version = "14.6.202.9")
+archive_override(
+    module_name = "v8",
+    integrity = "sha256-JphDwLAzsd9KvgRZ7eQvNtPU6qGd3XjFt/a/1QITAJU=",
+    patch_strip = 3,
+    patches = [
+        "//patches:v8_module_deps.patch",
+        "//patches:v8_bazel_rules.patch",
+        "//patches:v8_source_portability.patch",
+    ],
+    strip_prefix = "v8-14.6.202.9",
+    urls = ["https://github.com/v8/v8/archive/refs/tags/14.6.202.9.tar.gz"],
+)
+
+http_archive(
+    name = "v8_crate_146_4_0",
+    build_file = "//third_party/v8:v8_crate.BUILD.bazel",
+    sha256 = "d97bcac5cdc5a195a4813f1855a6bc658f240452aac36caa12fd6c6f16026ab1",
+    strip_prefix = "v8-146.4.0",
+    type = "tar.gz",
+    urls = ["https://static.crates.io/crates/v8/v8-146.4.0.crate"],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_aarch64_apple_darwin_archive",
+    downloaded_file_path = "librusty_v8_release_aarch64-apple-darwin.a.gz",
+    sha256 = "bfe2c9be32a56c28546f0f965825ee68fbf606405f310cc4e17b448a568cf98a",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_aarch64-apple-darwin.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_aarch64_unknown_linux_gnu_archive",
+    downloaded_file_path = "librusty_v8_release_aarch64-unknown-linux-gnu.a.gz",
+    sha256 = "dbf165b07c81bdb054bc046b43d23e69fcf7bcc1a4c1b5b4776983a71062ecd8",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_aarch64-unknown-linux-gnu.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_aarch64_pc_windows_msvc_archive",
+    downloaded_file_path = "rusty_v8_release_aarch64-pc-windows-msvc.lib.gz",
+    sha256 = "ed13363659c6d08583ac8fdc40493445c5767d8b94955a4d5d7bb8d5a81f6bf8",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/rusty_v8_release_aarch64-pc-windows-msvc.lib.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_x86_64_apple_darwin_archive",
+    downloaded_file_path = "librusty_v8_release_x86_64-apple-darwin.a.gz",
+    sha256 = "630cd240f1bbecdb071417dc18387ab81cf67c549c1c515a0b4fcf9eba647bb7",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_x86_64-apple-darwin.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_x86_64_unknown_linux_gnu_archive",
+    downloaded_file_path = "librusty_v8_release_x86_64-unknown-linux-gnu.a.gz",
+    sha256 = "e64b4d99e4ae293a2e846244a89b80178ba10382c13fb591c1fa6968f5291153",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/librusty_v8_release_x86_64-unknown-linux-gnu.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_x86_64_pc_windows_msvc_archive",
+    downloaded_file_path = "rusty_v8_release_x86_64-pc-windows-msvc.lib.gz",
+    sha256 = "90a9a2346acd3685a355e98df85c24dbe406cb124367d16259a4b5d522621862",
+    urls = [
+        "https://github.com/denoland/rusty_v8/releases/download/v146.4.0/rusty_v8_release_x86_64-pc-windows-msvc.lib.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_aarch64_unknown_linux_musl_archive",
+    downloaded_file_path = "librusty_v8_release_aarch64-unknown-linux-musl.a.gz",
+    sha256 = "27a08ed26c34297bfd93e514692ccc44b85f8b15c6aa39cf34e784f84fb37e8e",
+    urls = [
+        "https://github.com/openai/codex/releases/download/rusty-v8-v146.4.0/librusty_v8_release_aarch64-unknown-linux-musl.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_aarch64_unknown_linux_musl_binding",
+    downloaded_file_path = "src_binding_release_aarch64-unknown-linux-musl.rs",
+    sha256 = "09f8900ced8297c229246c7a50b2e0ec23c54d0a554f369619cc29863f38dd1a",
+    urls = [
+        "https://github.com/openai/codex/releases/download/rusty-v8-v146.4.0/src_binding_release_aarch64-unknown-linux-musl.rs",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_x86_64_unknown_linux_musl_archive",
+    downloaded_file_path = "librusty_v8_release_x86_64-unknown-linux-musl.a.gz",
+    sha256 = "20d8271ad712323d352c1383c36e3c4b755abc41ece35819c49c75ec7134d2f8",
+    urls = [
+        "https://github.com/openai/codex/releases/download/rusty-v8-v146.4.0/librusty_v8_release_x86_64-unknown-linux-musl.a.gz",
+    ],
+)
+
+http_file(
+    name = "rusty_v8_146_4_0_x86_64_unknown_linux_musl_binding",
+    downloaded_file_path = "src_binding_release_x86_64-unknown-linux-musl.rs",
+    sha256 = "09f8900ced8297c229246c7a50b2e0ec23c54d0a554f369619cc29863f38dd1a",
+    urls = [
+        "https://github.com/openai/codex/releases/download/rusty-v8-v146.4.0/src_binding_release_x86_64-unknown-linux-musl.rs",
+    ],
+)
+
 use_repo(crate, "crates")
+
+bazel_dep(name = "libcap", version = "2.27.bcr.1")
 
 rbe_platform_repository = use_repo_rule("//:rbe.bzl", "rbe_platform_repository")
 

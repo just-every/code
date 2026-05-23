@@ -2,10 +2,11 @@
 
 `codex-otel` is the OpenTelemetry integration crate for Codex. It provides:
 
-- Trace/log/metrics exporters and tracing subscriber layers (`codex_otel::otel_provider`).
-- A structured event helper (`codex_otel::OtelManager`).
-- OpenTelemetry metrics support via OTLP exporters (`codex_otel::metrics`).
-- A metrics facade on `OtelManager` so tracing + metrics share metadata.
+- Provider wiring for log/trace/metric exporters (`codex_otel::OtelProvider`
+  and `codex_otel::provider`).
+- Session-scoped business event emission via `codex_otel::SessionTelemetry`.
+- Low-level metrics APIs via `codex_otel::metrics`.
+- Trace-context helpers via `codex_otel::trace_context` and crate-root re-exports.
 
 ## Tracing and logs
 
@@ -17,7 +18,7 @@ registry:
 use codex_otel::config::OtelExporter;
 use codex_otel::config::OtelHttpProtocol;
 use codex_otel::config::OtelSettings;
-use codex_otel::otel_provider::OtelProvider;
+use codex_otel::OtelProvider;
 use tracing_subscriber::prelude::*;
 
 let settings = OtelSettings {
@@ -38,6 +39,8 @@ let settings = OtelSettings {
         tls: None,
     },
     metrics_exporter: OtelExporter::None,
+    span_attributes: std::collections::BTreeMap::new(),
+    tracestate: std::collections::BTreeMap::new(),
 };
 
 if let Some(provider) = OtelProvider::from(&settings)? {
@@ -48,21 +51,43 @@ if let Some(provider) = OtelProvider::from(&settings)? {
 }
 ```
 
-## OtelManager (events)
+Configured span attributes and W3C tracestate member fields are applied to
+exported trace spans and propagated trace context:
 
-`OtelManager` adds consistent metadata to tracing events and helps record
-Codex-specific events.
+```toml
+[otel.span_attributes]
+"example.trace_attr" = "enabled"
+
+[otel.tracestate.example]
+alpha = "one"
+beta = "two"
+```
+
+Configured tracestate members and encoded values must be valid W3C tracestate.
+Each nested table is encoded as semicolon-separated `key:value` fields inside
+that member. If propagated trace context already has the named member, Codex
+upserts configured fields and preserves other fields in that member. This
+config shape does not support setting opaque tracestate member values. Invalid
+trace metadata entries are ignored during config load and reported as startup
+warnings.
+
+## SessionTelemetry (events)
+
+`SessionTelemetry` adds consistent metadata to tracing events and helps record
+Codex-specific session events. Rich session/business events should go through
+`SessionTelemetry`; subsystem-owned audit events can stay with the owning subsystem.
 
 ```rust
-use codex_otel::OtelManager;
+use codex_otel::SessionTelemetry;
 
-let manager = OtelManager::new(
+let manager = SessionTelemetry::new(
     conversation_id,
     model,
     slug,
     account_id,
     account_email,
     auth_mode,
+    originator,
     log_user_prompts,
     terminal_type,
     session_source,
@@ -119,10 +144,19 @@ metrics.counter("codex.turns", 1, &[("model", "gpt-5.1")])?;
 metrics.shutdown()?; // flushes in-memory exporter
 ```
 
+## Trace context
+
+Trace propagation helpers remain separate from the session event emitter:
+
+```rust
+use codex_otel::current_span_w3c_trace_context;
+use codex_otel::set_parent_from_w3c_trace_context;
+```
+
 ## Shutdown
 
 - `OtelProvider::shutdown()` stops the OTEL exporter.
-- `OtelManager::shutdown_metrics()` flushes and shuts down the metrics provider.
+- `SessionTelemetry::shutdown_metrics()` flushes and shuts down the metrics provider.
 
 Both are optional because drop performs best-effort shutdown, but calling them
 explicitly gives deterministic flushing (or a shutdown error if flushing does

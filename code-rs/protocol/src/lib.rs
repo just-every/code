@@ -7,6 +7,7 @@ pub mod custom_prompts;
 pub mod dynamic_tools;
 pub mod items;
 pub mod mcp;
+pub mod mcp_approval_meta;
 pub mod mcp_protocol;
 pub mod message_history;
 pub mod models;

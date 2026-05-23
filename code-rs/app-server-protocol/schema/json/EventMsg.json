@@ -140,6 +140,13 @@
         }
       ]
     },
+    "AutoContextPhase": {
+      "enum": [
+        "checking",
+        "compacting"
+      ],
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -189,6 +196,7 @@
           "enum": [
             "context_window_exceeded",
             "usage_limit_exceeded",
+            "cyber_policy",
             "internal_server_error",
             "unauthorized",
             "bad_request",
@@ -646,6 +654,33 @@
             "type"
           ],
           "title": "TokenCountEventMsg",
+          "type": "object"
+        },
+        {
+          "description": "Auto Context is evaluating whether to compact before the next turn.",
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AutoContextPhase"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "auto_context_check"
+              ],
+              "title": "AutoContextCheckEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AutoContextCheckEventMsg",
           "type": "object"
         },
         {
@@ -1167,6 +1202,70 @@
           "type": "object"
         },
         {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_begin"
+              ],
+              "title": "ImageGenerationBeginEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "type"
+          ],
+          "title": "ImageGenerationBeginEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "saved_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_end"
+              ],
+              "title": "ImageGenerationEndEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationEndEventMsg",
+          "type": "object"
+        },
+        {
           "description": "Notification that the server is about to execute a command.",
           "properties": {
             "call_id": {
@@ -1554,6 +1653,12 @@
             "arguments": true,
             "callId": {
               "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tool": {
               "type": "string"
@@ -3069,6 +3174,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "image_url": {
               "type": "string"
             },
@@ -3145,6 +3260,15 @@
         "ts"
       ],
       "type": "object"
+    },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
     },
     "LocalShellAction": {
       "oneOf": [
@@ -3747,12 +3871,22 @@
           "description": "Reject MCP elicitation prompts.",
           "type": "boolean"
         },
+        "request_permissions": {
+          "default": false,
+          "description": "Reject approval prompts related to built-in permission requests.",
+          "type": "boolean"
+        },
         "rules": {
           "description": "Reject prompts triggered by execpolicy `prompt` rules.",
           "type": "boolean"
         },
         "sandbox_approval": {
           "description": "Reject approval prompts related to sandbox escalation.",
+          "type": "boolean"
+        },
+        "skill_approval": {
+          "default": false,
+          "description": "Reject approval prompts triggered by skill script execution.",
           "type": "boolean"
         }
       },
@@ -4083,6 +4217,12 @@
             "name": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "function_call"
@@ -4098,6 +4238,47 @@
             "type"
           ],
           "title": "FunctionCallResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "arguments": true,
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "tool_search_call"
+              ],
+              "title": "ToolSearchCallResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "arguments",
+            "execution",
+            "type"
+          ],
+          "title": "ToolSearchCallResponseItem",
           "type": "object"
         },
         {
@@ -4170,8 +4351,14 @@
             "call_id": {
               "type": "string"
             },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "output": {
-              "type": "string"
+              "$ref": "#/definitions/FunctionCallOutputPayload"
             },
             "type": {
               "enum": [
@@ -4187,6 +4374,41 @@
             "type"
           ],
           "title": "CustomToolCallOutputResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tools": {
+              "items": true,
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "tool_search_output"
+              ],
+              "title": "ToolSearchOutputResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "execution",
+            "status",
+            "tools",
+            "type"
+          ],
+          "title": "ToolSearchOutputResponseItem",
           "type": "object"
         },
         {
@@ -4230,6 +4452,40 @@
         },
         {
           "properties": {
+            "id": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_call"
+              ],
+              "title": "ImageGenerationCallResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationCallResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "ghost_commit": {
               "$ref": "#/definitions/GhostCommit"
             },
@@ -4266,6 +4522,28 @@
             "type"
           ],
           "title": "CompactionSummaryResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "context_compaction"
+              ],
+              "title": "ContextCompactionResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ContextCompactionResponseItem",
           "type": "object"
         },
         {
@@ -5137,6 +5415,50 @@
             "id": {
               "type": "string"
             },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "saved_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "ImageGeneration"
+              ],
+              "title": "ImageGenerationTurnItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationTurnItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
             "type": {
               "enum": [
                 "ContextCompaction"
@@ -5567,6 +5889,33 @@
         "type"
       ],
       "title": "TokenCountEventMsg",
+      "type": "object"
+    },
+    {
+      "description": "Auto Context is evaluating whether to compact before the next turn.",
+      "properties": {
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AutoContextPhase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "auto_context_check"
+          ],
+          "title": "AutoContextCheckEventMsgType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "AutoContextCheckEventMsg",
       "type": "object"
     },
     {
@@ -6088,6 +6437,70 @@
       "type": "object"
     },
     {
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "image_generation_begin"
+          ],
+          "title": "ImageGenerationBeginEventMsgType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "type"
+      ],
+      "title": "ImageGenerationBeginEventMsg",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "revised_prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "saved_path": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "image_generation_end"
+          ],
+          "title": "ImageGenerationEndEventMsgType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "result",
+        "status",
+        "type"
+      ],
+      "title": "ImageGenerationEndEventMsg",
+      "type": "object"
+    },
+    {
       "description": "Notification that the server is about to execute a command.",
       "properties": {
         "call_id": {
@@ -6475,6 +6888,12 @@
         "arguments": true,
         "callId": {
           "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool": {
           "type": "string"

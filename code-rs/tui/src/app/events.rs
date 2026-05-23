@@ -229,6 +229,11 @@ impl App<'_> {
                         widget.flush_interrupts_if_stream_idle();
                     }
                 }
+                AppEvent::RecheckSpinnerIfIdle => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.recheck_spinner_if_idle();
+                    }
+                }
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
@@ -423,7 +428,7 @@ impl App<'_> {
                         // Standard text paste shortcuts (Ctrl/Cmd+V, Ctrl+Shift+V,
                         // Shift+Insert) must flow through terminal paste events to avoid
                         // truncating text on terminals that also emit partial key streams.
-                        // Keep an opt-in image path on Ctrl+Alt+V for environments that
+                        // Keep a direct image path on Ctrl+V / Alt+V for environments that
                         // don't emit Event::Paste for image clipboards.
                         key_event if is_image_clipboard_paste_shortcut(&key_event) => {
                             self.dispatch_paste_event(String::new());
@@ -609,6 +614,27 @@ impl App<'_> {
                     self.commit_anim_running.store(false, Ordering::Release);
                     self.input_running.store(false, Ordering::Release);
                     break 'main;
+                }
+                AppEvent::ClearUi => {
+                    terminal.clear()?;
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.abort_active_turn_for_new_chat();
+                    }
+                    let mut new_widget = ChatWidget::new(
+                        self.config.clone(),
+                        self.app_event_tx.clone(),
+                        None,
+                        Vec::new(),
+                        self.enhanced_keys_supported,
+                        self.terminal_info.clone(),
+                        self.show_order_overlay,
+                        self.latest_upgrade_version.clone(),
+                    );
+                    new_widget.enable_perf(self.timing_enabled);
+                    new_widget.set_standard_terminal_mode(!self.alt_screen_active);
+                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    self.terminal_runs.clear();
+                    self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
                 AppEvent::CancelRunningTask => {
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -860,6 +886,12 @@ impl App<'_> {
                         }
                         self.config.auto_upgrade_enabled = enabled;
                     }
+                }
+                AppEvent::SetMemoriesEnabled(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_memories_enabled(enabled);
+                    }
+                    self.config.memories_enabled = enabled;
                 }
                 AppEvent::SetAutoSwitchAccountsOnRateLimit(enabled) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -1168,7 +1200,24 @@ impl App<'_> {
                                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
                             }
                         }
-                        SlashCommand::Quit => { break 'main; }
+                        SlashCommand::Quit | SlashCommand::Exit => { break 'main; }
+                        SlashCommand::Clear => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                if widget.is_task_running() {
+                                    widget.history_push_plain_state(history_cell::new_error_event(
+                                        "'/clear' is disabled while a task is in progress.".to_string(),
+                                    ));
+                                    self.app_event_tx.send(AppEvent::RequestRedraw);
+                                } else {
+                                    self.app_event_tx.send(AppEvent::ClearUi);
+                                }
+                            }
+                        }
+                        SlashCommand::Copy => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.copy_last_agent_markdown();
+                            }
+                        }
                         SlashCommand::Login => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_login_command();
@@ -1268,6 +1317,11 @@ impl App<'_> {
                                 } else {
                                     widget.handle_model_command(command_args);
                                 }
+                            }
+                        }
+                        SlashCommand::Fast => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.show_settings_overlay(Some(SettingsSection::Model));
                             }
                         }
                         SlashCommand::Reasoning => {
@@ -1443,6 +1497,16 @@ impl App<'_> {
                 AppEvent::UpdateModelSelection { model, effort } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.apply_model_selection(model, effort);
+                    }
+                }
+                AppEvent::UpdateServiceTierSelection { service_tier } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_service_tier_selection(service_tier);
+                    }
+                }
+                AppEvent::UpdateSessionContextModeSelection { context_mode } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_session_context_mode_selection(context_mode);
                     }
                 }
                 AppEvent::UpdateReviewModelSelection { model, effort } => {
@@ -2407,8 +2471,8 @@ fn is_image_clipboard_paste_shortcut(key_event: &KeyEvent) -> bool {
             modifiers,
             ..
         } => {
-            modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
-                && modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                || *modifiers == crossterm::event::KeyModifiers::CONTROL
         }
         _ => false,
     }
@@ -2497,15 +2561,20 @@ mod next_event_priority_tests {
     }
 
     #[test]
-    fn image_clipboard_fallback_shortcut_is_ctrl_alt_v_only() {
+    fn image_clipboard_fallback_shortcut_accepts_ctrl_or_alt_v() {
         assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
             KeyCode::Char('v'),
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
         )));
 
-        assert!(!is_image_clipboard_paste_shortcut(&KeyEvent::new(
+        assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
             KeyCode::Char('v'),
             crossterm::event::KeyModifiers::CONTROL,
+        )));
+
+        assert!(is_image_clipboard_paste_shortcut(&KeyEvent::new(
+            KeyCode::Char('v'),
+            crossterm::event::KeyModifiers::ALT,
         )));
 
         assert!(!is_image_clipboard_paste_shortcut(&KeyEvent::new(

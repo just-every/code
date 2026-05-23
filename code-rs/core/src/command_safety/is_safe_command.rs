@@ -27,6 +27,15 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
         return true;
     }
 
+    if let [script] = command
+        && let Some(tree) = try_parse_bash(script)
+        && let Some(all_commands) = try_parse_word_only_commands_sequence(&tree, script)
+        && !all_commands.is_empty()
+        && all_commands.iter().all(|cmd| is_safe_to_call_with_exec(cmd))
+    {
+        return true;
+    }
+
     // Support `bash -lc "..."` where the script consists solely of one or
     // more "plain" commands (only bare words / quoted strings) combined with
     // a conservative allow‑list of shell operators that themselves do not
@@ -208,6 +217,7 @@ mod tests {
         assert!(is_safe_to_call_with_exec(&vec_str(&[
             "find", ".", "-name", "file.txt"
         ])));
+        assert!(is_known_safe_command(&vec_str(&["ls -1"])));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
+use crate::protocol::TaskOriginKind;
 use serde_json::Value;
+use crate::util::extract_shell_script;
 use code_protocol::dynamic_tools::DynamicToolResponse;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use super::streaming::{
@@ -74,32 +76,10 @@ fn semantic_tokens(command: &[String]) -> Option<Vec<String>> {
     if command.is_empty() {
         return None;
     }
-    if let Some(tokens) = shell_script_tokens(command) {
-        return Some(tokens);
+    if let Some((_, script)) = extract_shell_script(command) {
+        return Some(shlex_split(script).unwrap_or_else(|| vec![script.to_string()]));
     }
     Some(command.to_vec())
-}
-
-fn shell_script_tokens(command: &[String]) -> Option<Vec<String>> {
-    if command.len() == 3 && is_shell_wrapper(&command[0], &command[1]) {
-        if let Some(tokens) = shlex_split(&command[2]) {
-            return Some(tokens);
-        }
-        return Some(vec![command[2].clone()]);
-    }
-    None
-}
-
-fn is_shell_wrapper(shell: &str, flag: &str) -> bool {
-    let file_name = Path::new(shell)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(shell)
-        .to_ascii_lowercase();
-    matches!(
-        file_name.as_str(),
-        "bash" | "sh" | "zsh" | "ksh" | "fish" | "dash"
-    ) && matches!(flag, "-lc" | "-c")
 }
 
 #[derive(Clone)]
@@ -145,6 +125,7 @@ pub(super) struct State {
     pub(super) pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pub(super) selected_mcp_tools: Vec<String>,
     pub(super) pending_input: Vec<ResponseInputItem>,
+    pub(super) pending_post_turn_input: Vec<ResponseInputItem>,
     pub(super) pending_user_input: Vec<QueuedUserInput>,
     pub(super) history: ConversationHistory,
     /// Tracks which completed agents (by id) have already been returned to the
@@ -233,6 +214,37 @@ pub(crate) struct QueuedUserInput {
     pub(super) core_items: Vec<InputItem>,
 }
 
+pub(super) enum FollowUpTurnAction {
+    PostTurnPendingInput,
+    ManualCompact(String),
+    PendingInput,
+    QueuedUserInput(QueuedUserInput),
+}
+
+fn take_follow_up_turn_action(state: &mut State) -> Option<FollowUpTurnAction> {
+    if !state.pending_post_turn_input.is_empty() {
+        let mut post_turn_input = std::mem::take(&mut state.pending_post_turn_input);
+        state.pending_input.append(&mut post_turn_input);
+        return Some(FollowUpTurnAction::PostTurnPendingInput);
+    }
+
+    if let Some(sub_id) = state.pending_manual_compacts.pop_front() {
+        return Some(FollowUpTurnAction::ManualCompact(sub_id));
+    }
+
+    if !state.pending_input.is_empty() {
+        return Some(FollowUpTurnAction::PendingInput);
+    }
+
+    if state.pending_user_input.is_empty() {
+        None
+    } else {
+        Some(FollowUpTurnAction::QueuedUserInput(
+            state.pending_user_input.remove(0),
+        ))
+    }
+}
+
 /// Buffers partial turn progress produced during a single HTTP streaming attempt.
 /// This is not recorded to persistent history. It is only used to seed retries
 /// when the SSE stream disconnects mid‑turn.
@@ -317,7 +329,25 @@ pub(super) fn is_connectivity_error(err: &CodexErr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_connectivity_error;
+    use super::{
+        ApprovedCommandMatchKind,
+        ApprovedCommandPattern,
+        FollowUpTurnAction,
+        QueuedUserInput,
+        State,
+        take_follow_up_turn_action,
+    };
     use crate::error::CodexErr;
+    use code_protocol::models::{ContentItem, ResponseInputItem};
+
+    fn developer_input(text: &str) -> ResponseInputItem {
+        ResponseInputItem::Message {
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+        }
+    }
 
     #[test]
     fn context_overflow_transport_stream_is_not_connectivity() {
@@ -340,6 +370,58 @@ mod tests {
 
         assert!(is_connectivity_error(&err));
     }
+
+    #[test]
+    fn follow_up_turn_action_prioritizes_post_turn_input() {
+        let mut state = State::default();
+        state.pending_post_turn_input.push(developer_input("post-turn"));
+        state.pending_manual_compacts.push_back("compact-1".to_string());
+        state.pending_input.push(developer_input("pending"));
+        state.pending_user_input.push(QueuedUserInput {
+            submission_id: "queued-1".to_string(),
+            response_item: developer_input("queued"),
+            core_items: vec![],
+        });
+
+        let action = take_follow_up_turn_action(&mut state).expect("follow-up action");
+        assert!(matches!(action, FollowUpTurnAction::PostTurnPendingInput));
+        assert!(state.pending_post_turn_input.is_empty());
+        assert_eq!(state.pending_input.len(), 2);
+        assert_eq!(state.pending_manual_compacts.len(), 1);
+        assert_eq!(state.pending_user_input.len(), 1);
+    }
+
+    #[test]
+    fn follow_up_turn_action_preserves_queued_user_input_after_post_turn_input() {
+        let mut state = State::default();
+        state.pending_post_turn_input.push(developer_input("post-turn"));
+        state.pending_user_input.push(QueuedUserInput {
+            submission_id: "queued-1".to_string(),
+            response_item: developer_input("queued"),
+            core_items: vec![],
+        });
+
+        let first = take_follow_up_turn_action(&mut state).expect("post-turn action");
+        assert!(matches!(first, FollowUpTurnAction::PostTurnPendingInput));
+        assert_eq!(state.pending_user_input.len(), 1);
+
+        state.pending_input.clear();
+
+        let second = take_follow_up_turn_action(&mut state).expect("queued user action");
+        assert!(matches!(second, FollowUpTurnAction::QueuedUserInput(_)));
+        assert!(state.pending_user_input.is_empty());
+    }
+
+    #[test]
+    fn approved_command_prefix_matches_raw_shell_script_tokens() {
+        let pattern = ApprovedCommandPattern::new(
+            vec!["git".to_string(), "status".to_string()],
+            ApprovedCommandMatchKind::Prefix,
+            None,
+        );
+
+        assert!(pattern.matches(&["git status --short".to_string()]));
+    }
 }
 
 #[derive(Debug)]
@@ -352,6 +434,12 @@ pub(super) struct BackgroundExecState {
     pub(super) task_handle: Option<tokio::task::JoinHandle<()>>,
     pub(super) order_meta_for_end: crate::protocol::OrderMeta,
     pub(super) sub_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TaskLifecycleInfo {
+    pub(super) origin: TaskOriginKind,
+    pub(super) visible_to_user: bool,
 }
 
 /// Context for an initialized model agent
@@ -465,6 +553,14 @@ impl ToolCallCtx {
 }
 
 impl Session {
+    pub(crate) fn client(&self) -> &crate::ModelClient {
+        &self.client
+    }
+
+    pub(crate) fn remote_models_manager(&self) -> Option<&Arc<RemoteModelsManager>> {
+        self.remote_models_manager.as_ref()
+    }
+
     #[allow(dead_code)]
     pub(crate) fn get_writable_roots(&self) -> &[PathBuf] {
         &self._writable_roots
@@ -474,8 +570,10 @@ impl Session {
         self.approval_policy
     }
 
-    pub(crate) fn is_dynamic_tool(&self, name: &str) -> bool {
-        self.dynamic_tools.iter().any(|tool| tool.name == name)
+    pub(crate) fn is_dynamic_tool(&self, namespace: Option<&str>, name: &str) -> bool {
+        self.dynamic_tools
+            .iter()
+            .any(|tool| tool.name == name && tool.namespace.as_deref() == namespace)
     }
 
     fn next_background_sequence(&self, sub_id: &str) -> u64 {
@@ -933,7 +1031,12 @@ impl Session {
         state.current_task = Some(agent);
     }
 
-    pub async fn start_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+    pub(super) async fn start_internal_pending_only_turn(
+        self: &Arc<Self>,
+        sentinel: &str,
+        origin: TaskOriginKind,
+        visible_to_user: bool,
+    ) -> bool {
         let should_start = {
             let state = self.state.lock().unwrap();
             state.current_task.is_none()
@@ -947,11 +1050,51 @@ impl Session {
         let turn_context = self.make_turn_context();
         let sub_id = self.next_internal_sub_id();
         let sentinel_input = vec![InputItem::Text {
-            text: PENDING_ONLY_SENTINEL.to_string(),
+            text: sentinel.to_string(),
         }];
-        let agent = AgentTask::spawn(Arc::clone(self), turn_context, sub_id, sentinel_input);
+        let agent = AgentTask::spawn(
+            Arc::clone(self),
+            turn_context,
+            sub_id,
+            sentinel_input,
+            origin,
+            visible_to_user,
+        );
         self.set_task(agent);
         true
+    }
+
+    pub async fn start_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+        self.start_internal_pending_only_turn(
+            PENDING_ONLY_SENTINEL,
+            TaskOriginKind::PendingInput,
+            false,
+        )
+        .await
+    }
+
+    pub async fn start_post_turn_pending_only_turn_if_idle(self: &Arc<Self>) -> bool {
+        let should_start = {
+            let mut state = self.state.lock().unwrap();
+            if state.current_task.is_some() || state.pending_post_turn_input.is_empty() {
+                false
+            } else {
+                let mut post_turn_input = std::mem::take(&mut state.pending_post_turn_input);
+                state.pending_input.append(&mut post_turn_input);
+                true
+            }
+        };
+
+        if !should_start {
+            return false;
+        }
+
+        self.start_internal_pending_only_turn(
+            POST_TURN_PENDING_ONLY_SENTINEL,
+            TaskOriginKind::PostTurn,
+            false,
+        )
+            .await
     }
 
     pub fn replace_history(&self, items: Vec<ResponseItem>) {
@@ -968,8 +1111,32 @@ impl Session {
         }
     }
 
+    pub fn enqueue_post_turn_item(&self, item: ResponseInputItem) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let should_start_turn = state.current_task.is_none();
+        state.pending_post_turn_input.push(item);
+        should_start_turn
+    }
+
+    pub(super) fn take_follow_up_turn_action(&self) -> Option<FollowUpTurnAction> {
+        let mut state = self.state.lock().unwrap();
+        take_follow_up_turn_action(&mut state)
+    }
+
     pub fn has_running_task(&self) -> bool {
         self.state.lock().unwrap().current_task.is_some()
+    }
+
+    pub(super) fn task_lifecycle(&self, sub_id: &str) -> Option<TaskLifecycleInfo> {
+        let state = self.state.lock().unwrap();
+        let task = state.current_task.as_ref()?;
+        if task.sub_id != sub_id {
+            return None;
+        }
+        Some(TaskLifecycleInfo {
+            origin: task.origin,
+            visible_to_user: task.visible_to_user,
+        })
     }
 
     pub fn queue_user_input(&self, queued: QueuedUserInput) {
@@ -1129,15 +1296,6 @@ impl Session {
         }
 
         *content = new_content;
-    }
-
-    pub fn pop_next_queued_user_input(&self) -> Option<QueuedUserInput> {
-        let mut state = self.state.lock().unwrap();
-        if state.pending_user_input.is_empty() {
-            None
-        } else {
-            Some(state.pending_user_input.remove(0))
-        }
     }
 
     /// Enqueue a response item that should be surfaced to the model at the start of the
@@ -1975,12 +2133,6 @@ impl Session {
         state.pending_manual_compacts.push_back(sub_id);
         was_empty
     }
-
-    pub fn dequeue_manual_compact(&self) -> Option<String> {
-        let mut state = self.state.lock().unwrap();
-        state.pending_manual_compacts.pop_front()
-    }
-
 
     pub fn get_pending_input(&self) -> Vec<ResponseInputItem> {
         self.get_pending_input_filtered(true)

@@ -8,6 +8,8 @@ pub mod otel_provider;
 mod imp {
     use reqwest::header::HeaderMap;
     use tracing::Span;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::registry::LookupSpan;
 
     pub struct OtelProvider;
 
@@ -18,6 +20,13 @@ mod imp {
 
         pub fn headers(_span: &Span) -> HeaderMap {
             HeaderMap::new()
+        }
+
+        pub fn logger_layer<S>(&self) -> Option<impl Layer<S> + Send + Sync>
+        where
+            S: tracing::Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
+        {
+            None::<tracing_subscriber::fmt::Layer<S>>
         }
     }
 }

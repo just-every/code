@@ -5,10 +5,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use codex_core::error::CodexErr;
-use codex_core::error::Result;
-use codex_core::error::SandboxErr;
-use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
+use codex_protocol::error::SandboxErr;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use landlock::ABI;
@@ -38,15 +39,17 @@ use seccompiler::apply_filter;
 /// - installing the network seccomp filter when network access is disabled.
 ///
 /// Filesystem restrictions are intentionally handled by bubblewrap.
-pub(crate) fn apply_sandbox_policy_to_current_thread(
-    sandbox_policy: &SandboxPolicy,
+pub(crate) fn apply_permission_profile_to_current_thread(
+    permission_profile: &PermissionProfile,
     cwd: &Path,
     apply_landlock_fs: bool,
     allow_network_for_proxy: bool,
     proxy_routed_network: bool,
 ) -> Result<()> {
+    let (file_system_sandbox_policy, network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
     let network_seccomp_mode = network_seccomp_mode(
-        sandbox_policy,
+        network_sandbox_policy,
         allow_network_for_proxy,
         proxy_routed_network,
     );
@@ -56,7 +59,7 @@ pub(crate) fn apply_sandbox_policy_to_current_thread(
     // we avoid this unless we need seccomp or we are explicitly using the
     // legacy Landlock filesystem pipeline.
     if network_seccomp_mode.is_some()
-        || (apply_landlock_fs && !sandbox_policy.has_full_disk_write_access())
+        || (apply_landlock_fs && !file_system_sandbox_policy.has_full_disk_write_access())
     {
         set_no_new_privs()?;
     }
@@ -65,15 +68,15 @@ pub(crate) fn apply_sandbox_policy_to_current_thread(
         install_network_seccomp_filter_on_current_thread(mode)?;
     }
 
-    if apply_landlock_fs && !sandbox_policy.has_full_disk_write_access() {
-        if !sandbox_policy.has_full_disk_read_access() {
+    if apply_landlock_fs && !file_system_sandbox_policy.has_full_disk_write_access() {
+        if !file_system_sandbox_policy.has_full_disk_read_access() {
             return Err(CodexErr::UnsupportedOperation(
                 "Restricted read-only access is not supported by the legacy Linux Landlock filesystem backend."
                     .to_string(),
             ));
         }
 
-        let writable_roots = sandbox_policy
+        let writable_roots = file_system_sandbox_policy
             .get_writable_roots_with_cwd(cwd)
             .into_iter()
             .map(|writable_root| writable_root.root)
@@ -91,20 +94,20 @@ enum NetworkSeccompMode {
 }
 
 fn should_install_network_seccomp(
-    sandbox_policy: &SandboxPolicy,
+    network_sandbox_policy: NetworkSandboxPolicy,
     allow_network_for_proxy: bool,
 ) -> bool {
     // Managed-network sessions should remain fail-closed even for policies that
     // would normally grant full network access (for example, DangerFullAccess).
-    !sandbox_policy.has_full_network_access() || allow_network_for_proxy
+    !network_sandbox_policy.is_enabled() || allow_network_for_proxy
 }
 
 fn network_seccomp_mode(
-    sandbox_policy: &SandboxPolicy,
+    network_sandbox_policy: NetworkSandboxPolicy,
     allow_network_for_proxy: bool,
     proxy_routed_network: bool,
 ) -> Option<NetworkSeccompMode> {
-    if !should_install_network_seccomp(sandbox_policy, allow_network_for_proxy) {
+    if !should_install_network_seccomp(network_sandbox_policy, allow_network_for_proxy) {
         None
     } else if proxy_routed_network {
         Some(NetworkSeccompMode::ProxyRouted)
@@ -174,6 +177,8 @@ fn install_network_seccomp_filter_on_current_thread(
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     deny_syscall(&mut rules, libc::SYS_ptrace);
+    deny_syscall(&mut rules, libc::SYS_process_vm_readv);
+    deny_syscall(&mut rules, libc::SYS_process_vm_writev);
     deny_syscall(&mut rules, libc::SYS_io_uring_setup);
     deny_syscall(&mut rules, libc::SYS_io_uring_enter);
     deny_syscall(&mut rules, libc::SYS_io_uring_register);
@@ -266,13 +271,16 @@ mod tests {
     use super::NetworkSeccompMode;
     use super::network_seccomp_mode;
     use super::should_install_network_seccomp;
-    use codex_protocol::protocol::SandboxPolicy;
+    use codex_protocol::protocol::NetworkSandboxPolicy;
     use pretty_assertions::assert_eq;
 
     #[test]
     fn managed_network_enforces_seccomp_even_for_full_network_policy() {
         assert_eq!(
-            should_install_network_seccomp(&SandboxPolicy::DangerFullAccess, true),
+            should_install_network_seccomp(
+                NetworkSandboxPolicy::Enabled,
+                /*allow_network_for_proxy*/ true,
+            ),
             true
         );
     }
@@ -280,7 +288,10 @@ mod tests {
     #[test]
     fn full_network_policy_without_managed_network_skips_seccomp() {
         assert_eq!(
-            should_install_network_seccomp(&SandboxPolicy::DangerFullAccess, false),
+            should_install_network_seccomp(
+                NetworkSandboxPolicy::Enabled,
+                /*allow_network_for_proxy*/ false,
+            ),
             false
         );
     }
@@ -288,19 +299,23 @@ mod tests {
     #[test]
     fn restricted_network_policy_always_installs_seccomp() {
         assert!(should_install_network_seccomp(
-            &SandboxPolicy::new_read_only_policy(),
-            false
+            NetworkSandboxPolicy::Restricted,
+            /*allow_network_for_proxy*/ false,
         ));
         assert!(should_install_network_seccomp(
-            &SandboxPolicy::new_read_only_policy(),
-            true
+            NetworkSandboxPolicy::Restricted,
+            /*allow_network_for_proxy*/ true,
         ));
     }
 
     #[test]
     fn managed_proxy_routes_use_proxy_routed_seccomp_mode() {
         assert_eq!(
-            network_seccomp_mode(&SandboxPolicy::DangerFullAccess, true, true),
+            network_seccomp_mode(
+                NetworkSandboxPolicy::Enabled,
+                /*allow_network_for_proxy*/ true,
+                /*proxy_routed_network*/ true,
+            ),
             Some(NetworkSeccompMode::ProxyRouted)
         );
     }
@@ -308,7 +323,11 @@ mod tests {
     #[test]
     fn restricted_network_without_proxy_routing_uses_restricted_mode() {
         assert_eq!(
-            network_seccomp_mode(&SandboxPolicy::new_read_only_policy(), false, false),
+            network_seccomp_mode(
+                NetworkSandboxPolicy::Restricted,
+                /*allow_network_for_proxy*/ false,
+                /*proxy_routed_network*/ false,
+            ),
             Some(NetworkSeccompMode::Restricted)
         );
     }
@@ -316,7 +335,11 @@ mod tests {
     #[test]
     fn full_network_without_managed_proxy_skips_network_seccomp_mode() {
         assert_eq!(
-            network_seccomp_mode(&SandboxPolicy::DangerFullAccess, false, false),
+            network_seccomp_mode(
+                NetworkSandboxPolicy::Enabled,
+                /*allow_network_for_proxy*/ false,
+                /*proxy_routed_network*/ false,
+            ),
             None
         );
     }

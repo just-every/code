@@ -160,7 +160,7 @@ mod tests {
             .await
             .expect("write numeric");
 
-        let _runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let _runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn backfill_state_persists_progress_and_completion() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -260,18 +260,18 @@ mod tests {
     #[tokio::test]
     async fn backfill_claim_is_singleton_until_stale_and_blocked_when_complete() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         let claimed = runtime
-            .try_claim_backfill(3600)
+            .try_claim_backfill(/*lease_seconds*/ 3600)
             .await
             .expect("initial backfill claim");
         assert_eq!(claimed, true);
 
         let duplicate_claim = runtime
-            .try_claim_backfill(3600)
+            .try_claim_backfill(/*lease_seconds*/ 3600)
             .await
             .expect("duplicate backfill claim");
         assert_eq!(duplicate_claim, false);
@@ -291,17 +291,17 @@ WHERE id = 1
         .expect("force stale backfill lease");
 
         let stale_claim = runtime
-            .try_claim_backfill(10)
+            .try_claim_backfill(/*lease_seconds*/ 10)
             .await
             .expect("stale backfill claim");
         assert_eq!(stale_claim, true);
 
         runtime
-            .mark_backfill_complete(None)
+            .mark_backfill_complete(/*last_watermark*/ None)
             .await
             .expect("mark complete");
         let claim_after_complete = runtime
-            .try_claim_backfill(3600)
+            .try_claim_backfill(/*lease_seconds*/ 3600)
             .await
             .expect("claim after complete");
         assert_eq!(claim_after_complete, false);

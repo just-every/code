@@ -25,6 +25,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::replace_image_payloads_for_model;
+use crate::client_common::rewrite_image_generation_calls_for_input;
 use crate::debug_logger::DebugLogger;
 use crate::error::CodexErr;
 use crate::error::Result;
@@ -45,6 +46,7 @@ pub(crate) async fn stream_chat_completions(
     model_slug: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
+    responses_originator_header: &str,
     debug_logger: &Arc<Mutex<DebugLogger>>,
     auth_manager: Option<Arc<AuthManager>>,
     otel_event_manager: Option<OtelEventManager>,
@@ -63,6 +65,7 @@ pub(crate) async fn stream_chat_completions(
     messages.push(json!({"role": "system", "content": full_instructions}));
 
     let mut input = prompt.get_formatted_input();
+    rewrite_image_generation_calls_for_input(&mut input);
     replace_image_payloads_for_model(&mut input, model_slug);
 
     // Pre-scan: map Reasoning blocks to the adjacent assistant anchor after the last user.
@@ -78,15 +81,22 @@ pub(crate) async fn stream_chat_completions(
     for item in &input {
         match item {
             ResponseItem::Message { role, .. } => last_emitted_role = Some(role.as_str()),
-            ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
+            ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::LocalShellCall { .. } => {
                 last_emitted_role = Some("assistant")
             }
-            ResponseItem::FunctionCallOutput { .. } => last_emitted_role = Some("tool"),
-            ResponseItem::CompactionSummary { .. } => last_emitted_role = Some("assistant"),
+            ResponseItem::FunctionCallOutput { .. } | ResponseItem::ToolSearchOutput { .. } => {
+                last_emitted_role = Some("tool")
+            }
+            ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
+                last_emitted_role = Some("assistant")
+            }
             ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
             ResponseItem::CustomToolCall { .. } => {}
             ResponseItem::CustomToolCallOutput { .. } => {}
             ResponseItem::WebSearchCall { .. } => {}
+            ResponseItem::ImageGenerationCall { .. } => {}
             ResponseItem::GhostSnapshot { .. } => {}
         }
     }
@@ -144,7 +154,9 @@ pub(crate) async fn stream_chat_completions(
                 // Otherwise, attach to immediate next assistant anchor (tool-calls or assistant message)
                 if !attached && idx + 1 < input.len() {
                     match &input[idx + 1] {
-                        ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
+                        ResponseItem::FunctionCall { .. }
+                        | ResponseItem::ToolSearchCall { .. }
+                        | ResponseItem::LocalShellCall { .. } => {
                             reasoning_by_anchor_index
                                 .entry(idx + 1)
                                 .and_modify(|v| v.push_str(&text))
@@ -211,7 +223,7 @@ pub(crate) async fn stream_chat_completions(
                     messages.push(json!({"role": role, "content": text}));
                 }
             }
-            ResponseItem::CompactionSummary { .. } => {
+            ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
                 // Compaction summaries are only meaningful to the Responses API; omit them
                 // when translating to Chat Completions.
                 continue;
@@ -230,6 +242,24 @@ pub(crate) async fn stream_chat_completions(
                         "name": name,
                         "arguments": arguments,
                     }
+                });
+                push_tool_call_message(&mut messages, tool_call, reasoning);
+            }
+            ResponseItem::ToolSearchCall {
+                call_id,
+                status,
+                execution,
+                arguments,
+                ..
+            } => {
+                let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
+                let tool_call = json!({
+                    "id": call_id.clone().unwrap_or_default(),
+                    "type": "tool_search_call",
+                    "call_id": call_id,
+                    "status": status,
+                    "execution": execution,
+                    "arguments": arguments,
                 });
                 push_tool_call_message(&mut messages, tool_call, reasoning);
             }
@@ -256,6 +286,23 @@ pub(crate) async fn stream_chat_completions(
                     "content": output.to_string(),
                 }));
             }
+            ResponseItem::ToolSearchOutput {
+                call_id,
+                status,
+                execution,
+                tools,
+            } => {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id.clone().unwrap_or_default(),
+                    "content": serde_json::json!({
+                        "status": status,
+                        "execution": execution,
+                        "tools": tools,
+                    })
+                    .to_string(),
+                }));
+            }
             ResponseItem::CustomToolCall {
                 id,
                 call_id: _,
@@ -274,7 +321,11 @@ pub(crate) async fn stream_chat_completions(
                 });
                 push_tool_call_message(&mut messages, tool_call, reasoning);
             }
-            ResponseItem::CustomToolCallOutput { call_id, output } => {
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                output,
+                ..
+            } => {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -283,6 +334,7 @@ pub(crate) async fn stream_chat_completions(
             }
             ResponseItem::Reasoning { .. }
             | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::Other => {
                 // Omit these items from the conversation history.
@@ -344,8 +396,13 @@ pub(crate) async fn stream_chat_completions(
     loop {
         attempt += 1;
 
-        let auth = auth_manager.as_ref().and_then(|m| m.auth());
-        let mut req_builder = provider.create_request_builder(client, &auth).await?;
+        let base_auth = auth_manager.as_ref().and_then(|m| m.auth());
+        let auth = provider.effective_auth(&base_auth).await?;
+        let mut req_builder = provider.create_request_builder_with_auth(client, &auth).await?;
+        req_builder = req_builder.headers(crate::default_client::requested_model_headers(
+            Some(responses_originator_header),
+            model_slug,
+        ));
 
         if let Some(auth) = auth.as_ref() {
             if auth.mode.is_chatgpt() {
@@ -409,6 +466,19 @@ pub(crate) async fn stream_chat_completions(
             }
             Ok(res) => {
                 let status = res.status();
+                if status == StatusCode::UNAUTHORIZED && provider.has_command_auth() {
+                    provider.invalidate_cached_auth_token();
+                    if attempt > max_retries {
+                        return Err(CodexErr::RetryLimit(RetryLimitReachedError {
+                            status,
+                            request_id: None,
+                            retryable: true,
+                        }));
+                    }
+                    let delay = backoff(attempt);
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
                 if !(status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) {
                     let body = (res.text().await).unwrap_or_default();
                     if let Ok(logger) = debug_logger.lock() {
@@ -900,6 +970,7 @@ async fn process_chat_sse<S>(
                         let item = ResponseItem::FunctionCall {
                             id: current_item_id.clone(),
                             name: fn_call_state.name.clone().unwrap_or_else(|| "".to_string()),
+                            namespace: None,
                             arguments: fn_call_state.arguments.clone(),
                             call_id: fn_call_state.call_id.clone().unwrap_or_else(String::new),
                         };
@@ -1051,6 +1122,9 @@ where
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::ModelsEtag(etag)))) => {
                     return Poll::Ready(Some(Ok(ResponseEvent::ModelsEtag(etag))));
+                }
+                Poll::Ready(Some(Ok(ResponseEvent::ResponseHeaders(headers)))) => {
+                    return Poll::Ready(Some(Ok(ResponseEvent::ResponseHeaders(headers))));
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::Completed {
                     response_id,

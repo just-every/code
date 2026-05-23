@@ -1620,7 +1620,10 @@ async fn execute_model_with_permissions(
     let model_lower = model.to_lowercase();
     let command_lower = command_for_spawn.to_ascii_lowercase();
     fn is_known_family(s: &str) -> bool {
-        matches!(s, "claude" | "gemini" | "qwen" | "codex" | "code" | "cloud" | "coder")
+        matches!(
+            s,
+            "claude" | "gemini" | "copilot" | "qwen" | "codex" | "code" | "cloud" | "coder"
+        )
     }
 
     let slug_for_defaults = spec_opt.map(|spec| spec.slug).unwrap_or(model);
@@ -1678,7 +1681,7 @@ async fn execute_model_with_permissions(
     };
 
     // Configuration overrides for Codex CLI families. External CLIs (claude,
-    // gemini, qwen) do not understand our config flags, so only attach these
+    // gemini, copilot, qwen) do not understand our config flags, so only attach these
     // when launching Codex binaries.
     let effort_override = format!(
         "model_reasoning_effort={}",
@@ -1689,6 +1692,16 @@ async fn execute_model_with_permissions(
         clamped_effort.to_string().to_ascii_lowercase()
     );
     match family {
+        "copilot" => {
+            let mut defaults = default_params_for(slug_for_defaults, read_only);
+            strip_model_flags(&mut defaults);
+            final_args.extend(defaults);
+            final_args.extend(spec_model_args.iter().cloned());
+            final_args.push("--reasoning-effort".into());
+            final_args.push(clamped_effort.to_string().to_ascii_lowercase());
+            final_args.push("-p".into());
+            final_args.push(prompt.to_string());
+        }
         "claude" | "gemini" | "qwen" => {
             let mut defaults = default_params_for(slug_for_defaults, read_only);
             strip_model_flags(&mut defaults);
@@ -2417,7 +2430,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
                 },
             }),
                 description: Some(
-                    "Optional array of model names (e.g., ['code-gpt-5.2','claude-sonnet-4.5','code-gpt-5.3-codex-spark','gemini-3-flash'])".to_string(),
+                    "Optional array of model names (e.g., ['code-gpt-5.4','claude-sonnet-4.5','code-gpt-5.3-codex-spark','gemini-3-flash'])".to_string(),
                 ),
         },
     );
@@ -3005,6 +3018,106 @@ mod tests {
         assert_eq!(output.trim(), "local-claude");
     }
 
+    #[tokio::test]
+    async fn github_copilot_launches_with_agent_mode_flags() {
+        let dir = tempdir().expect("tempdir");
+        let copilot = script_path(dir.path(), "copilot");
+        write_argv_script(&copilot);
+
+        let cfg = AgentConfig {
+            name: "github-copilot".to_string(),
+            command: copilot.display().to_string(),
+            args: Vec::new(),
+            read_only: true,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-test",
+            "github-copilot",
+            "hello from copilot",
+            true,
+            None,
+            Some(cfg),
+            ReasoningEffort::Low,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute copilot agent");
+
+        let args: Vec<&str> = output.trim().split('|').collect();
+        assert_eq!(
+            args,
+            vec![
+                "--autopilot",
+                "--allow-all-tools",
+                "--no-ask-user",
+                "-s",
+                "--reasoning-effort",
+                "low",
+                "-p",
+                "hello from copilot",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn github_copilot_write_mode_uses_yolo() {
+        let dir = tempdir().expect("tempdir");
+        let copilot = script_path(dir.path(), "copilot");
+        write_argv_script(&copilot);
+
+        let cfg = AgentConfig {
+            name: "github-copilot".to_string(),
+            command: copilot.display().to_string(),
+            args: Vec::new(),
+            read_only: false,
+            enabled: true,
+            description: None,
+            env: None,
+            args_read_only: None,
+            args_write: None,
+            instructions: None,
+        };
+
+        let output = execute_model_with_permissions(
+            "agent-test",
+            "github-copilot",
+            "hello from copilot",
+            false,
+            None,
+            Some(cfg),
+            ReasoningEffort::High,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute copilot write agent");
+
+        let args: Vec<&str> = output.trim().split('|').collect();
+        assert_eq!(
+            args,
+            vec![
+                "--autopilot",
+                "--yolo",
+                "--no-ask-user",
+                "-s",
+                "--reasoning-effort",
+                "high",
+                "-p",
+                "hello from copilot",
+            ]
+        );
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -3063,6 +3176,24 @@ mod tests {
     fn write_script(path: &Path, marker: &str) {
         let script = format!("#!/bin/sh\necho {marker}\nexit 0\n");
         std::fs::write(path, script).expect("write script");
+        let mut perms = std::fs::metadata(path)
+            .expect("script metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod script");
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_argv_script(path: &Path) {
+        let script = "@echo off\r\nsetlocal enabledelayedexpansion\r\nset out=\r\n:loop\r\nif \"%~1\"==\"\" goto done\r\nif defined out (set out=!out!|%~1) else (set out=%~1)\r\nshift\r\ngoto loop\r\n:done\r\necho %out%\r\nexit /b 0\r\n";
+        std::fs::write(path, script).expect("write argv cmd");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_argv_script(path: &Path) {
+        let script = "#!/bin/sh\nprintf '%s' \"$1\"\nshift\nfor arg in \"$@\"; do\n  printf '|%s' \"$arg\"\ndone\nprintf '\\n'\nexit 0\n";
+        std::fs::write(path, script).expect("write argv script");
         let mut perms = std::fs::metadata(path)
             .expect("script metadata")
             .permissions();

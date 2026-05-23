@@ -770,6 +770,9 @@ pub struct DynamicToolCallParams {
     pub conversation_id: ConversationId,
     pub turn_id: String,
     pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub namespace: Option<String>,
     pub tool: String,
     pub arguments: serde_json::Value,
 }

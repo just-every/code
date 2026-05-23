@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use std::io::BufRead;
 use std::io::BufReader;
 use std::process::ChildStdout;
@@ -66,8 +67,8 @@ pub fn start_reader(
             }
 
             let line = buffer.trim_end_matches(['\n', '\r']);
-            if !line.is_empty() && !filtered_output {
-                let _ = output.server_line(line);
+            if !line.is_empty() {
+                let _ = output.server_json_line(line, filtered_output);
             }
 
             let Ok(message) = serde_json::from_str::<JSONRPCMessage>(line) else {
@@ -113,7 +114,7 @@ fn handle_server_request(
     stdin: &Arc<Mutex<Option<std::process::ChildStdin>>>,
     output: &Output,
 ) -> anyhow::Result<()> {
-    let server_request = match ServerRequest::try_from(request.clone()) {
+    let server_request = match ServerRequest::try_from(request) {
         Ok(server_request) => server_request,
         Err(_) => return Ok(()),
     };

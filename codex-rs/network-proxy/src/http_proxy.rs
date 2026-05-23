@@ -1,4 +1,5 @@
 use crate::config::NetworkMode;
+use crate::connect_policy::TargetCheckedTcpConnector;
 use crate::mitm;
 use crate::network_policy::BlockDecisionAuditEventArgs;
 use crate::network_policy::NetworkDecision;
@@ -30,6 +31,7 @@ use crate::upstream::UpstreamClient;
 use crate::upstream::proxy_for_connect;
 use anyhow::Context as _;
 use anyhow::Result;
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
@@ -38,7 +40,6 @@ use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::layer::AddInputExtensionLayer;
-use rama_core::rt::Executor;
 use rama_core::service::service_fn;
 use rama_http::Body;
 use rama_http::HeaderMap;
@@ -48,6 +49,8 @@ use rama_http::Request;
 use rama_http::Response;
 use rama_http::StatusCode;
 use rama_http::header;
+use rama_http::headers::HeaderMapExt;
+use rama_http::headers::Host;
 use rama_http::layer::remove_header::RemoveResponseHeaderLayer;
 use rama_http::matcher::MethodMatcher;
 use rama_http_backend::client::proxy::layer::HttpProxyConnector;
@@ -55,7 +58,6 @@ use rama_http_backend::server::HttpServer;
 use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_backend::server::layer::upgrade::Upgraded;
 use rama_net::Protocol;
-use rama_net::address::HostWithOptPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::ConnectorService;
 use rama_net::client::EstablishedClientConnection;
@@ -65,7 +67,6 @@ use rama_net::proxy::ProxyTarget;
 use rama_net::proxy::StreamForwardService;
 use rama_net::stream::SocketInfo;
 use rama_tcp::client::Request as TcpRequest;
-use rama_tcp::client::service::TcpConnector;
 use rama_tcp::server::TcpListener;
 use rama_tls_rustls::client::TlsConnectorDataBuilder;
 use rama_tls_rustls::client::TlsConnectorLayer;
@@ -74,6 +75,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
@@ -112,11 +114,17 @@ async fn run_http_proxy_with_listener(
     listener: TcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
 ) -> Result<()> {
+    ensure_rustls_crypto_provider();
+
     let addr = listener
         .local_addr()
         .context("read HTTP proxy listener local addr")?;
 
-    let http_service = HttpServer::auto(Executor::new()).service(
+    // This proxy listener only needs HTTP/1 proxy semantics. Using Rama's auto builder
+    // forces every accepted socket through the HTTP version sniffing pre-read path before proxy
+    // request parsing, which can stall some local clients on macOS before CONNECT/absolute-form
+    // handling runs at all.
+    let http_service = HttpServer::http1().service(
         (
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
@@ -180,7 +188,7 @@ async fn http_connect_accept(
             client_addr(&req),
             Some("CONNECT".to_string()),
             NetworkProtocol::HttpsConnect,
-            None,
+            /*audit_endpoint_override*/ None,
         )
         .await);
     }
@@ -338,20 +346,22 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         return Ok(());
     }
 
-    let allow_upstream_proxy = match upgraded
+    let app_state = match upgraded
         .extensions()
         .get::<Arc<NetworkProxyState>>()
         .cloned()
     {
-        Some(state) => match state.allow_upstream_proxy().await {
-            Ok(allowed) => allowed,
-            Err(err) => {
-                error!("failed to read upstream proxy setting: {err}");
-                false
-            }
-        },
+        Some(state) => state,
         None => {
             error!("missing app state");
+            return Ok(());
+        }
+    };
+
+    let allow_upstream_proxy = match app_state.allow_upstream_proxy().await {
+        Ok(allowed) => allowed,
+        Err(err) => {
+            error!("failed to read upstream proxy setting: {err}");
             false
         }
     };
@@ -361,8 +371,18 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     } else {
         None
     };
+    match proxy.as_ref() {
+        Some(proxy) => info!(
+            "CONNECT route selected (host={}, port={}, route=upstream_proxy, proxy={})",
+            target.host, target.port, proxy.address
+        ),
+        None => info!(
+            "CONNECT route selected (host={}, port={}, route=direct)",
+            target.host, target.port
+        ),
+    }
 
-    if let Err(err) = forward_connect_tunnel(upgraded, proxy).await {
+    if let Err(err) = forward_connect_tunnel(upgraded, proxy, app_state).await {
         warn!("tunnel error: {err}");
     }
     Ok(())
@@ -371,6 +391,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 async fn forward_connect_tunnel(
     upgraded: Upgraded,
     proxy: Option<ProxyAddress>,
+    app_state: Arc<NetworkProxyState>,
 ) -> Result<(), BoxError> {
     let authority = upgraded
         .extensions()
@@ -385,28 +406,54 @@ async fn forward_connect_tunnel(
 
     let req = TcpRequest::new_with_extensions(authority.clone(), extensions)
         .with_protocol(Protocol::HTTPS);
-    let proxy_connector = HttpProxyConnector::optional(TcpConnector::new());
+    let proxy_connector = HttpProxyConnector::optional(TargetCheckedTcpConnector::new(app_state));
     let tls_config = TlsConnectorDataBuilder::new()
         .with_alpn_protocols_http_auto()
         .build();
     let connector = TlsConnectorLayer::tunnel(None)
         .with_connector_data(tls_config)
         .into_layer(proxy_connector);
-    let EstablishedClientConnection { conn: target, .. } =
-        connector.connect(req).await.map_err(|err| {
-            OpaqueError::from_boxed(err)
+    info!("CONNECT upstream dial started (target={authority})");
+    let connect_started_at = Instant::now();
+    let EstablishedClientConnection { conn: target, .. } = match connector.connect(req).await {
+        Ok(connection) => {
+            info!(
+                "CONNECT upstream dial established (target={authority}, elapsed_ms={})",
+                connect_started_at.elapsed().as_millis()
+            );
+            connection
+        }
+        Err(err) => {
+            warn!(
+                "CONNECT upstream dial failed (target={authority}, elapsed_ms={})",
+                connect_started_at.elapsed().as_millis()
+            );
+            return Err(OpaqueError::from_boxed(err)
                 .with_context(|| format!("establish CONNECT tunnel to {authority}"))
-                .into_boxed()
-        })?;
+                .into_boxed());
+        }
+    };
 
     let proxy_req = ProxyRequest {
         source: upgraded,
         target,
     };
+    info!("CONNECT tunnel forwarding started (target={authority})");
+    let forward_started_at = Instant::now();
     StreamForwardService::default()
         .serve(proxy_req)
         .await
+        .map(|_| {
+            info!(
+                "CONNECT tunnel forwarding completed (target={authority}, elapsed_ms={})",
+                forward_started_at.elapsed().as_millis()
+            );
+        })
         .map_err(|err| {
+            warn!(
+                "CONNECT tunnel forwarding failed (target={authority}, elapsed_ms={})",
+                forward_started_at.elapsed().as_millis()
+            );
             OpaqueError::from_boxed(err.into())
                 .with_context(|| format!("forward CONNECT tunnel to {authority}"))
                 .into_boxed()
@@ -462,7 +509,7 @@ async fn http_plain_proxy(
             return Ok(proxy_disabled_response(
                 &app_state,
                 socket_path,
-                0,
+                /*port*/ 0,
                 client_addr(&req),
                 Some(req.method().as_str().to_string()),
                 NetworkProtocol::Http,
@@ -488,7 +535,11 @@ async fn http_plain_proxy(
             warn!(
                 "unix socket blocked by method policy (client={client}, method={method}, mode=limited, allowed_methods=GET, HEAD, OPTIONS)"
             );
-            return Ok(json_blocked("unix-socket", REASON_METHOD_NOT_ALLOWED, None));
+            return Ok(json_blocked(
+                "unix-socket",
+                REASON_METHOD_NOT_ALLOWED,
+                /*details*/ None,
+            ));
         }
 
         if !unix_socket_permissions_supported() {
@@ -553,7 +604,11 @@ async fn http_plain_proxy(
                 );
                 let client = client.as_deref().unwrap_or_default();
                 warn!("unix socket blocked (client={client}, path={socket_path})");
-                Ok(json_blocked("unix-socket", REASON_NOT_ALLOWED, None))
+                Ok(json_blocked(
+                    "unix-socket",
+                    REASON_NOT_ALLOWED,
+                    /*details*/ None,
+                ))
             }
             Err(err) => {
                 warn!("unix socket check failed: {err}");
@@ -562,18 +617,27 @@ async fn http_plain_proxy(
         };
     }
 
-    let authority = match RequestContext::try_from(&req).map(|ctx| ctx.host_with_port()) {
-        Ok(authority) => authority,
+    let request_ctx = match RequestContext::try_from(&req) {
+        Ok(request_ctx) => request_ctx,
         Err(err) => {
             warn!("missing host: {err}");
             return Ok(text_response(StatusCode::BAD_REQUEST, "missing host"));
         }
     };
+    let authority = request_ctx.host_with_port();
     let host = normalize_host(&authority.host.to_string());
     let port = authority.port;
-    if let Err(err) = validate_plain_http_host_header(&req, &authority) {
-        warn!("HTTP request host mismatch: {err}");
-        return Ok(text_response(StatusCode::BAD_REQUEST, "host mismatch"));
+    if let Err(reason) = validate_absolute_form_host_header(&req, &request_ctx) {
+        let client = client.as_deref().unwrap_or_default();
+        let host_header = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<missing>");
+        warn!(
+            "request rejected due to mismatched Host header (client={client}, target={host}:{port}, host_header={host_header}, reason={reason})"
+        );
+        return Ok(text_response(StatusCode::BAD_REQUEST, reason));
     }
     let enabled = match app_state
         .enabled()
@@ -594,7 +658,7 @@ async fn http_plain_proxy(
             client_addr(&req),
             Some(req.method().as_str().to_string()),
             NetworkProtocol::Http,
-            None,
+            /*audit_endpoint_override*/ None,
         )
         .await);
     }
@@ -706,9 +770,9 @@ async fn http_plain_proxy(
         Err(resp) => return Ok(resp),
     };
     let client = if allow_upstream_proxy {
-        UpstreamClient::from_env_proxy()
+        UpstreamClient::from_env_proxy(app_state.clone())
     } else {
-        UpstreamClient::direct()
+        UpstreamClient::direct(app_state.clone())
     };
 
     // Strip hop-by-hop headers only after extracting metadata used for policy correlation.
@@ -757,6 +821,39 @@ fn client_addr<T: ExtensionsRef>(input: &T) -> Option<String> {
         .map(|info| info.peer_addr().to_string())
 }
 
+fn validate_absolute_form_host_header(
+    req: &Request,
+    request_ctx: &RequestContext,
+) -> Result<(), &'static str> {
+    if req.uri().scheme_str().is_none() {
+        return Ok(());
+    }
+
+    let Some(host_header) = req
+        .headers()
+        .typed_try_get::<Host>()
+        .map_err(|_| "invalid Host header")?
+    else {
+        return Ok(());
+    };
+
+    if host_header.0.host != request_ctx.authority.host {
+        return Err("Host header does not match request target");
+    }
+
+    if let Some(host_port) = host_header.0.port {
+        if Some(host_port) != request_ctx.authority.port {
+            return Err("Host header does not match request target");
+        }
+        return Ok(());
+    }
+
+    if !request_ctx.authority_has_default_port() {
+        return Err("Host header does not match request target");
+    }
+
+    Ok(())
+}
 fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
     while let Some(raw_connection) = headers.get(header::CONNECTION).cloned() {
         headers.remove(header::CONNECTION);
@@ -790,45 +887,6 @@ fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
     if let Ok(short_hop_header_name) = HeaderName::from_bytes(&[0x74, 0x65]) {
         headers.remove(short_hop_header_name);
     }
-}
-
-fn validate_plain_http_host_header(
-    req: &Request,
-    target: &rama_net::address::HostWithPort,
-) -> std::result::Result<(), &'static str> {
-    // Only enforce this in absolute-form requests. Origin-form requests use the Host header as the
-    // routing authority, so there is no separate target authority to compare against.
-    if req.uri().authority().is_none() {
-        return Ok(());
-    }
-
-    let Some(raw_host) = req.headers().get(header::HOST) else {
-        return Ok(());
-    };
-    let raw_host = raw_host.to_str().map_err(|_| "invalid Host header")?;
-    let parsed = HostWithOptPort::try_from(raw_host).map_err(|_| "invalid Host header")?;
-
-    let target_host = normalize_host(&target.host.to_string());
-    let request_host = normalize_host(&parsed.host.to_string());
-    if request_host.is_empty() || request_host != target_host {
-        return Err("request Host header host does not match target authority");
-    }
-
-    let expected_port = target.port;
-    let request_port = match parsed.port {
-        Some(port) => port,
-        None => match req.uri().scheme_str() {
-            Some("http") => 80,
-            Some("https") => 443,
-            Some(_) | None => expected_port,
-        },
-    };
-
-    if request_port != expected_port {
-        return Err("request Host header port does not match target authority");
-    }
-
-    Ok(())
 }
 
 fn json_blocked(host: &str, reason: &str, details: Option<&PolicyDecisionDetails<'_>>) -> Response {
@@ -973,13 +1031,21 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rama_http::Method;
     use rama_http::Request;
+    use std::net::Ipv4Addr;
+    use std::net::TcpListener as StdTcpListener;
     use std::sync::Arc;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener as TokioTcpListener;
+    use tokio::time::Duration;
+    use tokio::time::timeout;
 
     #[tokio::test]
     async fn http_connect_accept_blocks_in_limited_mode() {
-        let policy = NetworkProxySettings {
-            allowed_domains: vec!["example.com".to_string()],
-            ..Default::default()
+        let policy = {
+            let mut policy = NetworkProxySettings::default();
+            policy.set_allowed_domains(vec!["example.com".to_string()]);
+            policy
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
         state.set_network_mode(NetworkMode::Limited).await.unwrap();
@@ -992,7 +1058,9 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_connect_accept(None, req).await.unwrap_err();
+        let response = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers().get("x-proxy-error").unwrap(),
@@ -1002,9 +1070,13 @@ mod tests {
 
     #[tokio::test]
     async fn http_connect_accept_allows_allowlisted_host_in_full_mode() {
-        let policy = NetworkProxySettings {
-            allowed_domains: vec!["example.com".to_string()],
-            ..Default::default()
+        let policy = {
+            let mut policy = NetworkProxySettings {
+                allow_local_binding: true,
+                ..NetworkProxySettings::default()
+            };
+            policy.set_allowed_domains(vec!["example.com".to_string()]);
+            policy
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
@@ -1016,8 +1088,72 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let (response, _request) = http_connect_accept(None, req).await.unwrap();
+        let (response, _request) = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_proxy_listener_accepts_plain_http1_connect_requests() {
+        let target_listener = TokioTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("target listener should bind");
+        let target_addr = target_listener
+            .local_addr()
+            .expect("target listener should expose local addr");
+        let target_task = tokio::spawn(async move {
+            let (mut stream, _) = target_listener
+                .accept()
+                .await
+                .expect("target listener should accept");
+            let mut buf = [0_u8; 1];
+            let _ = timeout(Duration::from_secs(1), stream.read(&mut buf)).await;
+        });
+
+        let state = Arc::new(network_proxy_state_for_policy({
+            let mut network = NetworkProxySettings::default();
+            network.set_allowed_domains(vec!["127.0.0.1".to_string()]);
+            network.allow_local_binding = true;
+            network
+        }));
+        let listener =
+            StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("proxy listener should bind");
+        let proxy_addr = listener
+            .local_addr()
+            .expect("proxy listener should expose local addr");
+        let proxy_task = tokio::spawn(run_http_proxy_with_std_listener(
+            state, listener, /*policy_decider*/ None,
+        ));
+
+        let mut stream = tokio::net::TcpStream::connect(proxy_addr)
+            .await
+            .expect("client should connect to proxy");
+        let request = format!(
+            "CONNECT 127.0.0.1:{port} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n",
+            port = target_addr.port()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("client should write CONNECT request");
+
+        let mut buf = [0_u8; 256];
+        let bytes_read = timeout(Duration::from_secs(2), stream.read(&mut buf))
+            .await
+            .expect("proxy should respond before timeout")
+            .expect("client should read proxy response");
+        let response = String::from_utf8_lossy(&buf[..bytes_read]);
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected proxy response: {response:?}"
+        );
+
+        drop(stream);
+        proxy_task.abort();
+        let _ = proxy_task.await;
+        target_task.abort();
+        let _ = target_task.await;
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1038,7 +1174,9 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(None, req).await.unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
@@ -1061,7 +1199,9 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(None, req).await.unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
 
         if cfg!(target_os = "macos") {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1077,9 +1217,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test(flavor = "current_thread")]
     async fn http_plain_proxy_attempts_allowed_unix_socket_proxy() {
-        let state = Arc::new(network_proxy_state_for_policy(NetworkProxySettings {
-            allow_unix_sockets: vec!["/tmp/test.sock".to_string()],
-            ..NetworkProxySettings::default()
+        let state = Arc::new(network_proxy_state_for_policy({
+            let mut network = NetworkProxySettings::default();
+            network.set_allow_unix_sockets(vec!["/tmp/test.sock".to_string()]);
+            network
         }));
 
         let mut req = Request::builder()
@@ -1090,16 +1231,19 @@ mod tests {
             .expect("request should build");
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(None, req).await.unwrap();
+        let response = http_plain_proxy(/*policy_decider*/ None, req)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
     async fn http_connect_accept_denies_denylisted_host() {
-        let policy = NetworkProxySettings {
-            allowed_domains: vec!["**.openai.com".to_string()],
-            denied_domains: vec!["api.openai.com".to_string()],
-            ..Default::default()
+        let policy = {
+            let mut policy = NetworkProxySettings::default();
+            policy.set_allowed_domains(vec!["**.openai.com".to_string()]);
+            policy.set_denied_domains(vec!["api.openai.com".to_string()]);
+            policy
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
@@ -1111,7 +1255,9 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_connect_accept(None, req).await.unwrap_err();
+        let response = http_connect_accept(/*policy_decider*/ None, req)
+            .await
+            .unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers().get("x-proxy-error").unwrap(),
@@ -1132,8 +1278,53 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(state);
 
-        let response = http_plain_proxy(None, req).await;
+        let response = http_plain_proxy(/*policy_decider*/ None, req).await;
         assert_eq!(response.unwrap().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn validate_absolute_form_host_header_allows_matching_default_port() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(
+            validate_absolute_form_host_header(&req, &RequestContext::try_from(&req).unwrap(),),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_absolute_form_host_header_rejects_mismatched_host() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://raw.githubusercontent.com/")
+            .header("host", "api.github.com")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(
+            validate_absolute_form_host_header(&req, &RequestContext::try_from(&req).unwrap(),),
+            Err("Host header does not match request target")
+        );
+    }
+
+    #[test]
+    fn validate_absolute_form_host_header_rejects_missing_non_default_port() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://example.com:8080/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(
+            validate_absolute_form_host_header(&req, &RequestContext::try_from(&req).unwrap(),),
+            Err("Host header does not match request target")
+        );
     }
 
     #[test]

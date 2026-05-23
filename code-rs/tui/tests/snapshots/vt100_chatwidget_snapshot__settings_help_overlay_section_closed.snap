@@ -9,18 +9,18 @@ expression: section_closed
  |                                                                                                |
  | ›  Model              + Select Model & Reasoning --------------------------------------------+ |
  |    Theme              |                                                                      | |
- |    Updates            |  Current model: GPT-5.3-Codex                                        | |
+ |    Updates            |  Current model: GPT-5.4                                              | |
  |    Accounts           |  Reasoning effort: Medium                                            | |
  |    Agents             |                                                                      | |
- |    Prompts            |  GPT-5.2                                                             | |
- |    Skills             |  Latest frontier model with improvements across knowledge, reasoning | |
- |    Auto Drive         |     XHigh - Extra high reasoning depth for complex problems          | |
- |    Review             |     High - Maximizes reasoning depth for complex or ambiguous proble | |
- |    Planning           |     Medium - Provides a solid balance of reasoning depth and latency | |
- |    Validation         |                                                                      | |
- |    Chrome             |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
- |    MCP                |                                                                      | |
- |  ↓ Notifications      +----------------------------------------------------------------------+ |
+ |    Prompts            |  Mode Settings                                                       | |
+ |    Memories           |  Fast mode speeds up replies. 1M Context is available on supported m | |
+ |    Skills             |  › Fast Mode: disabled                                               | |
+ |    Auto Drive         |    1M Context: auto                                                  | |
+ |    Review             |  Press Enter to cycle Disabled, Enabled, and Auto.                   | |
+ |    Planning           |                                                                      | |
+ |    Validation         |  ↑↓ Navigate  Enter Select  Esc Cancel                               | |
+ |    Chrome             |                                                                      | |
+ |  ↓ MCP                +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
  +------------------------------------------------------------------------------------------------+

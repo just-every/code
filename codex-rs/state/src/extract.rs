@@ -29,6 +29,17 @@ pub fn apply_rollout_item(
     }
 }
 
+/// Return whether this rollout item can mutate thread metadata stored in SQLite.
+pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
+    match item {
+        RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
+        RolloutItem::EventMsg(EventMsg::TokenCount(_) | EventMsg::UserMessage(_)) => true,
+        RolloutItem::EventMsg(_) | RolloutItem::ResponseItem(_) | RolloutItem::Compacted(_) => {
+            false
+        }
+    }
+}
+
 fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &SessionMetaLine) {
     if metadata.id != meta_line.meta.id {
         // Ignore session_meta lines that don't match the canonical thread ID,
@@ -37,8 +48,10 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     }
     metadata.id = meta_line.meta.id;
     metadata.source = enum_to_string(&meta_line.meta.source);
+    metadata.thread_source = meta_line.meta.thread_source;
     metadata.agent_nickname = meta_line.meta.agent_nickname.clone();
     metadata.agent_role = meta_line.meta.agent_role.clone();
+    metadata.agent_path = meta_line.meta.agent_path.clone();
     if let Some(provider) = meta_line.meta.model_provider.as_deref() {
         metadata.model_provider = provider.to_string();
     }
@@ -49,14 +62,18 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
         metadata.cwd = meta_line.meta.cwd.clone();
     }
     if let Some(git) = meta_line.git.as_ref() {
-        metadata.git_sha = git.commit_hash.clone();
+        metadata.git_sha = git.commit_hash.as_ref().map(|sha| sha.0.clone());
         metadata.git_branch = git.branch.clone();
         metadata.git_origin_url = git.repository_url.clone();
     }
 }
 
 fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem) {
-    metadata.cwd = turn_ctx.cwd.clone();
+    if metadata.cwd.as_os_str().is_empty() {
+        metadata.cwd = turn_ctx.cwd.clone();
+    }
+    metadata.model = Some(turn_ctx.model.clone());
+    metadata.reasoning_effort = turn_ctx.effort;
     metadata.sandbox_policy = enum_to_string(&turn_ctx.sandbox_policy);
     metadata.approval_mode = enum_to_string(&turn_ctx.approval_policy);
 }
@@ -83,9 +100,7 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
     }
 }
 
-fn apply_response_item(_metadata: &mut ThreadMetadata, _item: &ResponseItem) {
-    // Title and first_user_message are derived from EventMsg::UserMessage only.
-}
+fn apply_response_item(_metadata: &mut ThreadMetadata, _item: &ResponseItem) {}
 
 fn strip_user_message_prefix(text: &str) -> &str {
     match text.find(USER_MESSAGE_BEGIN) {
@@ -125,10 +140,18 @@ mod tests {
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SandboxPolicy;
+    use codex_protocol::protocol::SessionMeta;
+    use codex_protocol::protocol::SessionMetaLine;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use codex_protocol::protocol::UserMessageEvent;
 
@@ -145,7 +168,6 @@ mod tests {
             content: vec![ContentItem::InputText {
                 text: "hello from response item".to_string(),
             }],
-            end_turn: None,
             phase: None,
         });
 
@@ -209,6 +231,177 @@ mod tests {
         assert_eq!(metadata.title, "");
     }
 
+    #[test]
+    fn turn_context_does_not_override_session_cwd() {
+        let mut metadata = metadata_for_test();
+        metadata.cwd = PathBuf::new();
+        let thread_id = metadata.id;
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    forked_from_id: Some(
+                        ThreadId::from_string(&Uuid::now_v7().to_string()).expect("thread id"),
+                    ),
+                    timestamp: "2026-02-26T00:00:00.000Z".to_string(),
+                    cwd: PathBuf::from("/child/worktree"),
+                    originator: "codex_cli_rs".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    thread_source: None,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                    model_provider: Some("openai".to_string()),
+                    base_instructions: None,
+                    dynamic_tools: None,
+                    memory_mode: None,
+                },
+                git: None,
+            }),
+            "test-provider",
+        );
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                trace_id: None,
+                cwd: PathBuf::from("/parent/workspace"),
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::DangerFullAccess,
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "gpt-5".to_string(),
+                personality: None,
+                collaboration_mode: None,
+                realtime_active: None,
+                effort: None,
+                summary: ReasoningSummary::Auto,
+                user_instructions: None,
+                developer_instructions: None,
+                final_output_json_schema: None,
+                truncation_policy: None,
+            }),
+            "test-provider",
+        );
+
+        assert_eq!(metadata.cwd, PathBuf::from("/child/worktree"));
+        assert_eq!(
+            metadata.sandbox_policy,
+            super::enum_to_string(&SandboxPolicy::DangerFullAccess)
+        );
+        assert_eq!(metadata.approval_mode, "never");
+    }
+
+    #[test]
+    fn turn_context_sets_cwd_when_session_cwd_missing() {
+        let mut metadata = metadata_for_test();
+        metadata.cwd = PathBuf::new();
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                trace_id: None,
+                cwd: PathBuf::from("/fallback/workspace"),
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::OnRequest,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "gpt-5".to_string(),
+                personality: None,
+                collaboration_mode: None,
+                realtime_active: None,
+                effort: Some(ReasoningEffort::High),
+                summary: ReasoningSummary::Auto,
+                user_instructions: None,
+                developer_instructions: None,
+                final_output_json_schema: None,
+                truncation_policy: None,
+            }),
+            "test-provider",
+        );
+
+        assert_eq!(metadata.cwd, PathBuf::from("/fallback/workspace"));
+    }
+
+    #[test]
+    fn turn_context_sets_model_and_reasoning_effort() {
+        let mut metadata = metadata_for_test();
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                trace_id: None,
+                cwd: PathBuf::from("/fallback/workspace"),
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::OnRequest,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "gpt-5".to_string(),
+                personality: None,
+                collaboration_mode: None,
+                realtime_active: None,
+                effort: Some(ReasoningEffort::High),
+                summary: ReasoningSummary::Auto,
+                user_instructions: None,
+                developer_instructions: None,
+                final_output_json_schema: None,
+                truncation_policy: None,
+            }),
+            "test-provider",
+        );
+
+        assert_eq!(metadata.model.as_deref(), Some("gpt-5"));
+        assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn session_meta_does_not_set_model_or_reasoning_effort() {
+        let mut metadata = metadata_for_test();
+        let thread_id = metadata.id;
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    forked_from_id: None,
+                    timestamp: "2026-02-26T00:00:00.000Z".to_string(),
+                    cwd: PathBuf::from("/workspace"),
+                    originator: "codex_cli_rs".to_string(),
+                    cli_version: "0.0.0".to_string(),
+                    source: SessionSource::Cli,
+                    thread_source: None,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                    model_provider: Some("openai".to_string()),
+                    base_instructions: None,
+                    dynamic_tools: None,
+                    memory_mode: None,
+                },
+                git: None,
+            }),
+            "test-provider",
+        );
+
+        assert_eq!(metadata.model, None);
+        assert_eq!(metadata.reasoning_effort, None);
+    }
+
     fn metadata_for_test() -> ThreadMetadata {
         let id = ThreadId::from_string(&Uuid::from_u128(42).to_string()).expect("thread id");
         let created_at = DateTime::<Utc>::from_timestamp(1_735_689_600, 0).expect("timestamp");
@@ -218,9 +411,13 @@ mod tests {
             created_at,
             updated_at: created_at,
             source: "cli".to_string(),
+            thread_source: None,
+            agent_path: None,
             agent_nickname: None,
             agent_role: None,
             model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),

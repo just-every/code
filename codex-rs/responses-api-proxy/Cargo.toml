@@ -7,6 +7,7 @@ license.workspace = true
 [lib]
 name = "codex_responses_api_proxy"
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "codex-responses-api-proxy"
@@ -26,3 +27,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tiny_http = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

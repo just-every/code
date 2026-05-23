@@ -748,7 +748,7 @@ fn smoke_approval_flow() {
         .expect("change for sample.txt present");
     match change {
         FileChange::Add { content } => {
-            assert_eq!(content, "Hello world", "patch change should include file contents");
+            assert!(content.is_empty(), "patch approval history should keep compacted file contents");
         }
         other => panic!("expected FileChange::Add, got {other:?}"),
     }

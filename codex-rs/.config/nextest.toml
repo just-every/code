@@ -2,6 +2,17 @@
 # Do not increase, fix your test instead
 slow-timeout = { period = "15s", terminate-after = 2 }
 
+[test-groups.app_server_protocol_codegen]
+max-threads = 1
+
+[test-groups.app_server_integration]
+max-threads = 1
+
+[test-groups.core_apply_patch_cli_integration]
+max-threads = 1
+
+[test-groups.windows_sandbox_legacy_sessions]
+max-threads = 1
 
 [[profile.default.overrides]]
 # Do not add new tests here
@@ -11,3 +22,25 @@ slow-timeout = { period = "1m", terminate-after = 4 }
 [[profile.default.overrides]]
 filter = 'test(approval_matrix_covers_all_modes)'
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(codex-app-server-protocol) & (test(typescript_schema_fixtures_match_generated) | test(json_schema_fixtures_match_generated) | test(generate_ts_with_experimental_api_retains_experimental_entries) | test(generated_ts_optional_nullable_fields_only_in_params) | test(generate_json_filters_experimental_fields_and_methods))'
+test-group = 'app_server_protocol_codegen'
+
+[[profile.default.overrides]]
+# These integration tests spawn a fresh app-server subprocess per case.
+# Keep the library unit tests parallel.
+filter = 'package(codex-app-server) & kind(test)'
+test-group = 'app_server_integration'
+
+[[profile.default.overrides]]
+# These tests exercise full Codex turns and apply_patch execution, and they are
+# sensitive to Windows runner process-startup stalls when many cases launch at once.
+filter = 'package(codex-core) & kind(test) & test(apply_patch_cli)'
+test-group = 'core_apply_patch_cli_integration'
+
+[[profile.default.overrides]]
+# These tests create restricted-token Windows child processes and private desktops.
+# Serialize them to avoid exhausting Windows session/global desktop resources in CI.
+filter = 'package(codex-windows-sandbox) & test(legacy_)'
+test-group = 'windows_sandbox_legacy_sessions'

@@ -16,9 +16,11 @@ Notes
 - `/browser`: open internal browser.
 - `/chrome`: connect to your Chrome browser.
 - `/new`: start a new chat during a conversation.
+- `/clear`: clear the terminal and start a new chat.
 - `/resume`: resume a past session for this folder.
 - `/rename <name>`: rename the current session (shown in the resume list).
 - `/quit`: exit Code.
+- `/exit`: exit Code.
 - `/logout`: log out of Code.
 - `/login`: manage Code sign-ins (select, add, or disconnect accounts).
 - `/settings [section]`: open the settings panel. Optional section argument
@@ -29,6 +31,7 @@ Notes
 
 - `/init`: create an `AGENTS.md` file with instructions for Code.
 - `/diff`: show `git diff` (including untracked files).
+- `/copy`: copy the last assistant response as markdown.
 - `/undo`: open a snapshot picker so you can restore workspace files to a
   previous Code snapshot and optionally rewind the conversation to that point.
 - `/branch [task]`: create a worktree branch and switch to it. If a
@@ -59,6 +62,7 @@ Notes
 - `/theme`: customize the app theme.
 - `/verbosity (high|medium|low)`: change text verbosity.
 - `/model`: choose your default model.
+- `/fast`: open the model selector and toggle Fast mode.
 - `/reasoning (minimal|low|medium|high)`: change reasoning effort.
 - `/prompts`: manage custom prompts.
 - `/skills`: manage skills.
@@ -115,8 +119,8 @@ Implementation Notes
 - Prompt formatting for `/plan`, `/solve`, and `/code` lives in
   `code-rs/core/src/slash_commands.rs`.
   When no `[[agents]]` are configured, the orchestrator advertises the
-  following model slugs to the LLM for multi-agent runs: `code-gpt-5.2`,
-  `code-gpt-5.2-codex`, `claude-opus-4.6`, `gemini-3-pro`,
+  following model slugs to the LLM for multi-agent runs: `code-gpt-5.4`,
+  `code-gpt-5.3-codex`, `claude-opus-4.6`, `gemini-3-pro`,
   `code-gpt-5.1-codex-mini`, `claude-sonnet-4.5`, `gemini-3-flash`,
   `claude-haiku-4.5`, and `qwen-3-coder` (with
   `cloud-gpt-5.1-codex-max` gated by `CODE_ENABLE_CLOUD_AGENT_MODEL`). (`gemini`

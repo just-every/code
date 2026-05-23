@@ -1,32 +1,40 @@
 //! Apply Patch runtime: executes verified patches under the orchestrator.
 //!
-//! Assumes `apply_patch` verification/approval happened upstream. Reuses that
-//! decision to avoid re-prompting, builds the self-invocation command for
-//! `codex --codex-run-as-apply-patch`, and runs under the current
-//! `SandboxAttempt` with a minimal environment.
-use crate::exec::ExecToolCallOutput;
-use crate::sandboxing::CommandSpec;
-use crate::sandboxing::SandboxPermissions;
-use crate::sandboxing::execute_env;
+//! Assumes `apply_patch` verification/approval happened upstream. Reuses the
+//! selected turn environment filesystem for both local and remote turns, with
+//! sandboxing enforced by the explicit filesystem sandbox context.
+use crate::exec::is_likely_sandbox_denied;
+use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::review_approval_request;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
+use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::Sandboxable;
-use crate::tools::sandboxing::SandboxablePreference;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
 use crate::tools::sandboxing::with_cached_approval;
+use codex_apply_patch::AppliedPatchDelta;
 use codex_apply_patch::ApplyPatchAction;
-use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
+use codex_exec_server::FileSystemSandboxContext;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::SandboxErr;
+use codex_protocol::exec_output::ExecToolCallOutput;
+use codex_protocol::exec_output::StreamOutput;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::ReviewDecision;
+use codex_sandboxing::SandboxType;
+use codex_sandboxing::SandboxablePreference;
+use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Debug)]
 pub struct ApplyPatchRequest {
@@ -34,48 +42,58 @@ pub struct ApplyPatchRequest {
     pub file_paths: Vec<AbsolutePathBuf>,
     pub changes: std::collections::HashMap<PathBuf, FileChange>,
     pub exec_approval_requirement: ExecApprovalRequirement,
-    pub timeout_ms: Option<u64>,
-    pub codex_exe: Option<PathBuf>,
+    pub additional_permissions: Option<AdditionalPermissionProfile>,
+    pub permissions_preapproved: bool,
 }
 
 #[derive(Default)]
-pub struct ApplyPatchRuntime;
+pub struct ApplyPatchRuntime {
+    committed_delta: AppliedPatchDelta,
+}
+
+#[derive(Debug)]
+pub struct ApplyPatchRuntimeOutput {
+    pub exec_output: ExecToolCallOutput,
+    pub delta: AppliedPatchDelta,
+}
 
 impl ApplyPatchRuntime {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    fn build_command_spec(req: &ApplyPatchRequest) -> Result<CommandSpec, ToolError> {
-        use std::env;
-        let exe = if let Some(path) = &req.codex_exe {
-            path.clone()
-        } else {
-            env::current_exe()
-                .map_err(|e| ToolError::Rejected(format!("failed to determine codex exe: {e}")))?
-        };
-        let program = exe.to_string_lossy().to_string();
-        Ok(CommandSpec {
-            program,
-            args: vec![
-                CODEX_CORE_APPLY_PATCH_ARG1.to_string(),
-                req.action.patch.clone(),
-            ],
+    pub fn committed_delta(&self) -> &AppliedPatchDelta {
+        &self.committed_delta
+    }
+
+    fn build_guardian_review_request(
+        req: &ApplyPatchRequest,
+        call_id: &str,
+    ) -> GuardianApprovalRequest {
+        GuardianApprovalRequest::ApplyPatch {
+            id: call_id.to_string(),
             cwd: req.action.cwd.clone(),
-            expiration: req.timeout_ms.into(),
-            // Run apply_patch with a minimal environment for determinism and to avoid leaks.
-            env: HashMap::new(),
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            justification: None,
-        })
+            files: req.file_paths.clone(),
+            patch: req.action.patch.clone(),
+        }
     }
 
-    fn stdout_stream(ctx: &ToolCtx) -> Option<crate::exec::StdoutStream> {
-        Some(crate::exec::StdoutStream {
-            sub_id: ctx.turn.sub_id.clone(),
-            call_id: ctx.call_id.clone(),
-            tx_event: ctx.session.get_tx_event(),
+    fn file_system_sandbox_context_for_attempt(
+        req: &ApplyPatchRequest,
+        attempt: &SandboxAttempt<'_>,
+    ) -> Option<FileSystemSandboxContext> {
+        if attempt.sandbox == SandboxType::None {
+            return None;
+        }
+
+        let permissions =
+            effective_permission_profile(attempt.permissions, req.additional_permissions.as_ref());
+        Some(FileSystemSandboxContext {
+            permissions,
+            cwd: Some(attempt.sandbox_cwd.clone()),
+            windows_sandbox_level: attempt.windows_sandbox_level,
+            windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
+            use_legacy_landlock: attempt.use_legacy_landlock,
         })
     }
 }
@@ -107,10 +125,25 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let retry_reason = ctx.retry_reason.clone();
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
+        let guardian_review_id = ctx.guardian_review_id.clone();
         Box::pin(async move {
+            if let Some(review_id) = guardian_review_id {
+                let action = ApplyPatchRuntime::build_guardian_review_request(req, ctx.call_id);
+                return review_approval_request(session, turn, review_id, action, retry_reason)
+                    .await;
+            }
+            if req.permissions_preapproved && retry_reason.is_none() {
+                return ReviewDecision::Approved;
+            }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
-                    .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
+                    .request_patch_approval(
+                        turn,
+                        call_id,
+                        changes.clone(),
+                        Some(reason),
+                        /*grant_root*/ None,
+                    )
                     .await;
                 return rx_approve.await.unwrap_or_default();
             }
@@ -121,7 +154,9 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                 approval_keys,
                 || async move {
                     let rx_approve = session
-                        .request_patch_approval(turn, call_id, changes, None, None)
+                        .request_patch_approval(
+                            turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
+                        )
                         .await;
                     rx_approve.await.unwrap_or_default()
                 },
@@ -133,7 +168,7 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
         match policy {
             AskForApproval::Never => false,
-            AskForApproval::Reject(reject_config) => !reject_config.rejects_sandbox_approval(),
+            AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
             AskForApproval::OnFailure => true,
             AskForApproval::OnRequest => true,
             AskForApproval::UnlessTrusted => true,
@@ -150,48 +185,72 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     ) -> Option<ExecApprovalRequirement> {
         Some(req.exec_approval_requirement.clone())
     }
+
+    fn permission_request_payload(
+        &self,
+        req: &ApplyPatchRequest,
+    ) -> Option<PermissionRequestPayload> {
+        Some(PermissionRequestPayload {
+            tool_name: HookToolName::apply_patch(),
+            tool_input: serde_json::json!({ "command": req.action.patch }),
+        })
+    }
 }
 
-impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
+impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRuntime {
     async fn run(
         &mut self,
         req: &ApplyPatchRequest,
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
-    ) -> Result<ExecToolCallOutput, ToolError> {
-        let spec = Self::build_command_spec(req)?;
-        let env = attempt
-            .env_for(spec, None)
-            .map_err(|err| ToolError::Codex(err.into()))?;
-        let out = execute_env(env, Self::stdout_stream(ctx))
-            .await
-            .map_err(ToolError::Codex)?;
-        Ok(out)
+    ) -> Result<ApplyPatchRuntimeOutput, ToolError> {
+        let turn_environment = ctx.turn.environments.primary().ok_or_else(|| {
+            ToolError::Rejected("apply_patch is unavailable in this session".to_string())
+        })?;
+        let started_at = Instant::now();
+        let fs = turn_environment.environment.get_filesystem();
+        let sandbox = Self::file_system_sandbox_context_for_attempt(req, attempt);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = codex_apply_patch::apply_patch(
+            &req.action.patch,
+            &req.action.cwd,
+            &mut stdout,
+            &mut stderr,
+            fs.as_ref(),
+            sandbox.as_ref(),
+        )
+        .await;
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&stderr).into_owned();
+        let failed = result.is_err();
+        let exit_code = if failed { 1 } else { 0 };
+        let delta = match result {
+            Ok(delta) => delta,
+            Err(failure) => failure.into_parts().1,
+        };
+        self.committed_delta.append(delta);
+        let output = ExecToolCallOutput {
+            exit_code,
+            stdout: StreamOutput::new(stdout.clone()),
+            stderr: StreamOutput::new(stderr.clone()),
+            aggregated_output: StreamOutput::new(format!("{stdout}{stderr}")),
+            duration: started_at.elapsed(),
+            timed_out: false,
+        };
+        if failed && is_likely_sandbox_denied(attempt.sandbox, &output) {
+            return Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+                output: Box::new(output),
+                network_policy_decision: None,
+            })));
+        }
+        Ok(ApplyPatchRuntimeOutput {
+            exec_output: output,
+            delta: self.committed_delta.clone(),
+        })
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use codex_protocol::protocol::RejectConfig;
-
-    #[test]
-    fn wants_no_sandbox_approval_reject_respects_sandbox_flag() {
-        let runtime = ApplyPatchRuntime::new();
-        assert!(runtime.wants_no_sandbox_approval(AskForApproval::OnRequest));
-        assert!(
-            !runtime.wants_no_sandbox_approval(AskForApproval::Reject(RejectConfig {
-                sandbox_approval: true,
-                rules: false,
-                mcp_elicitations: false,
-            }))
-        );
-        assert!(
-            runtime.wants_no_sandbox_approval(AskForApproval::Reject(RejectConfig {
-                sandbox_approval: false,
-                rules: false,
-                mcp_elicitations: false,
-            }))
-        );
-    }
-}
+#[path = "apply_patch_tests.rs"]
+mod tests;

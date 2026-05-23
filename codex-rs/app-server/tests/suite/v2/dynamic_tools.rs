@@ -21,6 +21,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -34,6 +35,11 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use wiremock::MockServer;
 
+// macOS and Windows Bazel CI can spend tens of seconds starting app-server
+// subprocesses or processing test RPCs under load.
+#[cfg(any(target_os = "macos", windows))]
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ensures dynamic tool specs are serialized into the model request payload.
@@ -58,9 +64,11 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         "additionalProperties": false,
     });
     let dynamic_tool = DynamicToolSpec {
+        namespace: None,
         name: "demo_tool".to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: input_schema.clone(),
+        defer_loading: false,
     };
 
     // Thread start injects dynamic tools into the thread's tool registry.
@@ -118,10 +126,164 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex_app".to_string()),
+        name: "hidden_tool".to_string(),
+        description: "Hidden dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string" }
+            },
+            "required": ["city"],
+            "additionalProperties": false,
+        }),
+        defer_loading: true,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool.clone()]),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    assert!(
+        bodies
+            .iter()
+            .all(|body| find_tool(body, &dynamic_tool.name).is_none()),
+        "hidden dynamic tool should not be sent to the model"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result<()> {
+    let server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: None,
+        name: "hidden_tool".to_string(),
+        description: "Hidden dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading: true,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool]),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("hidden_tool"));
+    assert!(error.error.message.contains("namespace"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Result<()> {
+    let server = MockServer::start().await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let dynamic_tool = DynamicToolSpec {
+        namespace: Some("codex.app".to_string()),
+        name: "lookup.ticket".to_string(),
+        description: "Invalid dynamic tool".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading: false,
+    };
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            dynamic_tools: Some(vec![dynamic_tool]),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert!(error.error.message.contains("Responses API"));
+    assert!(error.error.message.contains("lookup.ticket"));
+
+    Ok(())
+}
+
 /// Exercises the full dynamic tool call path (server request, client response, model output).
 #[tokio::test]
 async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Result<()> {
     let call_id = "dyn-call-1";
+    let tool_namespace = "codex_app";
     let tool_name = "demo_tool";
     let tool_args = json!({ "city": "Paris" });
     let tool_call_arguments = serde_json::to_string(&tool_args)?;
@@ -130,7 +292,16 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let responses = vec![
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, tool_name, &tool_call_arguments),
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "namespace": tool_namespace,
+                    "name": tool_name,
+                    "arguments": tool_call_arguments,
+                }
+            }),
             responses::ev_completed("resp-1"),
         ]),
         create_final_assistant_message_sse_response("Done")?,
@@ -144,6 +315,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let dynamic_tool = DynamicToolSpec {
+        namespace: Some(tool_namespace.to_string()),
         name: tool_name.to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: json!({
@@ -154,6 +326,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
             "required": ["city"],
             "additionalProperties": false,
         }),
+        defer_loading: false,
     };
 
     let thread_req = mcp
@@ -194,6 +367,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     assert_eq!(started.turn_id, turn_id.clone());
     let ThreadItem::DynamicToolCall {
         id,
+        namespace,
         tool,
         arguments,
         status,
@@ -205,6 +379,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         panic!("expected dynamic tool call item");
     };
     assert_eq!(id, call_id);
+    assert_eq!(namespace.as_deref(), Some(tool_namespace));
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, DynamicToolCallStatus::InProgress);
@@ -227,6 +402,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         thread_id: thread_id.clone(),
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
+        namespace: Some(tool_namespace.to_string()),
         tool: tool_name.to_string(),
         arguments: tool_args.clone(),
     };
@@ -247,6 +423,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     assert_eq!(completed.turn_id, turn_id);
     let ThreadItem::DynamicToolCall {
         id,
+        namespace,
         tool,
         arguments,
         status,
@@ -258,6 +435,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         panic!("expected dynamic tool call item");
     };
     assert_eq!(id, call_id);
+    assert_eq!(namespace.as_deref(), Some(tool_namespace));
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, DynamicToolCallStatus::Completed);
@@ -281,11 +459,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         .iter()
         .find_map(|body| function_call_output_payload(body, call_id))
         .context("expected function_call_output in follow-up request")?;
-    let expected_payload = FunctionCallOutputPayload::from_content_items(vec![
-        FunctionCallOutputContentItem::InputText {
-            text: "dynamic-ok".to_string(),
-        },
-    ]);
+    let expected_payload = FunctionCallOutputPayload::from_text("dynamic-ok".to_string());
     assert_eq!(payload, expected_payload);
 
     Ok(())
@@ -316,6 +490,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let dynamic_tool = DynamicToolSpec {
+        namespace: None,
         name: tool_name.to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: json!({
@@ -326,6 +501,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             "required": ["city"],
             "additionalProperties": false,
         }),
+        defer_loading: false,
     };
 
     let thread_req = mcp
@@ -378,6 +554,7 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
         thread_id,
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
+        namespace: None,
         tool: tool_name.to_string(),
         arguments: tool_args,
     };
@@ -399,7 +576,10 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
                 FunctionCallOutputContentItem::InputText { text }
             }
             DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                FunctionCallOutputContentItem::InputImage { image_url }
+                FunctionCallOutputContentItem::InputImage {
+                    image_url,
+                    detail: Some(DEFAULT_IMAGE_DETAIL),
+                }
             }
         })
         .collect::<Vec<FunctionCallOutputContentItem>>();
@@ -456,7 +636,8 @@ async fn dynamic_tool_call_round_trip_sends_content_items_to_model() -> Result<(
             },
             {
                 "type": "input_image",
-                "image_url": "data:image/png;base64,AAA"
+                "image_url": "data:image/png;base64,AAA",
+                "detail": "high"
             }
         ])
     );

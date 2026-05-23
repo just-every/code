@@ -55,16 +55,20 @@ use code_git_tooling::CreateGhostCommitOptions;
 use code_git_tooling::create_ghost_commit;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::backtrace::Backtrace;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Once;
 use supports_color::Stream;
 use tokio::time::{Duration, Instant};
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
+use tracing_subscriber::util::SubscriberInitExt;
 
 use anyhow::Context;
 use crate::cli::Command as ExecCommand;
@@ -242,12 +246,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         .or_else(|_| EnvFilter::try_new(default_level))
         .unwrap_or_else(|_| EnvFilter::new(default_level));
 
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_ansi(stderr_with_ansi)
-        .with_writer(|| std::io::stderr())
-        .try_init();
-
     let sandbox_mode = if full_auto {
         Some(SandboxMode::WorkspaceWrite)
     } else if dangerously_bypass_approvals_and_sandbox {
@@ -319,6 +317,32 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             AUTO_EXEC_TIMEBOXED_CLI_GUIDANCE,
         );
     }
+
+    let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        code_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"))
+    })) {
+        Ok(Ok(otel)) => otel,
+        Ok(Err(err)) => {
+            eprintln!("Could not create otel exporter: {err}");
+            None
+        }
+        Err(_) => {
+            eprintln!("Could not create otel exporter: panicked during initialization");
+            None
+        }
+    };
+    let otel_logger_layer = otel.as_ref().map(|provider| provider.logger_layer());
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(stderr_with_ansi)
+        .with_writer(|| std::io::stderr())
+        .with_filter(env_filter);
+
+    let _ = tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(otel_logger_layer)
+        .try_init();
+    install_exec_panic_hook();
     if auto_drive_goal.is_some() {
         // Exec is non-interactive; don't burn time on countdown delays between Auto Drive turns.
         config.auto_drive.continue_mode = AutoDriveContinueMode::Immediate;
@@ -1190,6 +1214,43 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     Ok(())
+}
+
+fn install_exec_panic_hook() {
+    static PANIC_HOOK_ONCE: Once = Once::new();
+
+    PANIC_HOOK_ONCE.call_once(|| {
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let current_thread = std::thread::current();
+            let thread_name = current_thread.name().unwrap_or("unnamed");
+            let thread_id = format!("{:?}", current_thread.id());
+            let backtrace = Backtrace::force_capture().to_string();
+
+            if let Some(location) = info.location() {
+                tracing::error!(
+                    thread_name,
+                    thread_id,
+                    file = location.file(),
+                    line = location.line(),
+                    column = location.column(),
+                    panic = %info,
+                    backtrace = %backtrace,
+                    "exec panic captured"
+                );
+            } else {
+                tracing::error!(
+                    thread_name,
+                    thread_id,
+                    panic = %info,
+                    backtrace = %backtrace,
+                    "exec panic captured"
+                );
+            }
+
+            prev_hook(info);
+        }));
+    });
 }
 
 async fn resolve_resume_path(

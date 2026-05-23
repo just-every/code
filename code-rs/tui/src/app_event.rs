@@ -1,5 +1,7 @@
 use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::config_types::ReasoningEffort;
+use code_core::config_types::ContextMode;
+use code_core::config_types::ServiceTier;
 use code_core::config_types::TextVerbosity;
 use code_core::config_types::ThemeName;
 use code_core::protocol::Event;
@@ -162,6 +164,9 @@ pub(crate) enum AppEvent {
     /// Internal: when interrupts queue up behind a stalled/idle stream,
     /// finalize the stream and flush the queue so Exec/Tool cells render.
     FlushInterruptsIfIdle,
+    /// Internal: re-check whether a turn-level spinner is truly stuck after a
+    /// short grace period.
+    RecheckSpinnerIfIdle,
 
     KeyEvent(KeyEvent),
 
@@ -175,6 +180,9 @@ pub(crate) enum AppEvent {
 
     /// Request to exit the application gracefully.
     ExitRequest,
+
+    /// Clear the terminal UI and start a fresh chat.
+    ClearUi,
 
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
@@ -276,6 +284,16 @@ pub(crate) enum AppEvent {
     UpdateModelSelection {
         model: String,
         effort: Option<ReasoningEffort>,
+    },
+
+    /// Update the session Fast mode service tier.
+    UpdateServiceTierSelection {
+        service_tier: Option<ServiceTier>,
+    },
+
+    /// Update the session context mode.
+    UpdateSessionContextModeSelection {
+        context_mode: Option<ContextMode>,
     },
 
     /// Update the dedicated review model + reasoning effort
@@ -664,6 +682,7 @@ pub(crate) enum AppEvent {
         latest_version: Option<String>,
     },
     SetAutoUpgradeEnabled(bool),
+    SetMemoriesEnabled(bool),
     SetAutoSwitchAccountsOnRateLimit(bool),
     SetApiKeyFallbackOnAllAccountsLimited(bool),
     RequestAgentInstall { name: String, selected_index: usize },

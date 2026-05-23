@@ -2,15 +2,29 @@
 mod unix;
 
 #[cfg(unix)]
+pub use unix::ESCALATE_SOCKET_ENV_VAR;
+#[cfg(unix)]
 pub use unix::EscalateAction;
 #[cfg(unix)]
 pub use unix::EscalateServer;
 #[cfg(unix)]
+pub use unix::EscalationDecision;
+#[cfg(unix)]
+pub use unix::EscalationExecution;
+#[cfg(unix)]
+pub use unix::EscalationPermissions;
+#[cfg(unix)]
 pub use unix::EscalationPolicy;
+#[cfg(unix)]
+pub use unix::EscalationSession;
 #[cfg(unix)]
 pub use unix::ExecParams;
 #[cfg(unix)]
 pub use unix::ExecResult;
+#[cfg(unix)]
+pub use unix::PreparedExec;
+#[cfg(unix)]
+pub use unix::ResolvedPermissionProfile;
 #[cfg(unix)]
 pub use unix::ShellCommandExecutor;
 #[cfg(unix)]

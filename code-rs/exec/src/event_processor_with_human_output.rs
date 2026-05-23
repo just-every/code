@@ -230,6 +230,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::ListCustomPromptsResponse(_)
             | EventMsg::ListSkillsResponse(_)
             | EventMsg::McpListToolsResponse(_)
+            | EventMsg::TaskLifecycle(_)
             | EventMsg::ViewImageToolCall(_) => {
                 // Environment context events are consumed by the TUI; the CLI runner
                 // does not surface them alongside the human-readable transcript.
@@ -258,6 +259,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     );
                 }
             }
+            EventMsg::AutoContextCheck(_) => {}
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 if !self.answer_started {
                     ts_println!(self, "{}\n", "codex".style(self.italic).style(self.magenta));
@@ -759,6 +761,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::CompactionCheckpointWarning(_) => {}
+            EventMsg::ImageGenerationBegin(_) | EventMsg::ImageGenerationEnd(_) => {}
         }
         CodexStatus::Running
     }

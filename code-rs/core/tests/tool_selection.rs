@@ -49,7 +49,7 @@ async fn collect_tool_identifiers_for_model(model: &str) -> Vec<String> {
 
     let model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
-        ..built_in_model_providers()["openai"].clone()
+        ..built_in_model_providers(None)["openai"].clone()
     };
 
     let cwd = TempDir::new().unwrap();

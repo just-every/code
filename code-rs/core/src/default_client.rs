@@ -1,4 +1,5 @@
 use crate::spawn::CODEX_SANDBOX_ENV_VAR;
+use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -94,11 +95,49 @@ pub fn get_code_user_agent(originator_override: Option<&str>) -> String {
     get_code_user_agent_with_suffix(originator_override, suffix.as_deref())
 }
 
+pub fn get_code_user_agent_for_model(originator_override: Option<&str>, model: &str) -> String {
+    let suffix = USER_AGENT_SUFFIX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    let build_version = code_version::wire_compatible_version_for_model(model);
+    get_code_user_agent_with_version(originator_override, suffix.as_deref(), &build_version)
+}
+
+pub fn requested_model_headers(originator_override: Option<&str>, model: &str) -> HeaderMap {
+    let requested_version = code_version::wire_compatible_version_for_model(model);
+    let user_agent = get_code_user_agent_for_model(originator_override, model);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "version",
+        HeaderValue::from_str(&requested_version)
+            .expect("requested model version should be a valid header value"),
+    );
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_str(&user_agent)
+            .expect("requested model user-agent should be a valid header value"),
+    );
+    headers
+}
+
 pub fn get_code_user_agent_with_suffix(
     originator_override: Option<&str>,
     user_agent_suffix: Option<&str>,
 ) -> String {
-    let build_version = code_version::wire_compatible_version();
+    get_code_user_agent_with_version(
+        originator_override,
+        user_agent_suffix,
+        code_version::wire_compatible_version(),
+    )
+}
+
+fn get_code_user_agent_with_version(
+    originator_override: Option<&str>,
+    user_agent_suffix: Option<&str>,
+    build_version: &str,
+) -> String {
     let os_info = os_info::get();
     let originator_value = originator_override
         .map(str::to_string)
@@ -157,7 +196,9 @@ pub fn create_client(originator: &str) -> reqwest::Client {
     headers.insert("originator", originator_value);
     let ua = get_code_user_agent(Some(originator.value.as_str()));
 
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::http_client::apply_extra_root_certificates(
+        crate::http_client::with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder()),
+    )
         // Set UA via dedicated helper to avoid header validation pitfalls
         .user_agent(ua)
         .default_headers(headers);
@@ -244,6 +285,43 @@ mod tests {
                 user_agent.starts_with(&expected),
                 "expected user-agent to start with {expected}, got {user_agent}"
             );
+        });
+    }
+
+    #[test]
+    fn requested_model_headers_replace_version_and_user_agent() {
+        with_originator_env_cleared(|| {
+            let client = reqwest::Client::new();
+            let mut original_headers = HeaderMap::new();
+            original_headers.insert("version", HeaderValue::from_static("0.101.0"));
+            original_headers.insert(
+                reqwest::header::USER_AGENT,
+                HeaderValue::from_static("old-originator/0.101.0"),
+            );
+
+            let request = client
+                .get("https://example.com")
+                .headers(original_headers)
+                .headers(requested_model_headers(Some("test_originator"), "gpt-5.5"))
+                .build()
+                .expect("request should build");
+
+            let version_values: Vec<_> = request
+                .headers()
+                .get_all("version")
+                .iter()
+                .map(|value| value.to_str().expect("version header"))
+                .collect();
+            assert_eq!(version_values, vec!["0.124.0"]);
+
+            let ua_values: Vec<_> = request
+                .headers()
+                .get_all(reqwest::header::USER_AGENT)
+                .iter()
+                .map(|value| value.to_str().expect("user-agent header"))
+                .collect();
+            assert_eq!(ua_values.len(), 1);
+            assert!(ua_values[0].starts_with("test_originator/0.124.0"));
         });
     }
 

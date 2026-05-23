@@ -25,9 +25,10 @@ pub(crate) struct MentionItem {
     pub(crate) search_terms: Vec<String>,
     pub(crate) path: Option<String>,
     pub(crate) category_tag: Option<String>,
+    pub(crate) sort_rank: u8,
 }
 
-const MENTION_NAME_TRUNCATE_LEN: usize = 24;
+const MENTION_NAME_TRUNCATE_LEN: usize = 28;
 
 pub(crate) struct SkillPopup {
     query: String,
@@ -98,14 +99,26 @@ impl SkillPopup {
             .map(|(idx, indices, _score)| {
                 let mention = &self.mentions[idx];
                 let name = truncate_text(&mention.display_name, MENTION_NAME_TRUNCATE_LEN);
-                let description = mention.description.clone().unwrap_or_default();
+                let description = match (
+                    mention.category_tag.as_deref(),
+                    mention.description.as_deref(),
+                ) {
+                    (Some(tag), Some(description)) if !description.is_empty() => {
+                        Some(format!("{tag} {description}"))
+                    }
+                    (Some(tag), _) => Some(tag.to_string()),
+                    (None, Some(description)) if !description.is_empty() => {
+                        Some(description.to_string())
+                    }
+                    _ => None,
+                };
                 GenericDisplayRow {
                     name,
                     name_prefix_spans: Vec::new(),
                     match_indices: indices,
                     display_shortcut: None,
-                    description: Some(description).filter(|desc| !desc.is_empty()),
-                    category_tag: mention.category_tag.clone(),
+                    description,
+                    category_tag: None,
                     is_disabled: false,
                     disabled_reason: None,
                     wrap_indent: None,
@@ -118,39 +131,24 @@ impl SkillPopup {
         let filter = self.query.trim();
         let mut out: Vec<(usize, Option<Vec<usize>>, i32)> = Vec::new();
 
-        if filter.is_empty() {
-            for (idx, _mention) in self.mentions.iter().enumerate() {
-                out.push((idx, None, 0));
-            }
-            return out;
-        }
-
         for (idx, mention) in self.mentions.iter().enumerate() {
-            let mut best_match: Option<(Option<Vec<usize>>, i32)> = None;
-
-            if let Some((indices, score)) = fuzzy_match(&mention.display_name, filter) {
-                best_match = Some((Some(indices), score));
+            if filter.is_empty() {
+                out.push((idx, None, 0));
+                continue;
             }
 
-            for term in &mention.search_terms {
-                if term == &mention.display_name {
-                    continue;
-                }
-
-                if let Some((_indices, score)) = fuzzy_match(term, filter) {
-                    match best_match.as_mut() {
-                        Some((best_indices, best_score)) => {
-                            if score > *best_score {
-                                *best_score = score;
-                                *best_indices = None;
-                            }
-                        }
-                        None => {
-                            best_match = Some((None, score));
-                        }
-                    }
-                }
-            }
+            let best_match =
+                if let Some((indices, score)) = fuzzy_match(&mention.display_name, filter) {
+                    Some((Some(indices), score))
+                } else {
+                    mention
+                        .search_terms
+                        .iter()
+                        .filter(|term| *term != &mention.display_name)
+                        .filter_map(|term| fuzzy_match(term, filter).map(|(_indices, score)| score))
+                        .min()
+                        .map(|score| (None, score))
+                };
 
             if let Some((indices, score)) = best_match {
                 out.push((idx, indices, score));
@@ -158,7 +156,21 @@ impl SkillPopup {
         }
 
         out.sort_by(|a, b| {
-            a.2.cmp(&b.2).then_with(|| {
+            if filter.is_empty() {
+                self.mentions[a.0]
+                    .sort_rank
+                    .cmp(&self.mentions[b.0].sort_rank)
+            } else {
+                a.1.is_none()
+                    .cmp(&b.1.is_none())
+                    .then_with(|| a.2.cmp(&b.2))
+                    .then_with(|| {
+                        self.mentions[a.0]
+                            .sort_rank
+                            .cmp(&self.mentions[b.0].sort_rank)
+                    })
+            }
+            .then_with(|| {
                 let an = self.mentions[a.0].display_name.as_str();
                 let bn = self.mentions[b.0].display_name.as_str();
                 an.cmp(bn)
@@ -184,7 +196,9 @@ impl WidgetRef for SkillPopup {
         };
         let rows = self.rows_from_matches(self.filtered());
         render_rows_single_line(
-            list_area.inset(Insets::tlbr(0, 2, 0, 0)),
+            list_area.inset(Insets::tlbr(
+                /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
+            )),
             buf,
             &rows,
             &self.state,
@@ -211,4 +225,166 @@ fn skill_popup_hint_line() -> Line<'static> {
         key_hint::plain(KeyCode::Esc).into(),
         " to close".into(),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn mention_item(index: usize) -> MentionItem {
+        MentionItem {
+            display_name: format!("Mention {index:02}"),
+            description: Some(format!("Description {index:02}")),
+            insert_text: format!("$mention-{index:02}"),
+            search_terms: vec![format!("mention-{index:02}")],
+            path: Some(format!("skill://mention-{index:02}")),
+            category_tag: Some("[Skill]".to_string()),
+            sort_rank: 1,
+        }
+    }
+
+    fn ranked_mention_item(
+        display_name: &str,
+        search_terms: &[&str],
+        category_tag: &str,
+        sort_rank: u8,
+    ) -> MentionItem {
+        MentionItem {
+            display_name: display_name.to_string(),
+            description: None,
+            insert_text: format!("${display_name}"),
+            search_terms: search_terms
+                .iter()
+                .map(|term| (*term).to_string())
+                .collect(),
+            path: None,
+            category_tag: Some(category_tag.to_string()),
+            sort_rank,
+        }
+    }
+
+    fn named_mention_item(display_name: &str, search_terms: &[&str]) -> MentionItem {
+        ranked_mention_item(display_name, search_terms, "[Skill]", /*sort_rank*/ 1)
+    }
+
+    fn plugin_mention_item(display_name: &str, search_terms: &[&str]) -> MentionItem {
+        ranked_mention_item(display_name, search_terms, "[Plugin]", /*sort_rank*/ 0)
+    }
+
+    #[test]
+    fn filtered_mentions_preserve_results_beyond_popup_height() {
+        let popup = SkillPopup::new((0..(MAX_POPUP_ROWS + 2)).map(mention_item).collect());
+
+        let filtered_names: Vec<String> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|idx| popup.mentions[idx].display_name.clone())
+            .collect();
+
+        assert_eq!(
+            filtered_names,
+            (0..(MAX_POPUP_ROWS + 2))
+                .map(|idx| format!("Mention {idx:02}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            popup.calculate_required_height(72),
+            (MAX_POPUP_ROWS as u16) + 2
+        );
+    }
+
+    fn render_popup(popup: &SkillPopup, width: u16) -> String {
+        let area = Rect::new(0, 0, width, popup.calculate_required_height(width));
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        format!("{buf:?}")
+    }
+
+    #[test]
+    fn scrolling_mentions_shifts_rendered_window_snapshot() {
+        let mut popup = SkillPopup::new((0..(MAX_POPUP_ROWS + 2)).map(mention_item).collect());
+
+        for _ in 0..=MAX_POPUP_ROWS {
+            popup.move_down();
+        }
+
+        insta::assert_snapshot!("skill_popup_scrolled", render_popup(&popup, /*width*/ 72));
+    }
+
+    #[test]
+    fn display_name_match_sorting_beats_worse_secondary_search_term_matches() {
+        let mut popup = SkillPopup::new(vec![
+            named_mention_item("pr-review-triage", &["pr-review-triage"]),
+            named_mention_item("prd", &["prd"]),
+            named_mention_item("PR Babysitter", &["babysit-pr", "PR Babysitter"]),
+            named_mention_item("Plugin Creator", &["plugin-creator", "Plugin Creator"]),
+            named_mention_item(
+                "Logging Best Practices",
+                &["logging-best-practices", "Logging Best Practices"],
+            ),
+        ]);
+        popup.set_query("pr");
+
+        let filtered_names: Vec<String> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|idx| popup.mentions[idx].display_name.clone())
+            .collect();
+
+        assert_eq!(
+            filtered_names,
+            vec![
+                "PR Babysitter".to_string(),
+                "pr-review-triage".to_string(),
+                "prd".to_string(),
+                "Plugin Creator".to_string(),
+                "Logging Best Practices".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn query_match_score_sorts_before_plugin_rank_bias() {
+        let mut popup = SkillPopup::new(vec![
+            plugin_mention_item("GitHub", &["github", "pull requests", "pr"]),
+            named_mention_item("pr-review-triage", &["pr-review-triage"]),
+            named_mention_item("prd", &["prd"]),
+            named_mention_item("Plugin Creator", &["plugin-creator", "Plugin Creator"]),
+            named_mention_item(
+                "Logging Best Practices",
+                &["logging-best-practices", "Logging Best Practices"],
+            ),
+            named_mention_item("PR Babysitter", &["babysit-pr", "PR Babysitter"]),
+        ]);
+        popup.set_query("pr");
+
+        let filtered_items: Vec<(String, Option<String>)> = popup
+            .filtered_items()
+            .into_iter()
+            .map(|idx| {
+                (
+                    popup.mentions[idx].display_name.clone(),
+                    popup.mentions[idx].category_tag.clone(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            filtered_items,
+            vec![
+                ("PR Babysitter".to_string(), Some("[Skill]".to_string())),
+                ("pr-review-triage".to_string(), Some("[Skill]".to_string())),
+                ("prd".to_string(), Some("[Skill]".to_string())),
+                ("Plugin Creator".to_string(), Some("[Skill]".to_string())),
+                (
+                    "Logging Best Practices".to_string(),
+                    Some("[Skill]".to_string())
+                ),
+                ("GitHub".to_string(), Some("[Plugin]".to_string())),
+            ]
+        );
+    }
 }

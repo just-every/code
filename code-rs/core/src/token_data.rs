@@ -1,4 +1,7 @@
 use base64::Engine;
+use chrono::DateTime;
+use chrono::Utc;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
@@ -39,6 +42,7 @@ pub struct IdTokenInfo {
     /// (e.g., "free", "plus", "pro", "business", "enterprise", "edu").
     /// (Note: values may vary by backend.)
     pub(crate) chatgpt_plan_type: Option<PlanType>,
+    pub(crate) chatgpt_account_is_fedramp: bool,
     pub raw_jwt: String,
 }
 
@@ -48,6 +52,10 @@ impl IdTokenInfo {
             PlanType::Known(plan) => format!("{plan:?}"),
             PlanType::Unknown(s) => s.clone(),
         })
+    }
+
+    pub fn is_fedramp_account(&self) -> bool {
+        self.chatgpt_account_is_fedramp
     }
 }
 
@@ -91,6 +99,14 @@ struct IdClaims {
 struct AuthClaims {
     #[serde(default)]
     chatgpt_plan_type: Option<PlanType>,
+    #[serde(default)]
+    chatgpt_account_is_fedramp: bool,
+}
+
+#[derive(Deserialize)]
+struct StandardJwtClaims {
+    #[serde(default)]
+    exp: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -103,16 +119,28 @@ pub enum IdTokenInfoError {
     Json(#[from] serde_json::Error),
 }
 
-pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+fn decode_jwt_payload<T: DeserializeOwned>(jwt: &str) -> Result<T, IdTokenInfoError> {
     // JWT format: header.payload.signature
-    let mut parts = id_token.split('.');
+    let mut parts = jwt.split('.');
     let (_header_b64, payload_b64, _sig_b64) = match (parts.next(), parts.next(), parts.next()) {
         (Some(h), Some(p), Some(s)) if !h.is_empty() && !p.is_empty() && !s.is_empty() => (h, p, s),
         _ => return Err(IdTokenInfoError::InvalidFormat),
     };
 
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64)?;
-    let claims: IdClaims = serde_json::from_slice(&payload_bytes)?;
+    let claims = serde_json::from_slice(&payload_bytes)?;
+    Ok(claims)
+}
+
+pub fn parse_jwt_expiration(jwt: &str) -> Result<Option<DateTime<Utc>>, IdTokenInfoError> {
+    let claims: StandardJwtClaims = decode_jwt_payload(jwt)?;
+    Ok(claims
+        .exp
+        .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0)))
+}
+
+pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
+    let claims: IdClaims = decode_jwt_payload(id_token)?;
     if tracing::enabled!(Level::DEBUG) {
         let plan = claims
             .auth
@@ -122,6 +150,11 @@ pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
         tracing::debug!(
             email = claims.email.as_deref().unwrap_or("<missing>"),
             chatgpt_plan_type = plan.as_deref().unwrap_or("unknown"),
+            chatgpt_account_is_fedramp = claims
+                .auth
+                .as_ref()
+                .map(|auth| auth.chatgpt_account_is_fedramp)
+                .unwrap_or(false),
             "decoded ChatGPT id_token claims"
         );
     }
@@ -129,6 +162,10 @@ pub fn parse_id_token(id_token: &str) -> Result<IdTokenInfo, IdTokenInfoError> {
 
     Ok(IdTokenInfo {
         email,
+        chatgpt_account_is_fedramp: auth
+            .as_ref()
+            .map(|claims| claims.chatgpt_account_is_fedramp)
+            .unwrap_or(false),
         chatgpt_plan_type: auth.and_then(|a| a.chatgpt_plan_type),
         raw_jwt: id_token.to_string(),
     })
@@ -184,6 +221,7 @@ mod tests {
         let info = parse_id_token(&fake_jwt).expect("should parse");
         assert_eq!(info.email.as_deref(), Some("user@example.com"));
         assert_eq!(info.get_chatgpt_plan_type().as_deref(), Some("Pro"));
+        assert!(!info.is_fedramp_account());
     }
 
     #[test]
@@ -211,5 +249,66 @@ mod tests {
         let info = parse_id_token(&fake_jwt).expect("should parse");
         assert!(info.email.is_none());
         assert!(info.get_chatgpt_plan_type().is_none());
+        assert!(!info.is_fedramp_account());
+    }
+
+    #[test]
+    fn id_token_info_parses_fedramp_flag() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+        let payload = serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_is_fedramp": true
+            }
+        });
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        let header_b64 = b64url_no_pad(&serde_json::to_vec(&header).unwrap());
+        let payload_b64 = b64url_no_pad(&serde_json::to_vec(&payload).unwrap());
+        let signature_b64 = b64url_no_pad(b"sig");
+        let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+        let info = parse_id_token(&fake_jwt).expect("should parse");
+
+        assert!(info.is_fedramp_account());
+    }
+
+    #[test]
+    fn parse_jwt_expiration_reads_exp_claim() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+        let exp = Utc::now().timestamp() + 3600;
+        let payload = serde_json::json!({ "exp": exp });
+        let fake_jwt = format!(
+            "{}.{}.{}",
+            b64url_no_pad(&serde_json::to_vec(&header).unwrap()),
+            b64url_no_pad(&serde_json::to_vec(&payload).unwrap()),
+            b64url_no_pad(b"sig")
+        );
+
+        let parsed = parse_jwt_expiration(&fake_jwt).expect("expiration should parse");
+        assert_eq!(parsed.map(|value| value.timestamp()), Some(exp));
     }
 }

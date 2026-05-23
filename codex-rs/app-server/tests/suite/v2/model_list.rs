@@ -9,6 +9,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::Model;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::ModelServiceTier;
+use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
 use codex_protocol::openai_models::ModelPreset;
@@ -24,6 +26,13 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
         id: preset.id.clone(),
         model: preset.model.clone(),
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
+        upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
+            model: upgrade.id.clone(),
+            upgrade_copy: upgrade.upgrade_copy.clone(),
+            model_link: upgrade.model_link.clone(),
+            migration_markdown: upgrade.migration_markdown.clone(),
+        }),
+        availability_nux: preset.availability_nux.clone().map(Into::into),
         display_name: preset.display_name.clone(),
         description: preset.description.clone(),
         hidden: !preset.show_in_picker,
@@ -42,14 +51,26 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
         // cache report `supports_personality = false`.
         // todo(sayan): fix, maybe make roundtrip use ModelInfo only
         supports_personality: false,
+        additional_speed_tiers: preset.additional_speed_tiers.clone(),
+        service_tiers: preset
+            .service_tiers
+            .iter()
+            .map(|service_tier| ModelServiceTier {
+                id: service_tier.id.clone(),
+                name: service_tier.name.clone(),
+                description: service_tier.description.clone(),
+            })
+            .collect(),
         is_default: preset.is_default,
     }
 }
 
 fn expected_visible_models() -> Vec<Model> {
     // Filter by supported_in_api to support testing with both ChatGPT and non-ChatGPT auth modes.
-    let mut presets =
-        ModelPreset::filter_by_auth(codex_core::test_support::all_model_presets().clone(), false);
+    let mut presets = ModelPreset::filter_by_auth(
+        codex_core::test_support::all_model_presets().clone(),
+        /*chatgpt_mode*/ false,
+    );
 
     // Mirror `ModelsManager::build_available_models()` default selection after auth filtering.
     ModelPreset::mark_default_by_picker_visibility(&mut presets);

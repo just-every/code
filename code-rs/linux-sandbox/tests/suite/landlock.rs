@@ -39,6 +39,7 @@ async fn run_cmd(cmd: &[&str], writable_roots: &[PathBuf], timeout_ms: u64) {
     let sandbox_cwd = cwd.clone();
     let params = ExecParams {
         command: cmd.iter().copied().map(str::to_owned).collect(),
+        shell_script: None,
         cwd,
         timeout_ms: Some(timeout_ms),
         env: create_env_from_core_vars(),
@@ -140,6 +141,7 @@ async fn assert_network_blocked(cmd: &[&str]) {
     let sandbox_cwd = cwd.clone();
     let params = ExecParams {
         command: cmd.iter().copied().map(str::to_owned).collect(),
+        shell_script: None,
         cwd,
         // Give the tool a generous 2-second timeout so even slow DNS timeouts
         // do not stall the suite.

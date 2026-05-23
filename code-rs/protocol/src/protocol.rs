@@ -385,6 +385,12 @@ pub struct RejectConfig {
     pub sandbox_approval: bool,
     /// Reject prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
+    /// Reject approval prompts triggered by skill script execution.
+    #[serde(default)]
+    pub skill_approval: bool,
+    /// Reject approval prompts related to built-in permission requests.
+    #[serde(default)]
+    pub request_permissions: bool,
     /// Reject MCP elicitation prompts.
     pub mcp_elicitations: bool,
 }
@@ -396,6 +402,14 @@ impl RejectConfig {
 
     pub const fn rejects_rules_approval(self) -> bool {
         self.rules
+    }
+
+    pub const fn rejects_skill_approval(self) -> bool {
+        self.skill_approval
+    }
+
+    pub const fn rejects_request_permissions(self) -> bool {
+        self.request_permissions
     }
 
     pub const fn rejects_mcp_elicitations(self) -> bool {
@@ -780,6 +794,9 @@ pub enum EventMsg {
     /// Optional means unknown — UIs should not display when `None`.
     TokenCount(TokenCountEvent),
 
+    /// Auto Context is evaluating whether to compact before the next turn.
+    AutoContextCheck(AutoContextCheckEvent),
+
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
 
@@ -822,6 +839,10 @@ pub enum EventMsg {
     WebSearchBegin(WebSearchBeginEvent),
 
     WebSearchEnd(WebSearchEndEvent),
+
+    ImageGenerationBegin(ImageGenerationBeginEvent),
+
+    ImageGenerationEnd(ImageGenerationEndEvent),
 
     /// Notification that the server is about to execute a command.
     ExecCommandBegin(ExecCommandBeginEvent),
@@ -1023,6 +1044,7 @@ pub enum AgentStatus {
 pub enum CodexErrorInfo {
     ContextWindowExceeded,
     UsageLimitExceeded,
+    CyberPolicy,
     ModelCap {
         model: String,
         reset_after_seconds: Option<u64>,
@@ -1068,6 +1090,11 @@ impl HasLegacyEvent for ItemStartedEvent {
             TurnItem::WebSearch(item) => vec![EventMsg::WebSearchBegin(WebSearchBeginEvent {
                 call_id: item.id.clone(),
             })],
+            TurnItem::ImageGeneration(item) => vec![EventMsg::ImageGenerationBegin(
+                ImageGenerationBeginEvent {
+                    call_id: item.id.clone(),
+                },
+            )],
             _ => Vec::new(),
         }
     }
@@ -1209,6 +1236,18 @@ pub struct TurnStartedEvent {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub collaboration_mode_kind: ModeKind,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoContextPhase {
+    Checking,
+    Compacting,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct AutoContextCheckEvent {
+    pub phase: Option<AutoContextPhase>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]
@@ -1587,6 +1626,24 @@ pub struct WebSearchEndEvent {
     pub call_id: String,
     pub query: String,
     pub action: WebSearchAction,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ImageGenerationBeginEvent {
+    pub call_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ImageGenerationEndEvent {
+    pub call_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revised_prompt: Option<String>,
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub saved_path: Option<AbsolutePathBuf>,
 }
 
 // Conversation kept for backward compatibility.
@@ -2705,6 +2762,7 @@ pub struct CollabResumeEndEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::ImageGenerationItem;
     use crate::items::UserMessageItem;
     use crate::items::WebSearchItem;
     use anyhow::Result;
@@ -2751,6 +2809,28 @@ mod tests {
     }
 
     #[test]
+    fn item_started_event_from_image_generation_emits_begin_event() {
+        let event = ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            item: TurnItem::ImageGeneration(ImageGenerationItem {
+                id: "image-1".into(),
+                status: "in_progress".into(),
+                revised_prompt: None,
+                result: String::new(),
+                saved_path: None,
+            }),
+        };
+
+        let legacy_events = event.as_legacy_events(false);
+        assert_eq!(legacy_events.len(), 1);
+        match &legacy_events[0] {
+            EventMsg::ImageGenerationBegin(event) => assert_eq!(event.call_id, "image-1"),
+            _ => panic!("expected ImageGenerationBegin event"),
+        }
+    }
+
+    #[test]
     fn item_started_event_from_non_web_search_emits_no_legacy_events() {
         let event = ItemStartedEvent {
             thread_id: ThreadId::new(),
@@ -2772,6 +2852,29 @@ mod tests {
         assert_eq!(json_op, json!({ "type": "user_input", "items": [] }));
 
         Ok(())
+    }
+
+    #[test]
+    fn reject_config_defaults_missing_optional_flags_to_false() {
+        let decoded = serde_json::from_value::<RejectConfig>(json!({
+            "sandbox_approval": true,
+            "rules": false,
+            "mcp_elicitations": true,
+        }))
+        .expect("legacy reject config should deserialize");
+
+        assert_eq!(
+            decoded,
+            RejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true,
+            }
+        );
+        assert!(!decoded.rejects_skill_approval());
+        assert!(!decoded.rejects_request_permissions());
     }
 
     #[test]

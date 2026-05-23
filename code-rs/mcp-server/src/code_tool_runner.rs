@@ -313,8 +313,10 @@ async fn run_code_tool_session_inner(
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::AgentReasoningRawContentDelta(_)
                     | EventMsg::Warning(_)
+                    | EventMsg::TaskLifecycle(_)
                     | EventMsg::TaskStarted
                     | EventMsg::TokenCount(_)
+                    | EventMsg::AutoContextCheck(_)
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::AgentReasoningSectionBreak(_)
                     | EventMsg::McpToolCallBegin(_)
@@ -349,6 +351,8 @@ async fn run_code_tool_session_inner(
                     | EventMsg::CustomToolCallBegin(_)
                     | EventMsg::CustomToolCallUpdate(_)
                     | EventMsg::CustomToolCallEnd(_)
+                    | EventMsg::ImageGenerationBegin(_)
+                    | EventMsg::ImageGenerationEnd(_)
                     | EventMsg::ViewImageToolCall(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that

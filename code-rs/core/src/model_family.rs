@@ -1,7 +1,16 @@
 use crate::config_types::Personality;
+use crate::config_types::ContextMode;
 use crate::config_types::ReasoningEffort;
+use crate::config_types::ReasoningSummary;
 use crate::tool_apply_patch::ApplyPatchToolType;
+use code_protocol::openai_models::ConfigShellToolType;
+use code_protocol::openai_models::InputModality;
+use code_protocol::openai_models::ModelInfo;
+use code_protocol::openai_models::ModelsResponse;
+use code_protocol::openai_models::TruncationMode;
+use code_protocol::openai_models::WebSearchToolType;
 use code_protocol::protocol::TruncationPolicy;
+use once_cell::sync::Lazy;
 
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
@@ -13,14 +22,10 @@ const GPT_5_1_INSTRUCTIONS: &str = include_str!("../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../gpt-5.1-codex-max_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../gpt-5.2-codex_prompt.md");
-
-const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str = include_str!(
-    "../templates/model_instructions/gpt-5.2-codex_instructions_template.md",
-);
-const PERSONALITY_FRIENDLY: &str =
-    include_str!("../templates/personalities/gpt-5.2-codex_friendly.md");
-const PERSONALITY_PRAGMATIC: &str =
-    include_str!("../templates/personalities/gpt-5.2-codex_pragmatic.md");
+const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const LOCAL_FRIENDLY_TEMPLATE: &str =
+    "You optimize for team morale and being a supportive teammate as much as code quality.";
+const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
@@ -29,6 +34,29 @@ const CONTEXT_WINDOW_96K: u64 = 96_000;
 const CONTEXT_WINDOW_16K: u64 = 16_385;
 const CONTEXT_WINDOW_1M: u64 = 1_047_576;
 const MAX_OUTPUT_DEFAULT: u64 = 128_000;
+
+static UPSTREAM_MODELS: Lazy<Vec<ModelInfo>> = Lazy::new(|| {
+    serde_json::from_str::<ModelsResponse>(include_str!("../../../codex-rs/models-manager/models.json"))
+        .map(|response| response.models)
+        .unwrap_or_else(|err| panic!("failed to parse upstream models.json: {err}"))
+});
+
+fn namespaced_model_suffix(model: &str) -> Option<&str> {
+    let (namespace, suffix) = model.split_once('/')?;
+    if suffix.contains('/') {
+        return None;
+    }
+    if !namespace
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(suffix)
+}
+
+pub const STANDARD_CONTEXT_WINDOW_272K: u64 = CONTEXT_WINDOW_272K;
+pub const EXTENDED_CONTEXT_WINDOW_1M: u64 = CONTEXT_WINDOW_1M;
 
 /// A model family is a group of models that share certain characteristics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,9 +92,18 @@ pub struct ModelFamily {
     /// The reasoning effort to use for this model family when none is explicitly chosen.
     pub default_reasoning_effort: Option<ReasoningEffort>,
 
+    /// The reasoning summary setting to use when requests don't override it.
+    pub default_reasoning_summary: ReasoningSummary,
+
     /// Whether this model supports parallel tool calls when using the
     /// Responses API.
     pub supports_parallel_tool_calls: bool,
+
+    /// Additional speed tiers advertised by the backend for this model.
+    pub additional_speed_tiers: Vec<String>,
+
+    /// Whether the backend says this model supports the native search tool.
+    pub supports_search_tool: bool,
 
     /// Prefer websocket transport for this model when supported by the provider.
     pub prefer_websockets: bool,
@@ -80,6 +117,19 @@ pub struct ModelFamily {
     /// Present if the model performs better when `apply_patch` is provided as
     /// a tool call instead of just a bash command
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
+
+    /// This should be set when the model expects a `shell_command` tool that
+    /// accepts a shell script string instead of argv-style arguments.
+    pub uses_shell_command_tool: bool,
+
+    /// Whether web_search should request text-only or multimodal results.
+    pub web_search_tool_type: WebSearchToolType,
+
+    /// Whether responses can use `detail: "original"` for tool-returned images.
+    pub supports_image_detail_original: bool,
+
+    /// Whether this model supports image generation via the native Responses tool.
+    pub supports_image_generation: bool,
 
     // Instructions to use for querying the model
     pub base_instructions: String,
@@ -99,23 +149,23 @@ pub(crate) fn base_instructions_override_for_personality(
     }
     let personality_message = match personality {
         Some(Personality::None) => "",
-        Some(Personality::Friendly) => PERSONALITY_FRIENDLY,
-        Some(Personality::Pragmatic) => PERSONALITY_PRAGMATIC,
+        Some(Personality::Friendly) => LOCAL_FRIENDLY_TEMPLATE,
+        Some(Personality::Pragmatic) => LOCAL_PRAGMATIC_TEMPLATE,
         None => "",
     };
-    Some(
-        GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE
-            .replace("{{ personality }}", personality_message),
-    )
+    Some(format!(
+        "{DEFAULT_PERSONALITY_HEADER}\n\n{personality_message}\n\n{BASE_INSTRUCTIONS}"
+    ))
 }
 
 macro_rules! model_family {
     (
         $slug:expr, $family:expr $(, $key:ident : $value:expr )* $(,)?
     ) => {{
+        let slug_value = $slug;
         // defaults
         let mut mf = ModelFamily {
-            slug: $slug.to_string(),
+            slug: slug_value.to_string(),
             family: $family.to_string(),
             needs_special_apply_patch_instructions: false,
             context_window: Some(CONTEXT_WINDOW_272K),
@@ -124,23 +174,92 @@ macro_rules! model_family {
             auto_compact_token_limit: None,
             supports_reasoning_summaries: false,
             default_reasoning_effort: None,
+            default_reasoning_summary: ReasoningSummary::Auto,
             supports_parallel_tool_calls: false,
+            additional_speed_tiers: Vec::new(),
+            supports_search_tool: false,
             prefer_websockets: false,
             uses_local_shell_tool: false,
             apply_patch_tool_type: None,
+            uses_shell_command_tool: false,
+            web_search_tool_type: WebSearchToolType::Text,
+            supports_image_detail_original: false,
+            supports_image_generation: false,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
         };
         // apply overrides
         $(
             mf.$key = $value;
         )*
-        Some(mf)
+        Some(apply_upstream_model_overrides(mf))
     }};
+}
+
+fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
+    let model_slug = family
+        .slug
+        .strip_prefix("openai/")
+        .or_else(|| namespaced_model_suffix(&family.slug))
+        .unwrap_or(&family.slug);
+    let Some(model_info) = UPSTREAM_MODELS.iter().find(|model| model.slug == model_slug) else {
+        return family;
+    };
+
+    family.base_instructions = model_info.base_instructions.clone();
+    family.context_window = model_info
+        .resolved_context_window()
+        .and_then(|limit| u64::try_from(limit).ok());
+    family.default_reasoning_effort = model_info.default_reasoning_level.map(|effort| match effort {
+        code_protocol::openai_models::ReasoningEffort::None
+        | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
+        code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
+        code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
+        code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
+        code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
+    });
+    family.default_reasoning_summary = model_info.default_reasoning_summary.into();
+    family.supports_reasoning_summaries = model_info.supports_reasoning_summaries;
+    family.supports_parallel_tool_calls = model_info.supports_parallel_tool_calls;
+    if let Some(tool_type) = model_info.apply_patch_tool_type.as_ref() {
+        family.apply_patch_tool_type = Some(match tool_type {
+            code_protocol::openai_models::ApplyPatchToolType::Freeform => {
+                ApplyPatchToolType::Freeform
+            }
+            code_protocol::openai_models::ApplyPatchToolType::Function => ApplyPatchToolType::Function,
+        });
+    }
+    family.web_search_tool_type = model_info.web_search_tool_type;
+    family.supports_search_tool = model_info.supports_search_tool;
+    family.additional_speed_tiers = model_info.additional_speed_tiers.clone();
+    family.prefer_websockets = model_info.prefer_websockets;
+    family.supports_image_detail_original = model_info.supports_image_detail_original;
+    family.supports_image_generation = supports_image_generation(model_info);
+    family.uses_local_shell_tool = matches!(model_info.shell_type, ConfigShellToolType::Local);
+    family.uses_shell_command_tool =
+        matches!(model_info.shell_type, ConfigShellToolType::ShellCommand);
+    family.auto_compact_token_limit = model_info.auto_compact_token_limit();
+    family.truncation_policy = match model_info.truncation_policy.mode {
+        TruncationMode::Bytes => TruncationPolicy::Bytes(
+            usize::try_from(model_info.truncation_policy.limit).unwrap_or(10_000),
+        ),
+        TruncationMode::Tokens => TruncationPolicy::Tokens(
+            usize::try_from(model_info.truncation_policy.limit).unwrap_or(10_000),
+        ),
+    };
+
+    family
 }
 
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
 pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
+    if let Some(suffix) = namespaced_model_suffix(slug)
+        && let Some(mut family) = find_family_for_model(suffix)
+    {
+        family.slug = slug.to_string();
+        return Some(family);
+    }
+
     if slug.starts_with("o3") {
         model_family!(
             slug, "o3",
@@ -342,7 +461,7 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
 }
 
 pub fn derive_default_model_family(model: &str) -> ModelFamily {
-    ModelFamily {
+    apply_upstream_model_overrides(ModelFamily {
         slug: model.to_string(),
         family: model.to_string(),
         needs_special_apply_patch_instructions: false,
@@ -352,11 +471,57 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         auto_compact_token_limit: None,
         supports_reasoning_summaries: false,
         default_reasoning_effort: None,
+        default_reasoning_summary: ReasoningSummary::Auto,
         supports_parallel_tool_calls: false,
+        additional_speed_tiers: Vec::new(),
+        supports_search_tool: false,
         prefer_websockets: false,
         uses_local_shell_tool: false,
         apply_patch_tool_type: None,
+        uses_shell_command_tool: false,
+        web_search_tool_type: WebSearchToolType::Text,
+        supports_image_detail_original: false,
+        supports_image_generation: false,
         base_instructions: BASE_INSTRUCTIONS.to_string(),
+    })
+}
+
+fn supports_image_generation(model_info: &ModelInfo) -> bool {
+    model_info.input_modalities.contains(&InputModality::Image)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config_types::ReasoningEffort;
+    use crate::tool_apply_patch::ApplyPatchToolType;
+
+    use super::find_family_for_model;
+
+    #[test]
+    fn image_generation_support_tracks_image_input_modality() {
+        let family = find_family_for_model("gpt-5.4").expect("known upstream model");
+
+        assert!(family.supports_image_generation);
+    }
+
+    #[test]
+    fn bundled_model_metadata_applies_upstream_tool_flags() {
+        let family = find_family_for_model("gpt-5.5").expect("known upstream model");
+
+        assert_eq!(
+            family.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Freeform)
+        );
+        assert!(family.uses_shell_command_tool);
+        assert!(family.supports_search_tool);
+        assert!(family.prefer_websockets);
+    }
+
+    #[test]
+    fn bundled_model_metadata_applies_upstream_reasoning_default() {
+        let family = find_family_for_model("gpt-5.4").expect("known upstream model");
+
+        assert_eq!(family.default_reasoning_effort, Some(ReasoningEffort::XHigh));
     }
 }
 
@@ -385,5 +550,32 @@ impl ModelFamily {
     const fn default_auto_compact_limit(context_window: u64) -> i64 {
         // Match upstream behaviour: 90% of the context window.
         ((context_window as i64) * 9) / 10
+    }
+}
+
+pub const fn default_auto_compact_limit_for_context_window(context_window: u64) -> i64 {
+    ((context_window as i64) * 9) / 10
+}
+
+pub fn supports_extended_context(model: &str) -> bool {
+    model.eq_ignore_ascii_case("gpt-5.4")
+}
+
+pub fn resolve_context_mode_limits(
+    model: &str,
+    mode: Option<ContextMode>,
+    family: &ModelFamily,
+) -> (Option<u64>, Option<i64>) {
+    match mode {
+        Some(ContextMode::OneM | ContextMode::Auto) if supports_extended_context(model) => (
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(default_auto_compact_limit_for_context_window(
+                EXTENDED_CONTEXT_WINDOW_1M,
+            )),
+        ),
+        Some(ContextMode::Disabled) => {
+            (family.context_window, family.auto_compact_token_limit())
+        }
+        _ => (family.context_window, family.auto_compact_token_limit()),
     }
 }

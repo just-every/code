@@ -6,6 +6,10 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use mcp_types::CallToolResult;
+use reqwest::ClientBuilder;
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
 use rmcp::model::CallToolResult as RmcpCallToolResult;
 use rmcp::service::ServiceError;
 use serde_json::Value;
@@ -66,6 +70,50 @@ where
 {
     let json = serde_json::to_value(value)?;
     serde_json::from_value(json).map_err(|err| anyhow!(err))
+}
+
+pub(crate) fn build_default_headers(
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+
+    if let Some(http_headers) = http_headers {
+        for (name, value) in http_headers {
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes())?,
+                HeaderValue::from_str(&value)?,
+            );
+        }
+    }
+
+    if let Some(env_http_headers) = env_http_headers {
+        for (name, env_var) in env_http_headers {
+            let Some(value) = env::var_os(&env_var) else {
+                continue;
+            };
+            let value = value
+                .into_string()
+                .map_err(|_| anyhow!("environment variable `{env_var}` was not valid UTF-8"))?;
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes())?,
+                HeaderValue::from_str(&value)?,
+            );
+        }
+    }
+
+    Ok(headers)
+}
+
+pub(crate) fn apply_default_headers(
+    builder: ClientBuilder,
+    default_headers: &HeaderMap,
+) -> ClientBuilder {
+    if default_headers.is_empty() {
+        builder
+    } else {
+        builder.default_headers(default_headers.clone())
+    }
 }
 
 pub(crate) fn create_env_for_mcp_server(

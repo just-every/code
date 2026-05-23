@@ -4,8 +4,6 @@ use clap::Parser;
 use code_common::CliConfigOverrides;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
-
-use crate::chatgpt_token::init_chatgpt_token_from_auth;
 use crate::get_task::GetTaskResponse;
 use crate::get_task::OutputItem;
 use crate::get_task::PrOutputItem;
@@ -30,8 +28,6 @@ pub async fn run_apply_command(
             .map_err(anyhow::Error::msg)?,
         ConfigOverrides::default(),
     )?;
-
-    init_chatgpt_token_from_auth(&config.code_home, &config.responses_originator_header).await?;
 
     let task_response = get_task(&config, apply_cli.task_id).await?;
     apply_diff_from_task(task_response, cwd).await

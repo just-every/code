@@ -8,6 +8,7 @@ use crate::history::state::{
     ExploreSummary,
 };
 use code_core::parse_command::ParsedCommand;
+use code_core::util::extract_shell_script;
 use shlex::Shlex;
 use std::path::{Component, Path};
 
@@ -696,32 +697,7 @@ fn command_string_for_annotation(original_command: &[String]) -> String {
 }
 
 fn unwrap_shell_script(command: &[String]) -> Option<String> {
-    for idx in 0..command.len() {
-        if is_shell_like(&command[idx]) {
-            let mut j = idx + 1;
-            while j < command.len() {
-                let arg = &command[j];
-                if arg == "-c" || arg == "-lc" {
-                    return command.get(j + 1).cloned();
-                }
-                if arg.starts_with('-') {
-                    j += 1;
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    None
-}
-
-fn is_shell_like(token: &str) -> bool {
-    filter_command_name(token)
-        .map(|name| match name.as_str() {
-            "bash" | "sh" | "dash" | "zsh" | "ksh" | "busybox" => true,
-            _ => false,
-        })
-        .unwrap_or(false)
+    extract_shell_script(command).map(|(_, script)| script.to_string())
 }
 
 fn looks_like_line_filter(cmd: &str) -> bool {

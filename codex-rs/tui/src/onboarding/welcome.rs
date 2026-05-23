@@ -1,7 +1,5 @@
-use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
@@ -14,6 +12,8 @@ use ratatui::widgets::Wrap;
 use std::cell::Cell;
 
 use crate::ascii_animation::AsciiAnimation;
+use crate::key_hint::KeyBindingListExt;
+use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
 use crate::tui::FrameRequester;
@@ -27,18 +27,20 @@ pub(crate) struct WelcomeWidget {
     pub is_logged_in: bool,
     animation: AsciiAnimation,
     animations_enabled: bool,
+    animations_suppressed: Cell<bool>,
     layout_area: Cell<Option<Rect>>,
 }
 
 impl KeyboardHandler for WelcomeWidget {
+    /// Rotate the welcome animation when the fixed toggle shortcut fires.
+    ///
+    /// The key list includes compatibility variants for terminals that report
+    /// modifier bits differently.
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         if !self.animations_enabled {
             return;
         }
-        if key_event.kind == KeyEventKind::Press
-            && key_event.code == KeyCode::Char('.')
-            && key_event.modifiers.contains(KeyModifiers::CONTROL)
-        {
+        if key_event.kind == KeyEventKind::Press && keys::TOGGLE_ANIMATION.is_pressed(key_event) {
             tracing::warn!("Welcome background to press '.'");
             let _ = self.animation.pick_random_variant();
         }
@@ -55,6 +57,7 @@ impl WelcomeWidget {
             is_logged_in,
             animation: AsciiAnimation::new(request_frame),
             animations_enabled,
+            animations_suppressed: Cell::new(false),
             layout_area: Cell::new(None),
         }
     }
@@ -62,18 +65,23 @@ impl WelcomeWidget {
     pub(crate) fn update_layout_area(&self, area: Rect) {
         self.layout_area.set(Some(area));
     }
+
+    pub(crate) fn set_animations_suppressed(&self, suppressed: bool) {
+        self.animations_suppressed.set(suppressed);
+    }
 }
 
 impl WidgetRef for &WelcomeWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        if self.animations_enabled {
+        if self.animations_enabled && !self.animations_suppressed.get() {
             self.animation.schedule_next_frame();
         }
 
         let layout_area = self.layout_area.get().unwrap_or(area);
         // Skip the animation entirely when the viewport is too small so we don't clip frames.
         let show_animation = self.animations_enabled
+            && !self.animations_suppressed.get()
             && layout_area.height >= MIN_ANIMATION_HEIGHT
             && layout_area.width >= MIN_ANIMATION_WIDTH;
 
@@ -108,6 +116,8 @@ impl StepStateProvider for WelcomeWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -128,7 +138,11 @@ mod tests {
 
     #[test]
     fn welcome_renders_animation_on_first_draw() {
-        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true);
+        let widget = WelcomeWidget::new(
+            /*is_logged_in*/ false,
+            FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+        );
         let area = Rect::new(0, 0, MIN_ANIMATION_WIDTH, MIN_ANIMATION_HEIGHT);
         let mut buf = Buffer::empty(area);
         let frame_lines = widget.animation.current_frame().lines().count() as u16;
@@ -140,7 +154,11 @@ mod tests {
 
     #[test]
     fn welcome_skips_animation_below_height_breakpoint() {
-        let widget = WelcomeWidget::new(false, FrameRequester::test_dummy(), true);
+        let widget = WelcomeWidget::new(
+            /*is_logged_in*/ false,
+            FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+        );
         let area = Rect::new(0, 0, MIN_ANIMATION_WIDTH, MIN_ANIMATION_HEIGHT - 1);
         let mut buf = Buffer::empty(area);
         (&widget).render(area, &mut buf);
@@ -153,8 +171,13 @@ mod tests {
     fn ctrl_dot_changes_animation_variant() {
         let mut widget = WelcomeWidget {
             is_logged_in: false,
-            animation: AsciiAnimation::with_variants(FrameRequester::test_dummy(), &VARIANTS, 0),
+            animation: AsciiAnimation::with_variants(
+                FrameRequester::test_dummy(),
+                &VARIANTS,
+                /*variant_idx*/ 0,
+            ),
             animations_enabled: true,
+            animations_suppressed: Cell::new(false),
             layout_area: Cell::new(None),
         };
 
@@ -165,6 +188,33 @@ mod tests {
         assert_ne!(
             before, after,
             "expected ctrl+. to switch welcome animation variant"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_dot_changes_animation_variant() {
+        let mut widget = WelcomeWidget {
+            is_logged_in: false,
+            animation: AsciiAnimation::with_variants(
+                FrameRequester::test_dummy(),
+                &VARIANTS,
+                /*variant_idx*/ 0,
+            ),
+            animations_enabled: true,
+            animations_suppressed: Cell::new(false),
+            layout_area: Cell::new(None),
+        };
+
+        let before = widget.animation.current_frame();
+        widget.handle_key_event(KeyEvent::new(
+            KeyCode::Char('.'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        let after = widget.animation.current_frame();
+
+        assert_ne!(
+            before, after,
+            "expected ctrl+shift+. to switch welcome animation variant"
         );
     }
 }

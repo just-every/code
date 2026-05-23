@@ -7,7 +7,7 @@ import type { AppMetadata } from "./AppMetadata";
 /**
  * EXPERIMENTAL - app metadata returned by app-list APIs.
  */
-export type AppInfo = { id: string, name: string, description: string | null, logoUrl: string | null, logoUrlDark: string | null, distributionChannel: string | null, branding: AppBranding | null, appMetadata: AppMetadata | null, labels: { [key in string]?: string } | null, installUrl: string | null, isAccessible: boolean, 
+export type AppInfo = { id: string, name: string, description: string | null, logoUrl: string | null, logoUrlDark: string | null, distributionChannel: string | null, branding: AppBranding | null, appMetadata: AppMetadata | null, labels: { [key in string]?: string } | null, installUrl: string | null, isAccessible: boolean,
 /**
  * Whether this app is enabled in config.toml.
  * Example:
@@ -16,4 +16,4 @@ export type AppInfo = { id: string, name: string, description: string | null, lo
  * enabled = false
  * ```
  */
-isEnabled: boolean, };
+isEnabled: boolean, pluginDisplayNames: Array<string>, };

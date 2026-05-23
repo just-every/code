@@ -12,15 +12,15 @@ expression: section_open
  |    Updates            |  Curren+------------------------------+                              | |
  |    Accounts           |  Reason|Model Shortcuts               |                              | |
  |    Agents             |        |                              |                              | |
- |    Prompts            |  GPT-5.|• Esc    Return to overview   |                              | |
- |    Skills             |  Latest|• Tab    Cycle sections       |s across knowledge, reasoning | |
- |    Auto Drive         |     XHi|• Shift+Tab  Cycle backwards  |for complex problems          | |
- |    Review             |     Hig|• ?      Toggle this help     |r complex or ambiguous proble | |
- |    Planning           |     Med|                              |f reasoning depth and latency | |
- |    Validation         |        |Press Esc to close            |                              | |
- |    Chrome             |  ↑↓ Nav+------------------------------+                              | |
- |    MCP                |                                                                      | |
- |  ↓ Notifications      +----------------------------------------------------------------------+ |
+ |    Prompts            |  Mode S|• Esc    Return to overview   |                              | |
+ |    Memories           |  Fast m|• Tab    Cycle sections       |t is available on supported m | |
+ |    Skills             |  › Fast|• Shift+Tab  Cycle backwards  |                              | |
+ |    Auto Drive         |    1M C|• ?      Toggle this help     |                              | |
+ |    Review             |  Press |                              |, and Auto.                   | |
+ |    Planning           |        |Press Esc to close            |                              | |
+ |    Validation         |  ↑↓ Nav+------------------------------+                              | |
+ |    Chrome             |                                                                      | |
+ |  ↓ MCP                +----------------------------------------------------------------------+ |
  | ↑ ↓ Move    Enter Open    Esc Close    ? Help                                                  |
  |                                                                                                |
  +------------------------------------------------------------------------------------------------+

@@ -7,6 +7,7 @@ use super::exec::{
 };
 use super::session::{
     BackgroundExecState,
+    FollowUpTurnAction,
     QueuedUserInput,
     State,
     WaitInterruptReason,
@@ -26,8 +27,17 @@ use crate::account_switching::RateLimitSwitchState;
 use crate::agent_tool::current_agent_spawn_depth;
 use crate::agent_tool::external_agent_command_exists;
 use crate::protocol::McpListToolsResponseEvent;
+use crate::protocol::TaskLifecycleEvent;
+use crate::protocol::TaskLifecyclePhase;
+use crate::protocol::TaskOriginKind;
 use code_app_server_protocol::AuthMode as AppAuthMode;
+use code_protocol::models::ContentItem;
+use code_protocol::models::ResponseItem;
 use code_protocol::models::FunctionCallOutputContentItem;
+use code_protocol::models::ImageDetail;
+use code_protocol::models::FunctionCallOutputPayload;
+use code_protocol::models::ShellCommandToolCallParams;
+use code_protocol::models::ShellToolCallParams;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,8 +49,50 @@ enum AgentTaskKind {
 
 const SEARCH_TOOL_DEVELOPER_INSTRUCTIONS: &str =
     include_str!("../../templates/search_tool/developer_instructions.md");
-const SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+const LEGACY_SEARCH_TOOL_BM25_TOOL_NAME: &str = "search_tool_bm25";
 const CODEX_APPS_TOOL_PREFIX: &str = "mcp__codex_apps__";
+const GENERATED_IMAGE_ARTIFACTS_DIR: &str = "generated_images";
+const AUTO_CONTEXT_JUDGE_MIN_TOKENS: u64 = 150_000;
+const AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS: u64 = 20_000;
+const AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN: u64 = 4;
+const AUTO_CONTEXT_MIN_PROJECTED_TURN_GROWTH_TOKENS: u64 = 24_000;
+const AUTO_CONTEXT_MAX_PROJECTED_TURN_GROWTH_TOKENS: u64 = 180_000;
+const AUTO_CONTEXT_JUDGE_PRIMARY_MODEL: &str = "gpt-5.3-codex-spark";
+const AUTO_CONTEXT_JUDGE_FALLBACK_MODEL: &str = "codex-mini-latest";
+const AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE: &str = concat!(
+    "You decide whether Code should compact conversation history before the next user turn. ",
+    "Return strict JSON only that matches the provided schema. ",
+    "The provided tokens_in_context already includes the new user turn before assistant/tool work begins. ",
+    "Strongly prefer should_compact_now=false when the new user message is clearly continuing the same thread ",
+    "and recent context is likely still needed. However, as projected usage approaches or exceeds the standard ",
+    "usage limit, increase your bias toward compaction even for continuations. If the current turn is likely to go ",
+    "past the standard usage limit, treat should_compact_now=true as materially more favorable unless doing so ",
+    "would likely harm correctness or progress. If the current turn is likely to go past the force-compact threshold ",
+    "or hard 1M context limit, strongly prefer should_compact_now=true. The farther the projected usage goes past ",
+    "the standard usage limit, the more aggressively you should lean toward compaction. Prefer preserving continuity ",
+    "only when nearby context appears genuinely essential to finishing the active thread correctly."
+);
+
+#[derive(Clone, Debug, Default)]
+struct ImageGenerationTurnMetadata {
+    requested_model: String,
+    latest_response_model: Option<String>,
+    response_headers: Option<serde_json::Value>,
+}
+
+#[derive(serde::Serialize)]
+struct ImageGenerationSidecar<'a> {
+    call_id: &'a str,
+    status: &'a str,
+    revised_prompt: Option<&'a str>,
+    artifact_path: String,
+    requested_model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_response_model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_headers: Option<&'a serde_json::Value>,
+}
 
 /// A series of Turns in response to user input.
 pub(super) struct AgentTask {
@@ -48,6 +100,8 @@ pub(super) struct AgentTask {
     pub(super) sub_id: String,
     handle: AbortHandle,
     kind: AgentTaskKind,
+    pub(super) origin: TaskOriginKind,
+    pub(super) visible_to_user: bool,
 }
 
 impl AgentTask {
@@ -56,13 +110,17 @@ impl AgentTask {
         turn_context: Arc<TurnContext>,
         sub_id: String,
         input: Vec<InputItem>,
+        origin: TaskOriginKind,
+        visible_to_user: bool,
     ) -> Self {
         let handle = {
             let sess_clone = Arc::clone(&sess);
             let tc_clone = Arc::clone(&turn_context);
             let sub_clone = sub_id.clone();
+            let origin_clone = origin;
+            let visible_clone = visible_to_user;
             tokio::spawn(async move {
-                run_agent(sess_clone, tc_clone, sub_clone, input).await;
+                run_agent(sess_clone, tc_clone, sub_clone, input, origin_clone, visible_clone).await;
             })
             .abort_handle()
         };
@@ -71,6 +129,8 @@ impl AgentTask {
             sub_id,
             handle,
             kind: AgentTaskKind::Regular,
+            origin,
+            visible_to_user,
         }
     }
 
@@ -100,6 +160,8 @@ impl AgentTask {
             sub_id,
             handle,
             kind: AgentTaskKind::Compact,
+            origin: TaskOriginKind::ManualCompact,
+            visible_to_user: false,
         }
     }
 
@@ -114,7 +176,15 @@ impl AgentTask {
             let tc_clone = Arc::clone(&turn_context);
             let sub_clone = sub_id.clone();
             tokio::spawn(async move {
-                run_agent(sess_clone, tc_clone, sub_clone, input).await;
+                run_agent(
+                    sess_clone,
+                    tc_clone,
+                    sub_clone,
+                    input,
+                    TaskOriginKind::Review,
+                    false,
+                )
+                .await;
             })
             .abort_handle()
         };
@@ -123,6 +193,8 @@ impl AgentTask {
             sub_id,
             handle,
             kind: AgentTaskKind::Review,
+            origin: TaskOriginKind::Review,
+            visible_to_user: false,
         }
     }
 
@@ -249,8 +321,32 @@ pub(super) async fn submission_loop(
                     let sentinel_input = vec![InputItem::Text {
                         text: PENDING_ONLY_SENTINEL.to_string(),
                     }];
-                    let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub_id, sentinel_input);
+                    let agent = AgentTask::spawn(
+                        Arc::clone(&sess),
+                        turn_context,
+                        sub_id,
+                        sentinel_input,
+                        TaskOriginKind::OutOfTurnDeveloper,
+                        false,
+                    );
                     sess.set_task(agent);
+                }
+            }
+            Op::AddPostTurnDeveloperInput { text } => {
+                let sess = match sess.as_ref() {
+                    Some(s) => s.clone(),
+                    None => {
+                        send_no_session_event(sub.id).await;
+                        continue;
+                    }
+                };
+                let dev_msg = ResponseInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText { text }],
+                };
+                let should_start_turn = sess.enqueue_post_turn_item(dev_msg);
+                if should_start_turn {
+                    sess.start_post_turn_pending_only_turn_if_idle().await;
                 }
             }
             Op::ConfigureSession {
@@ -261,6 +357,10 @@ pub(super) async fn submission_loop(
                 preferred_model_reasoning_effort,
                 model_reasoning_summary,
                 model_text_verbosity,
+                service_tier,
+                context_mode,
+                model_context_window,
+                model_auto_compact_token_limit,
                 user_instructions: provided_user_instructions,
                 base_instructions: provided_base_instructions,
                 approval_policy,
@@ -307,6 +407,10 @@ pub(super) async fn submission_loop(
                 }
                 updated_config.model_reasoning_summary = model_reasoning_summary;
                 updated_config.model_text_verbosity = model_text_verbosity;
+                updated_config.service_tier = service_tier;
+                updated_config.context_mode = context_mode;
+                updated_config.model_context_window = model_context_window;
+                updated_config.model_auto_compact_token_limit = model_auto_compact_token_limit;
                 updated_config.user_instructions = provided_user_instructions.clone();
                 let base_instructions = provided_base_instructions.or_else(|| {
                     crate::model_family::base_instructions_override_for_personality(
@@ -621,6 +725,12 @@ pub(super) async fn submission_loop(
                     } else {
                         AppAuthMode::ApiKey
                     }));
+                let image_generation_auth_allowed = auth_manager
+                    .as_ref()
+                    .and_then(|manager| manager.auth().map(|auth| auth.mode))
+                    .is_some_and(|mode| matches!(mode, AppAuthMode::Chatgpt));
+                tools_config.image_gen_tool = config.model_family.supports_image_generation
+                    && image_generation_auth_allowed;
                 let supports_pro_only_models = auth_manager
                     .as_ref()
                     .is_some_and(|manager| manager.supports_pro_only_models());
@@ -722,6 +832,11 @@ pub(super) async fn submission_loop(
                     inner.self_handle = weak_handle;
                 }
                 sess = Some(new_session);
+                if config.memories_enabled && config.memories.generate_memories {
+                    crate::memories::maybe_spawn_memory_refresh(Arc::clone(
+                        sess.as_ref().expect("session initialized"),
+                    ));
+                }
                 if let Some(sess_arc) = &sess {
                     if !config.always_allow_commands.is_empty() {
                         let mut st = sess_arc.state.lock().unwrap();
@@ -882,10 +997,14 @@ pub(super) async fn submission_loop(
                 sess.notify_wait_interrupted(WaitInterruptReason::UserMessage);
                 sess.abort();
 
-                // Spawn a new agent for this user input.
-                let turn_context = sess.make_turn_context_with_schema(final_output_json_schema);
-                let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
-                sess.set_task(agent);
+                spawn_user_turn(
+                    Arc::clone(sess),
+                    sub.id.clone(),
+                    items,
+                    final_output_json_schema,
+                    TaskOriginKind::User,
+                )
+                .await;
             }
             Op::QueueUserInput { items } => {
                 let sess = match sess.as_ref() {
@@ -909,9 +1028,14 @@ pub(super) async fn submission_loop(
                 } else {
                     // No task running: treat this as immediate user input without aborting.
                     sess.cleanup_old_status_items().await;
-                    let turn_context = sess.make_turn_context();
-                    let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub.id.clone(), items);
-                    sess.set_task(agent);
+                    spawn_user_turn(
+                        Arc::clone(sess),
+                        sub.id.clone(),
+                        items,
+                        None,
+                        TaskOriginKind::QueuedUser,
+                    )
+                    .await;
                 }
             }
             Op::ExecApproval {
@@ -1555,6 +1679,594 @@ fn spark_fallback_model(model: &str) -> Option<String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AutoContextPressureBand {
+    Medium,
+    High,
+    Critical,
+}
+
+impl AutoContextPressureBand {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AutoContextJudgeDecision {
+    should_compact_now: bool,
+    reason: String,
+    continuation_of_previous_thread: bool,
+    recent_context_still_useful: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoContextTurnRisk {
+    estimated_additional_turn_tokens: u64,
+    projected_post_turn_tokens: u64,
+    crosses_standard_limit_now: bool,
+    crosses_standard_limit_after_turn: bool,
+    crosses_force_compact_after_turn: bool,
+    crosses_hard_limit_after_turn: bool,
+}
+
+fn auto_context_force_compact_threshold(limit: Option<u64>) -> u64 {
+    limit
+        .unwrap_or(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M)
+        .saturating_sub(AUTO_CONTEXT_FORCE_COMPACT_MARGIN_TOKENS)
+}
+
+fn auto_context_pressure_band(
+    tokens_in_context: u64,
+    force_compact_threshold: u64,
+) -> Option<AutoContextPressureBand> {
+    if tokens_in_context < AUTO_CONTEXT_JUDGE_MIN_TOKENS {
+        None
+    } else if tokens_in_context >= force_compact_threshold.saturating_sub(40_000) {
+        Some(AutoContextPressureBand::Critical)
+    } else if tokens_in_context >= crate::model_family::STANDARD_CONTEXT_WINDOW_272K {
+        Some(AutoContextPressureBand::High)
+    } else {
+        Some(AutoContextPressureBand::Medium)
+    }
+}
+
+fn should_skip_auto_context_judge_for_continuation(
+    pressure_band: AutoContextPressureBand,
+    new_user_message: &str,
+) -> bool {
+    pressure_band == AutoContextPressureBand::Medium
+        && is_obvious_continuation_message(new_user_message)
+}
+
+fn proactive_compact_limit_reached(last_token_usage: Option<&TokenUsage>, limit: i64) -> bool {
+    last_token_usage
+        .and_then(|usage| i64::try_from(usage.tokens_in_context_window()).ok())
+        .is_some_and(|tokens| tokens >= limit)
+}
+
+fn extract_text_from_response_item(item: &ResponseItem) -> Option<String> {
+    let ResponseItem::Message { content, .. } = item else {
+        return None;
+    };
+    let text = crate::content_items_to_text(content)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn summarize_input_items(items: &[InputItem]) -> String {
+    let mut parts = Vec::new();
+    for item in items {
+        match item {
+            InputItem::Text { text } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
+                }
+            }
+            InputItem::Image { .. }
+            | InputItem::LocalImage { .. }
+            | InputItem::EphemeralImage { .. } => parts.push("[image attachment]".to_string()),
+        }
+    }
+    if parts.is_empty() {
+        "(no text input)".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn estimate_text_tokens(text: &str) -> u64 {
+    let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    bytes
+        .saturating_add(AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN - 1)
+        / AUTO_CONTEXT_ESTIMATED_BYTES_PER_TOKEN
+}
+
+fn estimate_response_item_tokens(item: &ResponseItem) -> u64 {
+    match item {
+        ResponseItem::Message { content, .. } => {
+            let mut total: u64 = 6;
+            for entry in content {
+                match entry {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                        total = total.saturating_add(estimate_text_tokens(text));
+                    }
+                    ContentItem::InputImage { .. } => {
+                        total = total.saturating_add(256);
+                    }
+                }
+            }
+            total
+        }
+        ResponseItem::FunctionCall { arguments, name, call_id, .. } => estimate_text_tokens(arguments)
+            .saturating_add(estimate_text_tokens(name))
+            .saturating_add(estimate_text_tokens(call_id))
+            .saturating_add(12),
+        ResponseItem::FunctionCallOutput { call_id, output, .. } => estimate_text_tokens(call_id)
+            .saturating_add(output.body.to_text().as_deref().map(estimate_text_tokens).unwrap_or(0))
+            .saturating_add(12),
+        _ => 0,
+    }
+}
+
+fn estimate_response_items_tokens(items: &[ResponseItem]) -> u64 {
+    items
+        .iter()
+        .map(estimate_response_item_tokens)
+        .sum::<u64>()
+}
+
+fn estimate_next_turn_context_tokens(history: &[ResponseItem], items: &[InputItem]) -> u64 {
+    let mut with_next_turn = history.to_vec();
+    let next_item: ResponseItem = compact::response_input_from_core_items(items.to_vec()).into();
+    with_next_turn.push(next_item);
+    estimate_response_items_tokens(&with_next_turn)
+}
+
+fn estimate_auto_context_turn_risk(
+    tokens_in_context: u64,
+    new_user_message: &str,
+    last_token_usage: Option<&TokenUsage>,
+    force_compact_threshold: u64,
+) -> AutoContextTurnRisk {
+    let standard_limit = crate::model_family::STANDARD_CONTEXT_WINDOW_272K;
+    let hard_limit = crate::model_family::EXTENDED_CONTEXT_WINDOW_1M;
+    let message_complexity_tokens = estimate_text_tokens(new_user_message).saturating_mul(6);
+    let last_turn_growth_tokens = last_token_usage
+        .map(|usage| {
+            usage
+                .output_tokens
+                .saturating_add(usage.reasoning_output_tokens)
+                .max(usage.blended_total() / 2)
+        })
+        .unwrap_or(0);
+    let estimated_additional_turn_tokens = message_complexity_tokens
+        .max(last_turn_growth_tokens)
+        .clamp(
+            AUTO_CONTEXT_MIN_PROJECTED_TURN_GROWTH_TOKENS,
+            AUTO_CONTEXT_MAX_PROJECTED_TURN_GROWTH_TOKENS,
+        );
+    let projected_post_turn_tokens = tokens_in_context.saturating_add(estimated_additional_turn_tokens);
+
+    AutoContextTurnRisk {
+        estimated_additional_turn_tokens,
+        projected_post_turn_tokens,
+        crosses_standard_limit_now: tokens_in_context >= standard_limit,
+        crosses_standard_limit_after_turn: projected_post_turn_tokens >= standard_limit,
+        crosses_force_compact_after_turn: projected_post_turn_tokens >= force_compact_threshold,
+        crosses_hard_limit_after_turn: projected_post_turn_tokens >= hard_limit,
+    }
+}
+
+fn is_obvious_continuation_message(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    let continuation_prefixes = [
+        "continue",
+        "keep going",
+        "go on",
+        "carry on",
+        "pick up",
+        "resume",
+        "fix that",
+        "fix this",
+        "do that",
+        "do this",
+        "use that",
+        "use this",
+        "now",
+        "next",
+        "also",
+        "can you also",
+        "let's keep",
+        "lets keep",
+        "update that",
+        "refine that",
+        "finish that",
+    ];
+
+    continuation_prefixes
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn extract_first_json_object(input: &str) -> Option<String> {
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start_idx = start?;
+                    return Some(input[start_idx..=idx].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+async fn emit_auto_context_phase(
+    sess: &Arc<Session>,
+    sub_id: &str,
+    phase: Option<crate::protocol::AutoContextPhase>,
+) {
+    sess.send_event(sess.make_event(
+        sub_id,
+        EventMsg::AutoContextCheck(crate::protocol::AutoContextCheckEvent { phase }),
+    ))
+    .await;
+}
+
+async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> CodexResult<String> {
+    use futures::StreamExt;
+
+    let mut stream = sess.client.clone().stream(prompt).await?;
+    let mut out = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ResponseEvent::OutputTextDelta { delta, .. }) => out.push_str(&delta),
+            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
+                if let ResponseItem::Message { content, .. } = item {
+                    for content_item in content {
+                        if let ContentItem::OutputText { text } = content_item {
+                            out.push_str(&text);
+                        }
+                    }
+                }
+            }
+            Ok(ResponseEvent::Completed { .. }) => break,
+            Err(err) => return Err(err),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn auto_context_judge_models() -> [&'static str; 2] {
+    [
+        AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+        AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+    ]
+}
+
+async fn maybe_run_auto_context_compaction(
+    sess: &Arc<Session>,
+    sub_id: &str,
+    items: &[InputItem],
+) {
+    if sess.client.get_context_mode() != Some(crate::config_types::ContextMode::Auto) {
+        return;
+    }
+
+    if sess.client.get_model_context_window() != Some(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M)
+    {
+        return;
+    }
+
+    let history = sess.turn_input_with_history(Vec::new());
+    let tokens_in_context = estimate_next_turn_context_tokens(&history, items);
+    if tokens_in_context < AUTO_CONTEXT_JUDGE_MIN_TOKENS {
+        return;
+    }
+
+    let auto_compact_limit = sess
+        .client
+        .get_auto_compact_token_limit()
+        .and_then(|limit| u64::try_from(limit).ok());
+    let force_compact_threshold = auto_context_force_compact_threshold(auto_compact_limit);
+    let Some(pressure_band) = auto_context_pressure_band(tokens_in_context, force_compact_threshold)
+    else {
+        return;
+    };
+
+    if tokens_in_context >= force_compact_threshold {
+        tracing::info!(
+            tokens_in_context,
+            force_compact_threshold,
+            pressure_band = pressure_band.as_str(),
+            "auto context forcing compaction before next turn"
+        );
+        emit_auto_context_phase(
+            sess,
+            sub_id,
+            Some(crate::protocol::AutoContextPhase::Compacting),
+        )
+        .await;
+        let turn_context = sess.make_turn_context();
+        let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+        emit_auto_context_phase(sess, sub_id, None).await;
+        return;
+    }
+
+    let recent_messages: Vec<serde_json::Value> = history
+        .into_iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { ref role, .. }
+                if role == "user" || role == "assistant" =>
+            {
+                extract_text_from_response_item(&item).map(|text| {
+                    serde_json::json!({
+                        "role": role,
+                        "text": text,
+                    })
+                })
+            }
+            _ => None,
+        })
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let new_user_message = summarize_input_items(items);
+
+    if should_skip_auto_context_judge_for_continuation(pressure_band, &new_user_message) {
+        tracing::info!(
+            tokens_in_context,
+            pressure_band = pressure_band.as_str(),
+            "auto context skipped judge for obvious continuation"
+        );
+        return;
+    }
+
+    let last_token_usage = {
+        let state = sess.state.lock().unwrap();
+        state.token_usage_info.as_ref().map(|info| info.last_token_usage.clone())
+    };
+    let turn_risk = estimate_auto_context_turn_risk(
+        tokens_in_context,
+        &new_user_message,
+        last_token_usage.as_ref(),
+        force_compact_threshold,
+    );
+    let standard_usage_limit_tokens = crate::model_family::STANDARD_CONTEXT_WINDOW_272K;
+    let hard_context_limit_tokens = crate::model_family::EXTENDED_CONTEXT_WINDOW_1M;
+    let standard_limit_ratio = if standard_usage_limit_tokens == 0 {
+        0.0
+    } else {
+        tokens_in_context as f64 / standard_usage_limit_tokens as f64
+    };
+    let hard_limit_ratio = if hard_context_limit_tokens == 0 {
+        0.0
+    } else {
+        tokens_in_context as f64 / hard_context_limit_tokens as f64
+    };
+
+    let developer_message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    };
+    let user_payload = serde_json::json!({
+        "tokens_in_context": tokens_in_context,
+        "judge_window": {
+            "start_tokens": AUTO_CONTEXT_JUDGE_MIN_TOKENS,
+            "standard_usage_limit_tokens": standard_usage_limit_tokens,
+            "force_compact_at_tokens": force_compact_threshold,
+            "hard_context_limit_tokens": hard_context_limit_tokens,
+        },
+        "pressure_band": pressure_band.as_str(),
+        "pressure": {
+            "standard_limit_ratio": standard_limit_ratio,
+            "hard_limit_ratio": hard_limit_ratio,
+            "distance_to_standard_limit_tokens": i64::try_from(standard_usage_limit_tokens).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+            "distance_to_force_compact_tokens": i64::try_from(force_compact_threshold).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+            "distance_to_hard_limit_tokens": i64::try_from(hard_context_limit_tokens).unwrap_or(i64::MAX)
+                - i64::try_from(tokens_in_context).unwrap_or(i64::MAX),
+        },
+        "turn_risk": {
+            "estimated_additional_turn_tokens": turn_risk.estimated_additional_turn_tokens,
+            "projected_post_turn_tokens": turn_risk.projected_post_turn_tokens,
+            "would_cross_standard_limit_now": turn_risk.crosses_standard_limit_now,
+            "would_cross_standard_limit_after_turn": turn_risk.crosses_standard_limit_after_turn,
+            "would_cross_force_compact_after_turn": turn_risk.crosses_force_compact_after_turn,
+            "would_cross_hard_limit_after_turn": turn_risk.crosses_hard_limit_after_turn,
+        },
+        "new_user_message": new_user_message,
+        "recent_messages": recent_messages,
+    });
+    let user_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: serde_json::to_string_pretty(&user_payload)
+                .unwrap_or_else(|_| user_payload.to_string()),
+        }],
+        end_turn: None,
+        phase: None,
+    };
+
+    let mut prompt = Prompt::default();
+    prompt.input = vec![developer_message, user_message];
+    prompt.include_additional_instructions = false;
+    prompt.text_format = Some(TextFormat {
+        r#type: "json_schema".to_string(),
+        name: Some("auto_context_decision".to_string()),
+        strict: Some(true),
+        schema: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "should_compact_now": { "type": "boolean" },
+                "reason": { "type": "string", "minLength": 1, "maxLength": 240 },
+                "continuation_of_previous_thread": { "type": "boolean" },
+                "recent_context_still_useful": { "type": "boolean" }
+            },
+            "required": [
+                "should_compact_now",
+                "reason",
+                "continuation_of_previous_thread",
+                "recent_context_still_useful"
+            ],
+            "additionalProperties": false
+        })),
+    });
+    prompt.set_log_tag("auto_context/judge");
+
+    emit_auto_context_phase(
+        sess,
+        sub_id,
+        Some(crate::protocol::AutoContextPhase::Checking),
+    )
+    .await;
+
+    let mut raw_decision: Option<String> = None;
+    for model in auto_context_judge_models() {
+        prompt.model_override = Some(model.to_string());
+        prompt.model_family_override = Some(derive_default_model_family(model));
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            request_auto_context_decision(sess, &prompt),
+        )
+        .await
+        {
+            Ok(Ok(raw)) => {
+                raw_decision = Some(raw);
+                break;
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(?err, model, "auto context judge request failed");
+            }
+            Err(_) => {
+                tracing::warn!(model, "auto context judge timed out");
+            }
+        }
+    }
+
+    let Some(raw_decision) = raw_decision else {
+        emit_auto_context_phase(sess, sub_id, None).await;
+        return;
+    };
+
+    emit_auto_context_phase(sess, sub_id, None).await;
+
+    let parsed = serde_json::from_str::<AutoContextJudgeDecision>(&raw_decision)
+        .or_else(|_| {
+            extract_first_json_object(&raw_decision)
+                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing JSON object")))
+                .and_then(|json| serde_json::from_str::<AutoContextJudgeDecision>(&json))
+        });
+    let decision = match parsed {
+        Ok(decision) => decision,
+        Err(err) => {
+            tracing::warn!(?err, raw_decision, "auto context judge returned invalid JSON");
+            return;
+        }
+    };
+
+    tracing::info!(
+        tokens_in_context,
+        pressure_band = pressure_band.as_str(),
+        estimated_additional_turn_tokens = turn_risk.estimated_additional_turn_tokens,
+        projected_post_turn_tokens = turn_risk.projected_post_turn_tokens,
+        crosses_standard_limit_now = turn_risk.crosses_standard_limit_now,
+        crosses_standard_limit_after_turn = turn_risk.crosses_standard_limit_after_turn,
+        crosses_force_compact_after_turn = turn_risk.crosses_force_compact_after_turn,
+        crosses_hard_limit_after_turn = turn_risk.crosses_hard_limit_after_turn,
+        should_compact_now = decision.should_compact_now,
+        continuation_of_previous_thread = decision.continuation_of_previous_thread,
+        recent_context_still_useful = decision.recent_context_still_useful,
+        reason = decision.reason,
+        "auto context judge completed"
+    );
+
+    if decision.should_compact_now {
+        emit_auto_context_phase(
+            sess,
+            sub_id,
+            Some(crate::protocol::AutoContextPhase::Compacting),
+        )
+        .await;
+        let turn_context = sess.make_turn_context();
+        let _ = compact::run_inline_auto_compact_task(Arc::clone(sess), turn_context).await;
+        emit_auto_context_phase(sess, sub_id, None).await;
+    }
+}
+
+async fn spawn_user_turn(
+    sess: Arc<Session>,
+    sub_id: String,
+    items: Vec<InputItem>,
+    final_output_json_schema: Option<serde_json::Value>,
+    origin: TaskOriginKind,
+) {
+    maybe_run_auto_context_compaction(&sess, &sub_id, &items).await;
+    let turn_context = match final_output_json_schema {
+        Some(schema) => sess.make_turn_context_with_schema(Some(schema)),
+        None => sess.make_turn_context(),
+    };
+    let agent = AgentTask::spawn(Arc::clone(&sess), turn_context, sub_id, items, origin, true);
+    sess.set_task(agent);
+}
+
 fn context_window_for_model(model: &str) -> Option<u64> {
     find_family_for_model(model)
         .or_else(|| Some(derive_default_model_family(model)))
@@ -1671,8 +2383,27 @@ fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
 ///   back to the model in the next turn.
 /// - If the model sends only an assistant message, we record it in the
 ///   conversation history and consider the agent complete.
-async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: String, input: Vec<InputItem>) {
+async fn run_agent(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    sub_id: String,
+    input: Vec<InputItem>,
+    origin: TaskOriginKind,
+    visible_to_user: bool,
+) {
     if input.is_empty() {
+        return;
+    }
+    let lifecycle = sess.make_event(
+        &sub_id,
+        EventMsg::TaskLifecycle(TaskLifecycleEvent {
+            phase: TaskLifecyclePhase::Started,
+            origin,
+            visible_to_user,
+            last_agent_message: None,
+        }),
+    );
+    if sess.tx_event.send(lifecycle).await.is_err() {
         return;
     }
     let event = sess.make_event(&sub_id, EventMsg::TaskStarted);
@@ -1686,11 +2417,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     let mut review_messages: Vec<String> = Vec::new();
     let mut review_exit_emitted = false;
 
+    let post_turn_only_turn = input.len() == 1
+        && matches!(
+            &input[0],
+            InputItem::Text { text } if text == POST_TURN_PENDING_ONLY_SENTINEL
+        );
     let pending_only_turn = input.len() == 1
         && matches!(
             &input[0],
             InputItem::Text { text } if text == PENDING_ONLY_SENTINEL
-        );
+        )
+        || post_turn_only_turn;
 
     // Debug logging for ephemeral images
     let ephemeral_count = input
@@ -1746,7 +2483,7 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
         // review model, causing loops. Only include queued user inputs when not in
         // review mode. They will be picked up after TaskComplete via
         // pop_next_queued_user_input.
-        let pending_input = if is_review_mode {
+        let pending_input = if is_review_mode || post_turn_only_turn {
             sess.get_pending_input_filtered(false)
         } else {
             sess.get_pending_input()
@@ -1915,12 +2652,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                         }
                         (
                             ResponseItem::CustomToolCall { .. },
-                            Some(ResponseInputItem::CustomToolCallOutput { call_id, output }),
+                            Some(ResponseInputItem::CustomToolCallOutput {
+                                call_id,
+                                name,
+                                output,
+                            }),
                         ) => {
                             items_to_record_in_conversation_history.push(item.clone());
                             items_to_record_in_conversation_history.push(
                                 ResponseItem::CustomToolCallOutput {
                                     call_id: call_id.clone(),
+                                    name: name.clone(),
                                     output: output.clone(),
                                 },
                             );
@@ -1940,6 +2682,25 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                             );
                         }
                         (
+                            ResponseItem::ToolSearchCall { .. },
+                            Some(ResponseInputItem::ToolSearchOutput {
+                                call_id,
+                                status,
+                                execution,
+                                tools,
+                            }),
+                        ) => {
+                            items_to_record_in_conversation_history.push(item.clone());
+                            items_to_record_in_conversation_history.push(
+                                ResponseItem::ToolSearchOutput {
+                                    call_id: Some(call_id.clone()),
+                                    status: status.clone(),
+                                    execution: execution.clone(),
+                                    tools: tools.clone(),
+                                },
+                            );
+                        }
+                        (
                             ResponseItem::Reasoning {
                                 id,
                                 summary,
@@ -1954,6 +2715,9 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                                 content: content.clone(),
                                 encrypted_content: encrypted_content.clone(),
                             });
+                        }
+                        (ResponseItem::ImageGenerationCall { .. }, None) => {
+                            items_to_record_in_conversation_history.push(item.clone());
                         }
                         _ => {
                             warn!("Unexpected response item: {item:?} with response: {response:?}");
@@ -1984,18 +2748,13 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
                     .client
                     .get_auto_compact_token_limit()
                     .unwrap_or(i64::MAX);
-                let most_recent_usage_tokens: Option<i64> = {
+                let token_limit_reached = {
                     let state = sess.state.lock().unwrap();
-                    state.token_usage_info.as_ref().and_then(|info| {
-                        info.last_token_usage.total_tokens.try_into().ok()
-                    })
+                    proactive_compact_limit_reached(
+                        state.token_usage_info.as_ref().map(|info| &info.last_token_usage),
+                        limit,
+                    )
                 };
-                // auto_compact_token_limit is defined relative to a single turn's
-                // token usage (input + output). Using the cumulative total caused
-                // the limit check to stay tripped permanently once crossed, even
-                // after compacting history, which spammed repeated /compact runs.
-                let token_limit_reached = most_recent_usage_tokens
-                    .map_or(false, |tokens| tokens >= limit);
 
                 // If there are responses, add them to pending input for the next iteration
                 if !responses.is_empty() {
@@ -2099,6 +2858,17 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     }
 
     sess.remove_task(&sub_id);
+    let lifecycle = sess.make_event(
+        &sub_id,
+        EventMsg::TaskLifecycle(TaskLifecycleEvent {
+            phase: TaskLifecyclePhase::Quiescent,
+            origin,
+            visible_to_user,
+            last_agent_message: last_task_message.clone(),
+        }),
+    );
+    sess.tx_event.send(lifecycle).await.ok();
+
     let event = sess.make_event(
         &sub_id,
         EventMsg::TaskComplete(TaskCompleteEvent {
@@ -2113,30 +2883,53 @@ async fn run_agent(sess: Arc<Session>, turn_context: Arc<TurnContext>, sub_id: S
     }
     sess.tx_event.send(event).await.ok();
 
-    if let Some(compact_sub_id) = sess.dequeue_manual_compact() {
-        let turn_context = sess.make_turn_context();
-        let prompt_text = sess.compact_prompt_text();
-        compact::spawn_compact_task(
-            Arc::clone(&sess),
-            turn_context,
-            compact_sub_id,
-            vec![InputItem::Text {
-                text: prompt_text,
-            }],
-        );
-        return;
-    }
-
-    if let Some(queued) = sess.pop_next_queued_user_input() {
-        let sess_clone = Arc::clone(&sess);
-        tokio::spawn(async move {
-            sess_clone.cleanup_old_status_items().await;
-            let turn_context = sess_clone.make_turn_context();
-            let submission_id = queued.submission_id;
-            let items = queued.core_items;
-            let agent = AgentTask::spawn(Arc::clone(&sess_clone), turn_context, submission_id, items);
-            sess_clone.set_task(agent);
-        });
+    if let Some(action) = sess.take_follow_up_turn_action() {
+        match action {
+            FollowUpTurnAction::PostTurnPendingInput => {
+                sess.start_internal_pending_only_turn(
+                    POST_TURN_PENDING_ONLY_SENTINEL,
+                    TaskOriginKind::PostTurn,
+                    false,
+                )
+                    .await;
+            }
+            FollowUpTurnAction::ManualCompact(compact_sub_id) => {
+                let turn_context = sess.make_turn_context();
+                let prompt_text = sess.compact_prompt_text();
+                compact::spawn_compact_task(
+                    Arc::clone(&sess),
+                    turn_context,
+                    compact_sub_id,
+                    vec![InputItem::Text {
+                        text: prompt_text,
+                    }],
+                );
+            }
+            FollowUpTurnAction::PendingInput => {
+                sess.start_internal_pending_only_turn(
+                    PENDING_ONLY_SENTINEL,
+                    TaskOriginKind::PendingInput,
+                    false,
+                )
+                    .await;
+            }
+            FollowUpTurnAction::QueuedUserInput(queued) => {
+                let sess_clone = Arc::clone(&sess);
+                tokio::spawn(async move {
+                    sess_clone.cleanup_old_status_items().await;
+                    let submission_id = queued.submission_id;
+                    let items = queued.core_items;
+                    spawn_user_turn(
+                        sess_clone,
+                        submission_id,
+                        items,
+                        None,
+                        TaskOriginKind::QueuedUser,
+                    )
+                    .await;
+                });
+            }
+        }
     }
 }
 
@@ -2186,6 +2979,13 @@ async fn run_turn(
             .collect();
         if should_inject_html_sanitizer_guardrails(&attempt_input) {
             prepend_developer_messages.push(HTML_SANITIZER_GUARDRAILS_MESSAGE.to_string());
+        }
+        if tc.client.memories_enabled() && tc.client.memories_use_enabled() {
+            if let Some(memory_prompt) =
+                crate::memories::build_memory_tool_developer_instructions(tc.client.code_home()).await
+            {
+                prepend_developer_messages.push(memory_prompt);
+            }
         }
 
         let mut prompt = Prompt {
@@ -2753,7 +3553,12 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
     for item in history {
         match item {
             ResponseItem::FunctionCall { name, call_id, .. } => {
-                if name == SEARCH_TOOL_BM25_TOOL_NAME {
+                if name == TOOL_SEARCH_TOOL_NAME || name == LEGACY_SEARCH_TOOL_BM25_TOOL_NAME {
+                    search_call_ids.insert(call_id.clone());
+                }
+            }
+            ResponseItem::ToolSearchCall { call_id, .. } => {
+                if let Some(call_id) = call_id {
                     search_call_ids.insert(call_id.clone());
                 }
             }
@@ -2780,6 +3585,26 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
                 else {
                     continue;
                 };
+                active_selected_tools = Some(selected_tools);
+            }
+            ResponseItem::ToolSearchOutput { call_id, tools, .. } => {
+                let Some(call_id) = call_id else {
+                    continue;
+                };
+                if !search_call_ids.contains(call_id) {
+                    continue;
+                }
+                let selected_tools = tools
+                    .iter()
+                    .filter_map(|tool| {
+                        tool.get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>();
+                if selected_tools.is_empty() {
+                    continue;
+                }
                 active_selected_tools = Some(selected_tools);
             }
             _ => {}
@@ -2873,12 +3698,14 @@ mod mcp_tool_selection_tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "shell".to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-shell".to_string(),
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search-1".to_string(),
             },
@@ -2893,7 +3720,8 @@ mod mcp_tool_selection_tests {
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search-2".to_string(),
             },
@@ -2927,6 +3755,7 @@ mod mcp_tool_selection_tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "shell".to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-shell".to_string(),
             },
@@ -2941,7 +3770,8 @@ mod mcp_tool_selection_tests {
             },
             ResponseItem::FunctionCall {
                 id: None,
-                name: super::SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                name: super::LEGACY_SEARCH_TOOL_BM25_TOOL_NAME.to_string(),
+                namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-search".to_string(),
             },
@@ -3183,7 +4013,8 @@ async fn try_run_turn(
             })
             .map(|call_id| ResponseItem::CustomToolCallOutput {
                 call_id: call_id.clone(),
-                output: "aborted".to_string(),
+                name: None,
+                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
             })
             .collect::<Vec<_>>()
     };
@@ -3204,6 +4035,7 @@ async fn try_run_turn(
         .clone()
         .unwrap_or_else(|| sess.client.get_model());
     let mut latest_response_model: Option<String> = None;
+    let mut latest_response_headers: Option<serde_json::Value> = None;
     let mut stream = match sess.client.clone().stream(&prompt).await {
         Ok(stream) => stream,
         Err(e) => {
@@ -3294,9 +4126,33 @@ async fn try_run_turn(
                 );
             }
             ResponseEvent::ServerReasoningIncluded(_included) => {}
+            ResponseEvent::ResponseHeaders(headers) => {
+                latest_response_headers = Some(headers);
+            }
             ResponseEvent::OutputItemDone { item, sequence_number, output_index } => {
+                let (item, rollout_ids) = crate::memories::sanitize_response_item(item);
+                if !rollout_ids.is_empty() {
+                    let code_home = sess.client.code_home().to_path_buf();
+                    tokio::spawn(async move {
+                        crate::memories::note_memory_usage(&code_home, &rollout_ids).await;
+                    });
+                }
                 let response =
-                    handle_response_item(sess, turn_diff_tracker, sub_id, item.clone(), sequence_number, output_index, attempt_req).await?;
+                    handle_response_item(
+                        sess,
+                        turn_diff_tracker,
+                        sub_id,
+                        item.clone(),
+                        sequence_number,
+                        output_index,
+                        attempt_req,
+                        &ImageGenerationTurnMetadata {
+                            requested_model: requested_model.clone(),
+                            latest_response_model: latest_response_model.clone(),
+                            response_headers: latest_response_headers.clone(),
+                        },
+                    )
+                    .await?;
 
                 // Save into scratchpad so we can seed a retry if the stream drops later.
                 sess.scratchpad_push(&item, &response, &sub_id);
@@ -3482,6 +4338,7 @@ async fn handle_response_item(
     seq_hint: Option<u64>,
     output_index: Option<u32>,
     attempt_req: u64,
+    image_generation_metadata: &ImageGenerationTurnMetadata,
 ) -> CodexResult<Option<ResponseInputItem>> {
     debug!(?item, "Output item");
     let output = match item {
@@ -3497,7 +4354,7 @@ async fn handle_response_item(
             }
             None
         }
-        ResponseItem::CompactionSummary { .. } => {
+        ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
             // Keep compaction summaries in history; no user-visible event to emit.
             None
         }
@@ -3538,6 +4395,7 @@ async fn handle_response_item(
         }
         ResponseItem::FunctionCall {
             name,
+            namespace,
             arguments,
             call_id,
             ..
@@ -3548,6 +4406,7 @@ async fn handle_response_item(
                     sess,
                     turn_diff_tracker,
                     sub_id.to_string(),
+                    namespace,
                     name,
                     arguments,
                     call_id,
@@ -3558,6 +4417,22 @@ async fn handle_response_item(
                 .await,
             )
         }
+        ResponseItem::ToolSearchCall {
+            call_id,
+            execution,
+            arguments,
+            ..
+        } => Some(
+            handle_tool_search(
+                sess,
+                ToolSearchResponseMode::ToolSearchOutput {
+                    call_id: call_id.unwrap_or_default(),
+                    execution,
+                },
+                arguments,
+            )
+            .await,
+        ),
         ResponseItem::LocalShellCall {
             id,
             call_id,
@@ -3617,6 +4492,10 @@ async fn handle_response_item(
             debug!("unexpected FunctionCallOutput from stream");
             None
         }
+        ResponseItem::ToolSearchOutput { .. } => {
+            debug!("unexpected ToolSearchOutput from stream");
+            None
+        }
         ResponseItem::CustomToolCallOutput { .. } => {
             debug!("unexpected CustomToolCallOutput from stream");
             None
@@ -3634,10 +4513,204 @@ async fn handle_response_item(
             }
             None
         }
+        ResponseItem::ImageGenerationCall {
+            id,
+            status,
+            revised_prompt,
+            result,
+        } => {
+            handle_image_generation_call(
+                sess,
+                sub_id,
+                id,
+                status,
+                revised_prompt,
+                result,
+                seq_hint,
+                output_index,
+                attempt_req,
+                image_generation_metadata,
+            )
+            .await;
+            None
+        }
         ResponseItem::GhostSnapshot { .. } => None,
         ResponseItem::Other => None,
     };
     Ok(output)
+}
+
+async fn handle_image_generation_call(
+    sess: &Session,
+    sub_id: &str,
+    call_id: String,
+    status: String,
+    revised_prompt: Option<String>,
+    result: String,
+    seq_hint: Option<u64>,
+    output_index: Option<u32>,
+    attempt_req: u64,
+    metadata: &ImageGenerationTurnMetadata,
+) {
+    let order = crate::protocol::OrderMeta {
+        request_ordinal: attempt_req,
+        output_index,
+        sequence_number: seq_hint,
+    };
+    let begin = sess.make_event_with_order(
+        sub_id,
+        EventMsg::ImageGenerationBegin(crate::protocol::ImageGenerationBeginEvent {
+            call_id: call_id.clone(),
+        }),
+        order.clone(),
+        seq_hint,
+    );
+    sess.send_event(begin).await;
+
+    let saved_path = match save_image_generation_result(
+        sess.client.code_home(),
+        &sess.session_uuid().to_string(),
+        &call_id,
+        &result,
+    )
+    .await
+    {
+        Ok(path) => {
+            let image_output_dir = path
+                .as_path()
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| sess.client.code_home().to_path_buf());
+            let text = format!(
+                "Generated images are saved under {}. This image was saved to {}.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.",
+                image_output_dir.display(),
+                path.display()
+            );
+            let message = ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text }],
+                end_turn: None,
+                phase: None,
+            };
+            sess.record_conversation_items(&[message]).await;
+            Some(path)
+        }
+        Err(err) => {
+            let expected_path = image_generation_artifact_path(
+                sess.client.code_home(),
+                &sess.session_uuid().to_string(),
+                &call_id,
+            );
+            warn!(
+                "failed to save image generation result to {}: {err}",
+                expected_path.display()
+            );
+            None
+        }
+    };
+
+    if let Some(path) = saved_path.as_ref()
+        && let Err(err) = save_image_generation_sidecar(
+            path,
+            &call_id,
+            &status,
+            revised_prompt.as_deref(),
+            metadata,
+        )
+        .await
+    {
+        warn!(
+            "failed to save image generation metadata sidecar for {}: {err}",
+            path.display()
+        );
+    }
+
+    let end = sess.make_event_with_order(
+        sub_id,
+        EventMsg::ImageGenerationEnd(crate::protocol::ImageGenerationEndEvent {
+            call_id,
+            status,
+            revised_prompt,
+            result,
+            saved_path,
+        }),
+        order,
+        seq_hint,
+    );
+    sess.send_event(end).await;
+}
+
+fn image_generation_artifact_path(code_home: &Path, session_id: &str, call_id: &str) -> PathBuf {
+    fn sanitize(value: &str) -> String {
+        let sanitized: String = value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        if sanitized.is_empty() {
+            "generated_image".to_string()
+        } else {
+            sanitized
+        }
+    }
+
+    code_home
+        .join(GENERATED_IMAGE_ARTIFACTS_DIR)
+        .join(sanitize(session_id))
+        .join(format!("{}.png", sanitize(call_id)))
+}
+
+async fn save_image_generation_result(
+    code_home: &Path,
+    session_id: &str,
+    call_id: &str,
+    result: &str,
+) -> std::result::Result<code_utils_absolute_path::AbsolutePathBuf, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(result.trim().as_bytes())
+        .map_err(|err| format!("invalid image generation payload: {err}"))?;
+    let path = image_generation_artifact_path(code_home, session_id, call_id);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|err| err.to_string())?;
+    code_utils_absolute_path::AbsolutePathBuf::from_absolute_path(path)
+        .map_err(|err| err.to_string())
+}
+
+async fn save_image_generation_sidecar(
+    artifact_path: &code_utils_absolute_path::AbsolutePathBuf,
+    call_id: &str,
+    status: &str,
+    revised_prompt: Option<&str>,
+    metadata: &ImageGenerationTurnMetadata,
+) -> std::result::Result<code_utils_absolute_path::AbsolutePathBuf, String> {
+    let sidecar_path = artifact_path.as_path().with_extension("metadata.json");
+    let sidecar = ImageGenerationSidecar {
+        call_id,
+        status,
+        revised_prompt,
+        artifact_path: artifact_path.display().to_string(),
+        requested_model: &metadata.requested_model,
+        latest_response_model: metadata.latest_response_model.as_deref(),
+        response_headers: metadata.response_headers.as_ref(),
+    };
+    let json = serde_json::to_vec_pretty(&sidecar).map_err(|err| err.to_string())?;
+    tokio::fs::write(&sidecar_path, json)
+        .await
+        .map_err(|err| err.to_string())?;
+    code_utils_absolute_path::AbsolutePathBuf::from_absolute_path(sidecar_path)
+        .map_err(|err| err.to_string())
 }
 
 fn web_search_query(query: &Option<String>, queries: &Option<Vec<String>>) -> Option<String> {
@@ -3758,6 +4831,7 @@ async fn handle_function_call(
     sess: &Session,
     turn_diff_tracker: &mut TurnDiffTracker,
     sub_id: String,
+    namespace: Option<String>,
     name: String,
     arguments: String,
     call_id: String,
@@ -3767,7 +4841,7 @@ async fn handle_function_call(
 ) -> ResponseInputItem {
     let ctx = ToolCallCtx::new(sub_id.clone(), call_id.clone(), seq_hint, output_index);
     match name.as_str() {
-        "container.exec" | "shell" => {
+        "container.exec" | "shell" | "local_shell" => {
             let params = match parse_container_exec_arguments(arguments, sess, &call_id) {
                 Ok(params) => params,
                 Err(output) => {
@@ -3776,6 +4850,25 @@ async fn handle_function_call(
             };
             handle_container_exec_with_params(params, sess, turn_diff_tracker, sub_id, call_id, seq_hint, output_index, attempt_req)
                 .await
+        }
+        "shell_command" => {
+            let params = match parse_shell_command_arguments(arguments, sess, &call_id) {
+                Ok(params) => params,
+                Err(output) => {
+                    return *output;
+                }
+            };
+            handle_container_exec_with_params(
+                params,
+                sess,
+                turn_diff_tracker,
+                sub_id,
+                call_id,
+                seq_hint,
+                output_index,
+                attempt_req,
+            )
+            .await
         }
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
         "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
@@ -3789,10 +4882,32 @@ async fn handle_function_call(
         "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
         "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
-        SEARCH_TOOL_BM25_TOOL_NAME => handle_search_tool_bm25(sess, &ctx, arguments).await,
+        TOOL_SEARCH_TOOL_NAME | LEGACY_SEARCH_TOOL_BM25_TOOL_NAME => {
+            let arguments = match serde_json::from_str::<serde_json::Value>(&arguments) {
+                Ok(arguments) => arguments,
+                Err(err) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                                "invalid {TOOL_SEARCH_TOOL_NAME} arguments: {err}"
+                            )),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            handle_tool_search(
+                sess,
+                ToolSearchResponseMode::FunctionCallOutput(ctx.call_id.clone()),
+                arguments,
+            )
+            .await
+        }
         _ => {
-            if sess.is_dynamic_tool(&name) {
-                return handle_dynamic_tool_call(sess, &ctx, name, arguments).await;
+            if sess.is_dynamic_tool(namespace.as_deref(), &name) {
+                return handle_dynamic_tool_call(sess, &ctx, namespace, name, arguments).await;
             }
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
@@ -3881,6 +4996,19 @@ async fn handle_request_user_input(
     )
     .await;
 
+    if let Some(task) = sess.task_lifecycle(&ctx.sub_id) {
+        let lifecycle = sess.make_event(
+            &ctx.sub_id,
+            EventMsg::TaskLifecycle(TaskLifecycleEvent {
+                phase: TaskLifecyclePhase::AwaitingExternalInput,
+                origin: task.origin,
+                visible_to_user: task.visible_to_user,
+                last_agent_message: None,
+            }),
+        );
+        sess.tx_event.send(lifecycle).await.ok();
+    }
+
     let response = match rx_response.await {
         Ok(response) => response,
         Err(_) => {
@@ -3917,6 +5045,7 @@ async fn handle_request_user_input(
 async fn handle_dynamic_tool_call(
     sess: &Session,
     ctx: &ToolCallCtx,
+    namespace: Option<String>,
     tool_name: String,
     arguments: String,
 ) -> ResponseInputItem {
@@ -3953,6 +5082,7 @@ async fn handle_dynamic_tool_call(
         EventMsg::DynamicToolCallRequest(code_protocol::dynamic_tools::DynamicToolCallRequest {
             call_id: ctx.call_id.clone(),
             turn_id: ctx.sub_id.clone(),
+            namespace,
             tool: tool_name,
             arguments: args,
         }),
@@ -3987,17 +5117,71 @@ async fn handle_dynamic_tool_call(
     }
 }
 
-const SEARCH_TOOL_BM25_DEFAULT_LIMIT: usize = 8;
+const TOOL_SEARCH_DEFAULT_LIMIT: usize = 8;
 
-fn search_tool_bm25_default_limit() -> usize {
-    SEARCH_TOOL_BM25_DEFAULT_LIMIT
+fn tool_search_default_limit() -> usize {
+    TOOL_SEARCH_DEFAULT_LIMIT
 }
 
 #[derive(Deserialize)]
-struct SearchToolBm25Args {
+struct ToolSearchArgs {
     query: String,
-    #[serde(default = "search_tool_bm25_default_limit")]
+    #[serde(default = "tool_search_default_limit")]
     limit: usize,
+}
+
+enum ToolSearchResponseMode {
+    FunctionCallOutput(String),
+    ToolSearchOutput { call_id: String, execution: String },
+}
+
+impl ToolSearchResponseMode {
+    fn error(self, message: impl Into<String>) -> ResponseInputItem {
+        let message = message.into();
+        match self {
+            Self::FunctionCallOutput(call_id) => ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(message),
+                    success: Some(false),
+                },
+            },
+            Self::ToolSearchOutput { call_id, execution } => ResponseInputItem::ToolSearchOutput {
+                call_id,
+                status: "failed".to_string(),
+                execution,
+                tools: Vec::new(),
+            },
+        }
+    }
+
+    fn success(self, query: &str, total_tools: usize, active_selected_tools: Vec<String>, tools: Vec<serde_json::Value>) -> ResponseInputItem {
+        match self {
+            Self::FunctionCallOutput(call_id) => {
+                let content = serde_json::json!({
+                    "query": query,
+                    "total_tools": total_tools,
+                    "active_selected_tools": active_selected_tools,
+                    "tools": tools,
+                })
+                .to_string();
+
+                ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        body: code_protocol::models::FunctionCallOutputBody::Text(content),
+                        success: Some(true),
+                    },
+                }
+            }
+            Self::ToolSearchOutput { call_id, execution } => ResponseInputItem::ToolSearchOutput {
+                call_id,
+                status: "completed".to_string(),
+                execution,
+                tools,
+            },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -4099,49 +5283,25 @@ fn score_search_candidate(
     score
 }
 
-async fn handle_search_tool_bm25(
+async fn handle_tool_search(
     sess: &Session,
-    ctx: &ToolCallCtx,
-    arguments: String,
+    response_mode: ToolSearchResponseMode,
+    arguments: serde_json::Value,
 ) -> ResponseInputItem {
-    let args = match serde_json::from_str::<SearchToolBm25Args>(&arguments) {
+    let args = match serde_json::from_value::<ToolSearchArgs>(arguments) {
         Ok(args) => args,
         Err(err) => {
-            return ResponseInputItem::FunctionCallOutput {
-                call_id: ctx.call_id.clone(),
-                output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
-                        "invalid {SEARCH_TOOL_BM25_TOOL_NAME} arguments: {err}"
-                    )),
-                    success: Some(false),
-                },
-            };
+            return response_mode.error(format!("invalid {TOOL_SEARCH_TOOL_NAME} arguments: {err}"));
         }
     };
 
     let query = args.query.trim();
     if query.is_empty() {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id: ctx.call_id.clone(),
-            output: FunctionCallOutputPayload {
-                body: code_protocol::models::FunctionCallOutputBody::Text(
-                    "query must not be empty".to_string(),
-                ),
-                success: Some(false),
-            },
-        };
+        return response_mode.error("query must not be empty");
     }
 
     if args.limit == 0 {
-        return ResponseInputItem::FunctionCallOutput {
-            call_id: ctx.call_id.clone(),
-            output: FunctionCallOutputPayload {
-                body: code_protocol::models::FunctionCallOutputBody::Text(
-                    "limit must be greater than zero".to_string(),
-                ),
-                success: Some(false),
-            },
-        };
+        return response_mode.error("limit must be greater than zero");
     }
 
     let all_mcp_tools = sess.mcp_connection_manager.list_all_tools_with_server_names();
@@ -4203,21 +5363,7 @@ async fn handle_search_tool_bm25(
         }));
     }
 
-    let content = serde_json::json!({
-        "query": query,
-        "total_tools": total_tools,
-        "active_selected_tools": active_selected_tools,
-        "tools": tools_payload,
-    })
-    .to_string();
-
-    ResponseInputItem::FunctionCallOutput {
-        call_id: ctx.call_id.clone(),
-        output: FunctionCallOutputPayload {
-            body: code_protocol::models::FunctionCallOutputBody::Text(content),
-            success: Some(true),
-        },
-    }
+    response_mode.success(query, total_tools, active_selected_tools, tools_payload)
 }
 
 async fn handle_browser_cleanup(sess: &Session, ctx: &ToolCallCtx) -> ResponseInputItem {
@@ -5514,16 +6660,12 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
                 .filter(|text| !text.is_empty())
                 .unwrap_or(filename);
             let marker = format!("[image: {label}]");
-            let image_message = ResponseInputItem::Message {
-                role: "user".to_string(),
-                content: vec![
-                    ContentItem::InputText { text: marker },
-                    ContentItem::InputImage {
-                        image_url: format!("data:{mime};base64,{encoded}"),
-                    },
-                ],
-            };
-            sess.add_pending_input(image_message);
+            let image_url = format!("data:{mime};base64,{encoded}");
+            let image_detail = sess
+                .client
+                .get_model_family()
+                .supports_image_detail_original
+                .then_some(ImageDetail::Original);
 
             let order = ctx.order_meta(sess.current_request_ordinal());
             let event = sess.make_event_with_order(
@@ -5540,8 +6682,15 @@ async fn handle_image_view(sess: &Session, ctx: &ToolCallCtx, arguments: String)
             ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("attached image: {}", resolved.display())),
-                    success: Some(true)},
+                    body: code_protocol::models::FunctionCallOutputBody::ContentItems(vec![
+                        FunctionCallOutputContentItem::InputText { text: marker },
+                        FunctionCallOutputContentItem::InputImage {
+                            image_url,
+                            detail: image_detail,
+                        },
+                    ]),
+                    success: Some(true),
+                },
             }
         },
     )
@@ -6746,6 +7895,28 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
         .and_then(|p| p.requires_escalated_permissions().then_some(true));
     ExecParams {
         command: params.command,
+        shell_script: None,
+        cwd: sess.resolve_path(params.workdir.clone()),
+        timeout_ms,
+        env: create_env(&sess.shell_environment_policy),
+        with_escalated_permissions,
+        justification: params.justification,
+    }
+}
+
+fn to_exec_params_from_shell_command(params: ShellCommandToolCallParams, sess: &Session) -> ExecParams {
+    let timeout_ms = params.timeout_ms.map(|ms| ms.max(MIN_SHELL_TIMEOUT_MS));
+    let with_escalated_permissions = params
+        .sandbox_permissions
+        .and_then(|p| p.requires_escalated_permissions().then_some(true));
+    let use_login_shell = params.login.unwrap_or(true);
+
+    ExecParams {
+        command: vec![params.command.clone()],
+        shell_script: Some(crate::exec::DeferredShellScript {
+            command: params.command,
+            use_login_shell,
+        }),
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms,
         env: create_env(&sess.shell_environment_policy),
@@ -6868,6 +8039,28 @@ fn parse_container_exec_arguments(
                 output: FunctionCallOutputPayload {
                     body: code_protocol::models::FunctionCallOutputBody::Text(format!("failed to parse function arguments: {e}")),
                     success: None},
+            };
+            Err(Box::new(output))
+        }
+    }
+}
+
+fn parse_shell_command_arguments(
+    arguments: String,
+    sess: &Session,
+    call_id: &str,
+) -> Result<ExecParams, Box<ResponseInputItem>> {
+    match serde_json::from_str::<ShellCommandToolCallParams>(&arguments) {
+        Ok(shell_command_params) => Ok(to_exec_params_from_shell_command(shell_command_params, sess)),
+        Err(err) => {
+            let output = ResponseInputItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "failed to parse function arguments: {err}"
+                    )),
+                    success: None,
+                },
             };
             Err(Box::new(output))
         }
@@ -8829,12 +10022,12 @@ async fn handle_container_exec_with_params(
     }
 
 
-    // If the argv is a shell wrapper, analyze and optionally strip `confirm:`.
+    // If the command is a shell script, analyze and optionally strip `confirm:`.
     let mut params = params;
     let seq_hint_for_exec = seq_hint;
     let otel_event_manager = sess.client.get_otel_event_manager();
     let tool_name = "local_shell";
-    if let Some((script_index, script)) = extract_shell_script_from_wrapper(&params.command) {
+    if let Some((script_index, script)) = extract_shell_script(&params.command) {
         let trimmed = script.trim_start();
         let confirm_prefixes = ["confirm:", "CONFIRM:"];
         let has_confirm_prefix = confirm_prefixes
@@ -9002,8 +10195,8 @@ async fn handle_container_exec_with_params(
         };
     }
 
-    // If no shell wrapper, perform a lightweight argv inspection for sensitive git commands.
-    if extract_shell_script_from_wrapper(&params.command).is_none() {
+    // If no shell script is present, perform a lightweight argv inspection for sensitive git commands.
+    if extract_shell_script(&params.command).is_none() {
         let joined = params.command.join(" ");
         if !sess.confirm_guard.is_empty() {
             if let Some(pattern) = sess.confirm_guard.matched_pattern(&joined) {
@@ -10323,7 +11516,14 @@ async fn enqueue_agent_completion_wake(
         let sentinel_input = vec![InputItem::Text {
             text: PENDING_ONLY_SENTINEL.to_string(),
         }];
-        let agent = AgentTask::spawn(Arc::clone(sess), turn_context, sub_id, sentinel_input);
+        let agent = AgentTask::spawn(
+            Arc::clone(sess),
+            turn_context,
+            sub_id,
+            sentinel_input,
+            TaskOriginKind::OutOfTurnDeveloper,
+            false,
+        );
         sess.set_task(agent);
     }
 }
@@ -10607,6 +11807,10 @@ fn consume_pending_screenshots(sess: &Session) -> Vec<ResponseInputItem> {
         .collect()
 }
 
+fn custom_tool_event_result_text(output: &FunctionCallOutputPayload) -> String {
+    output.body.to_text().unwrap_or_else(|| output.to_string())
+}
+
 /// Helper function to wrap custom tool calls with events
 async fn execute_custom_tool<F, Fut>(
     sess: &Session,
@@ -10640,7 +11844,7 @@ where
     // Extract success/failure from result. Prefer explicit success flag when available.
     let (success, message) = match &result {
         ResponseInputItem::FunctionCallOutput { output, .. } => {
-            let content = output.to_string();
+            let content = custom_tool_event_result_text(output);
             let success_flag = output.success;
             (success_flag.unwrap_or(true), content)
         }
@@ -11918,20 +13122,8 @@ async fn handle_browser_history(sess: &Session, ctx: &ToolCallCtx, arguments: St
     .await
 }
 
-fn extract_shell_script_from_wrapper(argv: &[String]) -> Option<(usize, String)> {
-    // Return (index_of_script, script) if argv matches: <shell> (-lc|-c) <script>
-    if argv.len() == 3 {
-        let shell = std::path::Path::new(&argv[0])
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let is_shell = matches!(shell, "bash" | "sh" | "zsh");
-        let is_flag = matches!(argv[1].as_str(), "-lc" | "-c");
-        if is_shell && is_flag {
-            return Some((2, argv[2].clone()));
-        }
-    }
-    None
+fn extract_shell_script(argv: &[String]) -> Option<(usize, String)> {
+    crate::util::extract_shell_script(argv).map(|(index, script)| (index, script.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11941,7 +13133,7 @@ struct CatWriteSuggestion {
 }
 
 fn detect_cat_write(argv: &[String]) -> Option<CatWriteSuggestion> {
-    if let Some((_, script)) = extract_shell_script_from_wrapper(argv) {
+    if let Some((_, script)) = extract_shell_script(argv) {
         if script_contains_cat_write(&script) {
             return Some(CatWriteSuggestion {
                 label: "original_script",
@@ -12111,7 +13303,7 @@ struct PythonWriteSuggestion {
 }
 
 fn detect_python_write(argv: &[String]) -> Option<PythonWriteSuggestion> {
-    if let Some((_, script)) = extract_shell_script_from_wrapper(argv) {
+    if let Some((_, script)) = extract_shell_script(argv) {
         if script_contains_python_write(&script) {
             return Some(PythonWriteSuggestion {
                 label: "original_script",
@@ -12195,7 +13387,7 @@ struct RedundantCdSuggestion {
 
 fn detect_redundant_cd(argv: &[String], cwd: &Path) -> Option<RedundantCdSuggestion> {
     let normalized_cwd = normalize_path(cwd);
-    if let Some((script_index, script)) = extract_shell_script_from_wrapper(argv) {
+    if let Some((script_index, script)) = extract_shell_script(argv) {
         if let Some(suggestion) = detect_redundant_cd_in_shell(
             argv,
             script_index,
@@ -12387,6 +13579,16 @@ mod command_guard_detection_tests {
     }
 
     #[test]
+    fn detects_raw_shell_script_redundant_cd() {
+        let cwd = PathBuf::from("/tmp/project");
+        let argv = vec!["cd /tmp/project && ls".to_string()];
+
+        let suggestion = detect_redundant_cd(&argv, &cwd).expect("should flag redundant cd");
+        assert_eq!(suggestion.label, "original_script");
+        assert_eq!(suggestion.suggested, vec!["ls".to_string()]);
+    }
+
+    #[test]
     fn ignores_cd_to_different_directory() {
         let cwd = PathBuf::from("/tmp/project");
         let argv = vec![
@@ -12415,6 +13617,19 @@ mod command_guard_detection_tests {
         let argv = vec![
             "bash".to_string(),
             "-lc".to_string(),
+            "cat <<'EOF' > code-rs/git-tooling/Cargo.toml\n[package]\nname = \"demo\"\nEOF".to_string(),
+        ];
+
+        let suggestion = detect_cat_write(&argv).expect("should flag cat write");
+        assert_eq!(suggestion.label, "original_script");
+        assert!(suggestion
+            .original_value
+            .contains("cat <<'EOF' > code-rs/git-tooling/Cargo.toml"));
+    }
+
+    #[test]
+    fn detects_raw_shell_script_cat_heredoc_write() {
+        let argv = vec![
             "cat <<'EOF' > code-rs/git-tooling/Cargo.toml\n[package]\nname = \"demo\"\nEOF".to_string(),
         ];
 
@@ -12516,6 +13731,28 @@ mod cleanup_tests {
             }], end_turn: None, phase: None}
     }
 
+    struct AutoContextHarness {
+        history: Vec<ResponseItem>,
+        next_input: Vec<InputItem>,
+    }
+
+    impl AutoContextHarness {
+        fn new(history: Vec<ResponseItem>, next_input: Vec<InputItem>) -> Self {
+            Self { history, next_input }
+        }
+
+        fn estimated_tokens(&self) -> u64 {
+            estimate_next_turn_context_tokens(&self.history, &self.next_input)
+        }
+
+        fn skip_for_continuation(&self, pressure_band: AutoContextPressureBand) -> bool {
+            should_skip_auto_context_judge_for_continuation(
+                pressure_band,
+                &summarize_input_items(&self.next_input),
+            )
+        }
+    }
+
     #[test]
     fn prune_history_retains_recent_env_items() {
         let baseline1 = make_text_message(&format!(
@@ -12615,6 +13852,88 @@ mod cleanup_tests {
         let (pruned, stats) = prune_history_items(&history);
         assert_eq!(pruned, history);
         assert!(!stats.any_removed());
+    }
+
+    #[test]
+    fn auto_context_pressure_band_respects_thresholds() {
+        let force_threshold = auto_context_force_compact_threshold(Some(
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M,
+        ));
+
+        assert_eq!(auto_context_pressure_band(149_999, force_threshold), None);
+        assert_eq!(
+            auto_context_pressure_band(150_000, force_threshold),
+            Some(AutoContextPressureBand::Medium)
+        );
+        assert_eq!(
+            auto_context_pressure_band(crate::model_family::STANDARD_CONTEXT_WINDOW_272K, force_threshold),
+            Some(AutoContextPressureBand::High)
+        );
+        assert_eq!(
+            auto_context_pressure_band(force_threshold.saturating_sub(10_000), force_threshold),
+            Some(AutoContextPressureBand::Critical)
+        );
+    }
+
+    #[test]
+    fn auto_context_force_compact_threshold_leaves_margin() {
+        assert_eq!(
+            auto_context_force_compact_threshold(Some(1_000_000)),
+            980_000
+        );
+    }
+
+    #[test]
+    fn estimate_next_turn_context_tokens_uses_history_and_new_input() {
+        let harness = AutoContextHarness::new(
+            vec![
+            make_text_message("continue the refactor"),
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "I updated the model picker".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ],
+            vec![InputItem::Text {
+                text: "now fix the auto compact path".to_string(),
+            }],
+        );
+
+        let estimate = harness.estimated_tokens();
+
+        assert!(estimate > 0);
+        assert!(estimate >= estimate_response_items_tokens(&harness.history));
+    }
+
+    #[test]
+    fn continuation_short_circuits_medium_pressure_auto_judge() {
+        let harness = AutoContextHarness::new(
+            vec![make_text_message("continue the picker refactor")],
+            vec![InputItem::Text {
+                text: "continue with the previous fix and keep going".to_string(),
+            }],
+        );
+
+        assert!(harness.skip_for_continuation(AutoContextPressureBand::Medium));
+        assert!(!harness.skip_for_continuation(AutoContextPressureBand::High));
+    }
+
+    #[test]
+    fn proactive_compact_limit_uses_context_window_tokens() {
+        let usage = TokenUsage {
+            input_tokens: 40_000,
+            cached_input_tokens: 0,
+            output_tokens: 260_000,
+            reasoning_output_tokens: 250_000,
+            total_tokens: 300_000,
+        };
+
+        assert!(!proactive_compact_limit_reached(Some(&usage), 100_000));
+        assert!(proactive_compact_limit_reached(Some(&usage), 40_000));
     }
 }
 
@@ -12857,15 +14176,28 @@ fn parse_legacy_status_snapshot(item: &ResponseItem) -> Option<EnvironmentContex
 #[cfg(test)]
 mod tests {
     use super::{
+        estimate_auto_context_turn_risk,
+        AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE,
+        AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+        AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+        auto_context_judge_models,
         choose_larger_context_model_from_candidates,
+        custom_tool_event_result_text,
         ContextFallbackCandidate,
         format_exec_output_with_limit,
+        image_generation_artifact_path,
         is_context_overflow_stream_error,
         is_usage_limit_stream_error,
+        save_image_generation_result,
+        save_image_generation_sidecar,
+        ImageGenerationTurnMetadata,
         spark_fallback_model,
         TRUNCATION_MARKER,
     };
     use crate::exec::{ExecToolCallOutput, StreamOutput};
+    use crate::protocol::TokenUsage;
+    use code_protocol::models::FunctionCallOutputContentItem;
+    use code_protocol::models::FunctionCallOutputPayload;
     use serde_json::Value;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -12879,6 +14211,78 @@ mod tests {
             duration: Duration::from_secs(1),
             timed_out: false,
         }
+    }
+
+    #[test]
+    fn image_generation_artifact_path_sanitizes_session_and_call_ids() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = image_generation_artifact_path(dir.path(), "session/../1", "../ig?..123");
+
+        assert_eq!(
+            path,
+            dir.path()
+                .join("generated_images")
+                .join("session____1")
+                .join("___ig___123.png")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_image_generation_result_writes_png_payload() {
+        let dir = TempDir::new().expect("tempdir");
+        let saved_path = save_image_generation_result(dir.path(), "session-1", "ig_123", "Zm9v")
+            .await
+            .expect("image should save");
+
+        assert_eq!(std::fs::read(saved_path.as_path()).expect("saved file"), b"foo");
+    }
+
+    #[tokio::test]
+    async fn save_image_generation_sidecar_writes_metadata() {
+        let dir = TempDir::new().expect("tempdir");
+        let saved_path = save_image_generation_result(dir.path(), "session-1", "ig_123", "Zm9v")
+            .await
+            .expect("image should save");
+        let metadata = ImageGenerationTurnMetadata {
+            requested_model: "gpt-5.4".to_string(),
+            latest_response_model: Some("gpt-5.4-2026-04-01".to_string()),
+            response_headers: Some(serde_json::json!({
+                "x-request-id": ["req_123"],
+            })),
+        };
+
+        let sidecar_path = save_image_generation_sidecar(
+            &saved_path,
+            "ig_123",
+            "completed",
+            Some("A tiny square"),
+            &metadata,
+        )
+        .await
+        .expect("metadata should save");
+
+        assert_eq!(
+            sidecar_path.as_path(),
+            saved_path.as_path().with_extension("metadata.json")
+        );
+        let sidecar: Value = serde_json::from_slice(
+            &std::fs::read(sidecar_path.as_path()).expect("sidecar file"),
+        )
+        .expect("sidecar json");
+        assert_eq!(sidecar["call_id"], "ig_123");
+        assert_eq!(sidecar["requested_model"], "gpt-5.4");
+        assert_eq!(sidecar["latest_response_model"], "gpt-5.4-2026-04-01");
+        assert_eq!(sidecar["response_headers"]["x-request-id"][0], "req_123");
+    }
+
+    #[tokio::test]
+    async fn save_image_generation_result_rejects_non_standard_base64() {
+        let dir = TempDir::new().expect("tempdir");
+        let err = save_image_generation_result(dir.path(), "session-1", "ig_123", "_-8")
+            .await
+            .expect_err("invalid payload should fail");
+
+        assert!(err.contains("invalid image generation payload"));
     }
 
     #[test]
@@ -12921,6 +14325,24 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_event_result_text_omits_image_data_urls() {
+        let payload = FunctionCallOutputPayload::from_content_items(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "[image: hero]".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,BASE64".to_string(),
+                detail: None,
+            },
+        ]);
+
+        let text = custom_tool_event_result_text(&payload);
+
+        assert_eq!(text, "[image: hero]");
+        assert!(!text.contains("base64"));
+    }
+
+    #[test]
     fn context_overflow_detection_matches_provider_errors() {
         assert!(is_context_overflow_stream_error(
             "Transport error: Your input exceeds the context window of this model"
@@ -12940,6 +14362,58 @@ mod tests {
             "response.failed: usage_not_included"
         ));
         assert!(!is_usage_limit_stream_error("temporary network timeout"));
+    }
+
+    #[test]
+    fn auto_context_judge_prefers_spark_then_mini() {
+        assert_eq!(
+            auto_context_judge_models(),
+            [
+                AUTO_CONTEXT_JUDGE_PRIMARY_MODEL,
+                AUTO_CONTEXT_JUDGE_FALLBACK_MODEL,
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_context_judge_instructions_reference_schema_fields() {
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("should_compact_now=false"));
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("should_compact_now=true"));
+        assert!(AUTO_CONTEXT_JUDGE_DEVELOPER_MESSAGE.contains("Return strict JSON only"));
+    }
+
+    #[test]
+    fn auto_context_turn_risk_flags_standard_limit_pressure() {
+        let risk = estimate_auto_context_turn_risk(
+            290_000,
+            "continue fixing the active bug and update the tests",
+            None,
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M.saturating_sub(20_000),
+        );
+
+        assert!(risk.crosses_standard_limit_after_turn);
+        assert!(!risk.crosses_hard_limit_after_turn);
+        assert!(risk.projected_post_turn_tokens > 290_000);
+    }
+
+    #[test]
+    fn auto_context_turn_risk_flags_hard_limit_pressure() {
+        let risk = estimate_auto_context_turn_risk(
+            975_000,
+            "continue",
+            Some(&TokenUsage {
+                input_tokens: 20_000,
+                cached_input_tokens: 0,
+                output_tokens: 80_000,
+                reasoning_output_tokens: 10_000,
+                total_tokens: 110_000,
+            }),
+            crate::model_family::EXTENDED_CONTEXT_WINDOW_1M.saturating_sub(20_000),
+        );
+
+        assert!(risk.crosses_standard_limit_now);
+        assert!(risk.crosses_force_compact_after_turn);
+        assert!(risk.crosses_hard_limit_after_turn);
     }
 
     #[test]

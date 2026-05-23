@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::PathBuf;
 
+use codex_protocol::approvals::EscalationPermissions;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
@@ -11,9 +12,6 @@ pub const ESCALATE_SOCKET_ENV_VAR: &str = "CODEX_ESCALATE_SOCKET";
 
 /// Patched shells use this to wrap exec() calls.
 pub const EXEC_WRAPPER_ENV_VAR: &str = "EXEC_WRAPPER";
-
-/// Compatibility alias for older patched bash builds.
-pub const LEGACY_BASH_EXEC_WRAPPER_ENV_VAR: &str = "BASH_EXEC_WRAPPER";
 
 /// The client sends this to the server to request an exec() call.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -33,6 +31,38 @@ pub struct EscalateRequest {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct EscalateResponse {
     pub action: EscalateAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EscalationDecision {
+    Run,
+    Escalate(EscalationExecution),
+    Deny { reason: Option<String> },
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EscalationExecution {
+    /// Rerun the intercepted command outside any sandbox wrapper.
+    Unsandboxed,
+    /// Rerun using the turn's current sandbox configuration.
+    TurnDefault,
+    /// Rerun using an explicit sandbox configuration attached to the request.
+    Permissions(EscalationPermissions),
+}
+
+impl EscalationDecision {
+    pub fn run() -> Self {
+        Self::Run
+    }
+
+    pub fn escalate(execution: EscalationExecution) -> Self {
+        Self::Escalate(execution)
+    }
+
+    pub fn deny(reason: Option<String>) -> Self {
+        Self::Deny { reason }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]

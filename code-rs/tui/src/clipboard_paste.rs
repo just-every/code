@@ -178,3 +178,125 @@ pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
 }
 
 // Image format inference removed alongside clipboard image helpers.
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    /// Build a 1×1 red RGBA PNG in memory for test fixtures.
+    fn tiny_png_bytes() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let dyn_img = image::DynamicImage::ImageRgba8(img);
+        let mut buf = Vec::new();
+        dyn_img
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .expect("encode test PNG");
+        buf
+    }
+
+    // ── try_decode_base64_image_to_temp_png ──────────────────────────────────
+
+    #[test]
+    fn base64_raw_png_roundtrip() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(tiny_png_bytes());
+        assert!(b64.starts_with("iVBORw0K"), "raw base64 of PNG must start with iVBORw0K");
+        let (path, info) = try_decode_base64_image_to_temp_png(&b64).expect("decode ok");
+        assert_eq!((info.width, info.height), (1, 1));
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn base64_data_url_png_roundtrip() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(tiny_png_bytes());
+        let data_url = format!("data:image/png;base64,{b64}");
+        let (path, info) = try_decode_base64_image_to_temp_png(&data_url).expect("decode ok");
+        assert_eq!((info.width, info.height), (1, 1));
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn base64_empty_is_decode_error() {
+        assert!(matches!(
+            try_decode_base64_image_to_temp_png(""),
+            Err(PasteImageError::DecodeFailed(_))
+        ));
+    }
+
+    #[test]
+    fn base64_non_image_base64_is_decode_error() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello world");
+        assert!(matches!(
+            try_decode_base64_image_to_temp_png(&b64),
+            Err(PasteImageError::DecodeFailed(_))
+        ));
+    }
+
+    #[test]
+    fn base64_data_url_without_base64_marker_is_decode_error() {
+        assert!(matches!(
+            try_decode_base64_image_to_temp_png("data:image/png,somedata"),
+            Err(PasteImageError::DecodeFailed(_))
+        ));
+    }
+
+    // ── normalize_pasted_path ────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_file_url() {
+        assert_eq!(
+            normalize_pasted_path("file:///tmp/image.png"),
+            Some(std::path::PathBuf::from("/tmp/image.png"))
+        );
+    }
+
+    #[test]
+    fn normalize_simple_unix_path() {
+        assert_eq!(
+            normalize_pasted_path("/home/user/photo.jpg"),
+            Some(std::path::PathBuf::from("/home/user/photo.jpg"))
+        );
+    }
+
+    #[test]
+    fn normalize_quoted_path_with_spaces() {
+        assert_eq!(
+            normalize_pasted_path(r#""/home/user/my photo.jpg""#),
+            Some(std::path::PathBuf::from("/home/user/my photo.jpg"))
+        );
+    }
+
+    #[test]
+    fn normalize_two_paths_returns_none() {
+        assert!(normalize_pasted_path("/path/a /path/b").is_none());
+    }
+
+    #[test]
+    fn normalize_windows_drive_path() {
+        assert!(normalize_pasted_path(r"C:\Users\user\image.png").is_some());
+    }
+
+    #[test]
+    fn normalize_unc_path() {
+        assert!(normalize_pasted_path(r"\\server\share\image.png").is_some());
+    }
+
+    // ── paste_image_as_png: graceful-failure smoke test ──────────────────────
+    //
+    // Regression guard for #565 (Wayland clipboard image paste): arboard must
+    // return a typed PasteImageError rather than panicking when no clipboard
+    // server is reachable (e.g., headless CI). On a live Wayland session the
+    // success path is exercised instead.
+    #[test]
+    fn paste_image_returns_typed_error_when_no_display() {
+        match paste_image_as_png() {
+            Ok(_) => {}
+            Err(PasteImageError::ClipboardUnavailable(_)) => {}
+            Err(PasteImageError::NoImage(_)) => {}
+            Err(e) => panic!("unexpected PasteImageError variant: {e}"),
+        }
+    }
+}

@@ -1,13 +1,14 @@
-## @just-every/code v0.6.71
+## @just-every/code v0.6.98
 
-This release improves realtime reliability, tightens approvals, and upgrades core TUI and JS REPL workflows.
+This release improves TUI workflows, thread handling, plugin sharing, and Linux portability across Code.
 
 ### Changes
 
-- Core/Realtime: prefer websocket v2, add fallback behavior, and improve timeout handling for more resilient sessions.
-- TUI: add `/copy`, improve clear controls (`/clear` and Ctrl-L), and expand multi-agent progress and picker UX.
-- Security/Approvals: persist network approval policy and tighten zsh-fork approval and sandbox enforcement paths.
-- JS REPL: lower Node minimum requirement, gate incompatible runtimes at startup, and improve error recovery in nested tool calls.
+- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish.
+- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync.
+- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details.
+- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently.
+- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux.
 
 ### Install
 
@@ -18,6 +19,6 @@ code
 
 ### Thanks
 
-Thanks to @rupurt, @dchimento, @JaviSoto, @owenlin0, and @felipecoury for contributions!
+Thanks to @owenlin0, @alfozan111, and @vincentkoc for contributions!
 
-Compare: https://github.com/just-every/code/compare/v0.6.70...v0.6.71
+Compare: https://github.com/just-every/code/compare/v0.6.97...v0.6.98

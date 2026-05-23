@@ -111,10 +111,47 @@ pub fn write_global_mcp_servers(
                         entry["env"] = TomlItem::Table(env_table);
                     }
                 }
-                McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+                McpServerTransportConfig::StreamableHttp {
+                    url,
+                    bearer_token,
+                    bearer_token_env_var,
+                    http_headers,
+                    env_http_headers,
+                    oauth_resource,
+                } => {
                     entry["url"] = toml_edit::value(url.clone());
                     if let Some(token) = bearer_token {
                         entry["bearer_token"] = toml_edit::value(token.clone());
+                    }
+                    if let Some(token_env_var) = bearer_token_env_var {
+                        entry["bearer_token_env_var"] = toml_edit::value(token_env_var.clone());
+                    }
+                    if let Some(headers) = http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut headers_table = TomlTable::new();
+                        headers_table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            headers_table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["http_headers"] = TomlItem::Table(headers_table);
+                    }
+                    if let Some(headers) = env_http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut headers_table = TomlTable::new();
+                        headers_table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            headers_table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["env_http_headers"] = TomlItem::Table(headers_table);
+                    }
+                    if let Some(resource) = oauth_resource {
+                        entry["oauth_resource"] = toml_edit::value(resource.clone());
                     }
                 }
             }
@@ -1239,6 +1276,16 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
         let mut out = Vec::new();
         for (name, item) in tbl.iter() {
             if let Some(t) = item.as_table() {
+                let parse_string_array = |key: &str| {
+                    t.get(key).and_then(|value| {
+                        value.as_array().map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                };
                 let transport = if let Some(command) = t.get("command").and_then(|v| v.as_str()) {
                     let args: Vec<String> = t
                         .get("args")
@@ -1284,10 +1331,68 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         .get("bearer_token")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let bearer_token_env_var = t
+                        .get("bearer_token_env_var")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let http_headers = t.get("http_headers").and_then(|v| {
+                        v.as_table()
+                            .map(|table| {
+                                table
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.to_string(), value.to_string()))
+                                    })
+                                    .collect::<HashMap<_, _>>()
+                            })
+                            .or_else(|| {
+                                v.as_inline_table().map(|table| {
+                                    table
+                                        .iter()
+                                        .filter_map(|(key, value)| {
+                                            value
+                                                .as_str()
+                                                .map(|value| (key.to_string(), value.to_string()))
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                            })
+                    });
+                    let env_http_headers = t.get("env_http_headers").and_then(|v| {
+                        v.as_table()
+                            .map(|table| {
+                                table
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.to_string(), value.to_string()))
+                                    })
+                                    .collect::<HashMap<_, _>>()
+                            })
+                            .or_else(|| {
+                                v.as_inline_table().map(|table| {
+                                    table
+                                        .iter()
+                                        .filter_map(|(key, value)| {
+                                            value
+                                                .as_str()
+                                                .map(|value| (key.to_string(), value.to_string()))
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                            })
+                    });
+                    let oauth_resource = t
+                        .get("oauth_resource")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     McpServerTransportConfig::StreamableHttp {
                         url: url.to_string(),
                         bearer_token,
+                        bearer_token_env_var,
+                        http_headers,
+                        env_http_headers,
+                        oauth_resource,
                     }
                 } else {
                     continue;
@@ -1326,6 +1431,8 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         transport,
                         startup_timeout_sec,
                         tool_timeout_sec,
+                        enabled_tools: parse_string_array("enabled_tools"),
+                        disabled_tools: parse_string_array("disabled_tools"),
                     },
                 ));
             }
@@ -1383,6 +1490,8 @@ pub fn add_mcp_server(
         transport,
         startup_timeout_sec,
         tool_timeout_sec,
+        enabled_tools,
+        disabled_tools,
     } = cfg;
 
     // Build table for this server
@@ -1405,10 +1514,40 @@ pub fn add_mcp_server(
                 server_tbl.insert("env", TomlItem::Value(toml_edit::Value::InlineTable(it)));
             }
         }
-        McpServerTransportConfig::StreamableHttp { url, bearer_token } => {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            bearer_token,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+            oauth_resource,
+        } => {
             server_tbl.insert("url", toml_edit::value(url));
             if let Some(token) = bearer_token {
                 server_tbl.insert("bearer_token", toml_edit::value(token));
+            }
+            if let Some(token_env_var) = bearer_token_env_var {
+                server_tbl.insert("bearer_token_env_var", toml_edit::value(token_env_var));
+            }
+            if let Some(headers) = http_headers {
+                let mut it = toml_edit::InlineTable::new();
+                for (k, v) in headers {
+                    it.insert(&k, toml_edit::Value::from(v));
+                }
+                server_tbl.insert("http_headers", TomlItem::Value(toml_edit::Value::InlineTable(it)));
+            }
+            if let Some(headers) = env_http_headers {
+                let mut it = toml_edit::InlineTable::new();
+                for (k, v) in headers {
+                    it.insert(&k, toml_edit::Value::from(v));
+                }
+                server_tbl.insert(
+                    "env_http_headers",
+                    TomlItem::Value(toml_edit::Value::InlineTable(it)),
+                );
+            }
+            if let Some(resource) = oauth_resource {
+                server_tbl.insert("oauth_resource", toml_edit::value(resource));
             }
         }
     }
@@ -1418,6 +1557,30 @@ pub fn add_mcp_server(
     }
     if let Some(duration) = tool_timeout_sec {
         server_tbl.insert("tool_timeout_sec", toml_edit::value(duration.as_secs_f64()));
+    }
+    if let Some(enabled_tools) = enabled_tools
+        && !enabled_tools.is_empty()
+    {
+        let mut arr = toml_edit::Array::new();
+        for tool in enabled_tools {
+            arr.push(tool);
+        }
+        server_tbl.insert(
+            "enabled_tools",
+            TomlItem::Value(toml_edit::Value::Array(arr)),
+        );
+    }
+    if let Some(disabled_tools) = disabled_tools
+        && !disabled_tools.is_empty()
+    {
+        let mut arr = toml_edit::Array::new();
+        for tool in disabled_tools {
+            arr.push(tool);
+        }
+        server_tbl.insert(
+            "disabled_tools",
+            TomlItem::Value(toml_edit::Value::Array(arr)),
+        );
     }
 
     // Write into enabled table
@@ -1686,4 +1849,48 @@ pub(crate) fn get_compact_prompt_override(
     cwd: &Path,
 ) -> std::io::Result<Option<String>> {
     read_override_file(path, cwd, "compact prompt override file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONFIG_TOML_FILE;
+    use super::list_mcp_servers;
+
+    #[test]
+    fn list_mcp_servers_preserves_tool_filters() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_path,
+            r#"
+[mcp_servers.enabled_stdio]
+command = "npx"
+args = ["-y", "server-a"]
+enabled_tools = ["search_code", "read_file"]
+
+[mcp_servers_disabled.disabled_http]
+url = "https://example.com/mcp"
+disabled_tools = ["delete_repo"]
+"#,
+        )
+        .expect("write config");
+
+        let (enabled, disabled) = list_mcp_servers(tempdir.path()).expect("list servers");
+
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].0, "enabled_stdio");
+        assert_eq!(
+            enabled[0].1.enabled_tools,
+            Some(vec!["search_code".to_string(), "read_file".to_string()])
+        );
+        assert_eq!(enabled[0].1.disabled_tools, None);
+
+        assert_eq!(disabled.len(), 1);
+        assert_eq!(disabled[0].0, "disabled_http");
+        assert_eq!(disabled[0].1.enabled_tools, None);
+        assert_eq!(
+            disabled[0].1.disabled_tools,
+            Some(vec!["delete_repo".to_string()])
+        );
+    }
 }

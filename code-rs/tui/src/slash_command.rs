@@ -53,11 +53,13 @@ pub enum SlashCommand {
     Browser,
     Chrome,
     New,
+    Clear,
     Init,
     Compact,
     Undo,
     Review,
     Cloud,
+    Copy,
     Diff,
     Mention,
     Cmd,
@@ -69,6 +71,7 @@ pub enum SlashCommand {
     Theme,
     Settings,
     Model,
+    Fast,
     Reasoning,
     Verbosity,
     Prompts,
@@ -91,6 +94,7 @@ pub enum SlashCommand {
     Code,
     Logout,
     Quit,
+    Exit,
     #[cfg(debug_assertions)]
     TestApproval,
 }
@@ -114,7 +118,9 @@ impl SlashCommand {
             SlashCommand::Undo => "restore the workspace to the last Code snapshot",
             SlashCommand::Review => "review your changes for potential issues",
             SlashCommand::Cloud => "browse, apply, and create cloud tasks",
-            SlashCommand::Quit => "exit Code",
+            SlashCommand::Quit | SlashCommand::Exit => "exit Code",
+            SlashCommand::Clear => "clear the terminal and start a new chat",
+            SlashCommand::Copy => "copy last response as markdown",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Cmd => "run a project command",
@@ -127,6 +133,7 @@ impl SlashCommand {
             SlashCommand::Prompts => "manage custom prompts",
             SlashCommand::Skills => "manage skills",
             SlashCommand::Model => "choose your default model",
+            SlashCommand::Fast => "open model settings with the Fast mode toggle",
             SlashCommand::Agents => "configure agents",
             SlashCommand::Auto => "work autonomously on long tasks with Auto Drive",
             SlashCommand::Branch => {
@@ -235,7 +242,7 @@ pub fn process_slash_command_message(message: &str) -> ProcessedCommand {
     let args_raw = parts.next().map(|s| s.trim()).unwrap_or("");
     let canonical_command = command_str.to_ascii_lowercase();
 
-    if matches!(canonical_command.as_str(), "quit" | "exit") {
+    if !has_slash && matches!(canonical_command.as_str(), "quit" | "exit") {
         if !has_slash && !args_raw.is_empty() {
             return ProcessedCommand::NotCommand(message.to_string());
         }
@@ -333,6 +340,33 @@ mod tests {
                 assert!(command_text.contains("inspect the failing build"));
             }
             other => panic!("expected RegularCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fast_command_is_regular_command() {
+        match process_slash_command_message("/fast") {
+            ProcessedCommand::RegularCommand(SlashCommand::Fast, command_text) => {
+                assert_eq!(command_text, "/fast");
+            }
+            other => panic!("expected RegularCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn upstream_compat_commands_are_regular_commands() {
+        for (input, expected) in [
+            ("/exit", SlashCommand::Exit),
+            ("/clear", SlashCommand::Clear),
+            ("/copy", SlashCommand::Copy),
+        ] {
+            match process_slash_command_message(input) {
+                ProcessedCommand::RegularCommand(command, command_text) => {
+                    assert_eq!(command, expected);
+                    assert_eq!(command_text, input);
+                }
+                other => panic!("expected RegularCommand for {input}, got {:?}", other),
+            }
         }
     }
 }

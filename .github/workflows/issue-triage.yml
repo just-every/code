@@ -102,10 +102,12 @@ jobs:
       - name: Manual kick-off comment (optional)
         if: github.event_name == 'workflow_dispatch' && inputs.note != ''
         uses: actions/github-script@v7
+        env:
+          NOTE: ${{ inputs.note }}
         with:
           script: |
             const owner = context.repo.owner; const repo = context.repo.repo; const issue_number = Number(process.env.ISSUE_NUMBER);
-            const note = `${{ inputs.note }}`;
+            const note = process.env.NOTE || '';
             const body = [
               `Manual triage started by @${context.actor}.`,
               '',
@@ -496,14 +498,18 @@ jobs:
         timeout-minutes: 5
         id: gate
         env:
+          ALLOW_RATE: ${{ steps.rate_limit.outputs.allow }}
+          SAFETY_DECISION: ${{ steps.safety.outputs.decision }}
+          RATE_REASON: ${{ steps.rate_limit.outputs.reason }}
+          SAFETY_REASON: ${{ steps.safety.outputs.reason }}
           ISSUE_TITLE: ${{ env.ISSUE_TITLE }}
           ISSUE_BODY: ${{ env.ISSUE_BODY }}
         run: |
           set -euo pipefail
-          allow_rate='${{ steps.rate_limit.outputs.allow }}'
-          decision='${{ steps.safety.outputs.decision }}'
-          reason_rate='${{ steps.rate_limit.outputs.reason }}'
-          reason_safety='${{ steps.safety.outputs.reason }}'
+          allow_rate="${ALLOW_RATE:-false}"
+          decision="${SAFETY_DECISION:-comment_only}"
+          reason_rate="${RATE_REASON:-}"
+          reason_safety="${SAFETY_REASON:-}"
 
           allow_agent='false'
           agent_mode='comment'
@@ -573,10 +579,12 @@ jobs:
 
       - name: Apply code/<slug> label and remove ID marker comments
         uses: actions/github-script@v7
+        env:
+          SLUG: ${{ steps.slug.outputs.slug }}
         with:
           script: |
             const owner = context.repo.owner; const repo = context.repo.repo; const issue_number = Number(process.env.ISSUE_NUMBER);
-            const slug = `${{ steps.slug.outputs.slug }}`;
+            const slug = process.env.SLUG || '';
             if (slug) {
               try { await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [`code/${slug}`] }); } catch {}
             }
@@ -593,24 +601,31 @@ jobs:
 
       - name: Apply triage state label (allow/block)
         uses: actions/github-script@v7
+        env:
+          ALLOW_AGENT: ${{ steps.gate.outputs.allow_agent }}
+          AGENT_MODE: ${{ steps.gate.outputs.agent_mode }}
         with:
           script: |
             const owner = context.repo.owner; const repo = context.repo.repo; const issue_number = Number(process.env.ISSUE_NUMBER);
-            const allow = '${{ steps.gate.outputs.allow_agent }}' === 'true';
-            const mode = '${{ steps.gate.outputs.agent_mode }}';
+            const allow = process.env.ALLOW_AGENT === 'true';
+            const mode = process.env.AGENT_MODE || '';
             let label = allow && mode === 'full' ? 'triage/allow' : (allow ? 'triage/allow' : 'triage/block');
             try { await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [label] }); } catch {}
 
       - name: Queue issue-comment (comment mode)
         if: steps.safety.outputs.decision == 'comment_only'
         uses: actions/github-script@v7
+        env:
+          SAFETY_DECISION: ${{ steps.safety.outputs.decision }}
+          RATE_REASON: ${{ steps.rate_limit.outputs.reason }}
+          SAFETY_REASON: ${{ steps.safety.outputs.reason }}
         with:
           script: |
             const owner = context.repo.owner; const repo = context.repo.repo;
             const issue_number = Number(process.env.ISSUE_NUMBER);
-            const decision = '${{ steps.safety.outputs.decision }}';
-            const rr = `${{ steps.rate_limit.outputs.reason }}` || '';
-            const rs = `${{ steps.safety.outputs.reason }}` || '';
+            const decision = process.env.SAFETY_DECISION || '';
+            const rr = process.env.RATE_REASON || '';
+            const rs = process.env.SAFETY_REASON || '';
             const lines = [];
             lines.push(`Decision: ${decision}`);
             if (rr) lines.push(`Rate: ${rr}`);
@@ -622,11 +637,13 @@ jobs:
       - name: Queue implementation (issue-code workflow)
         if: steps.safety.outputs.decision == 'allow' && steps.gate.outputs.allow_agent == 'true' && steps.gate.outputs.agent_mode == 'full'
         uses: actions/github-script@v7
+        env:
+          SLUG: ${{ steps.slug.outputs.slug }}
         with:
           script: |
             const owner = context.repo.owner; const repo = context.repo.repo;
             const issue_number = Number(process.env.ISSUE_NUMBER);
-            const slug = `${{ steps.slug.outputs.slug }}`;
+            const slug = process.env.SLUG || '';
             await github.rest.repos.createDispatchEvent({ owner, repo, event_type: 'issue-code', client_payload: { issue_number, slug } });
             core.notice(`Queued issue-code for #${issue_number}`);
 

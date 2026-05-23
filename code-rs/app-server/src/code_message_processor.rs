@@ -286,9 +286,7 @@ impl CodexMessageProcessor {
     ) -> Result<GetAccountResponse, JSONRPCErrorError> {
         let requires_openai_auth = self.config.model_provider.requires_openai_auth;
 
-        if refresh_token {
-            let _ = self.auth_manager.refresh_token().await;
-        }
+        self.refresh_token_if_requested(refresh_token).await;
 
         if !requires_openai_auth {
             return Ok(GetAccountResponse {
@@ -327,6 +325,23 @@ impl CodexMessageProcessor {
             account,
             requires_openai_auth,
         })
+    }
+
+    async fn refresh_token_if_requested(&self, refresh_token: bool) {
+        if !refresh_token {
+            return;
+        }
+
+        if self
+            .auth_manager
+            .auth()
+            .as_ref()
+            .is_some_and(|auth| auth.mode == code_app_server_protocol::AuthMode::ChatgptAuthTokens)
+        {
+            return;
+        }
+
+        let _ = self.auth_manager.refresh_token_classified().await;
     }
 
     pub(crate) async fn login_account_v2(
@@ -1093,10 +1108,10 @@ impl CodexMessageProcessor {
 
     async fn get_auth_status(&self, request_id: RequestId, params: GetAuthStatusParams) {
         let requires_openai_auth = self.config.model_provider.requires_openai_auth;
+        let include_token = params.include_token.unwrap_or(false);
 
-        if params.refresh_token.unwrap_or(false) {
-            let _ = self.auth_manager.refresh_token().await;
-        }
+        self.refresh_token_if_requested(params.refresh_token.unwrap_or(false))
+            .await;
 
         let auth = self.auth_manager.auth();
         let mut auth_method = auth.as_ref().map(|a| map_auth_mode_to_wire(a.mode));
@@ -1104,9 +1119,11 @@ impl CodexMessageProcessor {
 
         if !requires_openai_auth {
             auth_method = None;
-        } else if params.include_token.unwrap_or(false) {
+        } else if include_token {
             if let Some(auth) = auth.as_ref() {
-                if let Ok(token) = auth.get_token().await {
+                let permanent_refresh_failure =
+                    self.auth_manager.refresh_failure_for_auth(auth).is_some();
+                if !permanent_refresh_failure && let Ok(token) = auth.get_token().await {
                     if !token.trim().is_empty() {
                         auth_token = Some(token);
                     }
@@ -1286,6 +1303,7 @@ impl CodexMessageProcessor {
 
         let exec_params = exec::ExecParams {
             command: params.command,
+            shell_script: None,
             cwd,
             timeout_ms: params.timeout_ms,
             env,
@@ -1547,6 +1565,7 @@ async fn apply_bespoke_event_handling(
                 conversation_id,
                 turn_id: request.turn_id,
                 call_id: call_id.clone(),
+                namespace: request.namespace,
                 tool: request.tool,
                 arguments: request.arguments,
             };
@@ -1903,10 +1922,13 @@ impl IntoWireAuthMode for code_app_server_protocol::AuthMode {
 mod tests {
     use super::*;
     use code_app_server_protocol::AuthMode;
+    use code_core::auth::CodexAuth;
+    use code_core::auth::RefreshTokenError;
     use code_core::config::ConfigOverrides;
     use code_protocol::mcp_protocol::RemoveConversationListenerParams;
     use code_protocol::protocol::SessionSource;
     use mcp_types::RequestId;
+    use serde_json::from_value;
     use tokio::sync::mpsc;
 
     fn make_processor_for_tests() -> (CodexMessageProcessor, mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>) {
@@ -1920,6 +1942,35 @@ mod tests {
             config.code_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
+        );
+        let conversation_manager = Arc::new(ConversationManager::new(
+            auth_manager.clone(),
+            SessionSource::Mcp,
+        ));
+
+        (
+            CodexMessageProcessor::new(
+                auth_manager,
+                conversation_manager,
+                outgoing,
+                None,
+                config,
+            ),
+            outgoing_rx,
+        )
+    }
+
+    fn make_processor_with_auth_for_tests(
+        auth_manager: Arc<AuthManager>,
+    ) -> (
+        CodexMessageProcessor,
+        mpsc::UnboundedReceiver<crate::outgoing_message::OutgoingMessage>,
+    ) {
+        let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
+        let outgoing = Arc::new(OutgoingMessageSender::new(outgoing_tx));
+        let config = Arc::new(
+            Config::load_with_cli_overrides(Vec::new(), ConfigOverrides::default())
+                .expect("load default config"),
         );
         let conversation_manager = Arc::new(ConversationManager::new(
             auth_manager.clone(),
@@ -2001,6 +2052,46 @@ mod tests {
             "listener should be removed by owner"
         );
         assert_eq!(cancel_rx.try_recv(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn get_auth_status_omits_token_after_permanent_refresh_failure() {
+        let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+        let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+        auth_manager.seed_refresh_failure_for_testing(
+            &auth,
+            RefreshTokenError::permanent("refresh token already used"),
+        );
+
+        let (processor, mut outgoing_rx) = make_processor_with_auth_for_tests(auth_manager);
+        processor
+            .get_auth_status(
+                RequestId::Integer(42),
+                GetAuthStatusParams {
+                    include_token: Some(true),
+                    refresh_token: Some(false),
+                },
+            )
+            .await;
+
+        let message = outgoing_rx
+            .recv()
+            .await
+            .expect("auth status response should be sent");
+        let response = match message {
+            crate::outgoing_message::OutgoingMessage::Response(response) => response,
+            _ => panic!("expected response message"),
+        };
+        let status: GetAuthStatusResponse =
+            from_value(response.result).expect("valid getAuthStatus payload");
+        assert_eq!(
+            status,
+            GetAuthStatusResponse {
+                auth_method: Some(code_protocol::mcp_protocol::AuthMode::ChatGPT),
+                auth_token: None,
+                requires_openai_auth: Some(true),
+            }
+        );
     }
 
     #[test]
@@ -2111,6 +2202,8 @@ fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) ->
             core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
                 rules: config.rules,
+                skill_approval: config.skill_approval,
+                request_permissions: config.request_permissions,
                 mcp_elicitations: config.mcp_elicitations,
             })
         }
@@ -2127,6 +2220,8 @@ fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protoc
             code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
                 sandbox_approval: config.sandbox_approval,
                 rules: config.rules,
+                skill_approval: config.skill_approval,
+                request_permissions: config.request_permissions,
                 mcp_elicitations: config.mcp_elicitations,
             })
         }

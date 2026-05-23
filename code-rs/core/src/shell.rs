@@ -93,6 +93,46 @@ impl Shell {
         }
     }
 
+    pub fn format_shell_script_invocation(
+        &self,
+        command: String,
+        use_login_shell: bool,
+    ) -> Option<Vec<String>> {
+        match self {
+            Shell::Zsh(zsh) => format_shell_script_invocation_with_rc(
+                &command,
+                &zsh.shell_path,
+                &zsh.zshrc_path,
+                use_login_shell,
+            ),
+            Shell::Bash(bash) => format_shell_script_invocation_with_rc(
+                &command,
+                &bash.shell_path,
+                &bash.bashrc_path,
+                use_login_shell,
+            ),
+            Shell::PowerShell(ps) => {
+                let mut args = vec![ps.exe.clone()];
+                // Keep PowerShell profile-neutral to match the historical shell tool behavior.
+                let _ = use_login_shell;
+                args.push("-NoProfile".to_string());
+                args.push("-Command".to_string());
+                args.push(command);
+                Some(args)
+            }
+            Shell::Unknown => None,
+        }
+    }
+
+    pub fn shell_script_invocation_or_default(
+        &self,
+        command: String,
+        use_login_shell: bool,
+    ) -> Vec<String> {
+        self.format_shell_script_invocation(command.clone(), use_login_shell)
+            .unwrap_or_else(|| default_shell_script_invocation(command, use_login_shell))
+    }
+
     pub fn name(&self) -> Option<String> {
         match self {
             Shell::Zsh(zsh) => std::path::Path::new(&zsh.shell_path)
@@ -116,12 +156,57 @@ fn format_shell_invocation_with_rc(
         .or_else(|| shlex::try_join(command.iter().map(String::as_str)).ok())?;
 
     let rc_command = if std::path::Path::new(rc_path).exists() {
-        format!("source {rc_path} && ({joined})")
+        format_command_with_rc(rc_path, &joined)
     } else {
         joined
     };
 
     Some(vec![shell_path.to_string(), "-lc".to_string(), rc_command])
+}
+
+fn format_shell_script_invocation_with_rc(
+    command: &str,
+    shell_path: &str,
+    rc_path: &str,
+    use_login_shell: bool,
+) -> Option<Vec<String>> {
+    let shell_flag = if use_login_shell { "-lc" } else { "-c" };
+    let rc_command = if use_login_shell && std::path::Path::new(rc_path).exists() {
+        format_command_with_rc(rc_path, command)
+    } else {
+        command.to_string()
+    };
+
+    Some(vec![shell_path.to_string(), shell_flag.to_string(), rc_command])
+}
+
+fn format_command_with_rc(rc_path: &str, command: &str) -> String {
+    if command.contains('\n') || command.contains('\r') {
+        format!("source {rc_path} && {{\n{command}\n}}")
+    } else {
+        format!("source {rc_path} && ({command})")
+    }
+}
+
+#[cfg(unix)]
+fn default_shell_script_invocation(command: String, use_login_shell: bool) -> Vec<String> {
+    let shell_flag = if use_login_shell { "-lc" } else { "-c" };
+    vec!["sh".to_string(), shell_flag.to_string(), command]
+}
+
+#[cfg(target_os = "windows")]
+fn default_shell_script_invocation(command: String, _use_login_shell: bool) -> Vec<String> {
+    vec![
+        "powershell.exe".to_string(),
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        command,
+    ]
+}
+
+#[cfg(all(not(unix), not(target_os = "windows")))]
+fn default_shell_script_invocation(command: String, _use_login_shell: bool) -> Vec<String> {
+    vec![command]
 }
 
 fn strip_bash_lc(command: &[String]) -> Option<String> {
@@ -306,6 +391,15 @@ mod tests {
                 ],
                 Some("single double\n"),
             ),
+            (
+                vec!["bash", "-lc", "cat <<'EOF'\nhello\nEOF"],
+                vec![
+                    shell_path,
+                    "-lc",
+                    "source BASHRC_PATH && {\ncat <<'EOF'\nhello\nEOF\n}",
+                ],
+                Some("hello\n"),
+            ),
         ];
 
         for (input, expected_cmd, expected_output) in cases {
@@ -348,6 +442,7 @@ mod tests {
             let output = process_exec_tool_call(
                 ExecParams {
                     command: actual_cmd.unwrap(),
+                    shell_script: None,
                     cwd: PathBuf::from(temp_home.path()),
                     timeout_ms: None,
                     env: HashMap::from([(
@@ -374,6 +469,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_shell_script_invocation_preserves_shell_syntax() {
+        let temp_home = tempfile::tempdir().unwrap();
+        let bashrc_path = temp_home.path().join(".bashrc");
+        std::fs::write(&bashrc_path, "").unwrap();
+
+        let shell = Shell::Bash(BashShell {
+            shell_path: "/bin/bash".to_string(),
+            bashrc_path: bashrc_path.to_str().unwrap().to_string(),
+        });
+
+        let script = "rg -n \"ensemble|grok-imagine\" -S .".to_string();
+
+        assert_eq!(
+            shell.format_shell_script_invocation(script.clone(), true),
+            Some(vec![
+                "/bin/bash".to_string(),
+                "-lc".to_string(),
+                format!("source {} && ({script})", bashrc_path.display()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_script_invocation_preserves_heredoc_terminator() {
+        let temp_home = tempfile::tempdir().unwrap();
+        let bashrc_path = temp_home.path().join(".bashrc");
+        std::fs::write(&bashrc_path, "").unwrap();
+
+        let shell = Shell::Bash(BashShell {
+            shell_path: "/bin/bash".to_string(),
+            bashrc_path: bashrc_path.to_str().unwrap().to_string(),
+        });
+
+        let script = "cat <<'EOF'\nhello\nEOF".to_string();
+
+        assert_eq!(
+            shell.format_shell_script_invocation(script.clone(), true),
+            Some(vec![
+                "/bin/bash".to_string(),
+                "-lc".to_string(),
+                format!("source {} && {{\n{script}\n}}", bashrc_path.display()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_script_invocation_uses_non_login_shell_when_requested() {
+        let temp_home = tempfile::tempdir().unwrap();
+        let bashrc_path = temp_home.path().join(".bashrc");
+        std::fs::write(&bashrc_path, "echo sourced").unwrap();
+
+        let shell = Shell::Bash(BashShell {
+            shell_path: "/bin/bash".to_string(),
+            bashrc_path: bashrc_path.to_str().unwrap().to_string(),
+        });
+
+        assert_eq!(
+            shell.format_shell_script_invocation("printf hello".to_string(), false),
+            Some(vec![
+                "/bin/bash".to_string(),
+                "-c".to_string(),
+                "printf hello".to_string(),
+            ])
+        );
     }
 }
 
@@ -459,6 +621,7 @@ mod macos_tests {
             let output = process_exec_tool_call(
                 ExecParams {
                     command: actual_cmd.unwrap(),
+                    shell_script: None,
                     cwd: PathBuf::from(temp_home.path()),
                     timeout_ms: None,
                     env: HashMap::from([(

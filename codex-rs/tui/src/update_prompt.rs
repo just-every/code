@@ -2,6 +2,7 @@
 
 use crate::history_cell::padded_emoji;
 use crate::key_hint;
+use crate::legacy_core::config::Config;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
@@ -12,7 +13,6 @@ use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use crate::updates;
-use codex_core::config::Config;
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -57,7 +57,7 @@ pub(crate) async fn run_update_prompt_if_needed(
             match event {
                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
                 TuiEvent::Paste(_) => {}
-                TuiEvent::Draw => {
+                TuiEvent::Draw | TuiEvent::Resize => {
                     tui.draw(u16::MAX, |frame| {
                         frame.render_widget_ref(&screen, frame.area());
                     })?;

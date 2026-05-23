@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::compact::{
+    apply_emergency_compaction_fallback,
     is_context_overflow_error,
     prune_orphan_tool_outputs,
     response_input_from_core_items,
@@ -23,6 +24,9 @@ use code_protocol::protocol::CompactedItem;
 use code_protocol::protocol::RolloutItem;
 use crate::util::backoff;
 use std::time::Duration;
+
+const MAX_REMOTE_COMPACT_CONTEXT_OVERFLOW_TRIMS: usize = 32;
+const MAX_REMOTE_COMPACT_USAGE_LIMIT_RETRIES: usize = 2;
 
 pub(super) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -90,6 +94,7 @@ async fn run_remote_compact_task_inner(
     let mut truncated_count = 0usize;
     let max_retries = turn_context.client.get_provider().stream_max_retries();
     let mut retries = 0;
+    let mut usage_limit_retries = 0usize;
     let new_history = loop {
         prune_orphan_tool_outputs(&mut turn_items);
 
@@ -115,7 +120,9 @@ async fn run_remote_compact_task_inner(
                 break history;
             }
             Err(err) if is_context_overflow_error(&err) => {
-                if turn_items.len() > 1 {
+                if turn_items.len() > 1
+                    && truncated_count < MAX_REMOTE_COMPACT_CONTEXT_OVERFLOW_TRIMS
+                {
                     tracing::warn!(
                         "Context window exceeded while remote compacting; dropping oldest item ({} remaining)",
                         turn_items.len().saturating_sub(1)
@@ -123,12 +130,50 @@ async fn run_remote_compact_task_inner(
                     turn_items.remove(0);
                     truncated_count = truncated_count.saturating_add(1);
                     retries = 0;
+                    usage_limit_retries = 0;
                     continue;
                 }
 
-                return Err(err);
+                if truncated_count >= MAX_REMOTE_COMPACT_CONTEXT_OVERFLOW_TRIMS {
+                    let reason = format!(
+                        "Remote compact trimmed {truncated_count} items but still exceeded the context window."
+                    );
+                    return Ok(
+                        apply_emergency_compaction_fallback(
+                            sess,
+                            turn_context.as_ref(),
+                            sub_id,
+                            &reason,
+                        )
+                        .await,
+                    );
+                }
+
+                let reason = "Remote compact failed: context overflow even with minimal input.";
+                return Ok(
+                    apply_emergency_compaction_fallback(
+                        sess,
+                        turn_context.as_ref(),
+                        sub_id,
+                        reason,
+                    )
+                    .await,
+                );
             }
             Err(CodexErr::UsageLimitReached(limit_err)) => {
+                if usage_limit_retries >= MAX_REMOTE_COMPACT_USAGE_LIMIT_RETRIES {
+                    let reason = "Remote compact hit persistent usage limits and cannot continue.";
+                    return Ok(
+                        apply_emergency_compaction_fallback(
+                            sess,
+                            turn_context.as_ref(),
+                            sub_id,
+                            reason,
+                        )
+                        .await,
+                    );
+                }
+                usage_limit_retries = usage_limit_retries.saturating_add(1);
                 let now = chrono::Utc::now();
                 let retry_after = limit_err
                     .retry_after(now)

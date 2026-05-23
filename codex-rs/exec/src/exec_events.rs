@@ -65,6 +65,8 @@ pub struct Usage {
     pub cached_input_tokens: i64,
     /// The number of output tokens used during the turn.
     pub output_tokens: i64,
+    /// The number of reasoning output tokens used during the turn.
+    pub reasoning_output_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -228,6 +230,7 @@ pub enum CollabTool {
 pub enum CollabAgentStatus {
     PendingInit,
     Running,
+    Interrupted,
     Completed,
     Errored,
     Shutdown,

@@ -3,6 +3,8 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, StatefulWidgetRef, WidgetRef};
+use code_core::config_types::ContextMode;
+use code_core::protocol::AutoContextPhase;
 use code_core::protocol::TokenUsage;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -17,6 +19,7 @@ use super::paste_burst::PasteBurst;
 use crate::slash_command::{built_in_slash_commands, SlashCommand};
 use code_protocol::custom_prompts::CustomPrompt;
 use code_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
+use code_core::model_family::EXTENDED_CONTEXT_WINDOW_1M;
 
 use crate::app_event_sender::AppEventSender;
 use crate::auto_drive_style::{BorderGradient, ComposerStyle};
@@ -83,6 +86,8 @@ struct TokenUsageInfo {
     _total_token_usage: TokenUsage,
     last_token_usage: TokenUsage,
     model_context_window: Option<u64>,
+    context_mode: Option<ContextMode>,
+    auto_context_phase: Option<AutoContextPhase>,
     /// Baseline token count present in the context before the user's first
     /// message content is considered. This is used to normalize the
     /// "context left" percentage so it reflects the portion the user can
@@ -126,6 +131,25 @@ fn format_with_thousands(n: u64) -> String {
         count += 1;
     }
     out.chars().rev().collect()
+}
+
+fn context_window_footer_label(
+    context_window: u64,
+    context_mode: Option<ContextMode>,
+    auto_context_phase: Option<AutoContextPhase>,
+) -> Option<&'static str> {
+    if context_window != EXTENDED_CONTEXT_WINDOW_1M {
+        return None;
+    }
+
+    Some(match auto_context_phase {
+        Some(AutoContextPhase::Checking) => "Checking context...",
+        Some(AutoContextPhase::Compacting) => "Compacting...",
+        None => match context_mode {
+        Some(ContextMode::Auto) => "1M Auto",
+        _ => "1M Context",
+        },
+    })
 }
 
 pub(crate) struct ChatComposer {
@@ -556,7 +580,9 @@ impl ChatComposer {
         // Catch some common technical terms
         else if lower.contains("processing") || lower.contains("analyzing") {
             "Thinking".to_string()
-        } else if lower.contains("reading") || lower.contains("searching") {
+        } else if lower == "search" || lower.contains("searching") {
+            "Searching".to_string()
+        } else if lower.contains("reading") {
             "Reading".to_string()
         } else {
             // Default fallback - use "working" for unknown status
@@ -632,6 +658,7 @@ impl ChatComposer {
         total_token_usage: TokenUsage,
         last_token_usage: TokenUsage,
         model_context_window: Option<u64>,
+        context_mode: Option<ContextMode>,
     ) {
         let initial_prompt_tokens = self
             .token_usage_info
@@ -643,8 +670,19 @@ impl ChatComposer {
             _total_token_usage: total_token_usage,
             last_token_usage,
             model_context_window,
+            context_mode,
+            auto_context_phase: self
+                .token_usage_info
+                .as_ref()
+                .and_then(|info| info.auto_context_phase),
             initial_prompt_tokens,
         });
+    }
+
+    pub(crate) fn set_auto_context_phase(&mut self, phase: Option<AutoContextPhase>) {
+        if let Some(info) = self.token_usage_info.as_mut() {
+            info.auto_context_phase = phase;
+        }
     }
 
     /// Record the history metadata advertised by `SessionConfiguredEvent` so
@@ -2082,7 +2120,20 @@ impl ChatComposer {
                     };
                     spans.push(Span::from(" (").style(label_style));
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
-                    spans.push(Span::from("% left)").style(label_style));
+                    spans.push(Span::from("% left").style(label_style));
+                    if let Some(context_label) =
+                        context_window_footer_label(
+                            context_window,
+                            token_usage_info.context_mode,
+                            token_usage_info.auto_context_phase,
+                        )
+                    {
+                        spans.push(Span::from(" • ").style(label_style));
+                        spans.push(
+                            Span::from(context_label).style(label_style.add_modifier(Modifier::BOLD)),
+                        );
+                    }
+                    spans.push(Span::from(")").style(label_style));
                 }
             }
         }
@@ -2102,7 +2153,20 @@ impl ChatComposer {
                     };
                     spans.push(Span::from("(").style(label_style));
                     spans.push(Span::from(percent_remaining.to_string()).style(label_style.add_modifier(Modifier::BOLD)));
-                    spans.push(Span::from("% left)").style(label_style));
+                    spans.push(Span::from("% left").style(label_style));
+                    if let Some(context_label) =
+                        context_window_footer_label(
+                            context_window,
+                            token_usage_info.context_mode,
+                            token_usage_info.auto_context_phase,
+                        )
+                    {
+                        spans.push(Span::from(" • ").style(label_style));
+                        spans.push(
+                            Span::from(context_label).style(label_style.add_modifier(Modifier::BOLD)),
+                        );
+                    }
+                    spans.push(Span::from(")").style(label_style));
                 }
             }
         }
@@ -3046,5 +3110,168 @@ mod tests {
         let esc_idx = line.find("Esc stop").unwrap_or(line.len());
 
         assert!(auto_idx < esc_idx, "Auto Review status should be left-most");
+    }
+
+    #[test]
+    fn footer_shows_1m_context_suffix_when_extended_context_is_active() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::OneM),
+        );
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(area.x + x, area.y)].symbol().to_string())
+            .collect();
+
+        assert!(line.contains("13,290 tokens"));
+        assert!(line.contains("1M Context"));
+    }
+
+    #[test]
+    fn footer_shows_1m_auto_suffix_when_auto_context_is_active() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::Auto),
+        );
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(line.contains("1M Auto"));
+    }
+
+    #[test]
+    fn footer_shows_checking_context_while_auto_context_check_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::Auto),
+        );
+        composer.set_auto_context_phase(Some(AutoContextPhase::Checking));
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(line.contains("Checking context..."));
+    }
+
+    #[test]
+    fn footer_shows_compacting_while_auto_context_compact_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+
+        let token_usage = TokenUsage {
+            input_tokens: 13_290,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 13_290,
+        };
+        composer.set_token_usage(
+            token_usage.clone(),
+            token_usage,
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(ContextMode::Auto),
+        );
+        composer.set_auto_context_phase(Some(AutoContextPhase::Compacting));
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 1,
+        };
+        let mut buf = Buffer::empty(area);
+
+        composer.render_footer(area, &mut buf);
+
+        let line: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(line.contains("Compacting..."));
+    }
+
+    #[test]
+    fn map_status_message_shows_searching_for_search_status() {
+        assert_eq!(
+            ChatComposer::map_status_message("Search"),
+            "Searching".to_string()
+        );
+        assert_eq!(
+            ChatComposer::map_status_message("searching files"),
+            "Searching".to_string()
+        );
+        assert_eq!(
+            ChatComposer::map_status_message("waiting for user input"),
+            "Working".to_string()
+        );
     }
 }

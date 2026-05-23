@@ -1,9 +1,11 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
+use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::RmcpClient;
 use codex_utils_cargo_bin::CargoBinError;
 use futures::FutureExt as _;
@@ -58,9 +60,10 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
     let client = RmcpClient::new_stdio_client(
         stdio_server_bin()?.into(),
         Vec::<OsString>::new(),
-        None,
+        /*env*/ None,
         &[],
-        None,
+        /*cwd*/ None,
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
     )
     .await?;
 
@@ -73,6 +76,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
                     Ok(ElicitationResponse {
                         action: ElicitationAction::Accept,
                         content: Some(json!({})),
+                        meta: None,
                     })
                 }
                 .boxed()
@@ -81,7 +85,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
         .await?;
 
     let list = client
-        .list_resources(None, Some(Duration::from_secs(5)))
+        .list_resources(/*params*/ None, Some(Duration::from_secs(5)))
         .await?;
     let memo = list
         .resources
@@ -103,7 +107,7 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
         .no_annotation()
     );
     let templates = client
-        .list_resource_templates(None, Some(Duration::from_secs(5)))
+        .list_resource_templates(/*params*/ None, Some(Duration::from_secs(5)))
         .await?;
     assert_eq!(
         templates,

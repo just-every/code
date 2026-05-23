@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::io;
 use std::process::Stdio;
@@ -33,6 +34,8 @@ use tracing::info;
 use tracing::warn;
 
 use crate::logging_client_handler::LoggingClientHandler;
+use crate::utils::apply_default_headers;
+use crate::utils::build_default_headers;
 use crate::utils::convert_call_tool_result;
 use crate::utils::convert_to_mcp;
 use crate::utils::convert_to_rmcp;
@@ -57,6 +60,13 @@ enum ClientState {
 /// https://github.com/modelcontextprotocol/rust-sdk
 pub struct RmcpClient {
     state: Mutex<ClientState>,
+}
+
+fn resolve_streamable_http_bearer_token(
+    bearer_token: Option<String>,
+    bearer_token_env_var: Option<String>,
+) -> Option<String> {
+    bearer_token.or_else(|| bearer_token_env_var.and_then(|env_var| env::var(env_var).ok()))
 }
 
 impl RmcpClient {
@@ -128,13 +138,24 @@ impl RmcpClient {
         })
     }
 
-    pub fn new_streamable_http_client(url: String, bearer_token: Option<String>) -> Result<Self> {
+    pub fn new_streamable_http_client(
+        url: String,
+        bearer_token: Option<String>,
+        bearer_token_env_var: Option<String>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
+    ) -> Result<Self> {
+        let default_headers = build_default_headers(http_headers, env_http_headers)?;
+        let bearer_token =
+            resolve_streamable_http_bearer_token(bearer_token, bearer_token_env_var);
+
         let mut config = StreamableHttpClientTransportConfig::with_uri(url);
         if let Some(token) = bearer_token {
-            config = config.auth_header(format!("Bearer {token}"));
+            config = config.auth_header(token);
         }
 
-        let transport = StreamableHttpClientTransport::from_config(config);
+        let http_client = apply_default_headers(reqwest::Client::builder(), &default_headers).build()?;
+        let transport = StreamableHttpClientTransport::with_client(http_client, config);
 
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
@@ -280,5 +301,32 @@ mod tests {
             "MCP_SCHEMA_VERSION should be in YYYY-MM-DD format"
         );
         assert!(parts.iter().all(|segment| !segment.trim().is_empty()));
+    }
+
+    #[test]
+    fn streamable_http_bearer_token_uses_explicit_value_without_prefixing() {
+        let token = resolve_streamable_http_bearer_token(Some("Bearer token".to_string()), None)
+            .expect("token should resolve");
+        assert_eq!(token, "Bearer token");
+    }
+
+    #[test]
+    fn streamable_http_bearer_token_reads_env_fallback() {
+        let original = std::env::var_os("CODE_TEST_MCP_TOKEN");
+        unsafe {
+            std::env::set_var("CODE_TEST_MCP_TOKEN", "env-token");
+        }
+
+        let token = resolve_streamable_http_bearer_token(
+            None,
+            Some("CODE_TEST_MCP_TOKEN".to_string()),
+        )
+        .expect("token should resolve from env");
+        assert_eq!(token, "env-token");
+
+        match original {
+            Some(value) => unsafe { std::env::set_var("CODE_TEST_MCP_TOKEN", value) },
+            None => unsafe { std::env::remove_var("CODE_TEST_MCP_TOKEN") },
+        }
     }
 }

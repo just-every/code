@@ -1,11 +1,7 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde::Deserialize;
+use crate::command_safety::is_safe_command::is_safe_git_command;
+use crate::command_safety::powershell_parser::PowershellParseOutcome;
+use crate::command_safety::powershell_parser::parse_with_powershell_ast;
 use std::path::Path;
-use std::process::Command;
-use std::sync::LazyLock;
-
-const POWERSHELL_PARSER_SCRIPT: &str = include_str!("powershell_parser.ps1");
 
 /// On Windows, we conservatively allow only clearly read-only PowerShell invocations
 /// that match a small safelist. Anything else (including direct CMD commands) is unsafe.
@@ -13,7 +9,7 @@ pub fn is_safe_command_windows(command: &[String]) -> bool {
     if let Some(commands) = try_parse_powershell_command_sequence(command) {
         commands
             .iter()
-            .all(|cmd| is_safe_powershell_command(cmd.as_slice()))
+            .all(|cmd| is_safe_powershell_words(cmd.as_slice()))
     } else {
         // Only PowerShell invocations are allowed on Windows for now; anything else is unsafe.
         false
@@ -121,82 +117,6 @@ fn is_powershell_executable(exe: &str) -> bool {
     )
 }
 
-/// Attempts to parse PowerShell using the real PowerShell parser, returning every pipeline element
-/// as a flat argv vector when possible. If parsing fails or the AST includes unsupported constructs,
-/// we conservatively reject the command instead of trying to split it manually.
-fn parse_with_powershell_ast(executable: &str, script: &str) -> PowershellParseOutcome {
-    let encoded_script = encode_powershell_base64(script);
-    let encoded_parser_script = encoded_parser_script();
-    match Command::new(executable)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            encoded_parser_script,
-        ])
-        .env("CODEX_POWERSHELL_PAYLOAD", &encoded_script)
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            if let Ok(result) =
-                serde_json::from_slice::<PowershellParserOutput>(output.stdout.as_slice())
-            {
-                result.into_outcome()
-            } else {
-                PowershellParseOutcome::Failed
-            }
-        }
-        _ => PowershellParseOutcome::Failed,
-    }
-}
-
-fn encode_powershell_base64(script: &str) -> String {
-    let mut utf16 = Vec::with_capacity(script.len() * 2);
-    for unit in script.encode_utf16() {
-        utf16.extend_from_slice(&unit.to_le_bytes());
-    }
-    BASE64_STANDARD.encode(utf16)
-}
-
-fn encoded_parser_script() -> &'static str {
-    static ENCODED: LazyLock<String> =
-        LazyLock::new(|| encode_powershell_base64(POWERSHELL_PARSER_SCRIPT));
-    &ENCODED
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PowershellParserOutput {
-    status: String,
-    commands: Option<Vec<Vec<String>>>,
-}
-
-impl PowershellParserOutput {
-    fn into_outcome(self) -> PowershellParseOutcome {
-        match self.status.as_str() {
-            "ok" => self
-                .commands
-                .filter(|commands| {
-                    !commands.is_empty()
-                        && commands
-                            .iter()
-                            .all(|cmd| !cmd.is_empty() && cmd.iter().all(|word| !word.is_empty()))
-                })
-                .map(PowershellParseOutcome::Commands)
-                .unwrap_or(PowershellParseOutcome::Unsupported),
-            "unsupported" => PowershellParseOutcome::Unsupported,
-            _ => PowershellParseOutcome::Failed,
-        }
-    }
-}
-
-enum PowershellParseOutcome {
-    Commands(Vec<Vec<String>>),
-    Unsupported,
-    Failed,
-}
-
 fn join_arguments_as_script(args: &[String]) -> String {
     let mut words = Vec::with_capacity(args.len());
     if let Some((first, rest)) = args.split_first() {
@@ -222,7 +142,7 @@ fn quote_argument(arg: &str) -> String {
 
 /// Validates that a parsed PowerShell command stays within our read-only safelist.
 /// Everything before this is parsing, and rejecting things that make us feel uncomfortable.
-fn is_safe_powershell_command(words: &[String]) -> bool {
+pub(crate) fn is_safe_powershell_words(words: &[String]) -> bool {
     if words.is_empty() {
         // Examples rejected here: "pwsh -Command ''" and "pwsh -Command \"\"".
         return false;
@@ -301,53 +221,11 @@ fn is_safe_ripgrep(words: &[String]) -> bool {
     })
 }
 
-/// Ensures a Git command sticks to whitelisted read-only subcommands and flags.
-fn is_safe_git_command(words: &[String]) -> bool {
-    const SAFE_SUBCOMMANDS: &[&str] = &["status", "log", "show", "diff", "cat-file"];
-
-    let mut iter = words.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let arg_lc = arg.to_ascii_lowercase();
-
-        if arg.starts_with('-') {
-            if arg.eq_ignore_ascii_case("-c") || arg.eq_ignore_ascii_case("--config") {
-                if iter.next().is_none() {
-                    // Examples rejected here: "pwsh -Command 'git -c'" and "pwsh -Command 'git --config'".
-                    return false;
-                }
-                continue;
-            }
-
-            if arg_lc.starts_with("-c=")
-                || arg_lc.starts_with("--config=")
-                || arg_lc.starts_with("--git-dir=")
-                || arg_lc.starts_with("--work-tree=")
-            {
-                continue;
-            }
-
-            if arg.eq_ignore_ascii_case("--git-dir") || arg.eq_ignore_ascii_case("--work-tree") {
-                if iter.next().is_none() {
-                    // Examples rejected here: "pwsh -Command 'git --git-dir'" and "pwsh -Command 'git --work-tree'".
-                    return false;
-                }
-                continue;
-            }
-
-            continue;
-        }
-
-        return SAFE_SUBCOMMANDS.contains(&arg_lc.as_str());
-    }
-
-    // Examples rejected here: "pwsh -Command 'git'" and "pwsh -Command 'git status --short | Remove-Item foo'".
-    false
-}
-
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::powershell::try_find_pwsh_executable_blocking;
+    use pretty_assertions::assert_eq;
     use std::string::ToString;
 
     /// Converts a slice of string literals into owned `String`s for the tests.
@@ -437,16 +315,8 @@ mod tests {
 
         assert!(is_safe_command_windows(&[
             pwsh.clone(),
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
             "-Command".to_string(),
-            "git -c core.pager=cat show HEAD:foo.rs".to_string()
-        ]));
-
-        assert!(is_safe_command_windows(&[
-            pwsh.clone(),
-            "-Command".to_string(),
-            "-git cat-file -p HEAD:foo.rs".to_string()
+            "git show HEAD:foo.rs".to_string()
         ]));
 
         assert!(is_safe_command_windows(&[
@@ -460,6 +330,76 @@ mod tests {
             "-Command".to_string(),
             "Get-Item foo.rs | Select-Object Length".to_string()
         ]));
+    }
+
+    #[test]
+    fn rejects_git_global_override_options() {
+        let Some(pwsh) = try_find_pwsh_executable_blocking() else {
+            return;
+        };
+
+        let pwsh: String = pwsh.as_path().to_str().unwrap().into();
+        for script in [
+            "git -c core.pager=cat show HEAD:foo.rs",
+            "git --config-env core.pager=PAGER show HEAD:foo.rs",
+            "git --config-env=core.pager=PAGER show HEAD:foo.rs",
+            "git --git-dir .evil-git diff HEAD~1..HEAD",
+            "git --git-dir=.evil-git diff HEAD~1..HEAD",
+            "git --work-tree . status",
+            "git --work-tree=. status",
+            "git --exec-path .git/helpers show HEAD:foo.rs",
+            "git --exec-path=.git/helpers show HEAD:foo.rs",
+            "git --namespace attacker show HEAD:foo.rs",
+            "git --namespace=attacker show HEAD:foo.rs",
+            "git --super-prefix attacker/ show HEAD:foo.rs",
+            "git --super-prefix=attacker/ show HEAD:foo.rs",
+        ] {
+            assert!(
+                !is_safe_command_windows(&[
+                    pwsh.clone(),
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-Command".to_string(),
+                    script.to_string(),
+                ]),
+                "expected {script:?} to require approval due to unsafe git global option",
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_git_subcommand_options_with_side_effects() {
+        let results: Vec<(&str, bool)> = [
+            "git diff --output codex_poc.txt",
+            "git diff --ext-diff HEAD",
+            "git log --textconv -1",
+            "git show --output=codex_poc.txt HEAD",
+            "git cat-file --filters HEAD:a.txt",
+        ]
+        .into_iter()
+        .map(|script| {
+            (
+                script,
+                is_safe_command_windows(&[
+                    "powershell.exe".to_string(),
+                    "-NoProfile".to_string(),
+                    "-Command".to_string(),
+                    script.to_string(),
+                ]),
+            )
+        })
+        .collect();
+
+        assert_eq!(
+            vec![
+                ("git diff --output codex_poc.txt", false),
+                ("git diff --ext-diff HEAD", false),
+                ("git log --textconv -1", false),
+                ("git show --output=codex_poc.txt HEAD", false),
+                ("git cat-file --filters HEAD:a.txt", false),
+            ],
+            results
+        );
     }
 
     #[test]

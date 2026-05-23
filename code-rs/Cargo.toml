@@ -98,7 +98,7 @@ upstream-mcp-types = { git = "https://github.com/openai/codex.git", package = "m
 allocative = "0.3.3"
 ansi-to-tui = "7.0.0"
 anyhow = "1"
-arboard = "3"
+arboard = { version = "3", features = ["wayland-data-control"] }
 askama = "0.12"
 assert_cmd = "2"
 async-channel = "2.3.1"

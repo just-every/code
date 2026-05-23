@@ -225,6 +225,10 @@ pub async fn run_main(cli: Cli, _code_linux_sandbox_exe: Option<PathBuf>) -> any
                             append_info_log(format!("auth: set ChatGPT-Account-Id header: {acc}"));
                             http = http.with_chatgpt_account_id(acc);
                         }
+                        if auth.is_fedramp_account() {
+                            append_info_log("auth: set X-OpenAI-Fedramp header: true".to_string());
+                            http = http.with_fedramp_routing_header();
+                        }
                         t
                     }
                     _ => {

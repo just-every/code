@@ -3,7 +3,10 @@ use anyhow::Result;
 use anyhow::bail;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -16,6 +19,101 @@ pub struct NetworkProxyConfig {
     pub network: NetworkProxySettings,
 }
 
+/// Variant order encodes effective precedence for duplicate patterns:
+/// `None < Allow < Deny`, so deny wins over allow when entries conflict.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkDomainPermission {
+    None,
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkDomainPermissionEntry {
+    pub pattern: String,
+    pub permission: NetworkDomainPermission,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkDomainPermissions {
+    pub entries: Vec<NetworkDomainPermissionEntry>,
+}
+
+impl Serialize for NetworkDomainPermissions {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.effective_entries()
+            .into_iter()
+            .map(|entry| (entry.pattern, entry.permission))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkDomainPermissions {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries = BTreeMap::<String, NetworkDomainPermission>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(pattern, permission)| NetworkDomainPermissionEntry {
+                pattern,
+                permission,
+            })
+            .collect();
+        Ok(Self { entries })
+    }
+}
+
+impl NetworkDomainPermissions {
+    fn effective_entries(&self) -> Vec<NetworkDomainPermissionEntry> {
+        let mut order = Vec::new();
+        let mut effective_permissions = BTreeMap::new();
+
+        for entry in &self.entries {
+            if !effective_permissions.contains_key(&entry.pattern) {
+                order.push(entry.pattern.clone());
+            }
+
+            let permission = effective_permissions
+                .entry(entry.pattern.clone())
+                .or_insert(entry.permission);
+            if entry.permission > *permission {
+                *permission = entry.permission;
+            }
+        }
+
+        order
+            .into_iter()
+            .filter_map(|pattern| {
+                effective_permissions.remove(&pattern).map(|permission| {
+                    NetworkDomainPermissionEntry {
+                        pattern,
+                        permission,
+                    }
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkUnixSocketPermission {
+    Allow,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct NetworkUnixSocketPermissions {
+    #[serde(flatten)]
+    pub entries: BTreeMap<String, NetworkUnixSocketPermission>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct NetworkProxySettings {
@@ -23,8 +121,6 @@ pub struct NetworkProxySettings {
     pub enabled: bool,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
-    #[serde(default = "default_admin_url")]
-    pub admin_url: String,
     pub enable_socks5: bool,
     #[serde(default = "default_socks_url")]
     pub socks_url: String,
@@ -33,17 +129,13 @@ pub struct NetworkProxySettings {
     #[serde(default)]
     pub dangerously_allow_non_loopback_proxy: bool,
     #[serde(default)]
-    pub dangerously_allow_non_loopback_admin: bool,
-    #[serde(default)]
     pub dangerously_allow_all_unix_sockets: bool,
     #[serde(default)]
     pub mode: NetworkMode,
     #[serde(default)]
-    pub allowed_domains: Vec<String>,
+    pub domains: Option<NetworkDomainPermissions>,
     #[serde(default)]
-    pub denied_domains: Vec<String>,
-    #[serde(default)]
-    pub allow_unix_sockets: Vec<String>,
+    pub unix_sockets: Option<NetworkUnixSocketPermissions>,
     pub allow_local_binding: bool,
     #[serde(default)]
     pub mitm: bool,
@@ -54,21 +146,123 @@ impl Default for NetworkProxySettings {
         Self {
             enabled: false,
             proxy_url: default_proxy_url(),
-            admin_url: default_admin_url(),
             enable_socks5: true,
             socks_url: default_socks_url(),
             enable_socks5_udp: true,
             allow_upstream_proxy: true,
             dangerously_allow_non_loopback_proxy: false,
-            dangerously_allow_non_loopback_admin: false,
             dangerously_allow_all_unix_sockets: false,
             mode: NetworkMode::default(),
-            allowed_domains: Vec::new(),
-            denied_domains: Vec::new(),
-            allow_unix_sockets: Vec::new(),
-            allow_local_binding: true,
+            domains: None,
+            unix_sockets: None,
+            allow_local_binding: false,
             mitm: false,
         }
+    }
+}
+
+impl NetworkProxySettings {
+    pub fn allowed_domains(&self) -> Option<Vec<String>> {
+        self.domain_entries(NetworkDomainPermission::Allow)
+    }
+
+    pub fn denied_domains(&self) -> Option<Vec<String>> {
+        self.domain_entries(NetworkDomainPermission::Deny)
+    }
+
+    fn domain_entries(&self, permission: NetworkDomainPermission) -> Option<Vec<String>> {
+        self.domains
+            .as_ref()
+            .map(|domains| {
+                domains
+                    .effective_entries()
+                    .iter()
+                    .filter(|entry| entry.permission == permission)
+                    .map(|entry| entry.pattern.clone())
+                    .collect()
+            })
+            .filter(|entries: &Vec<String>| !entries.is_empty())
+    }
+
+    pub fn allow_unix_sockets(&self) -> Vec<String> {
+        self.unix_sockets
+            .as_ref()
+            .map(|unix_sockets| {
+                unix_sockets
+                    .entries
+                    .iter()
+                    .filter(|(_, permission)| {
+                        matches!(permission, NetworkUnixSocketPermission::Allow)
+                    })
+                    .map(|(path, _)| path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_allowed_domains(&mut self, allowed_domains: Vec<String>) {
+        self.set_domain_entries(allowed_domains, NetworkDomainPermission::Allow);
+    }
+
+    pub fn set_denied_domains(&mut self, denied_domains: Vec<String>) {
+        self.set_domain_entries(denied_domains, NetworkDomainPermission::Deny);
+    }
+
+    pub fn upsert_domain_permission(
+        &mut self,
+        host: String,
+        permission: NetworkDomainPermission,
+        normalize: impl Fn(&str) -> String,
+    ) {
+        let mut domains = self.domains.take().unwrap_or_default();
+        let normalized_host = normalize(&host);
+        domains
+            .entries
+            .retain(|entry| normalize(&entry.pattern) != normalized_host);
+        domains.entries.push(NetworkDomainPermissionEntry {
+            pattern: host,
+            permission,
+        });
+        self.domains = (!domains.entries.is_empty()).then_some(domains);
+    }
+
+    pub fn set_allow_unix_sockets(&mut self, allow_unix_sockets: Vec<String>) {
+        self.set_unix_socket_entries(allow_unix_sockets, NetworkUnixSocketPermission::Allow);
+    }
+
+    fn set_domain_entries(&mut self, entries: Vec<String>, permission: NetworkDomainPermission) {
+        let mut domains = self.domains.take().unwrap_or_default();
+        domains
+            .entries
+            .retain(|entry| entry.permission != permission);
+        for entry in entries {
+            if !domains
+                .entries
+                .iter()
+                .any(|existing| existing.pattern == entry && existing.permission == permission)
+            {
+                domains.entries.push(NetworkDomainPermissionEntry {
+                    pattern: entry,
+                    permission,
+                });
+            }
+        }
+        self.domains = (!domains.entries.is_empty()).then_some(domains);
+    }
+
+    fn set_unix_socket_entries(
+        &mut self,
+        entries: Vec<String>,
+        permission: NetworkUnixSocketPermission,
+    ) {
+        let mut unix_sockets = self.unix_sockets.take().unwrap_or_default();
+        unix_sockets
+            .entries
+            .retain(|_, existing| *existing != permission);
+        for entry in entries {
+            unix_sockets.entries.insert(entry, permission);
+        }
+        self.unix_sockets = (!unix_sockets.entries.is_empty()).then_some(unix_sockets);
     }
 }
 
@@ -98,16 +292,17 @@ fn default_proxy_url() -> String {
     "http://127.0.0.1:3128".to_string()
 }
 
-fn default_admin_url() -> String {
-    "http://127.0.0.1:8080".to_string()
-}
-
 fn default_socks_url() -> String {
     "http://127.0.0.1:8081".to_string()
 }
 
 /// Clamp non-loopback bind addresses to loopback unless explicitly allowed.
-fn clamp_non_loopback(addr: SocketAddr, allow_non_loopback: bool, name: &str) -> SocketAddr {
+fn clamp_non_loopback(
+    addr: SocketAddr,
+    allow_non_loopback: bool,
+    name: &str,
+    override_setting_name: &str,
+) -> SocketAddr {
     if addr.ip().is_loopback() {
         return addr;
     }
@@ -118,7 +313,7 @@ fn clamp_non_loopback(addr: SocketAddr, allow_non_loopback: bool, name: &str) ->
     }
 
     warn!(
-        "{name} requested non-loopback bind ({addr}); clamping to 127.0.0.1:{port} (set dangerously_allow_non_loopback_proxy or dangerously_allow_non_loopback_admin to override)",
+        "{name} requested non-loopback bind ({addr}); clamping to 127.0.0.1:{port} (set {override_setting_name} to override)",
         port = addr.port()
     );
     SocketAddr::from(([127, 0, 0, 1], addr.port()))
@@ -127,30 +322,26 @@ fn clamp_non_loopback(addr: SocketAddr, allow_non_loopback: bool, name: &str) ->
 pub(crate) fn clamp_bind_addrs(
     http_addr: SocketAddr,
     socks_addr: SocketAddr,
-    admin_addr: SocketAddr,
     cfg: &NetworkProxySettings,
-) -> (SocketAddr, SocketAddr, SocketAddr) {
+) -> (SocketAddr, SocketAddr) {
     let http_addr = clamp_non_loopback(
         http_addr,
         cfg.dangerously_allow_non_loopback_proxy,
         "HTTP proxy",
+        "dangerously_allow_non_loopback_proxy",
     );
     let socks_addr = clamp_non_loopback(
         socks_addr,
         cfg.dangerously_allow_non_loopback_proxy,
         "SOCKS5 proxy",
+        "dangerously_allow_non_loopback_proxy",
     );
-    let admin_addr = clamp_non_loopback(
-        admin_addr,
-        cfg.dangerously_allow_non_loopback_admin,
-        "admin API",
-    );
-    if cfg.allow_unix_sockets.is_empty() && !cfg.dangerously_allow_all_unix_sockets {
-        return (http_addr, socks_addr, admin_addr);
+    if cfg.allow_unix_sockets().is_empty() && !cfg.dangerously_allow_all_unix_sockets {
+        return (http_addr, socks_addr);
     }
 
-    // `x-unix-socket` is intentionally a local escape hatch. If the proxy (or admin API) is
-    // reachable from outside the machine, it can become a remote bridge into local daemons
+    // `x-unix-socket` is intentionally a local escape hatch. If the proxy is reachable from
+    // outside the machine, it can become a remote bridge into local daemons
     // (e.g. docker.sock). To avoid footguns, enforce loopback binding whenever unix sockets
     // are enabled.
     if cfg.dangerously_allow_non_loopback_proxy && !http_addr.ip().is_loopback() {
@@ -163,22 +354,15 @@ pub(crate) fn clamp_bind_addrs(
             "unix socket proxying is enabled; ignoring dangerously_allow_non_loopback_proxy and clamping SOCKS5 proxy to loopback"
         );
     }
-    if cfg.dangerously_allow_non_loopback_admin && !admin_addr.ip().is_loopback() {
-        warn!(
-            "unix socket proxying is enabled; ignoring dangerously_allow_non_loopback_admin and clamping admin API to loopback"
-        );
-    }
     (
         SocketAddr::from(([127, 0, 0, 1], http_addr.port())),
         SocketAddr::from(([127, 0, 0, 1], socks_addr.port())),
-        SocketAddr::from(([127, 0, 0, 1], admin_addr.port())),
     )
 }
 
 pub struct RuntimeConfig {
     pub http_addr: SocketAddr,
     pub socks_addr: SocketAddr,
-    pub admin_addr: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +398,7 @@ impl ValidatedUnixSocketPath {
 }
 
 pub(crate) fn validate_unix_socket_allowlist_paths(cfg: &NetworkProxyConfig) -> Result<()> {
-    for (index, socket_path) in cfg.network.allow_unix_sockets.iter().enumerate() {
+    for (index, socket_path) in cfg.network.allow_unix_sockets().iter().enumerate() {
         ValidatedUnixSocketPath::parse(socket_path)
             .with_context(|| format!("invalid network.allow_unix_sockets[{index}]"))?;
     }
@@ -224,19 +408,15 @@ pub(crate) fn validate_unix_socket_allowlist_paths(cfg: &NetworkProxyConfig) -> 
 pub fn resolve_runtime(cfg: &NetworkProxyConfig) -> Result<RuntimeConfig> {
     validate_unix_socket_allowlist_paths(cfg)?;
 
-    let http_addr = resolve_addr(&cfg.network.proxy_url, 3128)
+    let http_addr = resolve_addr(&cfg.network.proxy_url, /*default_port*/ 3128)
         .with_context(|| format!("invalid network.proxy_url: {}", cfg.network.proxy_url))?;
-    let socks_addr = resolve_addr(&cfg.network.socks_url, 8081)
+    let socks_addr = resolve_addr(&cfg.network.socks_url, /*default_port*/ 8081)
         .with_context(|| format!("invalid network.socks_url: {}", cfg.network.socks_url))?;
-    let admin_addr = resolve_addr(&cfg.network.admin_url, 8080)
-        .with_context(|| format!("invalid network.admin_url: {}", cfg.network.admin_url))?;
-    let (http_addr, socks_addr, admin_addr) =
-        clamp_bind_addrs(http_addr, socks_addr, admin_addr, &cfg.network);
+    let (http_addr, socks_addr) = clamp_bind_addrs(http_addr, socks_addr, &cfg.network);
 
     Ok(RuntimeConfig {
         http_addr,
         socks_addr,
-        admin_addr,
     })
 }
 
@@ -377,6 +557,19 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
+    fn settings_with_unix_sockets(unix_sockets: &[&str]) -> NetworkProxySettings {
+        let mut settings = NetworkProxySettings::default();
+        if !unix_sockets.is_empty() {
+            settings.set_allow_unix_sockets(
+                unix_sockets
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect(),
+            );
+        }
+        settings
+    }
+
     #[test]
     fn network_proxy_settings_default_matches_local_use_baseline() {
         assert_eq!(
@@ -384,19 +577,16 @@ mod tests {
             NetworkProxySettings {
                 enabled: false,
                 proxy_url: "http://127.0.0.1:3128".to_string(),
-                admin_url: "http://127.0.0.1:8080".to_string(),
                 enable_socks5: true,
                 socks_url: "http://127.0.0.1:8081".to_string(),
                 enable_socks5_udp: true,
                 allow_upstream_proxy: true,
                 dangerously_allow_non_loopback_proxy: false,
-                dangerously_allow_non_loopback_admin: false,
                 dangerously_allow_all_unix_sockets: false,
                 mode: NetworkMode::Full,
-                allowed_domains: Vec::new(),
-                denied_domains: Vec::new(),
-                allow_unix_sockets: Vec::new(),
-                allow_local_binding: true,
+                domains: None,
+                unix_sockets: None,
+                allow_local_binding: false,
                 mitm: false,
             }
         );
@@ -421,19 +611,66 @@ mod tests {
     }
 
     #[test]
+    fn set_allowed_domains_preserves_existing_deny_for_same_pattern() {
+        let mut settings = NetworkProxySettings::default();
+        settings.set_denied_domains(vec!["example.com".to_string()]);
+
+        settings.set_allowed_domains(vec!["example.com".to_string()]);
+
+        assert_eq!(settings.allowed_domains(), None);
+        assert_eq!(
+            settings.denied_domains(),
+            Some(vec!["example.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn network_domain_permissions_serialize_to_effective_map_shape() {
+        let mut settings = NetworkProxySettings::default();
+        settings.set_denied_domains(vec!["example.com".to_string()]);
+        settings.set_allowed_domains(vec!["example.com".to_string()]);
+        let config = NetworkProxyConfig { network: settings };
+
+        let value = serde_json::to_value(&config).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "network": {
+                    "enabled": false,
+                    "proxy_url": "http://127.0.0.1:3128",
+                    "enable_socks5": true,
+                    "socks_url": "http://127.0.0.1:8081",
+                    "enable_socks5_udp": true,
+                    "allow_upstream_proxy": true,
+                    "dangerously_allow_non_loopback_proxy": false,
+                    "dangerously_allow_all_unix_sockets": false,
+                    "mode": "full",
+                    "domains": {
+                        "example.com": "deny",
+                    },
+                    "unix_sockets": null,
+                    "allow_local_binding": false,
+                    "mitm": false,
+                }
+            })
+        );
+    }
+
+    #[test]
     fn parse_host_port_defaults_for_empty_string() {
-        assert!(parse_host_port("", 1234).is_err());
+        assert!(parse_host_port("", /*default_port*/ 1234).is_err());
     }
 
     #[test]
     fn parse_host_port_defaults_for_whitespace() {
-        assert!(parse_host_port("   ", 5555).is_err());
+        assert!(parse_host_port("   ", /*default_port*/ 5555).is_err());
     }
 
     #[test]
     fn parse_host_port_parses_host_port_without_scheme() {
         assert_eq!(
-            parse_host_port("127.0.0.1:8080", 3128).unwrap(),
+            parse_host_port("127.0.0.1:8080", /*default_port*/ 3128).unwrap(),
             SocketAddressParts {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
@@ -444,7 +681,11 @@ mod tests {
     #[test]
     fn parse_host_port_parses_host_port_with_scheme_and_path() {
         assert_eq!(
-            parse_host_port("http://example.com:8080/some/path", 3128).unwrap(),
+            parse_host_port(
+                "http://example.com:8080/some/path",
+                /*default_port*/ 3128
+            )
+            .unwrap(),
             SocketAddressParts {
                 host: "example.com".to_string(),
                 port: 8080,
@@ -455,7 +696,11 @@ mod tests {
     #[test]
     fn parse_host_port_strips_userinfo() {
         assert_eq!(
-            parse_host_port("http://user:pass@host.example:5555", 3128).unwrap(),
+            parse_host_port(
+                "http://user:pass@host.example:5555",
+                /*default_port*/ 3128
+            )
+            .unwrap(),
             SocketAddressParts {
                 host: "host.example".to_string(),
                 port: 5555,
@@ -466,7 +711,7 @@ mod tests {
     #[test]
     fn parse_host_port_parses_ipv6_with_brackets() {
         assert_eq!(
-            parse_host_port("http://[::1]:9999", 3128).unwrap(),
+            parse_host_port("http://[::1]:9999", /*default_port*/ 3128).unwrap(),
             SocketAddressParts {
                 host: "::1".to_string(),
                 port: 9999,
@@ -477,7 +722,7 @@ mod tests {
     #[test]
     fn parse_host_port_does_not_treat_unbracketed_ipv6_as_host_port() {
         assert_eq!(
-            parse_host_port("2001:db8::1", 3128).unwrap(),
+            parse_host_port("2001:db8::1", /*default_port*/ 3128).unwrap(),
             SocketAddressParts {
                 host: "2001:db8::1".to_string(),
                 port: 3128,
@@ -488,7 +733,7 @@ mod tests {
     #[test]
     fn parse_host_port_falls_back_to_default_port_when_port_is_invalid() {
         assert_eq!(
-            parse_host_port("example.com:notaport", 3128).unwrap(),
+            parse_host_port("example.com:notaport", /*default_port*/ 3128).unwrap(),
             SocketAddressParts {
                 host: "example.com".to_string(),
                 port: 3128,
@@ -498,13 +743,16 @@ mod tests {
 
     #[test]
     fn host_and_port_from_network_addr_defaults_for_empty_string() {
-        assert_eq!(host_and_port_from_network_addr("", 1234), "<missing>");
+        assert_eq!(
+            host_and_port_from_network_addr("", /*default_port*/ 1234),
+            "<missing>"
+        );
     }
 
     #[test]
     fn host_and_port_from_network_addr_formats_ipv6() {
         assert_eq!(
-            host_and_port_from_network_addr("http://[::1]:8080", 3128),
+            host_and_port_from_network_addr("http://[::1]:8080", /*default_port*/ 3128),
             "[::1]:8080"
         );
     }
@@ -512,7 +760,7 @@ mod tests {
     #[test]
     fn resolve_addr_maps_localhost_to_loopback() {
         assert_eq!(
-            resolve_addr("localhost", 3128).unwrap(),
+            resolve_addr("localhost", /*default_port*/ 3128).unwrap(),
             "127.0.0.1:3128".parse::<SocketAddr>().unwrap()
         );
     }
@@ -520,7 +768,7 @@ mod tests {
     #[test]
     fn resolve_addr_parses_ip_literals() {
         assert_eq!(
-            resolve_addr("1.2.3.4", 80).unwrap(),
+            resolve_addr("1.2.3.4", /*default_port*/ 80).unwrap(),
             "1.2.3.4:80".parse::<SocketAddr>().unwrap()
         );
     }
@@ -528,7 +776,7 @@ mod tests {
     #[test]
     fn resolve_addr_parses_ipv6_literals() {
         assert_eq!(
-            resolve_addr("http://[::1]:8080", 3128).unwrap(),
+            resolve_addr("http://[::1]:8080", /*default_port*/ 3128).unwrap(),
             "[::1]:8080".parse::<SocketAddr>().unwrap()
         );
     }
@@ -536,7 +784,7 @@ mod tests {
     #[test]
     fn resolve_addr_falls_back_to_loopback_for_hostnames() {
         assert_eq!(
-            resolve_addr("http://example.com:5555", 3128).unwrap(),
+            resolve_addr("http://example.com:5555", /*default_port*/ 3128).unwrap(),
             "127.0.0.1:5555".parse::<SocketAddr>().unwrap()
         );
     }
@@ -545,68 +793,53 @@ mod tests {
     fn clamp_bind_addrs_allows_non_loopback_when_enabled() {
         let cfg = NetworkProxySettings {
             dangerously_allow_non_loopback_proxy: true,
-            dangerously_allow_non_loopback_admin: true,
             ..Default::default()
         };
         let http_addr = "0.0.0.0:3128".parse::<SocketAddr>().unwrap();
         let socks_addr = "0.0.0.0:8081".parse::<SocketAddr>().unwrap();
-        let admin_addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
 
-        let (http_addr, socks_addr, admin_addr) =
-            clamp_bind_addrs(http_addr, socks_addr, admin_addr, &cfg);
+        let (http_addr, socks_addr) = clamp_bind_addrs(http_addr, socks_addr, &cfg);
 
         assert_eq!(http_addr, "0.0.0.0:3128".parse::<SocketAddr>().unwrap());
         assert_eq!(socks_addr, "0.0.0.0:8081".parse::<SocketAddr>().unwrap());
-        assert_eq!(admin_addr, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
     }
 
     #[test]
     fn clamp_bind_addrs_forces_loopback_when_unix_sockets_enabled() {
-        let cfg = NetworkProxySettings {
-            dangerously_allow_non_loopback_proxy: true,
-            dangerously_allow_non_loopback_admin: true,
-            allow_unix_sockets: vec!["/tmp/docker.sock".to_string()],
-            ..Default::default()
+        let cfg = {
+            let mut settings = settings_with_unix_sockets(&["/tmp/docker.sock"]);
+            settings.dangerously_allow_non_loopback_proxy = true;
+            settings
         };
         let http_addr = "0.0.0.0:3128".parse::<SocketAddr>().unwrap();
         let socks_addr = "0.0.0.0:8081".parse::<SocketAddr>().unwrap();
-        let admin_addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
 
-        let (http_addr, socks_addr, admin_addr) =
-            clamp_bind_addrs(http_addr, socks_addr, admin_addr, &cfg);
+        let (http_addr, socks_addr) = clamp_bind_addrs(http_addr, socks_addr, &cfg);
 
         assert_eq!(http_addr, "127.0.0.1:3128".parse::<SocketAddr>().unwrap());
         assert_eq!(socks_addr, "127.0.0.1:8081".parse::<SocketAddr>().unwrap());
-        assert_eq!(admin_addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
     }
 
     #[test]
     fn clamp_bind_addrs_forces_loopback_when_all_unix_sockets_enabled() {
         let cfg = NetworkProxySettings {
             dangerously_allow_non_loopback_proxy: true,
-            dangerously_allow_non_loopback_admin: true,
             dangerously_allow_all_unix_sockets: true,
             ..Default::default()
         };
         let http_addr = "0.0.0.0:3128".parse::<SocketAddr>().unwrap();
         let socks_addr = "0.0.0.0:8081".parse::<SocketAddr>().unwrap();
-        let admin_addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
 
-        let (http_addr, socks_addr, admin_addr) =
-            clamp_bind_addrs(http_addr, socks_addr, admin_addr, &cfg);
+        let (http_addr, socks_addr) = clamp_bind_addrs(http_addr, socks_addr, &cfg);
 
         assert_eq!(http_addr, "127.0.0.1:3128".parse::<SocketAddr>().unwrap());
         assert_eq!(socks_addr, "127.0.0.1:8081".parse::<SocketAddr>().unwrap());
-        assert_eq!(admin_addr, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
     }
 
     #[test]
     fn resolve_runtime_rejects_relative_allow_unix_sockets_entries() {
         let cfg = NetworkProxyConfig {
-            network: NetworkProxySettings {
-                allow_unix_sockets: vec!["relative.sock".to_string()],
-                ..NetworkProxySettings::default()
-            },
+            network: settings_with_unix_sockets(&["relative.sock"]),
         };
 
         let err = match resolve_runtime(&cfg) {
@@ -625,10 +858,7 @@ mod tests {
     #[test]
     fn resolve_runtime_accepts_unix_style_absolute_allow_unix_sockets_entries() {
         let cfg = NetworkProxyConfig {
-            network: NetworkProxySettings {
-                allow_unix_sockets: vec!["/private/tmp/example.sock".to_string()],
-                ..NetworkProxySettings::default()
-            },
+            network: settings_with_unix_sockets(&["/private/tmp/example.sock"]),
         };
 
         assert!(

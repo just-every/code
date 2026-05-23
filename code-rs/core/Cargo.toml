@@ -51,7 +51,7 @@ once_cell = { workspace = true }
 portable-pty = { workspace = true }
 rand = { workspace = true }
 regex-lite = { workspace = true }
-reqwest = { workspace = true, features = ["json", "stream"] }
+reqwest = { workspace = true, features = ["json", "stream", "cookies"] }
 schemars = "0.8.22"
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = "0.11"

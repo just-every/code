@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used)]
-use codex_core::auth::CODEX_API_KEY_ENV_VAR;
+use codex_login::CODEX_API_KEY_ENV_VAR;
 use std::path::Path;
 use tempfile::TempDir;
 use wiremock::MockServer;
@@ -17,13 +17,15 @@ impl TestCodexExecBuilder {
         );
         cmd.current_dir(self.cwd.path())
             .env("CODEX_HOME", self.home.path())
+            .env("CODEX_SQLITE_HOME", self.home.path())
             .env(CODEX_API_KEY_ENV_VAR, "dummy");
         cmd
     }
     pub fn cmd_with_server(&self, server: &MockServer) -> assert_cmd::Command {
         let mut cmd = self.cmd();
         let base = format!("{}/v1", server.uri());
-        cmd.env("OPENAI_BASE_URL", base);
+        cmd.arg("-c")
+            .arg(format!("openai_base_url={}", toml_string_literal(&base)));
         cmd
     }
 
@@ -33,6 +35,10 @@ impl TestCodexExecBuilder {
     pub fn home_path(&self) -> &Path {
         self.home.path()
     }
+}
+
+fn toml_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("serialize TOML string literal")
 }
 
 pub fn test_codex_exec() -> TestCodexExecBuilder {

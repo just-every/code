@@ -148,7 +148,7 @@ event: response.completed\ndata: {}\n\n",
 
     config.model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
-        ..built_in_model_providers()["openai"].clone()
+        ..built_in_model_providers(None)["openai"].clone()
     };
     config.model = "gpt-5.1-codex".to_string();
 

@@ -127,6 +127,10 @@ pub enum ApplyPatchError {
         "patch detected without explicit call to apply_patch. Rerun as [\"apply_patch\", \"<patch>\"]"
     )]
     ImplicitInvocation,
+    #[error(
+        "apply_patch heredoc argv is malformed. Pass the patch as [\"apply_patch\", \"<patch>\"] or put the full heredoc in a single shell script string"
+    )]
+    MalformedHeredocInvocation,
 }
 
 impl From<std::io::Error> for ApplyPatchError {
@@ -180,6 +184,17 @@ pub struct ApplyPatchArgs {
 
 pub fn maybe_parse_apply_patch(argv: &[String]) -> MaybeApplyPatch {
     match argv {
+        [script] => match extract_apply_patch_from_bash(script) {
+            Ok((body, workdir)) => match parse_patch(&body) {
+                Ok(mut source) => {
+                    source.workdir = workdir;
+                    MaybeApplyPatch::Body(source)
+                }
+                Err(e) => MaybeApplyPatch::PatchParseError(e),
+            },
+            Err(ExtractHeredocError::CommandDidNotStartWithApplyPatch) => MaybeApplyPatch::NotApplyPatch,
+            Err(e) => MaybeApplyPatch::ShellParseError(e),
+        },
         // Direct invocation: apply_patch <patch>
         [cmd, body] if APPLY_PATCH_COMMANDS.contains(&cmd.as_str()) => match parse_patch(body) {
             Ok(source) => MaybeApplyPatch::Body(source),
@@ -296,6 +311,17 @@ impl ApplyPatchAction {
 /// cwd must be an absolute path so that we can resolve relative paths in the
 /// patch.
 pub fn maybe_parse_apply_patch_verified(argv: &[String], cwd: &Path) -> MaybeApplyPatchVerified {
+    if matches!(argv.first().map(String::as_str), Some(cmd) if APPLY_PATCH_COMMANDS.contains(&cmd))
+        && argv
+            .iter()
+            .skip(1)
+            .any(|arg| arg.trim_start().starts_with("<<"))
+    {
+        return MaybeApplyPatchVerified::CorrectnessError(
+            ApplyPatchError::MalformedHeredocInvocation,
+        );
+    }
+
     // Detect a raw patch body passed directly as the command or as the body of a shell
     // script. In these cases, report an explicit error rather than applying the patch.
     if argv.len() == 1 {
@@ -1060,6 +1086,26 @@ mod tests {
     }
 
     #[test]
+    fn test_malformed_apply_patch_heredoc_argv_is_error() {
+        let args = strs_to_strings(&[
+            "apply_patch",
+            "<<PATCH",
+            "*** Begin Patch",
+            "*** Add File: foo",
+            "+hi",
+            "*** End Patch",
+            "PATCH",
+        ]);
+        let dir = tempdir().unwrap();
+        assert!(matches!(
+            maybe_parse_apply_patch_verified(&args, dir.path()),
+            MaybeApplyPatchVerified::CorrectnessError(
+                ApplyPatchError::MalformedHeredocInvocation
+            )
+        ));
+    }
+
+    #[test]
     fn test_literal() {
         let args = strs_to_strings(&[
             "apply_patch",
@@ -1112,6 +1158,20 @@ mod tests {
     #[test]
     fn test_heredoc() {
         assert_match(&heredoc_script(""), None);
+    }
+
+    #[test]
+    fn test_raw_shell_command_heredoc() {
+        assert_match_args(vec![heredoc_script("")], None);
+    }
+
+    #[test]
+    fn test_verified_raw_shell_command_heredoc() {
+        let dir = tempdir().unwrap();
+        assert!(matches!(
+            maybe_parse_apply_patch_verified(&vec![heredoc_script("")], dir.path()),
+            MaybeApplyPatchVerified::Body(_)
+        ));
     }
 
     #[test]

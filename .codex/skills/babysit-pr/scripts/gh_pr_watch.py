@@ -45,7 +45,6 @@ MERGE_CONFLICT_OR_BLOCKING_STATES = {
     "DRAFT",
     "UNKNOWN",
 }
-GREEN_STATE_MAX_POLL_SECONDS = 60 * 60
 
 
 class GhCommandError(RuntimeError):
@@ -339,6 +338,66 @@ def failed_runs_from_workflow_runs(runs, head_sha):
     return failed_runs
 
 
+def get_jobs_for_run(repo, run_id):
+    endpoint = f"repos/{repo}/actions/runs/{run_id}/jobs"
+    data = gh_json(["api", endpoint, "-X", "GET", "-f", "per_page=100"], repo=repo)
+    if not isinstance(data, dict):
+        raise GhCommandError("Unexpected payload from actions run jobs API")
+    jobs = data.get("jobs") or []
+    if not isinstance(jobs, list):
+        raise GhCommandError("Expected `jobs` to be a list")
+    return jobs
+
+
+def failed_jobs_from_workflow_runs(repo, runs, head_sha):
+    failed_jobs = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        if str(run.get("head_sha") or "") != head_sha:
+            continue
+        run_id = run.get("id")
+        if run_id in (None, ""):
+            continue
+        run_status = str(run.get("status") or "")
+        run_conclusion = str(run.get("conclusion") or "")
+        if run_status.lower() == "completed" and run_conclusion not in FAILED_RUN_CONCLUSIONS:
+            continue
+        jobs = get_jobs_for_run(repo, run_id)
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            conclusion = str(job.get("conclusion") or "")
+            if conclusion not in FAILED_RUN_CONCLUSIONS:
+                continue
+            job_id = job.get("id")
+            logs_endpoint = None
+            if job_id not in (None, ""):
+                logs_endpoint = f"repos/{repo}/actions/jobs/{job_id}/logs"
+            failed_jobs.append(
+                {
+                    "run_id": run_id,
+                    "workflow_name": run.get("name") or run.get("display_title") or "",
+                    "run_status": run_status,
+                    "run_conclusion": run_conclusion,
+                    "job_id": job_id,
+                    "job_name": str(job.get("name") or ""),
+                    "status": str(job.get("status") or ""),
+                    "conclusion": conclusion,
+                    "html_url": str(job.get("html_url") or ""),
+                    "logs_endpoint": logs_endpoint,
+                }
+            )
+    failed_jobs.sort(
+        key=lambda item: (
+            str(item.get("workflow_name") or ""),
+            str(item.get("job_name") or ""),
+            str(item.get("job_id") or ""),
+        )
+    )
+    return failed_jobs
+
+
 def get_authenticated_login():
     data = gh_json(["api", "user"])
     if not isinstance(data, dict) or not data.get("login"):
@@ -569,7 +628,7 @@ def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
     return True
 
 
-def recommend_actions(pr, checks_summary, failed_runs, new_review_items, retries_used, max_retries):
+def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries):
     actions = []
     if pr["closed"] or pr["merged"]:
         if new_review_items:
@@ -578,13 +637,13 @@ def recommend_actions(pr, checks_summary, failed_runs, new_review_items, retries
         return unique_actions(actions)
 
     if is_pr_ready_to_merge(pr, checks_summary, new_review_items):
-        actions.append("stop_ready_to_merge")
+        actions.append("ready_to_merge")
         return unique_actions(actions)
 
     if new_review_items:
         actions.append("process_review_comment")
 
-    has_failed_pr_checks = checks_summary["failed_count"] > 0
+    has_failed_pr_checks = checks_summary["failed_count"] > 0 or bool(failed_jobs)
     if has_failed_pr_checks:
         if checks_summary["all_terminal"] and retries_used >= max_retries:
             actions.append("stop_exhausted_retries")
@@ -606,12 +665,6 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
-    # After resolving `--pr auto`, reuse the concrete PR number.
-    checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
-    checks_summary = summarize_checks(checks)
-    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
-    failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     authenticated_login = get_authenticated_login()
     new_review_items = fetch_new_review_items(
         pr,
@@ -619,12 +672,23 @@ def collect_snapshot(args):
         fresh_state=fresh_state,
         authenticated_login=authenticated_login,
     )
+    # Surface review feedback before drilling into CI and mergeability details.
+    # That keeps the babysitter responsive to new comments even when other
+    # actions are also available.
+    # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
+    # After resolving `--pr auto`, reuse the concrete PR number.
+    checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
+    checks_summary = summarize_checks(checks)
+    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+    failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
+    failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"])
 
     retries_used = current_retry_count(state, pr["head_sha"])
     actions = recommend_actions(
         pr,
         checks_summary,
         failed_runs,
+        failed_jobs,
         new_review_items,
         retries_used,
         args.max_flaky_retries,
@@ -639,6 +703,7 @@ def collect_snapshot(args):
         "pr": pr,
         "checks": checks_summary,
         "failed_runs": failed_runs,
+        "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
         "actions": actions,
         "retry_state": {
@@ -761,7 +826,6 @@ def run_watch(args):
         if (
             "stop_pr_closed" in actions
             or "stop_exhausted_retries" in actions
-            or "stop_ready_to_merge" in actions
         ):
             print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
             return 0
@@ -769,13 +833,13 @@ def run_watch(args):
         current_change_key = snapshot_change_key(snapshot)
         changed = current_change_key != last_change_key
         green = is_ci_green(snapshot)
+        pr = snapshot.get("pr") or {}
+        pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
 
-        if not green:
+        if not green or pr_open:
             poll_seconds = args.poll_seconds
         elif changed or last_change_key is None:
             poll_seconds = args.poll_seconds
-        else:
-            poll_seconds = min(poll_seconds * 2, GREEN_STATE_MAX_POLL_SECONDS)
 
         last_change_key = current_change_key
         time.sleep(poll_seconds)

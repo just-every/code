@@ -6,6 +6,12 @@ expression: popup
 
   The following files will be sent:
     • codex-logs.log
+    • auto-review-rollout-thread-1.jsonl
+    • codex-connectivity-diagnostics.txt
+
+  Connectivity diagnostics
+    - Proxy environment variables are set and may affect connectivity.
+      - HTTPS_PROXY = hello
 
 › 1. Yes  Share the current Codex session logs with the team for
           troubleshooting.

@@ -19,7 +19,7 @@ pub(crate) struct AsciiAnimation {
 
 impl AsciiAnimation {
     pub(crate) fn new(request_frame: FrameRequester) -> Self {
-        Self::with_variants(request_frame, ALL_VARIANTS, 0)
+        Self::with_variants(request_frame, ALL_VARIANTS, /*variant_idx*/ 0)
     }
 
     pub(crate) fn with_variants(
@@ -88,11 +88,6 @@ impl AsciiAnimation {
         self.variant_idx = next;
         self.request_frame.schedule_frame();
         true
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn request_frame(&self) {
-        self.request_frame.schedule_frame();
     }
 
     fn frames(&self) -> &'static [&'static str] {

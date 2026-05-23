@@ -65,6 +65,14 @@ Up/Down recall is handled by `ChatComposerHistory` and merges two sources:
 This distinction keeps the on-disk history backward compatible and avoids persisting attachments,
 while still providing a richer recall experience for in-session edits.
 
+### Reverse history search (Ctrl+R)
+
+Ctrl+R enters an incremental reverse search mode without immediately previewing the latest history entry. While search is active, the footer line becomes the editable query field and the composer body is only a preview of the currently matched entry. `Enter` accepts the preview as a normal editable draft, and `Esc` or Ctrl+C restores the exact draft that existed before search started.
+
+The composer owns the search session because it controls draft snapshots, footer rendering, cursor placement, and preview highlighting. `ChatComposerHistory` owns traversal: it scans persistent and local entries in one offset space, skips duplicate prompt text within a search session, keeps boundary hits on the current match, and resumes scans after asynchronous persistent history responses.
+
+The search query and composer text intentionally remain separate. A no-match result restores the original draft while leaving the footer query open for more typing, and accepting a match clears the search session so highlight styling disappears from the now-editable composer text.
+
 ## Config gating for reuse
 
 `ChatComposer` now supports feature gating via `ChatComposerConfig`
@@ -81,8 +89,6 @@ Key effects when disabled:
 
 - When `popups_enabled` is `false`, `sync_popups()` forces `ActivePopup::None`.
 - When `slash_commands_enabled` is `false`, the composer does not treat `/...` input as commands.
-- When `slash_commands_enabled` is `false`, the composer does not expand custom prompts in
-  `prepare_submission_text`.
 - When `slash_commands_enabled` is `false`, slash-context paste-burst exceptions are disabled.
 - When `image_paste_enabled` is `false`, file-path paste image attachment is skipped.
 - `ChatWidget` may toggle `image_paste_enabled` at runtime based on the selected model's
@@ -107,26 +113,18 @@ the input starts with `!` (shell command).
 
 1. Expands any pending paste placeholders so element ranges align with the final text.
 2. Trims whitespace and rebases element ranges to the trimmed buffer.
-3. Expands `/prompts:` custom prompts:
-   - Named args use key=value parsing.
-   - Numeric args use positional parsing for `$1..$9` and `$ARGUMENTS`.
-     The expansion preserves text elements and yields the final submission payload.
-4. Prunes attachments so only placeholders that survive expansion are sent.
-5. Clears pending pastes on success and suppresses submission if the final text is empty and there
+3. Prunes attachments so only placeholders that survive trimming are sent.
+4. Clears pending pastes on success and suppresses submission if the final text is empty and there
    are no attachments.
 
 The same preparation path is reused for slash commands with arguments (for example `/plan` and
 `/review`) so pasted content and text elements are preserved when extracting args.
 
-### Numeric auto-submit path
-
-When the slash popup is open and the first line matches a numeric-only custom prompt with
-positional args, Enter auto-submits without calling `prepare_submission_text`. That path still:
-
-- Expands pending pastes before parsing positional args.
-- Uses expanded text elements for prompt expansion.
-- Prunes attachments based on expanded placeholders.
-- Clears pending pastes after a successful auto-submit.
+The composer also treats the textarea kill buffer as separate editing state from the visible draft.
+After submit or slash-command dispatch clears the textarea, the most recent `Ctrl+K` payload is
+still available for `Ctrl+Y`. This supports flows where a user kills part of a draft, runs a
+composer action such as changing reasoning level, and then yanks that text back into the cleared
+draft.
 
 ## Remote image rows (selection/deletion flow)
 

@@ -154,12 +154,7 @@ const PASTE_BURST_MIN_CHARS: u16 = 3;
 const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(120);
 
 // Maximum delay between consecutive chars to be considered part of a paste burst.
-// Windows terminals (especially VS Code integrated terminal) deliver paste events
-// more slowly than native terminals, so we use a higher threshold there.
-#[cfg(not(windows))]
 const PASTE_BURST_CHAR_INTERVAL: Duration = Duration::from_millis(8);
-#[cfg(windows)]
-const PASTE_BURST_CHAR_INTERVAL: Duration = Duration::from_millis(30);
 
 // Idle timeout before flushing buffered paste content.
 // Slower paste bursts have been observed in Windows environments.
@@ -532,11 +527,15 @@ mod tests {
         let mut burst = PasteBurst::default();
         let now = Instant::now();
 
-        assert!(burst.decide_begin_buffer(now, "ab", 2).is_none());
+        assert!(
+            burst
+                .decide_begin_buffer(now, "ab", /*retro_chars*/ 2)
+                .is_none()
+        );
         assert!(!burst.is_active());
 
         let grab = burst
-            .decide_begin_buffer(now, "a b", 2)
+            .decide_begin_buffer(now, "a b", /*retro_chars*/ 2)
             .expect("whitespace should be considered paste-like");
         assert_eq!(grab.start_byte, 1);
         assert_eq!(grab.grabbed, " b");

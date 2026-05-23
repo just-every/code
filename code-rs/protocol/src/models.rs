@@ -45,8 +45,16 @@ impl SandboxPermissions {
         matches!(self, SandboxPermissions::RequireEscalated)
     }
 
-    pub fn requires_additional_permissions(self) -> bool {
+    pub fn requests_sandbox_override(self) -> bool {
         !matches!(self, SandboxPermissions::UseDefault)
+    }
+
+    pub fn uses_additional_permissions(self) -> bool {
+        matches!(self, SandboxPermissions::WithAdditionalPermissions)
+    }
+
+    pub fn requires_additional_permissions(self) -> bool {
+        self.requests_sandbox_override()
     }
 }
 
@@ -86,15 +94,56 @@ pub enum MacOsPreferencesValue {
     Mode(String),
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize, JsonSchema, TS)]
 #[serde(untagged)]
 pub enum MacOsAutomationValue {
     Bool(bool),
     BundleIds(Vec<String>),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum MacOsAutomationValueDe {
+    Bool(bool),
+    BundleIds(Vec<String>),
+    BundleIdsObject { bundle_ids: Vec<String> },
+}
+
+impl<'de> Deserialize<'de> for MacOsAutomationValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = MacOsAutomationValueDe::deserialize(deserializer)?;
+        Ok(match value {
+            MacOsAutomationValueDe::Bool(value) => Self::Bool(value),
+            MacOsAutomationValueDe::BundleIds(bundle_ids) => Self::BundleIds(bundle_ids),
+            MacOsAutomationValueDe::BundleIdsObject { bundle_ids } => Self::BundleIds(bundle_ids),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct NetworkPermissions {
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum NetworkPermissionValue {
+    Bool(bool),
+    Object(NetworkPermissions),
+}
+
 #[derive(Debug, Clone, Default, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PermissionProfile {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_network_permission",
+        deserialize_with = "deserialize_network_permission"
+    )]
+    #[schemars(with = "Option<NetworkPermissions>")]
     pub network: Option<bool>,
     pub file_system: Option<FileSystemPermissions>,
     pub macos: Option<MacOsPermissions>,
@@ -116,6 +165,33 @@ impl PermissionProfile {
     }
 }
 
+fn serialize_network_permission<S>(
+    network: &Option<bool>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match network {
+        Some(enabled) => NetworkPermissions {
+            enabled: Some(*enabled),
+        }
+        .serialize(serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_network_permission<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<NetworkPermissionValue>::deserialize(deserializer)?;
+    Ok(value.map(|value| match value {
+        NetworkPermissionValue::Bool(enabled) => enabled,
+        NetworkPermissionValue::Object(NetworkPermissions { enabled }) => enabled.unwrap_or(false),
+    }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseInputItem {
@@ -133,7 +209,17 @@ pub enum ResponseInputItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        name: Option<String>,
+        output: FunctionCallOutputPayload,
+    },
+    ToolSearchOutput {
+        call_id: String,
+        status: String,
+        execution: String,
+        #[ts(type = "unknown[]")]
+        tools: Vec<serde_json::Value>,
     },
 }
 
@@ -143,6 +229,15 @@ pub enum ContentItem {
     InputText { text: String },
     InputImage { image_url: String },
     OutputText { text: String },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
@@ -206,11 +301,26 @@ pub enum ResponseItem {
         #[ts(skip)]
         id: Option<String>,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        namespace: Option<String>,
         // The Responses API returns the function call arguments as a *string* that contains
         // JSON, not as an already‑parsed object. We keep it as a raw string here and let
         // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
+    },
+    ToolSearchCall {
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
+        id: Option<String>,
+        call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        status: Option<String>,
+        execution: String,
+        #[ts(type = "unknown")]
+        arguments: serde_json::Value,
     },
     // NOTE: The `output` field for `function_call_output` uses a dedicated payload type with
     // custom serialization. On the wire it is either:
@@ -235,7 +345,17 @@ pub enum ResponseItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        name: Option<String>,
+        output: FunctionCallOutputPayload,
+    },
+    ToolSearchOutput {
+        call_id: Option<String>,
+        status: String,
+        execution: String,
+        #[ts(type = "unknown[]")]
+        tools: Vec<serde_json::Value>,
     },
     // Emitted by the Responses API when the agent triggers a web search.
     // Example payload (from SSE `response.output_item.done`):
@@ -256,6 +376,15 @@ pub enum ResponseItem {
         #[ts(optional)]
         action: Option<WebSearchAction>,
     },
+    // Emitted by the Responses API when the agent triggers image generation.
+    ImageGenerationCall {
+        id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        revised_prompt: Option<String>,
+        result: String,
+    },
     // Generated by the harness but considered exactly as a model response.
     GhostSnapshot {
         ghost_commit: GhostCommit,
@@ -263,6 +392,11 @@ pub enum ResponseItem {
     #[serde(alias = "compaction")]
     CompactionSummary {
         encrypted_content: String,
+    },
+    ContextCompaction {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        encrypted_content: Option<String>,
     },
     #[serde(other)]
     Other,
@@ -344,12 +478,16 @@ impl DeveloperInstructions {
                 let on_request_instructions = on_request_instructions();
                 let sandbox_approval = reject_config.sandbox_approval;
                 let rules = reject_config.rules;
+                let skill_approval = reject_config.skill_approval;
+                let request_permissions = reject_config.request_permissions;
                 let mcp_elicitations = reject_config.mcp_elicitations;
                 format!(
                     "{on_request_instructions}\n\n\
                      Approval policy is `reject`.\n\
                      - `sandbox_approval`: {sandbox_approval}\n\
                      - `rules`: {rules}\n\
+                     - `skill_approval`: {skill_approval}\n\
+                     - `request_permissions`: {request_permissions}\n\
                      - `mcp_elicitations`: {mcp_elicitations}\n\
                      When a category is `true`, requests in that category are auto-rejected instead of prompting the user."
                 )
@@ -727,9 +865,26 @@ impl From<ResponseInputItem> for ResponseItem {
                 };
                 Self::FunctionCallOutput { call_id, output }
             }
-            ResponseInputItem::CustomToolCallOutput { call_id, output } => {
-                Self::CustomToolCallOutput { call_id, output }
-            }
+            ResponseInputItem::CustomToolCallOutput {
+                call_id,
+                name,
+                output,
+            } => Self::CustomToolCallOutput {
+                call_id,
+                name,
+                output,
+            },
+            ResponseInputItem::ToolSearchOutput {
+                call_id,
+                status,
+                execution,
+                tools,
+            } => Self::ToolSearchOutput {
+                call_id: Some(call_id),
+                status,
+                execution,
+                tools,
+            },
         }
     }
 }
@@ -886,7 +1041,12 @@ pub enum FunctionCallOutputContentItem {
     // Do not rename, these are serialized and used directly in the responses API.
     InputText { text: String },
     // Do not rename, these are serialized and used directly in the responses API.
-    InputImage { image_url: String },
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<ImageDetail>,
+    },
 }
 
 /// Converts structured function-call output content into plain text for
@@ -930,7 +1090,10 @@ impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
                 Self::InputText { text }
             }
             crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage { image_url }
+                Self::InputImage {
+                    image_url,
+                    detail: None,
+                }
             }
         }
     }
@@ -1132,7 +1295,10 @@ fn convert_mcp_content_to_items(
                     let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".into());
                     format!("data:{mime_type};base64,{data}")
                 };
-                FunctionCallOutputContentItem::InputImage { image_url }
+                FunctionCallOutputContentItem::InputImage {
+                    image_url,
+                    detail: None,
+                }
             }
             Ok(McpContent::Unknown) | Err(_) => FunctionCallOutputContentItem::InputText {
                 text: serde_json::to_string(content).unwrap_or_else(|_| "<content>".to_string()),
@@ -1166,7 +1332,7 @@ impl std::fmt::Display for FunctionCallOutputPayload {
 mod tests {
     use super::*;
     use crate::config_types::SandboxMode;
-    use crate::protocol::AskForApproval;
+    use crate::protocol::{AskForApproval, RejectConfig};
     use anyhow::Result;
     use codex_execpolicy::PolicyParser;
     use codex_execpolicy::Policy;
@@ -1192,6 +1358,28 @@ mod tests {
     }
 
     #[test]
+    fn reject_policy_instructions_include_request_permissions_status() {
+        let instructions = DeveloperInstructions::from_permissions_with_network(
+            SandboxMode::WorkspaceWrite,
+            NetworkAccess::Enabled,
+            AskForApproval::Reject(RejectConfig {
+                sandbox_approval: true,
+                rules: false,
+                skill_approval: true,
+                request_permissions: true,
+                mcp_elicitations: false,
+            }),
+            &empty_exec_policy(),
+            None,
+            false,
+        )
+        .into_text();
+
+        assert!(instructions.contains("- `request_permissions`: true"));
+        assert!(instructions.contains("- `skill_approval`: true"));
+    }
+
+    #[test]
     fn convert_mcp_content_to_items_preserves_data_urls() {
         let contents = vec![serde_json::json!({
             "type": "image",
@@ -1204,6 +1392,7 @@ mod tests {
             items,
             vec![FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,Zm9v".to_string(),
+                detail: None,
             }]
         );
     }
@@ -1221,6 +1410,7 @@ mod tests {
             items,
             vec![FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,Zm9v".to_string(),
+                detail: None,
             }]
         );
     }
@@ -1243,6 +1433,7 @@ mod tests {
             },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
             },
             FunctionCallOutputContentItem::InputText {
                 text: "line 2".to_string(),
@@ -1261,6 +1452,7 @@ mod tests {
             },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
             },
         ];
 
@@ -1283,6 +1475,7 @@ mod tests {
             },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,AAA".to_string(),
+                detail: None,
             },
         ]);
 
@@ -1478,6 +1671,7 @@ mod tests {
                 },
                 FunctionCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,BASE64".into(),
+                    detail: None,
                 },
             ]
         );
@@ -1485,6 +1679,28 @@ mod tests {
         let item = ResponseInputItem::FunctionCallOutput {
             call_id: "call1".into(),
             output: payload,
+        };
+
+        let json = serde_json::to_string(&item)?;
+        let v: serde_json::Value = serde_json::from_str(&json)?;
+
+        let output = v.get("output").expect("output field");
+        assert!(output.is_array(), "expected array output");
+
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_custom_tool_image_outputs_as_array() -> Result<()> {
+        let item = ResponseInputItem::CustomToolCallOutput {
+            call_id: "call1".into(),
+            name: None,
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,BASE64".into(),
+                    detail: None,
+                },
+            ]),
         };
 
         let json = serde_json::to_string(&item)?;
@@ -1518,6 +1734,7 @@ mod tests {
             items,
             vec![FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,BASE64".into(),
+                detail: None,
             }]
         );
 
@@ -1540,6 +1757,7 @@ mod tests {
             },
             FunctionCallOutputContentItem::InputImage {
                 image_url: "data:image/png;base64,XYZ".into(),
+                detail: None,
             },
         ];
         assert_eq!(
@@ -1566,6 +1784,266 @@ mod tests {
                 encrypted_content: "abc".into(),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn deserializes_context_compaction() -> Result<()> {
+        let json = r#"{"type":"context_compaction","encrypted_content":"abc"}"#;
+
+        let item: ResponseItem = serde_json::from_str(json)?;
+
+        assert_eq!(
+            item,
+            ResponseItem::ContextCompaction {
+                encrypted_content: Some("abc".into()),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_context_compaction_trigger_without_payload() -> Result<()> {
+        let item = ResponseItem::ContextCompaction {
+            encrypted_content: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(item)?,
+            serde_json::json!({
+                "type": "context_compaction",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn response_item_parses_image_generation_call() {
+        let item = serde_json::from_value::<ResponseItem>(serde_json::json!({
+            "id": "ig_123",
+            "type": "image_generation_call",
+            "status": "completed",
+            "revised_prompt": "A small blue square",
+            "result": "Zm9v",
+        }))
+        .expect("image generation item should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::ImageGenerationCall {
+                id: "ig_123".to_string(),
+                status: "completed".to_string(),
+                revised_prompt: Some("A small blue square".to_string()),
+                result: "Zm9v".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn response_item_parses_image_generation_call_without_revised_prompt() {
+        let item = serde_json::from_value::<ResponseItem>(serde_json::json!({
+            "id": "ig_123",
+            "type": "image_generation_call",
+            "status": "completed",
+            "result": "Zm9v",
+        }))
+        .expect("image generation item should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::ImageGenerationCall {
+                id: "ig_123".to_string(),
+                status: "completed".to_string(),
+                revised_prompt: None,
+                result: "Zm9v".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn function_call_deserializes_optional_namespace() {
+        let item: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "function_call",
+            "name": "mcp__codex_apps__gmail_get_recent_emails",
+            "namespace": "mcp__codex_apps__gmail",
+            "arguments": "{\"top_k\":5}",
+            "call_id": "call-1",
+        }))
+        .expect("function_call should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "mcp__codex_apps__gmail_get_recent_emails".to_string(),
+                namespace: Some("mcp__codex_apps__gmail".to_string()),
+                arguments: "{\"top_k\":5}".to_string(),
+                call_id: "call-1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn tool_search_call_roundtrips() -> Result<()> {
+        let parsed: ResponseItem = serde_json::from_str(
+            r#"{
+                "type": "tool_search_call",
+                "call_id": "search-1",
+                "execution": "client",
+                "arguments": {
+                    "query": "calendar create",
+                    "limit": 1
+                }
+            }"#,
+        )?;
+
+        assert_eq!(
+            parsed,
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("search-1".to_string()),
+                status: None,
+                execution: "client".to_string(),
+                arguments: serde_json::json!({
+                    "query": "calendar create",
+                    "limit": 1,
+                }),
+            }
+        );
+
+        assert_eq!(
+            serde_json::to_value(&parsed)?,
+            serde_json::json!({
+                "type": "tool_search_call",
+                "call_id": "search-1",
+                "execution": "client",
+                "arguments": {
+                    "query": "calendar create",
+                    "limit": 1,
+                }
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn tool_search_output_roundtrips() -> Result<()> {
+        let input = ResponseInputItem::ToolSearchOutput {
+            call_id: "search-1".to_string(),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![serde_json::json!({
+                "type": "function",
+                "name": "mcp__codex_apps__calendar_create_event",
+                "description": "Create a calendar event.",
+                "defer_loading": true,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    },
+                    "required": ["title"],
+                    "additionalProperties": false,
+                }
+            })],
+        };
+
+        assert_eq!(
+            ResponseItem::from(input.clone()),
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-1".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![serde_json::json!({
+                    "type": "function",
+                    "name": "mcp__codex_apps__calendar_create_event",
+                    "description": "Create a calendar event.",
+                    "defer_loading": true,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"],
+                        "additionalProperties": false,
+                    }
+                })],
+            }
+        );
+
+        assert_eq!(
+            serde_json::to_value(input)?,
+            serde_json::json!({
+                "type": "tool_search_output",
+                "call_id": "search-1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [{
+                    "type": "function",
+                    "name": "mcp__codex_apps__calendar_create_event",
+                    "description": "Create a calendar event.",
+                    "defer_loading": true,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"],
+                        "additionalProperties": false,
+                    }
+                }]
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn tool_search_server_items_allow_null_call_id() -> Result<()> {
+        let parsed_call: ResponseItem = serde_json::from_str(
+            r#"{
+                "type": "tool_search_call",
+                "execution": "server",
+                "call_id": null,
+                "status": "completed",
+                "arguments": {
+                    "paths": ["crm"]
+                }
+            }"#,
+        )?;
+        assert_eq!(
+            parsed_call,
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: None,
+                status: Some("completed".to_string()),
+                execution: "server".to_string(),
+                arguments: serde_json::json!({
+                    "paths": ["crm"],
+                }),
+            }
+        );
+
+        let parsed_output: ResponseItem = serde_json::from_str(
+            r#"{
+                "type": "tool_search_output",
+                "execution": "server",
+                "call_id": null,
+                "status": "completed",
+                "tools": []
+            }"#,
+        )?;
+        assert_eq!(
+            parsed_output,
+            ResponseItem::ToolSearchOutput {
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: vec![],
+            }
+        );
+
         Ok(())
     }
 
@@ -1805,5 +2283,50 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn permission_profile_accepts_network_object_shape() {
+        let profile: PermissionProfile = serde_json::from_value(serde_json::json!({
+            "network": { "enabled": true }
+        }))
+        .expect("deserialize network permission profile");
+
+        assert_eq!(profile.network, Some(true));
+        assert_eq!(
+            serde_json::to_value(profile).expect("serialize network permission profile"),
+            serde_json::json!({
+                "network": { "enabled": true },
+                "file_system": null,
+                "macos": null,
+            })
+        );
+    }
+
+    #[test]
+    fn macos_automation_value_accepts_bundle_ids_object() {
+        let value: MacOsAutomationValue = serde_json::from_value(serde_json::json!({
+            "bundle_ids": ["com.apple.Notes"]
+        }))
+        .expect("deserialize automation bundle ids object");
+
+        assert_eq!(
+            value,
+            MacOsAutomationValue::BundleIds(vec!["com.apple.Notes".to_string()])
+        );
+    }
+
+    #[test]
+    fn macos_automation_value_serializes_as_bool_or_array() {
+        assert_eq!(
+            serde_json::to_value(MacOsAutomationValue::Bool(false)).unwrap(),
+            serde_json::json!(false)
+        );
+
+        assert_eq!(
+            serde_json::to_value(MacOsAutomationValue::BundleIds(vec!["com.apple.Notes".to_string()]))
+                .unwrap(),
+            serde_json::json!(["com.apple.Notes"])
+        );
     }
 }

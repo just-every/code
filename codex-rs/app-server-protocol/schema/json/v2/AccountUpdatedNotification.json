@@ -24,8 +24,32 @@
             "chatgptAuthTokens"
           ],
           "type": "string"
+        },
+        {
+          "description": "Programmatic Codex auth backed by a registered Agent Identity.",
+          "enum": [
+            "agentIdentity"
+          ],
+          "type": "string"
         }
       ]
+    },
+    "PlanType": {
+      "enum": [
+        "free",
+        "go",
+        "plus",
+        "pro",
+        "prolite",
+        "team",
+        "self_serve_business_usage_based",
+        "business",
+        "enterprise_cbp_usage_based",
+        "enterprise",
+        "edu",
+        "unknown"
+      ],
+      "type": "string"
     }
   },
   "properties": {
@@ -33,6 +57,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AuthMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "planType": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PlanType"
         },
         {
           "type": "null"

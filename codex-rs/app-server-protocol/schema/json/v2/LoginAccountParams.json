@@ -23,6 +23,9 @@
     },
     {
       "properties": {
+        "codexStreamlinedLogin": {
+          "type": "boolean"
+        },
         "type": {
           "enum": [
             "chatgpt"
@@ -35,6 +38,22 @@
         "type"
       ],
       "title": "Chatgptv2::LoginAccountParams",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "type": {
+          "enum": [
+            "chatgptDeviceCode"
+          ],
+          "title": "ChatgptDeviceCodev2::LoginAccountParamsType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ChatgptDeviceCodev2::LoginAccountParams",
       "type": "object"
     },
     {

@@ -295,7 +295,7 @@ mod tests {
         }
 
         let defaults = get_default_models();
-        assert!(defaults.iter().any(|v| v == "code-gpt-5.2"));
+        assert!(defaults.iter().any(|v| v == "code-gpt-5.4"));
         assert!(defaults.iter().any(|v| v == "code-gpt-5.3-codex"));
         assert!(!defaults.iter().any(|v| v == "qwen-3-coder"));
         assert!(!defaults.iter().any(|v| v == "gemini-3-flash"));
@@ -341,6 +341,32 @@ mod tests {
         restore_var("CLAUDE_CONFIG_DIR", orig_claude_config_dir);
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn default_models_include_github_copilot_when_binary_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let orig_path = std::env::var_os("PATH");
+        let fake_bin_dir = tempdir().expect("temp bin dir");
+        let copilot_path = fake_bin_dir.path().join("copilot");
+        std::fs::write(&copilot_path, "#!/bin/sh\nexit 0\n").expect("write fake copilot");
+        let mut perms = std::fs::metadata(&copilot_path)
+            .expect("stat fake copilot")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&copilot_path, perms).expect("chmod fake copilot");
+
+        unsafe {
+            std::env::set_var("PATH", fake_bin_dir.path());
+        }
+
+        let defaults = get_default_models();
+        assert!(defaults.iter().any(|v| v == "github-copilot"));
+
+        restore_var("PATH", orig_path);
+    }
+
     #[test]
     fn test_slash_command_parsing() {
         // Test /plan command
@@ -349,7 +375,7 @@ mod tests {
         let plan_prompt = result.unwrap();
         assert!(plan_prompt.contains("final, comprehensive plan"));
         // Default agents list should include non-Codex providers when no [[agents]] configured
-        assert!(plan_prompt.contains("code-gpt-5.2"));
+        assert!(plan_prompt.contains("code-gpt-5.4"));
         assert!(plan_prompt.contains("code-gpt-5.3-codex"));
         assert!(!plan_prompt.contains("cloud-gpt-5.1-codex-max"));
 
@@ -383,7 +409,7 @@ mod tests {
         // Create test agent configurations
         let agents = vec![
             AgentConfig {
-                name: "code-gpt-5.2".to_string(),
+                name: "code-gpt-5.4".to_string(),
                 command: "code".to_string(),
                 args: vec![],
                 read_only: false,
@@ -412,7 +438,7 @@ mod tests {
         let result = handle_slash_command("/plan test task", Some(&agents));
         assert!(result.is_some());
         let prompt = result.unwrap();
-        assert!(prompt.contains("code-gpt-5.2"));
+        assert!(prompt.contains("code-gpt-5.4"));
         assert!(!prompt.contains("test-gemini"));
     }
 }

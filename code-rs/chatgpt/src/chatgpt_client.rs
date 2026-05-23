@@ -1,7 +1,6 @@
 use code_core::config::Config;
-
-use crate::chatgpt_token::get_chatgpt_token_data;
-use crate::chatgpt_token::init_chatgpt_token_from_auth;
+use code_core::CodexAuth;
+use code_app_server_protocol::AuthMode;
 
 use anyhow::Context;
 use serde::de::DeserializeOwned;
@@ -12,27 +11,40 @@ pub(crate) async fn chatgpt_get_request<T: DeserializeOwned>(
     path: String,
 ) -> anyhow::Result<T> {
     let chatgpt_base_url = &config.chatgpt_base_url;
-    init_chatgpt_token_from_auth(&config.code_home, &config.responses_originator_header).await?;
+    let auth = CodexAuth::from_code_home(
+        &config.code_home,
+        AuthMode::ChatGPT,
+        &config.responses_originator_header,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
+    anyhow::ensure!(
+        auth.uses_codex_backend(),
+        "ChatGPT backend requests require Codex backend auth"
+    );
 
     // Make direct HTTP request to ChatGPT backend API with the token
     let client = code_core::http_client::build_http_client();
-    let url = format!("{chatgpt_base_url}{path}");
+    let url = format!(
+        "{}/{}",
+        chatgpt_base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
 
-    let token =
-        get_chatgpt_token_data().ok_or_else(|| anyhow::anyhow!("ChatGPT token not available"))?;
-
+    let token = auth.get_token_data().await?;
     let account_id = token.account_id.ok_or_else(|| {
         anyhow::anyhow!("ChatGPT account ID not available, please re-run `code login`")
-    });
+    })?;
 
-    let response = client
+    let mut request = client
         .get(&url)
         .bearer_auth(&token.access_token)
-        .header("chatgpt-account-id", account_id?)
-        .header("Content-Type", "application/json")
-        .send()
-        .await
-        .context("Failed to send request")?;
+        .header("chatgpt-account-id", account_id)
+        .header("Content-Type", "application/json");
+    if token.id_token.is_fedramp_account() {
+        request = request.header("X-OpenAI-Fedramp", "true");
+    }
+
+    let response = request.send().await.context("Failed to send request")?;
 
     if response.status().is_success() {
         let result: T = response

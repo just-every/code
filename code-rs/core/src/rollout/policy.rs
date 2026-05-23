@@ -27,13 +27,43 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::CompactionSummary { .. }
+        | ResponseItem::ContextCompaction { .. }
         | ResponseItem::GhostSnapshot { .. }
-        | ResponseItem::WebSearchCall { .. } => true,
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. } => true,
         ResponseItem::Other => false,
+    }
+}
+
+/// Whether a rollout item is useful as memory extraction input.
+#[inline]
+pub(crate) fn should_persist_response_item_for_memories(item: &RolloutItem) -> bool {
+    match item {
+        RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
+        RolloutItem::ResponseItem(
+            ResponseItem::Message { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::CompactionSummary { .. }
+            | ResponseItem::ContextCompaction { .. },
+        ) => true,
+        RolloutItem::Event(ev) => event_msg_from_protocol(&ev.msg)
+            .is_some_and(|msg| should_persist_event_msg(&msg)),
+        RolloutItem::EventMsg(msg) => event_msg_from_protocol(msg)
+            .is_some_and(|event| should_persist_event_msg(&event)),
+        _ => false,
     }
 }
 
@@ -42,7 +72,8 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
 pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
     !matches!(
         ev,
-        EventMsg::AgentMessageDelta(_)
+        EventMsg::ImageGenerationBegin(_)
+            | EventMsg::AgentMessageDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::AgentReasoningRawContentDelta(_)
     )

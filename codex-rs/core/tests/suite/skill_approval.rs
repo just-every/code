@@ -2,24 +2,23 @@
 #![cfg(unix)]
 
 use anyhow::Result;
-use codex_core::features::Feature;
-use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecApprovalRequestEvent;
+use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::mount_function_call_agent_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
-use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
-use pretty_assertions::assert_eq;
-use serde_json::json;
+use core_test_support::zsh_fork::build_zsh_fork_test;
+use core_test_support::zsh_fork::restrictive_workspace_write_profile;
+use core_test_support::zsh_fork::zsh_fork_runtime;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,7 +31,7 @@ fn write_skill_metadata(home: &Path, name: &str, contents: &str) -> Result<()> {
 }
 
 fn shell_command_arguments(command: &str) -> Result<String> {
-    Ok(serde_json::to_string(&json!({
+    Ok(serde_json::to_string(&serde_json::json!({
         "command": command,
         "timeout_ms": 500,
     }))?)
@@ -42,10 +41,13 @@ async fn submit_turn_with_policies(
     test: &TestCodex,
     prompt: &str,
     approval_policy: AskForApproval,
-    sandbox_policy: SandboxPolicy,
+    permission_profile: PermissionProfile,
 ) -> Result<()> {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(permission_profile, test.cwd_path());
     test.codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: prompt.to_string(),
                 text_elements: Vec::new(),
@@ -53,10 +55,13 @@ async fn submit_turn_with_policies(
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy,
+            approvals_reviewer: None,
             sandbox_policy,
+            permission_profile,
             model: test.session_configured.model.clone(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -64,7 +69,13 @@ async fn submit_turn_with_policies(
     Ok(())
 }
 
-fn write_skill_with_shell_script(home: &Path, name: &str, script_name: &str) -> Result<PathBuf> {
+#[cfg(unix)]
+fn write_skill_with_shell_script_contents(
+    home: &Path,
+    name: &str,
+    script_name: &str,
+    script_contents: &str,
+) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
     let skill_dir = home.join("skills").join(name);
@@ -82,187 +93,134 @@ description: {name} skill
     )?;
 
     let script_path = scripts_dir.join(script_name);
-    fs::write(
-        &script_path,
-        r#"#!/bin/sh
-echo 'zsh-fork-stdout'
-echo 'zsh-fork-stderr' >&2
-"#,
-    )?;
+    fs::write(&script_path, script_contents)?;
     let mut permissions = fs::metadata(&script_path)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions)?;
     Ok(script_path)
 }
 
-fn find_test_zsh_path() -> Result<Option<PathBuf>> {
-    use core_test_support::fetch_dotslash_file;
-
-    let repo_root = codex_utils_cargo_bin::repo_root()?;
-    let dotslash_zsh = repo_root.join("codex-rs/app-server/tests/suite/zsh");
-    if !dotslash_zsh.is_file() {
-        eprintln!(
-            "skipping zsh-fork skill test: shared zsh DotSlash file not found at {}",
-            dotslash_zsh.display()
-        );
-        return Ok(None);
-    }
-
-    match fetch_dotslash_file(&dotslash_zsh, None) {
-        Ok(path) => Ok(Some(path)),
-        Err(error) => {
-            eprintln!("skipping zsh-fork skill test: failed to fetch zsh via dotslash: {error:#}");
-            Ok(None)
-        }
-    }
-}
-
-fn supports_exec_wrapper_intercept(zsh_path: &Path) -> bool {
-    let status = std::process::Command::new(zsh_path)
-        .arg("-fc")
-        .arg("/usr/bin/true")
-        .env("EXEC_WRAPPER", "/usr/bin/false")
-        .status();
-    match status {
-        Ok(status) => !status.success(),
-        Err(_) => false,
-    }
-}
-
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_zsh_fork_prompts_for_skill_script_execution() -> Result<()> {
-    use codex_config::Constrained;
-    use codex_protocol::protocol::ReviewDecision;
-
-    skip_if_no_network!(Ok(()));
-
-    let Some(zsh_path) = find_test_zsh_path()? else {
-        return Ok(());
-    };
-    if !supports_exec_wrapper_intercept(&zsh_path) {
-        eprintln!(
-            "skipping zsh-fork skill test: zsh does not support EXEC_WRAPPER intercepts ({})",
-            zsh_path.display()
-        );
-        return Ok(());
-    }
-    let Ok(main_execve_wrapper_exe) = codex_utils_cargo_bin::cargo_bin("codex-execve-wrapper")
-    else {
-        eprintln!("skipping zsh-fork skill test: unable to resolve `codex-execve-wrapper` binary");
-        return Ok(());
-    };
-
-    let server = start_mock_server().await;
-    let tool_call_id = "zsh-fork-skill-call";
-    let mut builder = test_codex()
-        .with_pre_build_hook(|home| {
-            write_skill_with_shell_script(home, "mbolin-test-skill", "hello-mbolin.sh").unwrap();
-            write_skill_metadata(
-                home,
-                "mbolin-test-skill",
-                r#"
-permissions:
-  file_system:
-    read:
-      - "./data"
-    write:
-      - "./output"
-"#,
-            )
-            .unwrap();
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::ShellTool);
-            config.features.enable(Feature::ShellZshFork);
-            config.zsh_path = Some(zsh_path.clone());
-            config.main_execve_wrapper_exe = Some(main_execve_wrapper_exe);
-            config.permissions.allow_login_shell = false;
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-            config.permissions.sandbox_policy =
-                Constrained::allow_any(SandboxPolicy::new_workspace_write_policy());
-        });
-    let test = builder.build(&server).await?;
-
+fn skill_script_command(test: &TestCodex, script_name: &str) -> Result<String> {
     let script_path = fs::canonicalize(
         test.codex_home_path()
-            .join("skills/mbolin-test-skill/scripts/hello-mbolin.sh"),
+            .join("skills/mbolin-test-skill/scripts")
+            .join(script_name),
     )?;
-    let script_path_str = script_path.to_string_lossy().into_owned();
-    let command = shlex::try_join([script_path_str.as_str()])?;
-    let arguments = shell_command_arguments(&command)?;
-    let mocks =
-        mount_function_call_agent_response(&server, tool_call_id, &arguments, "shell_command")
-            .await;
+    Ok(shlex::try_join([script_path.to_string_lossy().as_ref()])?)
+}
 
-    submit_turn_with_policies(
-        &test,
-        "use $mbolin-test-skill",
-        AskForApproval::OnRequest,
-        SandboxPolicy::new_workspace_write_policy(),
-    )
-    .await?;
-
-    let maybe_approval = wait_for_event_match(test.codex.as_ref(), |event| match event {
+async fn wait_for_exec_approval_request(test: &TestCodex) -> Option<ExecApprovalRequestEvent> {
+    wait_for_event_match(test.codex.as_ref(), |event| match event {
         EventMsg::ExecApprovalRequest(request) => Some(Some(request.clone())),
         EventMsg::TurnComplete(_) => Some(None),
         _ => None,
     })
-    .await;
-    let approval = match maybe_approval {
-        Some(approval) => approval,
-        None => {
-            let call_output = mocks
-                .completion
-                .single_request()
-                .function_call_output(tool_call_id);
-            panic!(
-                "expected exec approval request before completion; function_call_output={call_output:?}"
-            );
-        }
-    };
-    assert_eq!(approval.call_id, tool_call_id);
-    assert_eq!(approval.command, vec![script_path_str.clone()]);
-    assert_eq!(
-        approval.available_decisions,
-        Some(vec![
-            ReviewDecision::Approved,
-            ReviewDecision::ApprovedForSession,
-            ReviewDecision::Abort,
-        ])
-    );
-    assert_eq!(
-        approval.additional_permissions,
-        Some(PermissionProfile {
-            file_system: Some(FileSystemPermissions {
-                read: Some(vec![PathBuf::from("./data")]),
-                write: Some(vec![PathBuf::from("./output")]),
-            }),
-            ..Default::default()
-        })
-    );
+    .await
+}
 
-    test.codex
-        .submit(Op::ExecApproval {
-            id: approval.effective_approval_id(),
-            turn_id: None,
-            decision: ReviewDecision::Denied,
-        })
-        .await?;
-
+async fn wait_for_turn_complete(test: &TestCodex) {
     wait_for_event(test.codex.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+}
+
+fn output_shows_sandbox_denial(output: &str) -> bool {
+    output.contains("Permission denied")
+        || output.contains("Operation not permitted")
+        || output.contains("Read-only file system")
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_zsh_fork_skill_scripts_ignore_declared_permissions() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let Some(runtime) = zsh_fork_runtime("zsh-fork skill script ignores permissions test")? else {
+        return Ok(());
+    };
+
+    let approval_policy = AskForApproval::Granular(GranularApprovalConfig {
+        sandbox_approval: true,
+        rules: true,
+        skill_approval: false,
+        request_permissions: true,
+        mcp_elicitations: true,
+    });
+    let workspace_write_profile = restrictive_workspace_write_profile();
+    let outside_dir = tempfile::tempdir_in(std::env::current_dir()?)?;
+    let allowed_dir = outside_dir.path().join("allowed-output");
+    fs::create_dir_all(&allowed_dir)?;
+    let allowed_path = allowed_dir.join("allowed.txt");
+    let allowed_path_quoted = shlex::try_join([allowed_path.to_string_lossy().as_ref()])?;
+    let script_contents = format!(
+        "#!/bin/sh\nprintf '%s' allowed > {allowed_path_quoted}\nif [ -f {allowed_path_quoted} ]; then cat {allowed_path_quoted}; fi\n"
+    );
+    let permissions_yaml = format!(
+        "permissions:\n  file_system:\n    write:\n      - \"{}\"\n",
+        allowed_dir.display()
+    );
+
+    let server = start_mock_server().await;
+    let allowed_path_for_hook = allowed_path.clone();
+    let script_contents_for_hook = script_contents.clone();
+    let test = build_zsh_fork_test(
+        &server,
+        runtime,
+        approval_policy,
+        workspace_write_profile.clone(),
+        move |home| {
+            let _ = fs::remove_file(&allowed_path_for_hook);
+            write_skill_with_shell_script_contents(
+                home,
+                "mbolin-test-skill",
+                "sandboxed.sh",
+                &script_contents_for_hook,
+            )
+            .unwrap();
+            write_skill_metadata(home, "mbolin-test-skill", &permissions_yaml).unwrap();
+        },
+    )
+    .await?;
+
+    let command = skill_script_command(&test, "sandboxed.sh")?;
+    let call_id = "zsh-fork-skill-script-ignores-permissions";
+    let arguments = shell_command_arguments(&command)?;
+    let mocks =
+        mount_function_call_agent_response(&server, call_id, &arguments, "shell_command").await;
+
+    submit_turn_with_policies(
+        &test,
+        "use $mbolin-test-skill",
+        approval_policy,
+        workspace_write_profile,
+    )
+    .await?;
+
+    let approval = wait_for_exec_approval_request(&test).await;
+    assert!(
+        approval.is_none(),
+        "expected skill script execution to skip the removed skill approval path"
+    );
+
+    wait_for_turn_complete(&test).await;
 
     let call_output = mocks
         .completion
         .single_request()
-        .function_call_output(tool_call_id);
+        .function_call_output(call_id);
     let output = call_output["output"].as_str().unwrap_or_default();
     assert!(
-        output.contains("Execution denied: User denied execution"),
-        "expected rejection marker in function_call_output: {output:?}"
+        !output.contains("Execution denied: Execution forbidden by policy"),
+        "skill script should now be governed by the turn sandbox, not the removed skill approval gate: {output:?}"
+    );
+    assert!(
+        output_shows_sandbox_denial(output) || !output.contains("allowed"),
+        "expected the turn sandbox to block the out-of-workspace write, got output: {output:?}"
+    );
+    assert!(
+        !allowed_path.exists(),
+        "declared skill permissions should not widen script execution beyond the turn sandbox"
     );
 
     Ok(())
@@ -271,55 +229,27 @@ permissions:
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_zsh_fork_still_enforces_workspace_write_sandbox() -> Result<()> {
-    use codex_config::Constrained;
-    use codex_protocol::protocol::AskForApproval;
-
     skip_if_no_network!(Ok(()));
 
-    let Some(zsh_path) = find_test_zsh_path()? else {
-        return Ok(());
-    };
-    if !supports_exec_wrapper_intercept(&zsh_path) {
-        eprintln!(
-            "skipping zsh-fork sandbox test: zsh does not support EXEC_WRAPPER intercepts ({})",
-            zsh_path.display()
-        );
-        return Ok(());
-    }
-    let Ok(main_execve_wrapper_exe) = codex_utils_cargo_bin::cargo_bin("codex-execve-wrapper")
-    else {
-        eprintln!(
-            "skipping zsh-fork sandbox test: unable to resolve `codex-execve-wrapper` binary"
-        );
+    let Some(runtime) = zsh_fork_runtime("zsh-fork workspace sandbox test")? else {
         return Ok(());
     };
 
     let server = start_mock_server().await;
     let tool_call_id = "zsh-fork-workspace-write-deny";
     let outside_path = "/tmp/codex-zsh-fork-workspace-write-deny.txt";
-    let workspace_write_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: Vec::new(),
-        read_only_access: Default::default(),
-        network_access: false,
-        exclude_tmpdir_env_var: true,
-        exclude_slash_tmp: true,
-    };
-    let policy_for_config = workspace_write_policy.clone();
+    let workspace_write_profile = restrictive_workspace_write_profile();
     let _ = fs::remove_file(outside_path);
-    let mut builder = test_codex()
-        .with_pre_build_hook(move |_| {
+    let test = build_zsh_fork_test(
+        &server,
+        runtime,
+        AskForApproval::Never,
+        workspace_write_profile.clone(),
+        move |_| {
             let _ = fs::remove_file(outside_path);
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::ShellTool);
-            config.features.enable(Feature::ShellZshFork);
-            config.zsh_path = Some(zsh_path.clone());
-            config.main_execve_wrapper_exe = Some(main_execve_wrapper_exe);
-            config.permissions.allow_login_shell = false;
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config.permissions.sandbox_policy = Constrained::allow_any(policy_for_config);
-        });
-    let test = builder.build(&server).await?;
+        },
+    )
+    .await?;
 
     let command = format!("touch {outside_path}");
     let arguments = shell_command_arguments(&command)?;
@@ -331,11 +261,11 @@ async fn shell_zsh_fork_still_enforces_workspace_write_sandbox() -> Result<()> {
         &test,
         "write outside workspace with zsh fork",
         AskForApproval::Never,
-        workspace_write_policy,
+        workspace_write_profile,
     )
     .await?;
 
-    wait_for_turn_complete_without_skill_approval(&test).await;
+    wait_for_turn_complete(&test).await;
 
     let call_output = mocks
         .completion
@@ -343,9 +273,7 @@ async fn shell_zsh_fork_still_enforces_workspace_write_sandbox() -> Result<()> {
         .function_call_output(tool_call_id);
     let output = call_output["output"].as_str().unwrap_or_default();
     assert!(
-        output.contains("Permission denied")
-            || output.contains("Operation not permitted")
-            || output.contains("Read-only file system"),
+        output_shows_sandbox_denial(output),
         "expected sandbox denial, got output: {output:?}"
     );
     assert!(

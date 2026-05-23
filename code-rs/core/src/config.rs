@@ -14,6 +14,8 @@ use crate::config_types::History;
 use crate::config_types::GithubConfig;
 use crate::config_types::ValidationConfig;
 use crate::config_types::McpServerConfig;
+use crate::config_types::MemoriesConfig;
+use crate::config_types::MemoriesToml;
 use crate::config_types::Notifications;
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
@@ -32,6 +34,7 @@ use crate::config_types::Personality;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::git_info::resolve_root_git_project_for_trust;
 use crate::model_family::ModelFamily;
+use crate::model_family::resolve_context_mode_limits;
 use crate::model_family::derive_default_model_family;
 use crate::model_family::find_family_for_model;
 use crate::model_provider_info::ModelProviderInfo;
@@ -41,6 +44,8 @@ use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use crate::config_types::ReasoningEffort;
 use crate::config_types::ReasoningSummary;
+use crate::config_types::ContextMode;
+use crate::config_types::ServiceTier;
 use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
 use code_app_server_protocol::AuthMode;
 use code_protocol::config_types::SandboxMode;
@@ -58,6 +63,38 @@ mod sources;
 mod validation;
 
 use defaults::{default_responses_originator, default_review_model, default_true_local};
+
+const OPENAI_BASE_URL_ENV_VAR: &str = "OPENAI_BASE_URL";
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 2] = ["openai", "oss"];
+
+fn validate_reserved_model_provider_ids(
+    model_providers: &HashMap<String, ModelProviderInfo>,
+) -> Result<(), String> {
+    let mut conflicts = model_providers
+        .keys()
+        .filter(|key| RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str()))
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>();
+    conflicts.sort_unstable();
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "model_providers contains reserved built-in provider IDs: {}. Built-in providers cannot be overridden. Rename your custom provider.",
+            conflicts.join(", ")
+        ))
+    }
+}
+
+fn validate_model_providers(model_providers: &HashMap<String, ModelProviderInfo>) -> Result<(), String> {
+    validate_reserved_model_provider_ids(model_providers)?;
+    for (key, provider) in model_providers {
+        provider
+            .validate()
+            .map_err(|message| format!("model_providers.{key}: {message}"))?;
+    }
+    Ok(())
+}
 
 pub use builder::ConfigBuilder;
 pub use defaults::set_default_originator;
@@ -105,9 +142,9 @@ pub use crate::config_constraint::ConstraintResult;
 pub(crate) use defaults::merge_with_default_agents;
 pub(crate) use validation::upgrade_legacy_model_slugs;
 
-pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.3-codex";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.3-codex";
-pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.3-codex";
+pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.4";
+const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.4";
+pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5.4";
 pub(crate) const DEFAULT_SUBAGENT_MAX_DEPTH: i32 = 1;
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
@@ -192,7 +229,7 @@ pub struct Config {
     /// Whether planning should inherit the chat model instead of using a dedicated override.
     pub planning_use_chat_model: bool,
 
-    /// Model used specifically for review sessions. Defaults to "gpt-5.2-codex".
+    /// Model used specifically for review sessions. Defaults to "gpt-5.4".
     pub review_model: String,
 
     /// Reasoning effort used when running review sessions.
@@ -238,6 +275,9 @@ pub struct Config {
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
+
+    /// Optional named context behavior that can override per-model defaults.
+    pub context_mode: Option<ContextMode>,
 
     /// Key into the model_providers map that specifies which provider to use.
     pub model_provider_id: String,
@@ -411,6 +451,13 @@ pub struct Config {
     /// The value to use for `text.verbosity` when making a request using the Responses API.
     pub model_text_verbosity: TextVerbosity,
 
+    /// Optional service tier preference for model requests.
+    ///
+    /// `Some(Fast)` sends `service_tier=priority` to the Responses API.
+    /// `Some(Flex)` sends `service_tier=flex` to the Responses API.
+    /// `None` sends no override (legacy standard behavior).
+    pub service_tier: Option<ServiceTier>,
+
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: String,
 
@@ -435,6 +482,10 @@ pub struct Config {
 
     /// Experimental: enable discovery and injection of skills.
     pub skills_enabled: bool,
+    /// Upstream-aligned memory feature gate.
+    pub memories_enabled: bool,
+    /// Upstream-aligned memories runtime settings.
+    pub memories: MemoriesConfig,
     /// Experimental: enable JSON-based environment context snapshots and deltas (phase gated).
     pub env_ctx_v2: bool,
     /// Retention policy for env_ctx_v2 timeline management (gated by env_ctx_v2).
@@ -682,6 +733,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Optional base URL override for the built-in OpenAI provider.
+    pub openai_base_url: Option<String>,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: Option<usize>,
 
@@ -735,6 +789,8 @@ pub struct ConfigToml {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_text_verbosity: Option<TextVerbosity>,
     pub model_personality: Option<Personality>,
+    pub context_mode: Option<ContextMode>,
+    pub service_tier: Option<ServiceTier>,
 
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
@@ -778,6 +834,9 @@ pub struct ConfigToml {
 
     /// Experimental feature toggles.
     pub features: Option<FeaturesToml>,
+
+    /// Memory subsystem configuration.
+    pub memories: Option<MemoriesToml>,
 
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
@@ -874,6 +933,10 @@ pub struct FeaturesToml {
     /// Enable discovery and injection of skills.
     #[serde(default)]
     pub skills: Option<bool>,
+
+    /// Enable upstream-style memories behavior.
+    #[serde(default)]
+    pub memories: Option<bool>,
 }
 
 impl ConfigToml {
@@ -1049,7 +1112,27 @@ impl Config {
 
         // (removed placeholder) sandbox_policy computed below after resolving project overrides.
 
-        let mut model_providers = built_in_model_providers();
+        let openai_base_url = cfg.openai_base_url.clone().filter(|url| !url.trim().is_empty());
+        let openai_base_url_from_env = std::env::var(OPENAI_BASE_URL_ENV_VAR)
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if openai_base_url_from_env.is_some() {
+            if openai_base_url.is_some() {
+                tracing::warn!(
+                    env_var = OPENAI_BASE_URL_ENV_VAR,
+                    "deprecated env var is ignored because `openai_base_url` is set in config.toml"
+                );
+            } else {
+                tracing::warn!(
+                    "`{OPENAI_BASE_URL_ENV_VAR}` is deprecated. Set `openai_base_url` in config.toml instead."
+                );
+            }
+        }
+        let effective_openai_base_url = openai_base_url.or(openai_base_url_from_env);
+
+        validate_model_providers(&cfg.model_providers).map_err(std::io::Error::other)?;
+
+        let mut model_providers = built_in_model_providers(effective_openai_base_url);
         // Merge user-defined providers into the built-in list.
         for (key, provider) in cfg.model_providers.into_iter() {
             model_providers.entry(key).or_insert(provider);
@@ -1198,6 +1281,12 @@ impl Config {
             .as_ref()
             .and_then(|features| features.skills)
             .unwrap_or(true);
+        let memories_enabled = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.memories)
+            .unwrap_or(false);
+        let memories = cfg.memories.clone().unwrap_or_default().into();
 
         let env_ctx_v2_flag = *crate::flags::CTX_UI;
 
@@ -1231,6 +1320,17 @@ impl Config {
             .model_personality
             .or(cfg.model_personality);
 
+        let service_tier = match config_profile.service_tier.or(cfg.service_tier) {
+            Some(ServiceTier::Fast) => Some(ServiceTier::Fast),
+            Some(ServiceTier::Flex) => Some(ServiceTier::Flex),
+            Some(ServiceTier::Standard) => None,
+            None => None,
+        };
+        let context_mode = config_profile
+            .context_mode
+            .or(cfg.context_mode)
+            .or(Some(ContextMode::Auto));
+
         let model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
         let default_tool_output_max_bytes = model_family.tool_output_max_bytes();
@@ -1247,15 +1347,19 @@ impl Config {
         let chat_reasoning_effort =
             clamp_reasoning_effort_for_model(&model, requested_chat_effort);
 
-        let model_context_window = cfg
-            .model_context_window
-            .or(model_family.context_window);
+        let mut model_context_window = cfg.model_context_window;
         let model_max_output_tokens = cfg
             .model_max_output_tokens
             .or(model_family.max_output_tokens);
-        let model_auto_compact_token_limit = cfg
-            .model_auto_compact_token_limit
-            .or_else(|| model_family.auto_compact_token_limit());
+        let mut model_auto_compact_token_limit = cfg.model_auto_compact_token_limit;
+        let (context_mode_window, context_mode_auto_compact_limit) =
+            resolve_context_mode_limits(&model, context_mode, &model_family);
+        if model_context_window.is_none() {
+            model_context_window = context_mode_window;
+        }
+        if model_auto_compact_token_limit.is_none() {
+            model_auto_compact_token_limit = context_mode_auto_compact_limit;
+        }
 
         // Load base instructions override from a file if specified. If the
         // path is relative, resolve it against the effective cwd so the
@@ -1289,6 +1393,7 @@ impl Config {
                 || agent.name.eq_ignore_ascii_case("codex")
                 || agent.name.eq_ignore_ascii_case("claude")
                 || agent.name.eq_ignore_ascii_case("gemini")
+                || agent.name.eq_ignore_ascii_case("copilot")
                 || agent.name.eq_ignore_ascii_case("qwen")
                 || agent.name.eq_ignore_ascii_case("cloud")
             {
@@ -1524,6 +1629,7 @@ impl Config {
             model_context_window,
             model_max_output_tokens,
             model_auto_compact_token_limit,
+            context_mode,
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
@@ -1593,6 +1699,7 @@ impl Config {
                 .model_text_verbosity
                 .or(cfg.model_text_verbosity)
                 .unwrap_or_default(),
+            service_tier,
 
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
@@ -1610,6 +1717,8 @@ impl Config {
                 .unwrap_or(false),
             include_view_image_tool: include_view_image_tool_flag,
             skills_enabled,
+            memories_enabled,
+            memories,
             env_ctx_v2: env_ctx_v2_flag,
             retention: crate::config_types::RetentionConfig::default(),
             responses_originator_header,
@@ -2015,6 +2124,8 @@ exclude_slash_tmp = true
                 },
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
             },
         );
 
@@ -2296,17 +2407,19 @@ model_verbosity = "high"
             wire_api: crate::WireApi::Chat,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            auth: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
             request_max_retries: Some(4),
             stream_max_retries: Some(10),
             stream_idle_timeout_ms: Some(300_000),
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             openrouter: None,
         };
         let model_provider_map = {
-            let mut model_provider_map = built_in_model_providers();
+            let mut model_provider_map = built_in_model_providers(None);
             model_provider_map.insert(
                 "openai-chat-completions".to_string(),
                 openai_chat_completions_provider.clone(),
@@ -2919,6 +3032,34 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn upgrade_legacy_model_slugs_does_not_rewrite_gpt_5_4() {
+        let mut cfg = ConfigToml {
+            model: Some("gpt-5.4".to_string()),
+            review_model: Some("test-gpt-5.4".to_string()),
+            ..Default::default()
+        };
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.4"));
+    }
+
+    #[test]
+    fn upgrade_legacy_model_slugs_repairs_gpt_5_2_4_typo() {
+        let mut cfg = ConfigToml {
+            model: Some("gpt-5.2.4".to_string()),
+            review_model: Some("test-gpt-5.2.4".to_string()),
+            ..Default::default()
+        };
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.4"));
+    }
+
+    #[test]
     fn test_compact_prompt_override_prefers_cli_string() -> std::io::Result<()> {
         let fixture = create_test_fixture()?;
         let mut cfg = fixture.cfg.clone();
@@ -3003,7 +3144,7 @@ model_verbosity = "high"
             .collect();
 
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
-        assert!(enabled_names.contains("code-gpt-5.2"));
+        assert!(enabled_names.contains("code-gpt-5.4"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
         assert!(enabled_names.contains("gemini-3-pro"));
         assert!(enabled_names.contains("qwen-3-coder"));
@@ -3100,7 +3241,13 @@ model_verbosity = "high"
 #[cfg(test)]
 mod agent_merge_tests {
     use super::merge_with_default_agents;
+    use super::Config;
+    use super::ConfigOverrides;
+    use super::ConfigToml;
     use crate::config_types::AgentConfig;
+    use crate::config_types::ContextMode;
+    use crate::config_types::ServiceTier;
+    use tempfile::TempDir;
 
     fn agent(name: &str, command: &str, enabled: bool) -> AgentConfig {
         AgentConfig {
@@ -3124,14 +3271,14 @@ mod agent_merge_tests {
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for alias");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
                 .count(),
             1,
             "should dedupe alias/canonical"
@@ -3140,19 +3287,19 @@ mod agent_merge_tests {
 
     #[test]
     fn disabled_codex_mini_slug_is_preserved_with_command() {
-        let agents = vec![agent("code-gpt-5.1-codex-mini", "coder", false)];
+        let agents = vec![agent("code-gpt-5.4-mini", "coder", false)];
         let merged = merge_with_default_agents(agents);
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for canonical slug");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
                 .count(),
             1,
             "should dedupe canonical entry"
@@ -3163,20 +3310,20 @@ mod agent_merge_tests {
     fn codex_mini_alias_then_canonical_last_wins_disabled() {
         let agents = vec![
             agent("codex-mini", "coder", true),
-            agent("code-gpt-5.1-codex-mini", "coder", false),
+            agent("code-gpt-5.4-mini", "coder", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
             .expect("mini present");
 
         assert!(!mini.enabled, "later canonical disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
                 .count(),
             1,
             "should dedupe alias and canonical"
@@ -3186,21 +3333,21 @@ mod agent_merge_tests {
     #[test]
     fn codex_mini_canonical_then_alias_last_wins_disabled() {
         let agents = vec![
-            agent("code-gpt-5.1-codex-mini", "coder", true),
+            agent("code-gpt-5.4-mini", "coder", true),
             agent("codex-mini", "coder", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
             .expect("mini present");
 
         assert!(!mini.enabled, "later alias disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.1-codex-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
                 .count(),
             1,
             "should dedupe alias and canonical"
@@ -3253,6 +3400,216 @@ mod agent_merge_tests {
             1,
             "should dedupe gemini alias/canonical"
         );
+    }
+
+    #[test]
+    fn service_tier_defaults_to_standard_when_unspecified() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, None);
+        Ok(())
+    }
+
+    #[test]
+    fn service_tier_fast_preserves_override() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(r#"service_tier = "fast""#)?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, Some(ServiceTier::Fast));
+        Ok(())
+    }
+
+    #[test]
+    fn service_tier_flex_preserves_override() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(r#"service_tier = "flex""#)?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, Some(ServiceTier::Flex));
+        Ok(())
+    }
+
+    #[test]
+    fn service_tier_standard_disables_override() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(r#"service_tier = "standard""#)?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, None);
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_one_m_expands_gpt_5_4_context() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "1m"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::OneM));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_one_m_is_inert_for_unsupported_models() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.3-codex"
+context_mode = "1m"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::OneM));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_one_m_is_inert_for_gpt_5_5() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.5"
+context_mode = "1m"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::OneM));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_auto_expands_gpt_5_4_context() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "auto"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Auto));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_defaults_to_auto_when_unspecified() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Auto));
+        assert_eq!(config.model_context_window, Some(1_047_576));
+        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        Ok(())
+    }
+
+    #[test]
+    fn context_mode_disabled_preserves_standard_limits() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(
+            r#"
+model = "gpt-5.4"
+context_mode = "disabled"
+"#,
+        )?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.context_mode, Some(ContextMode::Disabled));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
     }
 }
 

@@ -2,6 +2,7 @@ use crate::config::OtelExporter;
 use crate::config::OtelHttpProtocol;
 use crate::config::OtelSettings;
 use opentelemetry::KeyValue;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::Protocol;
 use opentelemetry_otlp::WithExportConfig;
@@ -16,6 +17,8 @@ use reqwest::header::HeaderValue;
 use std::error::Error;
 use tonic::metadata::MetadataMap;
 use tracing::debug;
+use tracing_subscriber::Layer;
+use tracing_subscriber::registry::LookupSpan;
 
 const ENV_ATTRIBUTE: &str = "env";
 
@@ -94,10 +97,22 @@ impl OtelProvider {
             logger: builder.build(),
         }))
     }
+
+    pub fn logger_layer<S>(&self) -> impl Layer<S> + Send + Sync
+    where
+        S: tracing::Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
+    {
+        OpenTelemetryTracingBridge::new(&self.logger)
+            .with_filter(tracing_subscriber::filter::filter_fn(otel_export_filter))
+    }
 }
 
 impl Drop for OtelProvider {
     fn drop(&mut self) {
         let _ = self.logger.shutdown();
     }
+}
+
+fn otel_export_filter(meta: &tracing::Metadata<'_>) -> bool {
+    meta.target().starts_with("code_otel") || *meta.level() == tracing::Level::ERROR
 }

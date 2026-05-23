@@ -17,6 +17,7 @@ workspace = true
 default = ["otel"]
 otel = [
     "opentelemetry",
+    "opentelemetry-appender-tracing",
     "opentelemetry_sdk",
     "opentelemetry-otlp",
     "tonic",
@@ -29,6 +30,7 @@ code-app-server-protocol = { workspace = true }
 code-protocol = { workspace = true }
 eventsource-stream = { workspace = true }
 opentelemetry = { workspace = true, features = ["logs"], optional = true }
+opentelemetry-appender-tracing = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, features = [
     "grpc-tonic",
     "http-proto",
@@ -48,3 +50,4 @@ strum_macros = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, optional = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

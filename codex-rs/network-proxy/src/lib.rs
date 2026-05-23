@@ -1,8 +1,8 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
-mod admin;
 mod certs;
 mod config;
+mod connect_policy;
 mod http_proxy;
 mod mitm;
 mod network_policy;
@@ -15,8 +15,13 @@ mod socks5;
 mod state;
 mod upstream;
 
+pub use config::NetworkDomainPermission;
+pub use config::NetworkDomainPermissionEntry;
+pub use config::NetworkDomainPermissions;
 pub use config::NetworkMode;
 pub use config::NetworkProxyConfig;
+pub use config::NetworkUnixSocketPermission;
+pub use config::NetworkUnixSocketPermissions;
 pub use config::host_and_port_from_network_addr;
 pub use network_policy::NetworkDecision;
 pub use network_policy::NetworkDecisionSource;
@@ -29,11 +34,17 @@ pub use policy::normalize_host;
 pub use proxy::ALL_PROXY_ENV_KEYS;
 pub use proxy::ALLOW_LOCAL_BINDING_ENV_KEY;
 pub use proxy::Args;
+#[cfg(target_os = "macos")]
+pub use proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
 pub use proxy::DEFAULT_NO_PROXY_VALUE;
 pub use proxy::NO_PROXY_ENV_KEYS;
 pub use proxy::NetworkProxy;
 pub use proxy::NetworkProxyBuilder;
 pub use proxy::NetworkProxyHandle;
+pub use proxy::PROXY_ACTIVE_ENV_KEY;
+pub use proxy::PROXY_ENV_KEYS;
+#[cfg(target_os = "macos")]
+pub use proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
 pub use proxy::PROXY_URL_ENV_KEYS;
 pub use proxy::has_proxy_url_env_vars;
 pub use proxy::proxy_url_env_value;

@@ -104,6 +104,7 @@ use self::streaming::{add_pending_screenshot, capture_browser_screenshot, submis
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 const HOOK_OUTPUT_LIMIT: usize = 2048;
 const PENDING_ONLY_SENTINEL: &str = "__code_pending_only__";
+const POST_TURN_PENDING_ONLY_SENTINEL: &str = "__code_post_turn_pending_only__";
 const MIN_SHELL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
 #[derive(Clone, Default)]
@@ -188,6 +189,8 @@ fn to_proto_approval_policy(policy: AskForApproval) -> ProtoAskForApproval {
         AskForApproval::Reject(config) => ProtoAskForApproval::Reject(ProtoRejectConfig {
             sandbox_approval: config.sandbox_approval,
             rules: config.rules,
+            skill_approval: config.skill_approval,
+            request_permissions: config.request_permissions,
             mcp_elicitations: config.mcp_elicitations,
         }),
         AskForApproval::Never => ProtoAskForApproval::Never,
@@ -1006,7 +1009,6 @@ use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ReasoningItemReasoningSummary;
 use code_protocol::models::ResponseInputItem;
 use code_protocol::models::ResponseItem;
-use code_protocol::models::ShellToolCallParams;
 use code_protocol::models::SandboxPermissions;
 use crate::openai_tools::ToolsConfig;
 use crate::openai_tools::get_openai_tools;
@@ -1137,6 +1139,10 @@ impl Codex {
             preferred_model_reasoning_effort: config.preferred_model_reasoning_effort,
             model_reasoning_summary: config.model_reasoning_summary,
             model_text_verbosity: config.model_text_verbosity,
+            service_tier: config.service_tier,
+            context_mode: config.context_mode,
+            model_context_window: config.model_context_window,
+            model_auto_compact_token_limit: config.model_auto_compact_token_limit,
             user_instructions,
             base_instructions: config.base_instructions.clone(),
             approval_policy: config.approval_policy,

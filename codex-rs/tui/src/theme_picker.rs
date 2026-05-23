@@ -29,9 +29,10 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::bottom_pane::popup_content_width;
 use crate::bottom_pane::side_by_side_layout_widths;
 use crate::diff_render::DiffLineType;
+use crate::diff_render::current_diff_render_style_context;
 use crate::diff_render::line_number_width;
-use crate::diff_render::push_wrapped_diff_line;
-use crate::diff_render::push_wrapped_diff_line_with_syntax;
+use crate::diff_render::push_wrapped_diff_line_with_style_context;
+use crate::diff_render::push_wrapped_diff_line_with_syntax_and_style_context;
 use crate::render::highlight;
 use crate::render::renderable::Renderable;
 use crate::status::format_directory_display;
@@ -200,27 +201,30 @@ fn render_preview(
 
     let mut y = area.y.saturating_add(top_pad);
     let render_width = area.width.saturating_sub(left_pad);
+    let style_context = current_diff_render_style_context();
     for (idx, row) in preview_rows.iter().enumerate() {
         if y >= area.y + area.height {
             break;
         }
         let diff_type = preview_diff_line_type(row.kind);
         let wrapped = if let Some(syn) = syntax_lines.as_ref().and_then(|sl| sl.get(idx)) {
-            push_wrapped_diff_line_with_syntax(
+            push_wrapped_diff_line_with_syntax_and_style_context(
                 row.line_no,
                 diff_type,
                 row.code,
                 render_width as usize,
                 ln_width,
                 syn,
+                style_context,
             )
         } else {
-            push_wrapped_diff_line(
+            push_wrapped_diff_line_with_style_context(
                 row.line_no,
                 diff_type,
                 row.code,
                 render_width as usize,
                 ln_width,
+                style_context,
             )
         };
         let first_line = wrapped.into_iter().next().unwrap_or_else(|| Line::from(""));
@@ -238,7 +242,13 @@ impl Renderable for ThemePreviewWideRenderable {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        render_preview(area, buf, &WIDE_PREVIEW_ROWS, true, WIDE_PREVIEW_LEFT_INSET);
+        render_preview(
+            area,
+            buf,
+            &WIDE_PREVIEW_ROWS,
+            /*center_vertically*/ true,
+            WIDE_PREVIEW_LEFT_INSET,
+        );
     }
 }
 
@@ -248,7 +258,13 @@ impl Renderable for ThemePreviewNarrowRenderable {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        render_preview(area, buf, &NARROW_PREVIEW_ROWS, false, 0);
+        render_preview(
+            area,
+            buf,
+            &NARROW_PREVIEW_ROWS,
+            /*center_vertically*/ false,
+            /*left_inset*/ 0,
+        );
     }
 }
 
@@ -270,7 +286,7 @@ fn theme_picker_subtitle(codex_home: Option<&Path>, terminal_width: Option<u16>)
     let themes_dir = codex_home.map(|home| home.join("themes"));
     let themes_dir_display = themes_dir
         .as_deref()
-        .map(|path| format_directory_display(path, None));
+        .map(|path| format_directory_display(path, /*max_width*/ None));
     let available_width = subtitle_available_width(terminal_width);
 
     if let Some(path) = themes_dir_display
@@ -292,7 +308,7 @@ fn theme_picker_subtitle(codex_home: Option<&Path>, terminal_width: Option<u16>)
 ///
 /// `current_name` should be the value of `Config::tui_theme` (the persisted
 /// preference).  When it names a theme that is currently available the picker
-/// pre-selects it; otherwise the picker falls back to the configured name (or
+/// preselects it; otherwise the picker falls back to the configured name (or
 /// adaptive default) so opening the picker without a persisted preference still
 /// highlights the most likely intended entry.
 pub(crate) fn build_theme_picker_params(
@@ -317,7 +333,7 @@ pub(crate) fn build_theme_picker_params(
         highlight::configured_theme_name()
     };
 
-    // Track the index of the current theme so we can pre-select it.
+    // Track the index of the current theme so we can preselect it.
     let mut initial_idx = None;
 
     let items: Vec<SelectionItem> = entries
@@ -354,20 +370,25 @@ pub(crate) fn build_theme_picker_params(
     let preview_theme_names: Vec<Option<String>> =
         items.iter().map(|item| item.search_value.clone()).collect();
     let preview_home = codex_home_owned.clone();
-    let on_selection_changed = Some(Box::new(move |idx: usize, _tx: &_| {
-        if let Some(Some(name)) = preview_theme_names.get(idx)
-            && let Some(theme) = highlight::resolve_theme_by_name(name, preview_home.as_deref())
-        {
-            highlight::set_syntax_theme(theme);
-        }
-    })
+    let on_selection_changed = Some(Box::new(
+        move |idx: usize, tx: &crate::app_event_sender::AppEventSender| {
+            if let Some(Some(name)) = preview_theme_names.get(idx)
+                && let Some(theme) = highlight::resolve_theme_by_name(name, preview_home.as_deref())
+            {
+                highlight::set_syntax_theme(theme);
+                tx.send(AppEvent::SyntaxThemePreviewed);
+            }
+        },
+    )
         as Box<dyn Fn(usize, &crate::app_event_sender::AppEventSender) + Send + Sync>);
 
     // Restore original theme on cancel.
-    let on_cancel = Some(Box::new(move |_tx: &_| {
-        highlight::set_syntax_theme(original_theme.clone());
-    })
-        as Box<dyn Fn(&crate::app_event_sender::AppEventSender) + Send + Sync>);
+    let on_cancel = Some(
+        Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
+            highlight::set_syntax_theme(original_theme.clone());
+            tx.send(AppEvent::SyntaxThemePreviewed);
+        }) as Box<dyn Fn(&crate::app_event_sender::AppEventSender) + Send + Sync>,
+    );
     SelectionViewParams {
         title: Some("Select Syntax Theme".to_string()),
         subtitle: Some(theme_picker_subtitle(
@@ -460,7 +481,9 @@ mod tests {
 
     #[test]
     fn theme_picker_uses_half_width_with_stacked_fallback_preview() {
-        let params = build_theme_picker_params(None, None, None);
+        let params = build_theme_picker_params(
+            /*current_name*/ None, /*codex_home*/ None, /*terminal_width*/ None,
+        );
         assert_eq!(params.side_content_width, SideContentWidth::Half);
         assert_eq!(params.side_content_min_width, WIDE_PREVIEW_MIN_WIDTH);
         assert!(params.stacked_side_content.is_some());
@@ -468,7 +491,9 @@ mod tests {
 
     #[test]
     fn theme_picker_items_include_search_values_for_preview_mapping() {
-        let params = build_theme_picker_params(None, None, None);
+        let params = build_theme_picker_params(
+            /*current_name*/ None, /*codex_home*/ None, /*terminal_width*/ None,
+        );
         assert!(
             params.items.iter().all(|item| item.search_value.is_some()),
             "theme picker preview mapping relies on item search_value to stay aligned with final item order"
@@ -477,7 +502,11 @@ mod tests {
 
     #[test]
     fn wide_preview_renders_all_lines_with_vertical_center_and_left_inset() {
-        let lines = render_lines(&ThemePreviewWideRenderable, 80, 20);
+        let lines = render_lines(
+            &ThemePreviewWideRenderable,
+            /*width*/ 80,
+            /*height*/ 20,
+        );
         let numbered_rows: Vec<usize> = lines
             .iter()
             .enumerate()
@@ -523,7 +552,11 @@ mod tests {
 
     #[test]
     fn narrow_preview_renders_single_add_and_single_remove_in_four_lines() {
-        let lines = render_lines(&ThemePreviewNarrowRenderable, 80, 6);
+        let lines = render_lines(
+            &ThemePreviewNarrowRenderable,
+            /*width*/ 80,
+            /*height*/ 6,
+        );
         let numbered_lines: Vec<usize> = lines
             .iter()
             .filter_map(|line| preview_line_number(line))
@@ -590,7 +623,8 @@ mod tests {
 
     #[test]
     fn subtitle_falls_back_to_preview_instructions_without_tilde_path() {
-        let subtitle = theme_picker_subtitle(None, None);
+        let subtitle =
+            theme_picker_subtitle(/*codex_home*/ None, /*terminal_width*/ None);
         assert_eq!(subtitle, PREVIEW_FALLBACK_SUBTITLE);
     }
 
@@ -607,7 +641,11 @@ mod tests {
     #[test]
     fn unavailable_configured_theme_falls_back_to_configured_or_default_selection() {
         let configured_or_default_theme = highlight::configured_theme_name();
-        let params = build_theme_picker_params(Some("not-a-real-theme"), None, Some(120));
+        let params = build_theme_picker_params(
+            Some("not-a-real-theme"),
+            /*codex_home*/ None,
+            Some(120),
+        );
         let selected_idx = params
             .initial_selected_idx
             .expect("expected selected index for active fallback theme");

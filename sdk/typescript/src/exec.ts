@@ -41,6 +41,13 @@ export class CodexExec {
       }
     }
 
+    if (args.baseUrl) {
+      commandArgs.push(
+        "--config",
+        `openai_base_url=${toTomlValue(args.baseUrl, "openai_base_url")}`,
+      );
+    }
+
     if (args.model) {
       commandArgs.push("--model", args.model);
     }

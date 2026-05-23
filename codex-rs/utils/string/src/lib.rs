@@ -1,3 +1,13 @@
+mod json;
+mod truncate;
+
+pub use json::to_ascii_json_string;
+pub use truncate::approx_bytes_for_tokens;
+pub use truncate::approx_token_count;
+pub use truncate::approx_tokens_from_byte_count;
+pub use truncate::truncate_middle_chars;
+pub use truncate::truncate_middle_with_token_budget;
+
 // Truncate a &str to a byte budget at a char boundary (prefix)
 #[inline]
 pub fn take_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
@@ -13,28 +23,6 @@ pub fn take_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
         last_ok = nb;
     }
     &s[..last_ok]
-}
-
-// Take a suffix of a &str within a byte budget at a char boundary
-#[inline]
-pub fn take_last_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
-    if s.len() <= maxb {
-        return s;
-    }
-    let mut start = s.len();
-    let mut used = 0usize;
-    for (i, ch) in s.char_indices().rev() {
-        let nb = ch.len_utf8();
-        if used + nb > maxb {
-            break;
-        }
-        start = i;
-        used += nb;
-        if start == 0 {
-            break;
-        }
-    }
-    &s[start..]
 }
 
 /// Sanitize a tag value to comply with metric tag validation rules:
@@ -112,6 +100,7 @@ fn parse_markdown_hash_location_point(point: &str) -> Option<(&str, Option<&str>
 }
 
 #[cfg(test)]
+#[allow(warnings, clippy::all)]
 mod tests {
     use super::find_uuids;
     use super::normalize_markdown_hash_location_suffix;

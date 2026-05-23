@@ -492,12 +492,12 @@ pub(crate) fn estimate_item_tokens(item: &ResponseItem) -> usize {
                 .iter()
                 .map(|item| match item {
                     FunctionCallOutputContentItem::InputText { text } => text.len(),
-                    FunctionCallOutputContentItem::InputImage { image_url } => image_url.len() / 10,
+                    FunctionCallOutputContentItem::InputImage { image_url, .. } => image_url.len() / 10,
                 })
                 .sum(),
         },
         ResponseItem::CustomToolCall { name, input, .. } => name.len() + input.len(),
-        ResponseItem::CustomToolCallOutput { output, .. } => output.len(),
+        ResponseItem::CustomToolCallOutput { output, .. } => output.to_string().len(),
         ResponseItem::Reasoning { summary, content, .. } => {
             summary
                 .iter()

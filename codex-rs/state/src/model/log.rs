@@ -8,6 +8,7 @@ pub struct LogEntry {
     pub level: String,
     pub target: String,
     pub message: Option<String>,
+    pub feedback_log_body: Option<String>,
     pub thread_id: Option<String>,
     pub process_uuid: Option<String>,
     pub module_path: Option<String>,
@@ -31,7 +32,7 @@ pub struct LogRow {
 
 #[derive(Clone, Debug, Default)]
 pub struct LogQuery {
-    pub level_upper: Option<String>,
+    pub levels_upper: Vec<String>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
     pub module_like: Vec<String>,

@@ -17,6 +17,97 @@ use serde::Serialize;
 use strum_macros::Display;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 16;
+pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
+pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 6;
+pub const DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL: usize = 256;
+pub const DEFAULT_MEMORIES_MAX_UNUSED_DAYS: i64 = 30;
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemoriesToml {
+    #[serde(default)]
+    pub no_memories_if_mcp_or_web_search: Option<bool>,
+    pub generate_memories: Option<bool>,
+    pub use_memories: Option<bool>,
+    #[serde(default, alias = "max_raw_memories_for_consolidation")]
+    pub max_raw_memories_for_global: Option<usize>,
+    pub max_unused_days: Option<i64>,
+    pub max_rollout_age_days: Option<i64>,
+    pub max_rollouts_per_startup: Option<usize>,
+    pub min_rollout_idle_hours: Option<i64>,
+    /// Optional override for the model used by stage 1 extraction.
+    #[serde(default, alias = "extract_model")]
+    pub phase_1_model: Option<String>,
+    /// Optional override for the model used by stage 2 consolidation.
+    #[serde(default, alias = "consolidation_model")]
+    pub phase_2_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoriesConfig {
+    pub no_memories_if_mcp_or_web_search: bool,
+    pub generate_memories: bool,
+    pub use_memories: bool,
+    pub max_raw_memories_for_global: usize,
+    pub max_unused_days: i64,
+    pub max_rollout_age_days: i64,
+    pub max_rollouts_per_startup: usize,
+    pub min_rollout_idle_hours: i64,
+    pub phase_1_model: Option<String>,
+    pub phase_2_model: Option<String>,
+}
+
+impl Default for MemoriesConfig {
+    fn default() -> Self {
+        Self {
+            no_memories_if_mcp_or_web_search: false,
+            generate_memories: true,
+            use_memories: true,
+            max_raw_memories_for_global: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL,
+            max_unused_days: DEFAULT_MEMORIES_MAX_UNUSED_DAYS,
+            max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
+            max_rollouts_per_startup: DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP,
+            min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
+            phase_1_model: None,
+            phase_2_model: None,
+        }
+    }
+}
+
+impl From<MemoriesToml> for MemoriesConfig {
+    fn from(toml: MemoriesToml) -> Self {
+        let defaults = Self::default();
+        Self {
+            no_memories_if_mcp_or_web_search: toml
+                .no_memories_if_mcp_or_web_search
+                .unwrap_or(defaults.no_memories_if_mcp_or_web_search),
+            generate_memories: toml.generate_memories.unwrap_or(defaults.generate_memories),
+            use_memories: toml.use_memories.unwrap_or(defaults.use_memories),
+            max_raw_memories_for_global: toml
+                .max_raw_memories_for_global
+                .unwrap_or(defaults.max_raw_memories_for_global)
+                .min(4096),
+            max_unused_days: toml
+                .max_unused_days
+                .unwrap_or(defaults.max_unused_days)
+                .clamp(0, 365),
+            max_rollout_age_days: toml
+                .max_rollout_age_days
+                .unwrap_or(defaults.max_rollout_age_days)
+                .clamp(0, 365),
+            max_rollouts_per_startup: toml
+                .max_rollouts_per_startup
+                .unwrap_or(defaults.max_rollouts_per_startup)
+                .clamp(1, 1024),
+            min_rollout_idle_hours: toml
+                .min_rollout_idle_hours
+                .unwrap_or(defaults.min_rollout_idle_hours)
+                .clamp(0, 168),
+            phase_1_model: toml.phase_1_model,
+            phase_2_model: toml.phase_2_model,
+        }
+    }
+}
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -80,6 +171,14 @@ pub struct McpServerConfig {
     /// Default timeout for MCP tool calls initiated via this server.
     #[serde(default, with = "option_duration_secs")]
     pub tool_timeout_sec: Option<Duration>,
+
+    /// Explicit allow-list of tools exposed from this server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_tools: Option<Vec<String>>,
+
+    /// Explicit deny-list of tools. Applied after `enabled_tools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -97,6 +196,12 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
             url: Option<String>,
             bearer_token: Option<String>,
+            bearer_token_env_var: Option<String>,
+            #[serde(default)]
+            http_headers: Option<HashMap<String, String>>,
+            #[serde(default)]
+            env_http_headers: Option<HashMap<String, String>>,
+            oauth_resource: Option<String>,
 
             #[serde(default)]
             startup_timeout_sec: Option<f64>,
@@ -104,6 +209,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             startup_timeout_ms: Option<u64>,
             #[serde(default, with = "option_duration_secs")]
             tool_timeout_sec: Option<Duration>,
+            #[serde(default)]
+            enabled_tools: Option<Vec<String>>,
+            #[serde(default)]
+            disabled_tools: Option<Vec<String>>,
         }
 
         let raw = RawMcpServerConfig::deserialize(deserializer)?;
@@ -116,6 +225,8 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             (None, Some(ms)) => Some(Duration::from_millis(ms)),
             (None, None) => None,
         };
+        let enabled_tools = raw.enabled_tools.clone();
+        let disabled_tools = raw.disabled_tools.clone();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -136,10 +247,22 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 env,
                 url,
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+                oauth_resource,
                 ..
             } => {
                 throw_if_set("stdio", "url", url.as_ref())?;
                 throw_if_set("stdio", "bearer_token", bearer_token.as_ref())?;
+                throw_if_set(
+                    "stdio",
+                    "bearer_token_env_var",
+                    bearer_token_env_var.as_ref(),
+                )?;
+                throw_if_set("stdio", "http_headers", http_headers.as_ref())?;
+                throw_if_set("stdio", "env_http_headers", env_http_headers.as_ref())?;
+                throw_if_set("stdio", "oauth_resource", oauth_resource.as_ref())?;
                 McpServerTransportConfig::Stdio {
                     command,
                     args: args.unwrap_or_default(),
@@ -149,6 +272,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             RawMcpServerConfig {
                 url: Some(url),
                 bearer_token,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+                oauth_resource,
                 command,
                 args,
                 env,
@@ -157,7 +284,14 @@ impl<'de> Deserialize<'de> for McpServerConfig {
                 throw_if_set("streamable_http", "command", command.as_ref())?;
                 throw_if_set("streamable_http", "args", args.as_ref())?;
                 throw_if_set("streamable_http", "env", env.as_ref())?;
-                McpServerTransportConfig::StreamableHttp { url, bearer_token }
+                McpServerTransportConfig::StreamableHttp {
+                    url,
+                    bearer_token,
+                    bearer_token_env_var,
+                    http_headers,
+                    env_http_headers,
+                    oauth_resource,
+                }
             }
             _ => return Err(SerdeError::custom("invalid transport")),
         };
@@ -166,6 +300,8 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             transport,
             startup_timeout_sec,
             tool_timeout_sec: raw.tool_timeout_sec,
+            enabled_tools,
+            disabled_tools,
         })
     }
 }
@@ -189,6 +325,18 @@ pub enum McpServerTransportConfig {
         /// This should be used with caution because it lives on disk in clear text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bearer_token: Option<String>,
+        /// Name of the environment variable holding an HTTP bearer token.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_env_var: Option<String>,
+        /// Additional HTTP headers to include in requests to this server.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_headers: Option<HashMap<String, String>>,
+        /// HTTP headers where the value is sourced from an environment variable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_http_headers: Option<HashMap<String, String>>,
+        /// Optional OAuth resource parameter (RFC 8707) for providers that require it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth_resource: Option<String>,
     },
 }
 
@@ -1345,6 +1493,29 @@ pub enum ReasoningSummary {
     None,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ServiceTier {
+    /// Legacy compatibility value for older local config files.
+    Standard,
+    Fast,
+    Flex,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextMode {
+    #[serde(rename = "1m")]
+    #[serde(alias = "\"1m\"")]
+    #[strum(to_string = "1m")]
+    OneM,
+    #[serde(alias = "\"auto\"")]
+    Auto,
+    #[serde(alias = "\"disabled\"")]
+    Disabled,
+}
+
 /// Text verbosity level for OpenAI API responses.
 /// Controls the level of detail in the model's text responses.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Display)]
@@ -1620,7 +1791,11 @@ mod tests {
             cfg.transport,
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
-                bearer_token: None
+                bearer_token: None,
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+                oauth_resource: None
             }
         );
     }
@@ -1639,7 +1814,83 @@ mod tests {
             cfg.transport,
             McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
-                bearer_token: Some("secret".to_string())
+                bearer_token: Some("secret".to_string()),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+                oauth_resource: None
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_streamable_http_server_config_with_header_sources() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            bearer_token_env_var = "MCP_TOKEN"
+            http_headers = { "X-Foo" = "bar" }
+            env_http_headers = { "X-Token" = "MCP_HEADER" }
+        "#,
+        )
+        .expect("should deserialize http config with header sources");
+
+        assert_eq!(
+            cfg.transport,
+            McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token: None,
+                bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                http_headers: Some(HashMap::from([("X-Foo".to_string(), "bar".to_string())])),
+                env_http_headers: Some(HashMap::from([(
+                    "X-Token".to_string(),
+                    "MCP_HEADER".to_string(),
+                )])),
+                oauth_resource: None,
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_mcp_tool_filters() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            enabled_tools = ["search_code"]
+            disabled_tools = ["delete_repo"]
+        "#,
+        )
+        .expect("should deserialize MCP tool filters");
+
+        assert_eq!(
+            cfg.enabled_tools,
+            Some(vec!["search_code".to_string()])
+        );
+        assert_eq!(
+            cfg.disabled_tools,
+            Some(vec!["delete_repo".to_string()])
+        );
+    }
+
+    #[test]
+    fn deserialize_streamable_http_server_config_with_oauth_resource() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            url = "https://example.com/mcp"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect("should deserialize http config with oauth_resource");
+
+        assert_eq!(
+            cfg.transport,
+            McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token: None,
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+                oauth_resource: Some("https://api.example.com".to_string())
             }
         );
     }
@@ -1675,5 +1926,75 @@ mod tests {
         "#,
         )
         .expect_err("should reject bearer token for stdio transport");
+    }
+
+    #[test]
+    fn deserialize_rejects_http_headers_for_stdio_transport() {
+        toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            http_headers = { "X-Foo" = "bar" }
+        "#,
+        )
+        .expect_err("should reject http_headers for stdio transport");
+    }
+
+    #[test]
+    fn deserialize_rejects_oauth_resource_for_stdio_transport() {
+        let err = toml::from_str::<McpServerConfig>(
+            r#"
+            command = "echo"
+            oauth_resource = "https://api.example.com"
+        "#,
+        )
+        .expect_err("should reject oauth_resource for stdio transport");
+
+        assert!(
+            err.to_string()
+                .contains("oauth_resource is not supported for stdio"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn deserialize_memories_upstream_aliases() {
+        let cfg: MemoriesToml = toml::from_str(
+            r#"
+            no_memories_if_mcp_or_web_search = true
+            max_raw_memories_for_consolidation = 7
+            extract_model = "gpt-5-mini"
+            consolidation_model = "gpt-5"
+        "#,
+        )
+        .expect("should deserialize memories aliases");
+
+        assert_eq!(cfg.no_memories_if_mcp_or_web_search, Some(true));
+        assert_eq!(cfg.max_raw_memories_for_global, Some(7));
+        assert_eq!(cfg.phase_1_model.as_deref(), Some("gpt-5-mini"));
+        assert_eq!(cfg.phase_2_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn memories_config_defaults_and_aliases_flow_through() {
+        let toml = MemoriesToml {
+            no_memories_if_mcp_or_web_search: Some(true),
+            generate_memories: None,
+            use_memories: Some(false),
+            max_raw_memories_for_global: Some(9),
+            max_unused_days: None,
+            max_rollout_age_days: None,
+            max_rollouts_per_startup: None,
+            min_rollout_idle_hours: None,
+            phase_1_model: Some("phase1".to_string()),
+            phase_2_model: Some("phase2".to_string()),
+        };
+
+        let cfg: MemoriesConfig = toml.into();
+        assert_eq!(cfg.no_memories_if_mcp_or_web_search, true);
+        assert_eq!(cfg.generate_memories, true);
+        assert_eq!(cfg.use_memories, false);
+        assert_eq!(cfg.max_raw_memories_for_global, 9);
+        assert_eq!(cfg.phase_1_model.as_deref(), Some("phase1"));
+        assert_eq!(cfg.phase_2_model.as_deref(), Some("phase2"));
     }
 }

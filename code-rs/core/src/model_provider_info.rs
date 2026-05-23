@@ -8,20 +8,59 @@
 
 use crate::CodexAuth;
 use crate::error::CodexErr;
+use code_protocol::config_types::ModelProviderAuthInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::env::VarError;
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
+use std::time::Instant;
+use tokio::process::Command;
 use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
+pub(crate) const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 /// Hard cap for user-configured `stream_max_retries`.
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderAuthCacheKey {
+    command: String,
+    args: Vec<String>,
+    cwd: PathBuf,
+}
+
+impl From<&ModelProviderAuthInfo> for ProviderAuthCacheKey {
+    fn from(value: &ModelProviderAuthInfo) -> Self {
+        Self {
+            command: value.command.clone(),
+            args: value.args.clone(),
+            cwd: value.cwd.as_path().to_path_buf(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedProviderAuthToken {
+    access_token: String,
+    fetched_at: Instant,
+}
+
+fn provider_auth_cache() -> &'static Mutex<HashMap<ProviderAuthCacheKey, CachedProviderAuthToken>> {
+    static CACHE: OnceLock<Mutex<HashMap<ProviderAuthCacheKey, CachedProviderAuthToken>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Wire protocol that the provider speaks. Most third-party services only
 /// implement the classic OpenAI Chat Completions JSON schema, whereas OpenAI
@@ -63,6 +102,9 @@ pub struct ModelProviderInfo {
     /// this may be necessary when using this programmatically.
     pub experimental_bearer_token: Option<String>,
 
+    /// Command-backed bearer-token configuration for this provider.
+    pub auth: Option<ModelProviderAuthInfo>,
+
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
@@ -89,6 +131,9 @@ pub struct ModelProviderInfo {
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
+
+    /// Timeout (in milliseconds) when establishing a websocket transport connection.
+    pub websocket_connect_timeout_ms: Option<u64>,
 
     /// Whether this provider requires some form of standard authentication (API key, ChatGPT token).
     #[serde(default)]
@@ -189,6 +234,49 @@ pub struct OpenRouterMaxPrice {
 }
 
 impl ModelProviderInfo {
+    pub(crate) fn validate(&self) -> std::result::Result<(), String> {
+        let Some(auth) = self.auth.as_ref() else {
+            return Ok(());
+        };
+
+        if auth.command.trim().is_empty() {
+            return Err("provider auth.command must not be empty".to_string());
+        }
+
+        let mut conflicts = Vec::new();
+        if self.env_key.is_some() {
+            conflicts.push("env_key");
+        }
+        if self.experimental_bearer_token.is_some() {
+            conflicts.push("experimental_bearer_token");
+        }
+        if self.requires_openai_auth {
+            conflicts.push("requires_openai_auth");
+        }
+
+        if conflicts.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "provider auth cannot be combined with {}",
+                conflicts.join(", ")
+            ))
+        }
+    }
+
+    pub(crate) fn has_command_auth(&self) -> bool {
+        self.auth.is_some()
+    }
+
+    pub(crate) fn invalidate_cached_auth_token(&self) {
+        if let Some(auth) = self.auth.as_ref() {
+            provider_auth_cache()
+                .lock()
+                .unwrap()
+                .remove(&ProviderAuthCacheKey::from(auth));
+        }
+    }
+
     /// Construct a `POST` RequestBuilder for the given URL using the provided
     /// reqwest Client applying:
     ///   • provider-specific headers (static + env based)
@@ -202,14 +290,26 @@ impl ModelProviderInfo {
         client: &'a reqwest::Client,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<reqwest::RequestBuilder> {
-        let effective_auth = self.effective_auth(auth)?;
+        let effective_auth = self.effective_auth(auth).await?;
 
-        let url = self.get_full_url(&effective_auth);
+        self.create_request_builder_with_auth(client, &effective_auth)
+            .await
+    }
+
+    pub async fn create_request_builder_with_auth<'a>(
+        &'a self,
+        client: &'a reqwest::Client,
+        auth: &Option<CodexAuth>,
+    ) -> crate::error::Result<reqwest::RequestBuilder> {
+        let url = self.get_full_url(auth);
 
         let mut builder = client.post(&url);
 
-        if let Some(auth) = effective_auth.as_ref() {
+        if let Some(auth) = auth.as_ref() {
             builder = builder.bearer_auth(auth.get_token().await?);
+            if auth.is_fedramp_account() {
+                builder = builder.header("X-OpenAI-Fedramp", "true");
+            }
         }
 
         Ok(self.apply_http_headers(builder))
@@ -224,12 +324,27 @@ impl ModelProviderInfo {
         method: reqwest::Method,
         url: reqwest::Url,
     ) -> crate::error::Result<reqwest::RequestBuilder> {
-        let effective_auth = self.effective_auth(auth)?;
+        let effective_auth = self.effective_auth(auth).await?;
+
+        self.create_request_builder_for_url_with_auth(client, &effective_auth, method, url)
+            .await
+    }
+
+    pub async fn create_request_builder_for_url_with_auth<'a>(
+        &'a self,
+        client: &'a reqwest::Client,
+        auth: &Option<CodexAuth>,
+        method: reqwest::Method,
+        url: reqwest::Url,
+    ) -> crate::error::Result<reqwest::RequestBuilder> {
 
         let mut builder = client.request(method, url);
 
-        if let Some(auth) = effective_auth.as_ref() {
+        if let Some(auth) = auth.as_ref() {
             builder = builder.bearer_auth(auth.get_token().await?);
+            if auth.is_fedramp_account() {
+                builder = builder.header("X-OpenAI-Fedramp", "true");
+            }
         }
 
         Ok(self.apply_http_headers(builder))
@@ -240,27 +355,39 @@ impl ModelProviderInfo {
         client: &'a reqwest::Client,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<reqwest::RequestBuilder> {
+        let effective_auth = self.effective_auth(auth).await?;
+        self.create_compact_request_builder_with_auth(client, &effective_auth)
+            .await
+    }
+
+    pub async fn create_compact_request_builder_with_auth<'a>(
+        &'a self,
+        client: &'a reqwest::Client,
+        auth: &Option<CodexAuth>,
+    ) -> crate::error::Result<reqwest::RequestBuilder> {
         if !matches!(self.wire_api, WireApi::Responses | WireApi::ResponsesWebsocket) {
             return Err(CodexErr::UnsupportedOperation(
                 "Compaction endpoint requires Responses API providers".to_string(),
             ));
         }
-        let effective_auth = self.effective_auth(auth)?;
-        let url = self.get_compact_url(&effective_auth).ok_or_else(|| {
+        let url = self.get_compact_url(auth).ok_or_else(|| {
             CodexErr::UnsupportedOperation(
                 "Compaction endpoint requires Responses API providers".to_string(),
             )
         })?;
 
         let mut builder = client.post(url);
-        if let Some(auth) = effective_auth.as_ref() {
+        if let Some(auth) = auth.as_ref() {
             builder = builder.bearer_auth(auth.get_token().await?);
+            if auth.is_fedramp_account() {
+                builder = builder.header("X-OpenAI-Fedramp", "true");
+            }
         }
 
         Ok(self.apply_http_headers(builder))
     }
 
-    fn effective_auth(
+    pub(crate) async fn effective_auth(
         &self,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<Option<CodexAuth>> {
@@ -271,6 +398,13 @@ impl ModelProviderInfo {
             .filter(|token| !token.is_empty())
         {
             return Ok(Some(CodexAuth::from_api_key(token)));
+        }
+
+        if let Some(provider_auth) = self.auth.as_ref() {
+            let token = resolve_provider_auth_token(provider_auth)
+                .await
+                .map_err(|err| CodexErr::UnsupportedOperation(err.to_string()))?;
+            return Ok(Some(CodexAuth::from_api_key(&token)));
         }
 
         match self.api_key() {
@@ -305,10 +439,7 @@ impl ModelProviderInfo {
     }
 
     pub(crate) fn get_full_url(&self, auth: &Option<CodexAuth>) -> String {
-        let default_base_url = if auth
-            .as_ref()
-            .is_some_and(|auth| auth.mode.is_chatgpt())
-        {
+        let default_base_url = if auth.as_ref().is_some_and(CodexAuth::uses_codex_backend) {
             "https://chatgpt.com/backend-api/codex"
         } else {
             "https://api.openai.com/v1"
@@ -452,11 +583,111 @@ impl ModelProviderInfo {
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
 
+    pub fn websocket_connect_timeout(&self) -> Duration {
+        self.websocket_connect_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS))
+    }
+
     pub fn base_url_for_probe(&self) -> String {
         self.base_url
             .clone()
             .unwrap_or_else(|| "https://api.openai.com".to_string())
     }
+}
+
+async fn resolve_provider_auth_token(config: &ModelProviderAuthInfo) -> io::Result<String> {
+    let cache_key = ProviderAuthCacheKey::from(config);
+    if let Some(cached_token) = provider_auth_cache().lock().unwrap().get(&cache_key).cloned() {
+        let should_use_cached_token = match config.refresh_interval() {
+            Some(refresh_interval) => cached_token.fetched_at.elapsed() < refresh_interval,
+            None => true,
+        };
+        if should_use_cached_token {
+            return Ok(cached_token.access_token);
+        }
+    }
+
+    let access_token = run_provider_auth_command(config).await?;
+    provider_auth_cache().lock().unwrap().insert(
+        cache_key,
+        CachedProviderAuthToken {
+            access_token: access_token.clone(),
+            fetched_at: Instant::now(),
+        },
+    );
+    Ok(access_token)
+}
+
+async fn run_provider_auth_command(config: &ModelProviderAuthInfo) -> io::Result<String> {
+    let program = resolve_provider_auth_program(&config.command, config.cwd.as_path())?;
+    let mut command = Command::new(&program);
+    command
+        .args(&config.args)
+        .current_dir(config.cwd.as_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = tokio::time::timeout(config.timeout(), command.output())
+        .await
+        .map_err(|_| {
+            io::Error::other(format!(
+                "provider auth command `{}` timed out after {} ms",
+                config.command,
+                config.timeout_ms.get()
+            ))
+        })?
+        .map_err(|err| {
+            io::Error::other(format!(
+                "provider auth command `{}` failed to start: {err}",
+                config.command
+            ))
+        })?;
+
+    if !output.status.success() {
+        let status = output.status;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr_suffix = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        };
+        return Err(io::Error::other(format!(
+            "provider auth command `{}` exited with status {status}{stderr_suffix}",
+            config.command
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+        io::Error::other(format!(
+            "provider auth command `{}` wrote non-UTF-8 data to stdout",
+            config.command
+        ))
+    })?;
+    let access_token = stdout.trim().to_string();
+    if access_token.is_empty() {
+        return Err(io::Error::other(format!(
+            "provider auth command `{}` produced an empty token",
+            config.command
+        )));
+    }
+
+    Ok(access_token)
+}
+
+fn resolve_provider_auth_program(command: &str, cwd: &Path) -> io::Result<PathBuf> {
+    let path = Path::new(command);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    if path.components().count() > 1 {
+        return Ok(cwd.join(path));
+    }
+
+    Ok(PathBuf::from(command))
 }
 
 const DEFAULT_OLLAMA_PORT: u32 = 11434;
@@ -482,7 +713,9 @@ fn wire_api_override_from_env(env_key: &str) -> Option<WireApi> {
     }
 }
 
-pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
+pub fn built_in_model_providers(
+    openai_base_url: Option<String>,
+) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
 
     // We do not want to be in the business of adjucating which third-party
@@ -494,17 +727,11 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
             "openai",
             P {
                 name: "OpenAI".into(),
-                // Allow users to override the default OpenAI endpoint by
-                // exporting `OPENAI_BASE_URL`. This is useful when pointing
-                // Codex at a proxy, mock server, or Azure-style deployment
-                // without requiring a full TOML override for the built-in
-                // OpenAI provider.
-                base_url: std::env::var("OPENAI_BASE_URL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty()),
+                base_url: openai_base_url,
                 env_key: None,
                 env_key_instructions: None,
                 experimental_bearer_token: None,
+                auth: None,
                 wire_api: wire_api_override_from_env("OPENAI_WIRE_API")
                     .unwrap_or(WireApi::Responses),
                 query_params: None,
@@ -533,6 +760,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                websocket_connect_timeout_ms: None,
                 requires_openai_auth: true,
                 openrouter: None,
             },
@@ -572,6 +800,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
+        auth: None,
         wire_api: WireApi::Chat,
         query_params: None,
         http_headers: None,
@@ -579,6 +808,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         openrouter: None,
     }
@@ -599,7 +829,11 @@ fn matches_azure_responses_base_url(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_utils_absolute_path::AbsolutePathBuf;
+    use code_utils_absolute_path::AbsolutePathBufGuard;
     use pretty_assertions::assert_eq;
+    use std::num::NonZeroU64;
+    use tempfile::tempdir;
 
     #[test]
     fn test_deserialize_ollama_model_provider_toml() {
@@ -613,6 +847,7 @@ base_url = "http://localhost:11434/v1"
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            auth: None,
             wire_api: WireApi::Chat,
             query_params: None,
             http_headers: None,
@@ -620,6 +855,7 @@ base_url = "http://localhost:11434/v1"
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -642,6 +878,7 @@ query_params = { api-version = "2025-04-01-preview" }
             env_key: Some("AZURE_OPENAI_API_KEY".into()),
             env_key_instructions: None,
             experimental_bearer_token: None,
+            auth: None,
             wire_api: WireApi::Chat,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
@@ -651,6 +888,7 @@ query_params = { api-version = "2025-04-01-preview" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -674,6 +912,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             env_key: Some("API_KEY".into()),
             env_key_instructions: None,
             experimental_bearer_token: None,
+            auth: None,
             wire_api: WireApi::Chat,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
@@ -685,6 +924,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -702,6 +942,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 env_key: None,
                 env_key_instructions: None,
                 experimental_bearer_token: None,
+                auth: None,
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: None,
@@ -709,6 +950,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                websocket_connect_timeout_ms: None,
                 requires_openai_auth: false,
                 openrouter: None,
             }
@@ -736,6 +978,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            auth: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -743,6 +986,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -764,7 +1008,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 
     #[test]
     fn openai_provider_version_header_uses_wire_compatible_version() {
-        let providers = built_in_model_providers();
+        let providers = built_in_model_providers(None);
         let openai = providers.get("openai").expect("openai provider should exist");
         let headers = openai.http_headers.as_ref().expect("openai provider should set headers");
         let version = headers
@@ -772,5 +1016,87 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             .expect("openai provider should include version header");
 
         assert_eq!(version, code_version::wire_compatible_version());
+    }
+
+    #[test]
+    fn test_deserialize_provider_auth_config_defaults() {
+        let base_dir = tempdir().unwrap();
+        let provider_toml = r#"
+name = "Corp"
+
+[auth]
+command = "./scripts/print-token"
+args = ["--format=text"]
+        "#;
+
+        let provider: ModelProviderInfo = {
+            let _guard = AbsolutePathBufGuard::new(base_dir.path());
+            toml::from_str(provider_toml).unwrap()
+        };
+
+        assert_eq!(
+            provider.auth,
+            Some(ModelProviderAuthInfo {
+                command: "./scripts/print-token".to_string(),
+                args: vec!["--format=text".to_string()],
+                timeout_ms: NonZeroU64::new(5_000).unwrap(),
+                refresh_interval_ms: 300_000,
+                cwd: AbsolutePathBuf::resolve_path_against_base(".", base_dir.path()).unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_deserialize_provider_auth_config_allows_zero_refresh_interval() {
+        let base_dir = tempdir().unwrap();
+        let provider_toml = r#"
+name = "Corp"
+
+[auth]
+command = "./scripts/print-token"
+refresh_interval_ms = 0
+        "#;
+
+        let provider: ModelProviderInfo = {
+            let _guard = AbsolutePathBufGuard::new(base_dir.path());
+            toml::from_str(provider_toml).unwrap()
+        };
+
+        let auth = provider.auth.expect("auth config should deserialize");
+        assert_eq!(auth.refresh_interval_ms, 0);
+        assert_eq!(auth.refresh_interval(), None);
+    }
+
+    #[test]
+    fn provider_auth_validation_rejects_conflicting_fields() {
+        let provider = ModelProviderInfo {
+            name: "Corp".into(),
+            base_url: Some("https://example.com".into()),
+            env_key: Some("CORP_API_KEY".into()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: Some(ModelProviderAuthInfo {
+                command: "./print-token".to_string(),
+                args: Vec::new(),
+                timeout_ms: NonZeroU64::new(5_000).unwrap(),
+                refresh_interval_ms: 300_000,
+                cwd: AbsolutePathBuf::current_dir().unwrap(),
+            }),
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        assert_eq!(
+            provider.validate(),
+            Err("provider auth cannot be combined with env_key".to_string())
+        );
     }
 }

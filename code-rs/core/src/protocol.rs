@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use crate::config_types::ContextMode as ContextModeConfig;
+use crate::config_types::ServiceTier as ServiceTierConfig;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::message_history::HistoryEntry;
 use crate::model_provider_info::ModelProviderInfo;
@@ -39,6 +41,8 @@ pub use code_protocol::protocol::ReviewLineRange;
 pub use code_protocol::protocol::ReviewOutputEvent;
 pub use code_protocol::protocol::{ReviewContextMetadata, ReviewRequest};
 pub use code_protocol::protocol::GitInfo;
+pub use code_protocol::protocol::ImageGenerationBeginEvent;
+pub use code_protocol::protocol::ImageGenerationEndEvent;
 pub use code_protocol::protocol::RolloutItem;
 pub use code_protocol::protocol::RolloutLine;
 pub use code_protocol::protocol::ConversationPathResponseEvent;
@@ -101,6 +105,10 @@ pub enum Op {
         preferred_model_reasoning_effort: Option<ReasoningEffortConfig>,
         model_reasoning_summary: ReasoningSummaryConfig,
         model_text_verbosity: TextVerbosityConfig,
+        service_tier: Option<ServiceTierConfig>,
+        context_mode: Option<ContextModeConfig>,
+        model_context_window: Option<u64>,
+        model_auto_compact_token_limit: Option<i64>,
 
         /// Model instructions that are appended to the base instructions.
         user_instructions: Option<String>,
@@ -264,6 +272,13 @@ pub enum Op {
         text: String,
     },
 
+    /// Queue a developer-role message to run in a dedicated follow-up turn
+    /// immediately after the current turn completes.
+    AddPostTurnDeveloperInput {
+        /// The developer message text to add to the post-turn queue.
+        text: String,
+    },
+
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
 
@@ -331,6 +346,12 @@ pub struct RejectConfig {
     pub sandbox_approval: bool,
     /// Reject prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
+    /// Reject approval prompts triggered by skill script execution.
+    #[serde(default)]
+    pub skill_approval: bool,
+    /// Reject approval prompts related to built-in permission requests.
+    #[serde(default)]
+    pub request_permissions: bool,
     /// Reject MCP elicitation prompts.
     pub mcp_elicitations: bool,
 }
@@ -342,6 +363,14 @@ impl RejectConfig {
 
     pub const fn rejects_rules_approval(self) -> bool {
         self.rules
+    }
+
+    pub const fn rejects_skill_approval(self) -> bool {
+        self.skill_approval
+    }
+
+    pub const fn rejects_request_permissions(self) -> bool {
+        self.request_permissions
     }
 
     pub const fn rejects_mcp_elicitations(self) -> bool {
@@ -597,6 +626,7 @@ pub struct RecordedEvent {
 pub fn event_msg_to_protocol(msg: &EventMsg) -> Option<code_protocol::protocol::EventMsg> {
     match msg {
         EventMsg::ReplayHistory(_) => None,
+        EventMsg::TaskLifecycle(_) => None,
         EventMsg::TokenCount(payload) => {
             let info = convert_value(&payload.info)?;
             let rate_limits = payload
@@ -799,12 +829,19 @@ pub enum EventMsg {
     /// Agent has started a task
     TaskStarted,
 
+    /// Core-owned lifecycle signal for a task, including provenance and
+    /// whether the resulting output should be shown in the visible thread.
+    TaskLifecycle(TaskLifecycleEvent),
+
     /// Agent has completed all actions
     TaskComplete(TaskCompleteEvent),
 
     /// Token count event, sent periodically to report the number of tokens
     /// used in the current session and the latest rate limit snapshot.
     TokenCount(TokenCountEvent),
+
+    /// Auto Context is evaluating whether to compact before the next turn.
+    AutoContextCheck(AutoContextCheckEvent),
 
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
@@ -849,6 +886,12 @@ pub enum EventMsg {
     WebSearchBegin(WebSearchBeginEvent),
     /// Native web search call completed
     WebSearchComplete(WebSearchCompleteEvent),
+
+    /// Model requested native image generation.
+    ImageGenerationBegin(ImageGenerationBeginEvent),
+
+    /// Native image generation call completed.
+    ImageGenerationEnd(ImageGenerationEndEvent),
 
     /// Custom tool call events for non-MCP tools (browser, agent, etc)
     CustomToolCallBegin(CustomToolCallBeginEvent),
@@ -944,6 +987,46 @@ pub struct WarningEvent {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskCompleteEvent {
     pub last_agent_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskLifecyclePhase {
+    Started,
+    AwaitingExternalInput,
+    Quiescent,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOriginKind {
+    User,
+    QueuedUser,
+    PendingInput,
+    PostTurn,
+    OutOfTurnDeveloper,
+    Review,
+    ManualCompact,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TaskLifecycleEvent {
+    pub phase: TaskLifecyclePhase,
+    pub origin: TaskOriginKind,
+    pub visible_to_user: bool,
+    pub last_agent_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoContextPhase {
+    Checking,
+    Compacting,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutoContextCheckEvent {
+    pub phase: Option<AutoContextPhase>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]

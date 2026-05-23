@@ -379,6 +379,13 @@
       "title": "AuthStatusChangeNotification",
       "type": "object"
     },
+    "AutoContextPhase": {
+      "enum": [
+        "checking",
+        "compacting"
+      ],
+      "type": "string"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -2037,6 +2044,7 @@
           "enum": [
             "context_window_exceeded",
             "usage_limit_exceeded",
+            "cyber_policy",
             "internal_server_error",
             "unauthorized",
             "bad_request",
@@ -2588,6 +2596,12 @@
         "callId": {
           "type": "string"
         },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         },
@@ -2816,6 +2830,33 @@
             "type"
           ],
           "title": "TokenCountEventMsg",
+          "type": "object"
+        },
+        {
+          "description": "Auto Context is evaluating whether to compact before the next turn.",
+          "properties": {
+            "phase": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AutoContextPhase"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "auto_context_check"
+              ],
+              "title": "AutoContextCheckEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AutoContextCheckEventMsg",
           "type": "object"
         },
         {
@@ -3337,6 +3378,70 @@
           "type": "object"
         },
         {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_begin"
+              ],
+              "title": "ImageGenerationBeginEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "type"
+          ],
+          "title": "ImageGenerationBeginEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "saved_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_end"
+              ],
+              "title": "ImageGenerationEndEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationEndEventMsg",
+          "type": "object"
+        },
+        {
           "description": "Notification that the server is about to execute a command.",
           "properties": {
             "call_id": {
@@ -3724,6 +3829,12 @@
             "arguments": true,
             "callId": {
               "type": "string"
+            },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tool": {
               "type": "string"
@@ -5514,6 +5625,16 @@
         },
         {
           "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "image_url": {
               "type": "string"
             },
@@ -5819,6 +5940,15 @@
         "ts"
       ],
       "type": "object"
+    },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
     },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
@@ -7029,12 +7159,22 @@
           "description": "Reject MCP elicitation prompts.",
           "type": "boolean"
         },
+        "request_permissions": {
+          "default": false,
+          "description": "Reject approval prompts related to built-in permission requests.",
+          "type": "boolean"
+        },
         "rules": {
           "description": "Reject prompts triggered by execpolicy `prompt` rules.",
           "type": "boolean"
         },
         "sandbox_approval": {
           "description": "Reject approval prompts related to sandbox escalation.",
+          "type": "boolean"
+        },
+        "skill_approval": {
+          "default": false,
+          "description": "Reject approval prompts triggered by skill script execution.",
           "type": "boolean"
         }
       },
@@ -7383,6 +7523,12 @@
             "name": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "function_call"
@@ -7398,6 +7544,47 @@
             "type"
           ],
           "title": "FunctionCallResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "arguments": true,
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "tool_search_call"
+              ],
+              "title": "ToolSearchCallResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "arguments",
+            "execution",
+            "type"
+          ],
+          "title": "ToolSearchCallResponseItem",
           "type": "object"
         },
         {
@@ -7470,8 +7657,14 @@
             "call_id": {
               "type": "string"
             },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "output": {
-              "type": "string"
+              "$ref": "#/definitions/FunctionCallOutputPayload"
             },
             "type": {
               "enum": [
@@ -7487,6 +7680,41 @@
             "type"
           ],
           "title": "CustomToolCallOutputResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "tools": {
+              "items": true,
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "tool_search_output"
+              ],
+              "title": "ToolSearchOutputResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "execution",
+            "status",
+            "tools",
+            "type"
+          ],
+          "title": "ToolSearchOutputResponseItem",
           "type": "object"
         },
         {
@@ -7530,6 +7758,40 @@
         },
         {
           "properties": {
+            "id": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "image_generation_call"
+              ],
+              "title": "ImageGenerationCallResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationCallResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "ghost_commit": {
               "$ref": "#/definitions/GhostCommit"
             },
@@ -7566,6 +7828,28 @@
             "type"
           ],
           "title": "CompactionSummaryResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "encrypted_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "context_compaction"
+              ],
+              "title": "ContextCompactionResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ContextCompactionResponseItem",
           "type": "object"
         },
         {
@@ -9812,6 +10096,50 @@
             "id": {
               "type": "string"
             },
+            "result": {
+              "type": "string"
+            },
+            "revised_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "saved_path": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "ImageGeneration"
+              ],
+              "title": "ImageGenerationTurnItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "result",
+            "status",
+            "type"
+          ],
+          "title": "ImageGenerationTurnItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
             "type": {
               "enum": [
                 "ContextCompaction"
@@ -10553,10 +10881,18 @@
                   "mcp_elicitations": {
                     "type": "boolean"
                   },
+                  "request_permissions": {
+                    "default": false,
+                    "type": "boolean"
+                  },
                   "rules": {
                     "type": "boolean"
                   },
                   "sandbox_approval": {
+                    "type": "boolean"
+                  },
+                  "skill_approval": {
+                    "default": false,
                     "type": "boolean"
                   }
                 },
@@ -10661,6 +10997,7 @@
             "enum": [
               "contextWindowExceeded",
               "usageLimitExceeded",
+              "cyberPolicy",
               "internalServerError",
               "unauthorized",
               "badRequest",
@@ -11889,12 +12226,21 @@
       },
       "DynamicToolSpec": {
         "properties": {
+          "deferLoading": {
+            "type": "boolean"
+          },
           "description": {
             "type": "string"
           },
           "inputSchema": true,
           "name": {
             "type": "string"
+          },
+          "namespace": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -12286,6 +12632,16 @@
           },
           {
             "properties": {
+              "detail": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ImageDetail"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image_url": {
                 "type": "string"
               },
@@ -12427,6 +12783,15 @@
           }
         },
         "type": "object"
+      },
+      "ImageDetail": {
+        "enum": [
+          "auto",
+          "low",
+          "high",
+          "original"
+        ],
+        "type": "string"
       },
       "InputModality": {
         "description": "Canonical user-input modality tags advertised by a model.",
@@ -12951,6 +13316,16 @@
       },
       "Model": {
         "properties": {
+          "availabilityNux": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelAvailabilityNux"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "defaultReasoningEffort": {
             "$ref": "#/definitions/v2/ReasoningEffort"
           },
@@ -12997,6 +13372,16 @@
               "string",
               "null"
             ]
+          },
+          "upgradeInfo": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelUpgradeInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -13008,6 +13393,17 @@
           "isDefault",
           "model",
           "supportedReasoningEfforts"
+        ],
+        "type": "object"
+      },
+      "ModelAvailabilityNux": {
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
         ],
         "type": "object"
       },
@@ -13062,6 +13458,35 @@
           "data"
         ],
         "title": "ModelListResponse",
+        "type": "object"
+      },
+      "ModelUpgradeInfo": {
+        "properties": {
+          "migrationMarkdown": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "modelLink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upgradeCopy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model"
+        ],
         "type": "object"
       },
       "NetworkAccess": {
@@ -13923,6 +14348,12 @@
               "name": {
                 "type": "string"
               },
+              "namespace": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "type": {
                 "enum": [
                   "function_call"
@@ -13938,6 +14369,47 @@
               "type"
             ],
             "title": "FunctionCallResponseItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": true,
+              "call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution": {
+                "type": "string"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "writeOnly": true
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "tool_search_call"
+                ],
+                "title": "ToolSearchCallResponseItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "execution",
+              "type"
+            ],
+            "title": "ToolSearchCallResponseItem",
             "type": "object"
           },
           {
@@ -14010,8 +14482,14 @@
               "call_id": {
                 "type": "string"
               },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "output": {
-                "type": "string"
+                "$ref": "#/definitions/v2/FunctionCallOutputPayload"
               },
               "type": {
                 "enum": [
@@ -14027,6 +14505,41 @@
               "type"
             ],
             "title": "CustomToolCallOutputResponseItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "tools": {
+                "items": true,
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "tool_search_output"
+                ],
+                "title": "ToolSearchOutputResponseItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "execution",
+              "status",
+              "tools",
+              "type"
+            ],
+            "title": "ToolSearchOutputResponseItem",
             "type": "object"
           },
           {
@@ -14070,6 +14583,40 @@
           },
           {
             "properties": {
+              "id": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              },
+              "revised_prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image_generation_call"
+                ],
+                "title": "ImageGenerationCallResponseItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "result",
+              "status",
+              "type"
+            ],
+            "title": "ImageGenerationCallResponseItem",
+            "type": "object"
+          },
+          {
+            "properties": {
               "ghost_commit": {
                 "$ref": "#/definitions/v2/GhostCommit"
               },
@@ -14106,6 +14653,28 @@
               "type"
             ],
             "title": "CompactionSummaryResponseItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "encrypted_content": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "context_compaction"
+                ],
+                "title": "ContextCompactionResponseItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ContextCompactionResponseItem",
             "type": "object"
           },
           {
@@ -15580,6 +16149,50 @@
               "id": {
                 "type": "string"
               },
+              "result": {
+                "type": "string"
+              },
+              "revisedPrompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "savedPath": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AbsolutePathBuf"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "imageGeneration"
+                ],
+                "title": "ImageGenerationThreadItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "result",
+              "status",
+              "type"
+            ],
+            "title": "ImageGenerationThreadItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
               "review": {
                 "type": "string"
               },
@@ -16322,9 +16935,13 @@
             ]
           },
           "web_search": {
-            "type": [
-              "boolean",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebSearchToolConfig"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -16905,6 +17522,44 @@
           }
         ]
       },
+      "WebSearchContextSize": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "WebSearchLocation": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "WebSearchMode": {
         "enum": [
           "disabled",
@@ -16912,6 +17567,41 @@
           "live"
         ],
         "type": "string"
+      },
+      "WebSearchToolConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "context_size": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebSearchContextSize"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebSearchLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
       },
       "WindowsWorldWritableWarningNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",

@@ -2,11 +2,11 @@
 
 use anyhow::Ok;
 use codex_app_server_protocol::ConfigLayerSource;
-use codex_core::config_loader::ConfigLayerEntry;
-use codex_core::config_loader::ConfigLayerStack;
-use codex_core::config_loader::ConfigRequirements;
-use codex_core::config_loader::ConfigRequirementsToml;
-use codex_core::features::Feature;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerStack;
+use codex_config::ConfigRequirements;
+use codex_config::ConfigRequirementsToml;
+use codex_features::Feature;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::responses::start_mock_server;
@@ -26,10 +26,14 @@ async fn emits_deprecation_notice_for_legacy_feature_flag() -> anyhow::Result<()
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        let mut features = config.features.get().clone();
+        features.enable(Feature::UnifiedExec);
+        features
+            .record_legacy_usage_force("use_experimental_unified_exec_tool", Feature::UnifiedExec);
         config
             .features
-            .record_legacy_usage_force("use_experimental_unified_exec_tool", Feature::UnifiedExec);
+            .set(features)
+            .expect("test config should allow managed feature metadata updates");
         config.use_experimental_unified_exec_tool = true;
     });
 
@@ -44,8 +48,7 @@ async fn emits_deprecation_notice_for_legacy_feature_flag() -> anyhow::Result<()
     let DeprecationNoticeEvent { summary, details } = notice;
     assert_eq!(
         summary,
-        "`use_experimental_unified_exec_tool` is deprecated. Use `[features].unified_exec` instead."
-            .to_string(),
+        "`[features].use_experimental_unified_exec_tool` is deprecated. Use `[features].unified_exec` instead.".to_string(),
     );
     assert_eq!(
         details.as_deref(),
@@ -122,7 +125,12 @@ async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow
         let mut builder = test_codex().with_config(move |config| {
             let mut entries = BTreeMap::new();
             entries.insert("web_search_request".to_string(), enabled);
-            config.features.apply_map(&entries);
+            let mut features = config.features.get().clone();
+            features.apply_map(&entries);
+            config
+                .features
+                .set(features)
+                .expect("test config should allow managed feature map updates");
         });
 
         let TestCodex { codex, .. } = builder.build(&server).await?;
@@ -150,6 +158,48 @@ async fn emits_deprecation_notice_for_web_search_feature_flag_values() -> anyhow
             ),
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emits_deprecation_notice_for_use_legacy_landlock() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let mut builder = test_codex().with_config(|config| {
+        let mut entries = BTreeMap::new();
+        entries.insert("use_legacy_landlock".to_string(), true);
+        let mut features = config.features.get().clone();
+        features.apply_map(&entries);
+        config
+            .features
+            .set(features)
+            .expect("test config should allow managed feature map updates");
+    });
+
+    let TestCodex { codex, .. } = builder.build(&server).await?;
+
+    let notice = wait_for_event_match(&codex, |event| match event {
+        EventMsg::DeprecationNotice(ev)
+            if ev.summary.contains("[features].use_legacy_landlock") =>
+        {
+            Some(ev.clone())
+        }
+        _ => None,
+    })
+    .await;
+
+    let DeprecationNoticeEvent { summary, details } = notice;
+    assert_eq!(
+        summary,
+        "`[features].use_legacy_landlock` is deprecated and will be removed soon.".to_string(),
+    );
+    assert_eq!(
+        details.as_deref(),
+        Some("Remove this setting to stop opting into the legacy Linux sandbox behavior."),
+    );
 
     Ok(())
 }

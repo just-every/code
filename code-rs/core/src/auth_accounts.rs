@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use code_app_server_protocol::AuthMode;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 use crate::token_data::TokenData;
@@ -70,7 +70,10 @@ fn read_accounts_file(path: &Path) -> io::Result<AccountsFile> {
         Ok(mut file) => {
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
-            let parsed: AccountsFile = serde_json::from_str(&contents)?;
+            let (parsed, repaired) = parse_accounts_file(&contents)?;
+            if repaired {
+                write_accounts_file(path, &parsed)?;
+            }
             Ok(parsed)
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(AccountsFile::default()),
@@ -78,24 +81,52 @@ fn read_accounts_file(path: &Path) -> io::Result<AccountsFile> {
     }
 }
 
-fn write_accounts_file(path: &Path, data: &AccountsFile) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
+fn parse_accounts_file(contents: &str) -> io::Result<(AccountsFile, bool)> {
+    if contents.trim().is_empty() {
+        return Ok((AccountsFile::default(), false));
+    }
+
+    match serde_json::from_str(contents) {
+        Ok(parsed) => Ok((parsed, false)),
+        Err(original_err) => {
+            let mut latest: Option<AccountsFile> = None;
+            let mut recovered_count = 0usize;
+            let stream = serde_json::Deserializer::from_str(contents).into_iter::<AccountsFile>();
+            for value in stream {
+                match value {
+                    Ok(parsed) => {
+                        recovered_count += 1;
+                        latest = Some(parsed);
+                    }
+                    Err(_) => return Err(original_err.into()),
+                }
+            }
+
+            match (recovered_count, latest) {
+                (count, Some(parsed)) if count > 1 => Ok((parsed, true)),
+                _ => Err(original_err.into()),
+            }
         }
+    }
+}
+
+fn write_accounts_file(path: &Path, data: &AccountsFile) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("accounts path has no parent: {}", path.display()),
+        )
+    })?;
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)?;
     }
 
     let json = serde_json::to_string_pretty(data)?;
-    let mut options = OpenOptions::new();
-    options.truncate(true).write(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
+    let mut file = NamedTempFile::new_in(parent)?;
     file.write_all(json.as_bytes())?;
     file.flush()?;
+    file.as_file_mut().sync_all()?;
+    file.persist(path).map_err(|err| err.error)?;
     Ok(())
 }
 
@@ -380,6 +411,7 @@ mod tests {
             id_token: IdTokenInfo {
                 email: email.map(|s| s.to_string()),
                 chatgpt_plan_type: None,
+                chatgpt_account_is_fedramp: false,
                 raw_jwt: fake_jwt(account_id, email, "pro"),
             },
             access_token: "access".to_string(),
@@ -405,6 +437,30 @@ mod tests {
         let accounts = list_accounts(home.path()).expect("list accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, stored.id);
+    }
+
+    #[test]
+    fn missing_accounts_file_defaults_to_empty_state() {
+        let home = tempdir().expect("tempdir");
+
+        let accounts = list_accounts(home.path()).expect("list accounts");
+        assert!(accounts.is_empty());
+
+        let active = get_active_account_id(home.path()).expect("active account id");
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn empty_accounts_file_defaults_to_empty_state() {
+        let home = tempdir().expect("tempdir");
+        let path = accounts_file_path(home.path());
+        std::fs::write(&path, "\n \t").expect("write empty accounts file");
+
+        let accounts = list_accounts(home.path()).expect("list accounts");
+        assert!(accounts.is_empty());
+
+        let active = get_active_account_id(home.path()).expect("active account id");
+        assert!(active.is_none());
     }
 
     #[test]
@@ -489,5 +545,53 @@ mod tests {
 
         let active_after = get_active_account_id(home.path()).expect("active id");
         assert!(active_after.is_none());
+    }
+
+    #[test]
+    fn recovers_from_trailing_json_documents_by_keeping_latest_accounts_file() {
+        let home = tempdir().expect("tempdir");
+        let path = accounts_file_path(home.path());
+
+        let first = AccountsFile {
+            version: default_version(),
+            active_account_id: Some("first-active".to_string()),
+            accounts: vec![StoredAccount {
+                id: "first-active".to_string(),
+                mode: AuthMode::ApiKey,
+                label: Some("first".to_string()),
+                openai_api_key: Some("sk-first".to_string()),
+                tokens: None,
+                last_refresh: None,
+                created_at: None,
+                last_used_at: None,
+            }],
+        };
+        let second = AccountsFile {
+            version: default_version(),
+            active_account_id: Some("second-active".to_string()),
+            accounts: vec![StoredAccount {
+                id: "second-active".to_string(),
+                mode: AuthMode::ApiKey,
+                label: Some("second".to_string()),
+                openai_api_key: Some("sk-second".to_string()),
+                tokens: None,
+                last_refresh: None,
+                created_at: None,
+                last_used_at: None,
+            }],
+        };
+
+        let first_json = serde_json::to_string_pretty(&first).expect("serialize first");
+        let second_json = serde_json::to_string_pretty(&second).expect("serialize second");
+        std::fs::write(&path, format!("{first_json}\n{second_json}\n")).expect("write corrupt accounts file");
+
+        let accounts = list_accounts(home.path()).expect("recover accounts");
+        assert_eq!(accounts, second.accounts);
+
+        let active = get_active_account_id(home.path()).expect("active id");
+        assert_eq!(active.as_deref(), Some("second-active"));
+
+        let repaired = std::fs::read_to_string(&path).expect("read repaired accounts file");
+        assert_eq!(repaired, second_json);
     }
 }

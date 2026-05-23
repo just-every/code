@@ -1,24 +1,111 @@
-use codex_core::CodexAuth;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::AuthMode;
-use codex_core::auth::CLIENT_ID;
-use codex_core::auth::login_with_api_key;
-use codex_core::auth::logout;
+//! CLI login commands and their direct-user observability surfaces.
+//!
+//! The TUI path already installs a broader tracing stack with feedback, OpenTelemetry, and other
+//! interactive-session layers. Direct `codex login` intentionally does less: it preserves the
+//! existing stderr/browser UX and adds only a small file-backed tracing layer for login-specific
+//! targets. Keeping that setup local avoids pulling the TUI's session-oriented logging machinery
+//! into a one-shot CLI command while still producing a durable `codex-login.log` artifact that
+//! support can request from users.
+
+use codex_app_server_protocol::AuthMode;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
+use codex_login::CLIENT_ID;
+use codex_login::CodexAuth;
 use codex_login::ServerOptions;
+use codex_login::login_with_access_token;
+use codex_login::login_with_api_key;
+use codex_login::logout_with_revoke;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_utils_cli::CliConfigOverrides;
+use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
+use tracing_appender::non_blocking;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 const CHATGPT_LOGIN_DISABLED_MESSAGE: &str =
     "ChatGPT login is disabled. Use API key login instead.";
 const API_KEY_LOGIN_DISABLED_MESSAGE: &str =
     "API key login is disabled. Use ChatGPT login instead.";
+const ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE: &str =
+    "Access token login is disabled. Use API key login instead.";
 const LOGIN_SUCCESS_MESSAGE: &str = "Successfully logged in";
+
+/// Installs a small file-backed tracing layer for direct `codex login` flows.
+///
+/// This deliberately duplicates a narrow slice of the TUI logging setup instead of reusing it
+/// wholesale. The TUI stack includes session-oriented layers that are valuable for interactive
+/// runs but unnecessary for a one-shot login command. Keeping the direct CLI path local lets this
+/// command produce a durable `codex-login.log` artifact without coupling it to the TUI's broader
+/// telemetry and feedback initialization.
+fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
+    let log_dir = match codex_core::config::log_dir(config) {
+        Ok(log_dir) => log_dir,
+        Err(err) => {
+            eprintln!("Warning: failed to resolve login log directory: {err}");
+            return None;
+        }
+    };
+
+    if let Err(err) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "Warning: failed to create login log directory {}: {err}",
+            log_dir.display()
+        );
+        return None;
+    }
+
+    let mut log_file_opts = OpenOptions::new();
+    log_file_opts.create(true).append(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        log_file_opts.mode(0o600);
+    }
+
+    let log_path = log_dir.join("codex-login.log");
+    let log_file = match log_file_opts.open(&log_path) {
+        Ok(log_file) => log_file,
+        Err(err) => {
+            eprintln!(
+                "Warning: failed to open login log file {}: {err}",
+                log_path.display()
+            );
+            return None;
+        }
+    };
+
+    let (non_blocking, guard) = non_blocking(log_file);
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("codex_cli=info,codex_core=info,codex_login=info"));
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_target(true)
+        .with_ansi(false)
+        .with_filter(env_filter);
+
+    // Direct `codex login` otherwise relies on ephemeral stderr and browser output.
+    // Persist the same login targets to a file so support can inspect auth failures
+    // without reproducing them through TUI or app-server.
+    if let Err(err) = tracing_subscriber::registry().with(file_layer).try_init() {
+        eprintln!(
+            "Warning: failed to initialize login log file {}: {err}",
+            log_path.display()
+        );
+        return None;
+    }
+
+    Some(guard)
+}
 
 fn print_login_server_start(actual_port: u16, auth_url: &str) {
     eprintln!(
@@ -46,6 +133,8 @@ pub async fn login_with_chatgpt(
 
 pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting browser login flow");
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
@@ -55,7 +144,7 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
 
     match login_with_chatgpt(
-        config.codex_home,
+        config.codex_home.to_path_buf(),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
     )
@@ -77,6 +166,8 @@ pub async fn run_login_with_api_key(
     api_key: String,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting api key login flow");
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Chatgpt)) {
         eprintln!("{API_KEY_LOGIN_DISABLED_MESSAGE}");
@@ -99,31 +190,77 @@ pub async fn run_login_with_api_key(
     }
 }
 
+pub async fn run_login_with_access_token(
+    cli_config_overrides: CliConfigOverrides,
+    access_token: String,
+) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting access token login flow");
+
+    if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
+        eprintln!("{ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE}");
+        std::process::exit(1);
+    }
+
+    match login_with_access_token(
+        &config.codex_home,
+        &access_token,
+        config.cli_auth_credentials_store_mode,
+        Some(&config.chatgpt_base_url),
+    )
+    .await
+    {
+        Ok(_) => {
+            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging in with access token: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn read_api_key_from_stdin() -> String {
+    read_stdin_secret(
+        "--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.",
+        "Reading API key from stdin...",
+        "No API key provided via stdin.",
+    )
+}
+
+pub fn read_access_token_from_stdin() -> String {
+    read_stdin_secret(
+        "--with-access-token expects the access token on stdin. Try piping it, e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`.",
+        "Reading access token from stdin...",
+        "No access token provided via stdin.",
+    )
+}
+
+fn read_stdin_secret(terminal_message: &str, reading_message: &str, empty_message: &str) -> String {
     let mut stdin = std::io::stdin();
 
     if stdin.is_terminal() {
-        eprintln!(
-            "--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
-        );
+        eprintln!("{terminal_message}");
         std::process::exit(1);
     }
 
-    eprintln!("Reading API key from stdin...");
+    eprintln!("{reading_message}");
 
     let mut buffer = String::new();
     if let Err(err) = stdin.read_to_string(&mut buffer) {
-        eprintln!("Failed to read API key from stdin: {err}");
+        eprintln!("Failed to read stdin: {err}");
         std::process::exit(1);
     }
 
-    let api_key = buffer.trim().to_string();
-    if api_key.is_empty() {
-        eprintln!("No API key provided via stdin.");
+    let secret = buffer.trim().to_string();
+    if secret.is_empty() {
+        eprintln!("{empty_message}");
         std::process::exit(1);
     }
 
-    api_key
+    secret
 }
 
 /// Login using the OAuth device code flow.
@@ -133,13 +270,15 @@ pub async fn run_login_with_device_code(
     client_id: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting device code login flow");
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
     let mut opts = ServerOptions::new(
-        config.codex_home,
+        config.codex_home.to_path_buf(),
         client_id.unwrap_or(CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
@@ -169,6 +308,8 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     client_id: Option<String>,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting login flow with device code fallback");
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
@@ -176,7 +317,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
     let mut opts = ServerOptions::new(
-        config.codex_home,
+        config.codex_home.to_path_buf(),
         client_id.unwrap_or(CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
@@ -224,7 +365,13 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
-    match CodexAuth::from_auth_storage(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match CodexAuth::from_auth_storage(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        Some(&config.chatgpt_base_url),
+    )
+    .await
+    {
         Ok(Some(auth)) => match auth.auth_mode() {
             AuthMode::ApiKey => match auth.get_token() {
                 Ok(api_key) => {
@@ -236,8 +383,12 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                     std::process::exit(1);
                 }
             },
-            AuthMode::Chatgpt => {
+            AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens => {
                 eprintln!("Logged in using ChatGPT");
+                std::process::exit(0);
+            }
+            AuthMode::AgentIdentity => {
+                eprintln!("Logged in using access token");
                 std::process::exit(0);
             }
         },
@@ -255,7 +406,7 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
 pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
-    match logout(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match logout_with_revoke(&config.codex_home, config.cli_auth_credentials_store_mode).await {
         Ok(true) => {
             eprintln!("Successfully logged out");
             std::process::exit(0);

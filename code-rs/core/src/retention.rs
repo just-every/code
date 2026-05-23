@@ -137,7 +137,7 @@ fn estimate_item_size(item: &ResponseItem) -> usize {
         ResponseItem::FunctionCall { arguments, .. } => arguments.len(),
         ResponseItem::FunctionCallOutput { output, .. } => output.to_string().len(),
         ResponseItem::CustomToolCall { input, .. } => input.len(),
-        ResponseItem::CustomToolCallOutput { output, .. } => output.len(),
+        ResponseItem::CustomToolCallOutput { output, .. } => output.to_string().len(),
         ResponseItem::Reasoning { content, .. } => {
             content.as_ref().map(|c| c.len()).unwrap_or(0)
         }

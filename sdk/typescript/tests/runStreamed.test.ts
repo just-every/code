@@ -1,8 +1,5 @@
-import path from "node:path";
-
 import { describe, expect, it } from "@jest/globals";
 
-import { Codex } from "../src/codex";
 import { ThreadEvent } from "../src/index";
 
 import {
@@ -21,10 +18,9 @@ describe("Codex", () => {
       statusCode: 200,
       responseBodies: [sse(responseStarted(), assistantMessage("Hi!"), responseCompleted())],
     });
+    const { client, cleanup } = createMockClient(url);
 
     try {
-      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
-
       const thread = client.startThread();
       const result = await thread.runStreamed("Hello, world!");
 
@@ -53,6 +49,7 @@ describe("Codex", () => {
 
       expect(thread.id).toEqual(expect.any(String));
     } finally {
+      cleanup();
       await close();
     }
   });
@@ -73,10 +70,9 @@ describe("Codex", () => {
         ),
       ],
     });
+    const { client, cleanup } = createMockClient(url);
 
     try {
-      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
-
       const thread = client.startThread();
       const firstRun = await thread.runStreamed("first input");
       await drainEvents(firstRun.events);
@@ -99,6 +95,7 @@ describe("Codex", () => {
 
       expect(requests.length).toBeGreaterThanOrEqual(2);
     } finally {
+      cleanup();
       await close();
     }
   });
@@ -119,10 +116,9 @@ describe("Codex", () => {
         ),
       ],
     });
+    const { client, cleanup } = createMockClient(url);
 
     try {
-      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
-
       const originalThread = client.startThread();
       const firstRun = await originalThread.runStreamed("first input");
       await drainEvents(firstRun.events);
@@ -147,6 +143,7 @@ describe("Codex", () => {
 
       expect(requests.length).toBeGreaterThanOrEqual(2);
     } finally {
+      cleanup();
       await close();
     }
   });

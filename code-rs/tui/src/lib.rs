@@ -36,6 +36,7 @@ use code_ollama::DEFAULT_OSS_MODEL;
 use code_protocol::config_types::SandboxMode;
 use std::fs::OpenOptions;
 use std::io;
+use std::backtrace::Backtrace;
 use std::path::{Path, PathBuf};
 use code_core::review_coord::{
     bump_snapshot_epoch, clear_stale_lock_if_dead, read_lock_info, try_acquire_lock,
@@ -82,6 +83,7 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_renderer;
+mod memory_citation;
 mod remote_model_presets;
 mod markdown_stream;
 mod syntax_highlight;
@@ -117,6 +119,7 @@ mod foundation;
 mod ui_consts;
 mod user_approval_widget;
 mod height_manager;
+mod clipboard_copy;
 mod clipboard_paste;
 mod greeting;
 // Upstream introduced a standalone status indicator widget. Our fork renders
@@ -713,9 +716,18 @@ pub async fn run_main(
         .with_writer(critical_writer)
         .with_filter(LevelFilter::ERROR);
 
+    let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        code_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"))
+    })) {
+        Ok(Ok(otel)) => otel,
+        Ok(Err(_)) | Err(_) => None,
+    };
+    let otel_logger_layer = otel.as_ref().map(|provider| provider.logger_layer());
+
     let _ = tracing_subscriber::registry()
         .with(env_layer)
         .with(critical_layer)
+        .with(otel_logger_layer)
         .try_init();
 
     if cli.oss {
@@ -723,8 +735,6 @@ pub async fn run_main(
             .await
             .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
     }
-
-    let _otel = code_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
 
     let latest_upgrade_version = if crate::updates::upgrade_ui_enabled() {
         updates::get_upgrade_version(&config)
@@ -762,6 +772,19 @@ pub(crate) fn install_unified_panic_hook() {
             let current_thread = std::thread::current();
             let thread_name = current_thread.name().unwrap_or("unnamed");
             let thread_id = format!("{:?}", current_thread.id());
+            let backtrace = Backtrace::force_capture().to_string();
+
+            let location = info
+                .location()
+                .map(|location| (location.file(), location.line(), location.column()));
+
+            session_log::log_panic(
+                &info.to_string(),
+                thread_name,
+                &thread_id,
+                location,
+                &backtrace,
+            );
 
             if let Some(location) = info.location() {
                 tracing::error!(
@@ -771,6 +794,8 @@ pub(crate) fn install_unified_panic_hook() {
                     line = location.line(),
                     column = location.column(),
                     panic = %info,
+                    backtrace = %backtrace,
+                    session_log_path = session_log::log_path().as_ref().map(|path| path.display().to_string()),
                     "panic captured"
                 );
             } else {
@@ -778,6 +803,8 @@ pub(crate) fn install_unified_panic_hook() {
                     thread_name,
                     thread_id,
                     panic = %info,
+                    backtrace = %backtrace,
+                    session_log_path = session_log::log_path().as_ref().map(|path| path.display().to_string()),
                     "panic captured"
                 );
             }

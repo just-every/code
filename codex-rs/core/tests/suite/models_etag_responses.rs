@@ -1,15 +1,16 @@
 #![cfg(not(target_os = "windows"))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use codex_core::CodexAuth;
-use codex_protocol::config_types::ReasoningSummary;
+use codex_features::Feature;
+use codex_login::CodexAuth;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
@@ -20,7 +21,8 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
-use core_test_support::wait_for_event;
+use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use wiremock::MockServer;
 
@@ -45,17 +47,24 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let mut builder = test_codex()
         .with_auth(auth)
-        .with_model("gpt-5")
+        .with_model("gpt-5.2")
         .with_config(|config| {
             // Keep this test deterministic: no request retries, and a small stream retry budget.
             config.model_provider.request_max_retries = Some(0);
             config.model_provider.stream_max_retries = Some(1);
+            config
+                .features
+                .disable(Feature::Apps)
+                .expect("test config should allow feature update");
         });
 
     let test = builder.build(&server).await?;
     let codex = Arc::clone(&test.codex);
     let cwd = Arc::clone(&test.cwd);
     let session_model = test.session_configured.model.clone();
+    let cwd_path = cwd.path().to_path_buf();
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, cwd_path.as_path());
 
     assert_eq!(spawn_models_mock.requests().len(), 1);
     assert_eq!(spawn_models_mock.single_request_path(), "/v1/models");
@@ -96,23 +105,32 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
 
     codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "please run a tool".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: cwd.path().to_path_buf(),
+            cwd: cwd_path,
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            approvals_reviewer: None,
+            sandbox_policy,
+            permission_profile,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
         .await?;
 
-    let _ = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let _ = wait_for_event_with_timeout(
+        &codex,
+        |ev| matches!(ev, EventMsg::TurnComplete(_)),
+        Duration::from_secs(30),
+    )
+    .await;
 
     // Assert /models was refreshed exactly once after the X-Models-Etag mismatch.
     assert_eq!(refresh_models_mock.requests().len(), 1);

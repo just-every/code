@@ -1,12 +1,15 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use codex_arg0::Arg0DispatchPaths;
-use codex_core::AuthManager;
+use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
-use codex_core::default_client::USER_AGENT_SUFFIX;
-use codex_core::default_client::get_codex_user_agent;
-use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_core::thread_store_from_config;
+use codex_exec_server::EnvironmentManager;
+use codex_login::AuthManager;
+use codex_login::default_client::USER_AGENT_SUFFIX;
+use codex_login::default_client::get_codex_user_agent;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::Submission;
@@ -26,7 +29,6 @@ use rmcp::model::RequestId;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ToolsCapability;
 use serde_json::json;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -47,27 +49,29 @@ pub(crate) struct MessageProcessor {
 impl MessageProcessor {
     /// Create a new `MessageProcessor`, retaining a handle to the outgoing
     /// `Sender` so handlers can enqueue messages to be written to stdout.
-    pub(crate) fn new(
+    pub(crate) async fn new(
         outgoing: OutgoingMessageSender,
         arg0_paths: Arg0DispatchPaths,
         config: Arc<Config>,
+        environment_manager: Arc<EnvironmentManager>,
+        state_db: Option<StateDbHandle>,
+        installation_id: String,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager = AuthManager::shared(
-            config.codex_home.clone(),
-            false,
-            config.cli_auth_credentials_store_mode,
-        );
+        let auth_manager = AuthManager::shared_from_config(
+            config.as_ref(),
+            /*enable_codex_api_key_env*/ false,
+        )
+        .await;
         let thread_manager = Arc::new(ThreadManager::new(
-            config.codex_home.clone(),
+            config.as_ref(),
             auth_manager,
             SessionSource::Mcp,
-            config.model_catalog.clone(),
-            CollaborationModesConfig {
-                default_mode_request_user_input: config
-                    .features
-                    .enabled(codex_core::features::Feature::DefaultModeRequestUserInput),
-            },
+            environment_manager,
+            /*analytics_events_client*/ None,
+            thread_store_from_config(config.as_ref(), state_db.clone()),
+            state_db.clone(),
+            installation_id,
         ));
         Self {
             outgoing,
@@ -576,6 +580,7 @@ impl MessageProcessor {
             .submit_with_id(Submission {
                 id: request_id_string,
                 op: codex_protocol::protocol::Op::Interrupt,
+                trace: None,
             })
             .await
         {

@@ -105,6 +105,8 @@ async fn mcp_stdio_server_exits_before_next_session() {
         },
         startup_timeout_sec: Some(Duration::from_secs(5)),
         tool_timeout_sec: Some(Duration::from_secs(5)),
+        enabled_tools: None,
+        disabled_tools: None,
     };
 
     let mut mcp_servers = HashMap::new();

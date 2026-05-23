@@ -138,6 +138,27 @@ impl<T: Send + Sync> Constrained<T> {
         (self.validator)(candidate)
     }
 
+    /// Composes an additional validator onto the current constraint.
+    ///
+    /// The existing value must satisfy the combined validator before it is installed.
+    pub fn add_validator(
+        &mut self,
+        validator: impl Fn(&T) -> ConstraintResult<()> + Send + Sync + 'static,
+    ) -> ConstraintResult<()>
+    where
+        T: 'static,
+    {
+        let existing_validator = self.validator.clone();
+        let combined_validator: Arc<ConstraintValidator<T>> = Arc::new(move |candidate| {
+            existing_validator(candidate)?;
+            validator(candidate)
+        });
+
+        combined_validator(&self.value)?;
+        self.validator = combined_validator;
+        Ok(())
+    }
+
     pub fn set(&mut self, value: T) -> ConstraintResult<()> {
         let value = if let Some(normalizer) = &self.normalizer {
             normalizer(value)
@@ -188,8 +209,10 @@ mod tests {
 
     #[test]
     fn constrained_allow_any_accepts_any_value() {
-        let mut constrained = Constrained::allow_any(5);
-        constrained.set(-10).expect("allow any accepts all values");
+        let mut constrained = Constrained::allow_any(/*initial_value*/ 5);
+        constrained
+            .set(/*value*/ -10)
+            .expect("allow any accepts all values");
         assert_eq!(constrained.value(), -10);
     }
 
@@ -201,13 +224,13 @@ mod tests {
 
     #[test]
     fn constrained_allow_only_rejects_different_values() {
-        let mut constrained = Constrained::allow_only(5);
+        let mut constrained = Constrained::allow_only(/*only_value*/ 5);
         constrained
-            .set(5)
+            .set(/*value*/ 5)
             .expect("allowed value should be accepted");
 
         let err = constrained
-            .set(6)
+            .set(/*value*/ 6)
             .expect_err("different value should be rejected");
         assert_eq!(err, invalid_value("6", "[5]"));
         assert_eq!(constrained.value(), 5);
@@ -215,18 +238,49 @@ mod tests {
 
     #[test]
     fn constrained_normalizer_applies_on_init_and_set() -> anyhow::Result<()> {
-        let mut constrained = Constrained::normalized(-1, |value| value.max(0))?;
+        let mut constrained =
+            Constrained::normalized(/*initial_value*/ -1, |value| value.max(0))?;
         assert_eq!(constrained.value(), 0);
-        constrained.set(-5)?;
+        constrained.set(/*value*/ -5)?;
         assert_eq!(constrained.value(), 0);
-        constrained.set(10)?;
+        constrained.set(/*value*/ 10)?;
         assert_eq!(constrained.value(), 10);
         Ok(())
     }
 
     #[test]
+    fn constrained_add_validator_composes_with_existing_validator() -> anyhow::Result<()> {
+        let mut constrained = Constrained::new(/*initial_value*/ 5, |value: &i32| {
+            if *value >= 0 {
+                Ok(())
+            } else {
+                Err(ConstraintError::empty_field("value"))
+            }
+        })?;
+        constrained.add_validator(|value| {
+            if *value <= 10 {
+                Ok(())
+            } else {
+                Err(ConstraintError::empty_field("value"))
+            }
+        })?;
+
+        assert_eq!(constrained.can_set(&7), Ok(()));
+        assert_eq!(
+            constrained.can_set(&11),
+            Err(ConstraintError::empty_field("value"))
+        );
+        assert_eq!(
+            constrained.can_set(&-1),
+            Err(ConstraintError::empty_field("value"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn constrained_new_rejects_invalid_initial_value() {
-        let result = Constrained::new(0, |value| {
+        let result = Constrained::new(/*initial_value*/ 0, |value| {
             if *value > 0 {
                 Ok(())
             } else {
@@ -239,7 +293,7 @@ mod tests {
 
     #[test]
     fn constrained_set_rejects_invalid_value_and_leaves_previous() {
-        let mut constrained = Constrained::new(1, |value| {
+        let mut constrained = Constrained::new(/*initial_value*/ 1, |value| {
             if *value > 0 {
                 Ok(())
             } else {
@@ -249,7 +303,7 @@ mod tests {
         .expect("initial value should be accepted");
 
         let err = constrained
-            .set(-5)
+            .set(/*value*/ -5)
             .expect_err("negative values should be rejected");
         assert_eq!(err, invalid_value("-5", "positive values"));
         assert_eq!(constrained.value(), 1);
@@ -257,7 +311,7 @@ mod tests {
 
     #[test]
     fn constrained_can_set_allows_probe_without_setting() {
-        let constrained = Constrained::new(1, |value| {
+        let constrained = Constrained::new(/*initial_value*/ 1, |value| {
             if *value > 0 {
                 Ok(())
             } else {

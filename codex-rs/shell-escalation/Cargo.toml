@@ -8,10 +8,14 @@ version.workspace = true
 name = "codex-execve-wrapper"
 path = "src/bin/main_execve_wrapper.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -33,3 +37,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
+
+[lib]
+doctest = false

@@ -1,4 +1,5 @@
 use crate::bash::parse_shell_lc_plain_commands;
+use std::path::Path;
 #[cfg(windows)]
 #[path = "windows_dangerous_commands.rs"]
 mod windows_dangerous_commands;
@@ -27,6 +28,21 @@ pub fn command_might_be_dangerous(command: &[String]) -> bool {
     false
 }
 
+/// Returns whether already-tokenized PowerShell words should be treated as
+/// dangerous by the Windows unmatched-command heuristics.
+pub fn is_dangerous_powershell_words(command: &[String]) -> bool {
+    #[cfg(windows)]
+    {
+        windows_dangerous_commands::is_dangerous_powershell_words(command)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+        false
+    }
+}
+
 fn is_git_global_option_with_value(arg: &str) -> bool {
     matches!(
         arg,
@@ -52,6 +68,32 @@ fn is_git_global_option_with_inline_value(arg: &str) -> bool {
     ) || ((arg.starts_with("-C") || arg.starts_with("-c")) && arg.len() > 2)
 }
 
+pub(crate) fn executable_name_lookup_key(raw: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        Path::new(raw)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| {
+                let name = name.to_ascii_lowercase();
+                for suffix in [".exe", ".cmd", ".bat", ".com"] {
+                    if let Some(stripped) = name.strip_suffix(suffix) {
+                        return stripped.to_string();
+                    }
+                }
+                name
+            })
+    }
+
+    #[cfg(not(windows))]
+    {
+        Path::new(raw)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(std::borrow::ToOwned::to_owned)
+    }
+}
+
 /// Find the first matching git subcommand, skipping known global options that
 /// may appear before it (e.g., `-C`, `-c`, `--git-dir`).
 ///
@@ -61,7 +103,7 @@ pub(crate) fn find_git_subcommand<'a>(
     subcommands: &[&str],
 ) -> Option<(usize, &'a str)> {
     let cmd0 = command.first().map(String::as_str)?;
-    if !cmd0.ends_with("git") {
+    if executable_name_lookup_key(cmd0).as_deref() != Some("git") {
         return None;
     }
 
@@ -130,5 +172,16 @@ mod tests {
     #[test]
     fn rm_f_is_dangerous() {
         assert!(command_might_be_dangerous(&vec_str(&["rm", "-f", "/"])));
+    }
+
+    #[test]
+    fn direct_powershell_words_reuse_windows_dangerous_detection() {
+        let command = vec_str(&["Remove-Item", "test", "-Force"]);
+
+        if cfg!(windows) {
+            assert!(is_dangerous_powershell_words(&command));
+        } else {
+            assert!(!is_dangerous_powershell_words(&command));
+        }
     }
 }

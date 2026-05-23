@@ -394,11 +394,18 @@ mod tests {
                 "description": "Dynamic tool specifications injected by the client.",
                 "items": {
                   "properties": {
+                    "deferLoading": {
+                      "default": false,
+                      "type": "boolean"
+                    },
                     "description": {
                       "type": "string"
                     },
                     "inputSchema": true,
                     "name": {
+                      "type": "string"
+                    },
+                    "namespace": {
                       "type": "string"
                     }
                   },

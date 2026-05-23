@@ -1,11 +1,11 @@
 use std::io::ErrorKind;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use crate::StateDbHandle;
 use crate::rollout::list::find_thread_path_by_id_str;
 use crate::shell::Shell;
 use crate::shell::ShellType;
@@ -14,8 +14,9 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
-use codex_otel::OtelManager;
+use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::sync::watch;
@@ -25,8 +26,8 @@ use tracing::info_span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellSnapshot {
-    pub path: PathBuf,
-    pub cwd: PathBuf,
+    pub path: AbsolutePathBuf,
+    pub cwd: AbsolutePathBuf,
 }
 
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,11 +37,12 @@ const EXCLUDED_EXPORT_VARS: &[&str] = &["PWD", "OLDPWD"];
 
 impl ShellSnapshot {
     pub fn start_snapshotting(
-        codex_home: PathBuf,
+        codex_home: AbsolutePathBuf,
         session_id: ThreadId,
-        session_cwd: PathBuf,
+        session_cwd: AbsolutePathBuf,
         shell: &mut Shell,
-        otel_manager: OtelManager,
+        session_telemetry: SessionTelemetry,
+        state_db: Option<StateDbHandle>,
     ) -> watch::Sender<Option<Arc<ShellSnapshot>>> {
         let (shell_snapshot_tx, shell_snapshot_rx) = watch::channel(None);
         shell.shell_snapshot = shell_snapshot_rx;
@@ -51,19 +53,21 @@ impl ShellSnapshot {
             session_cwd,
             shell.clone(),
             shell_snapshot_tx.clone(),
-            otel_manager,
+            session_telemetry,
+            state_db,
         );
 
         shell_snapshot_tx
     }
 
     pub fn refresh_snapshot(
-        codex_home: PathBuf,
+        codex_home: AbsolutePathBuf,
         session_id: ThreadId,
-        session_cwd: PathBuf,
+        session_cwd: AbsolutePathBuf,
         shell: Shell,
         shell_snapshot_tx: watch::Sender<Option<Arc<ShellSnapshot>>>,
-        otel_manager: OtelManager,
+        session_telemetry: SessionTelemetry,
+        state_db: Option<StateDbHandle>,
     ) {
         Self::spawn_snapshot_task(
             codex_home,
@@ -71,27 +75,30 @@ impl ShellSnapshot {
             session_cwd,
             shell,
             shell_snapshot_tx,
-            otel_manager,
+            session_telemetry,
+            state_db,
         );
     }
 
     fn spawn_snapshot_task(
-        codex_home: PathBuf,
+        codex_home: AbsolutePathBuf,
         session_id: ThreadId,
-        session_cwd: PathBuf,
+        session_cwd: AbsolutePathBuf,
         snapshot_shell: Shell,
         shell_snapshot_tx: watch::Sender<Option<Arc<ShellSnapshot>>>,
-        otel_manager: OtelManager,
+        session_telemetry: SessionTelemetry,
+        state_db: Option<StateDbHandle>,
     ) {
         let snapshot_span = info_span!("shell_snapshot", thread_id = %session_id);
         tokio::spawn(
             async move {
-                let timer = otel_manager.start_timer("codex.shell_snapshot.duration_ms", &[]);
+                let timer = session_telemetry.start_timer("codex.shell_snapshot.duration_ms", &[]);
                 let snapshot = ShellSnapshot::try_new(
                     &codex_home,
                     session_id,
-                    session_cwd.as_path(),
+                    &session_cwd,
                     &snapshot_shell,
+                    state_db,
                 )
                 .await
                 .map(Arc::new);
@@ -102,7 +109,7 @@ impl ShellSnapshot {
                 if let Some(failure_reason) = snapshot.as_ref().err() {
                     counter_tags.push(("failure_reason", *failure_reason));
                 }
-                otel_manager.counter("codex.shell_snapshot", 1, &counter_tags);
+                session_telemetry.counter("codex.shell_snapshot", /*inc*/ 1, &counter_tags);
                 let _ = shell_snapshot_tx.send(snapshot.ok());
             }
             .instrument(snapshot_span),
@@ -110,72 +117,69 @@ impl ShellSnapshot {
     }
 
     async fn try_new(
-        codex_home: &Path,
+        codex_home: &AbsolutePathBuf,
         session_id: ThreadId,
-        session_cwd: &Path,
+        session_cwd: &AbsolutePathBuf,
         shell: &Shell,
+        state_db: Option<StateDbHandle>,
     ) -> std::result::Result<Self, &'static str> {
         // File to store the snapshot
         let extension = match shell.shell_type {
             ShellType::PowerShell => "ps1",
             _ => "sh",
         };
-        let path = codex_home
-            .join(SNAPSHOT_DIR)
-            .join(format!("{session_id}.{extension}"));
         let nonce = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
+        let path = codex_home
+            .join(SNAPSHOT_DIR)
+            .join(format!("{session_id}.{nonce}.{extension}"));
         let temp_path = codex_home
             .join(SNAPSHOT_DIR)
             .join(format!("{session_id}.tmp-{nonce}"));
 
         // Clean the (unlikely) leaked snapshot files.
-        let codex_home = codex_home.to_path_buf();
+        let codex_home = codex_home.clone();
         let cleanup_session_id = session_id;
         tokio::spawn(async move {
-            if let Err(err) = cleanup_stale_snapshots(&codex_home, cleanup_session_id).await {
+            if let Err(err) =
+                cleanup_stale_snapshots(&codex_home, cleanup_session_id, state_db).await
+            {
                 tracing::warn!("Failed to clean up shell snapshots: {err:?}");
             }
         });
 
         // Make the new snapshot.
-        let temp_path =
-            match write_shell_snapshot(shell.shell_type.clone(), &temp_path, session_cwd).await {
-                Ok(path) => {
-                    tracing::info!("Shell snapshot successfully created: {}", path.display());
-                    path
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "Failed to create shell snapshot for {}: {err:?}",
-                        shell.name()
-                    );
-                    return Err("write_failed");
-                }
-            };
+        if let Err(err) =
+            write_shell_snapshot(shell.shell_type.clone(), &temp_path, session_cwd).await
+        {
+            tracing::warn!(
+                "Failed to create shell snapshot for {}: {err:?}",
+                shell.name()
+            );
+            return Err("write_failed");
+        }
+        tracing::info!(
+            "Shell snapshot successfully created: {}",
+            temp_path.display()
+        );
 
-        let temp_snapshot = Self {
-            path: temp_path.clone(),
-            cwd: session_cwd.to_path_buf(),
-        };
-
-        if let Err(err) = validate_snapshot(shell, &temp_snapshot.path, session_cwd).await {
+        if let Err(err) = validate_snapshot(shell, &temp_path, session_cwd).await {
             tracing::error!("Shell snapshot validation failed: {err:?}");
-            remove_snapshot_file(&temp_snapshot.path).await;
+            remove_snapshot_file(&temp_path).await;
             return Err("validation_failed");
         }
 
-        if let Err(err) = fs::rename(&temp_snapshot.path, &path).await {
+        if let Err(err) = fs::rename(&temp_path, &path).await {
             tracing::warn!("Failed to finalize shell snapshot: {err:?}");
-            remove_snapshot_file(&temp_snapshot.path).await;
+            remove_snapshot_file(&temp_path).await;
             return Err("write_failed");
         }
 
         Ok(Self {
             path,
-            cwd: session_cwd.to_path_buf(),
+            cwd: session_cwd.clone(),
         })
     }
 }
@@ -193,13 +197,13 @@ impl Drop for ShellSnapshot {
 
 async fn write_shell_snapshot(
     shell_type: ShellType,
-    output_path: &Path,
-    cwd: &Path,
-) -> Result<PathBuf> {
+    output_path: &AbsolutePathBuf,
+    cwd: &AbsolutePathBuf,
+) -> Result<()> {
     if shell_type == ShellType::PowerShell || shell_type == ShellType::Cmd {
         bail!("Shell snapshot not supported yet for {shell_type:?}");
     }
-    let shell = get_shell(shell_type.clone(), None)
+    let shell = get_shell(shell_type.clone(), /*path*/ None)
         .with_context(|| format!("No available shell for {shell_type:?}"))?;
 
     let raw_snapshot = capture_snapshot(&shell, cwd).await?;
@@ -207,7 +211,7 @@ async fn write_shell_snapshot(
 
     if let Some(parent) = output_path.parent() {
         let parent_display = parent.display();
-        fs::create_dir_all(parent)
+        fs::create_dir_all(&parent)
             .await
             .with_context(|| format!("Failed to create snapshot parent {parent_display}"))?;
     }
@@ -217,10 +221,10 @@ async fn write_shell_snapshot(
         .await
         .with_context(|| format!("Failed to write snapshot to {snapshot_path}"))?;
 
-    Ok(output_path.to_path_buf())
+    Ok(())
 }
 
-async fn capture_snapshot(shell: &Shell, cwd: &Path) -> Result<String> {
+async fn capture_snapshot(shell: &Shell, cwd: &AbsolutePathBuf) -> Result<String> {
     let shell_type = shell.shell_type.clone();
     match shell_type {
         ShellType::Zsh => run_shell_script(shell, &zsh_snapshot_script(), cwd).await,
@@ -240,16 +244,33 @@ fn strip_snapshot_preamble(snapshot: &str) -> Result<String> {
     Ok(snapshot[start..].to_string())
 }
 
-async fn validate_snapshot(shell: &Shell, snapshot_path: &Path, cwd: &Path) -> Result<()> {
+async fn validate_snapshot(
+    shell: &Shell,
+    snapshot_path: &AbsolutePathBuf,
+    cwd: &AbsolutePathBuf,
+) -> Result<()> {
     let snapshot_path_display = snapshot_path.display();
     let script = format!("set -e; . \"{snapshot_path_display}\"");
-    run_script_with_timeout(shell, &script, SNAPSHOT_TIMEOUT, false, cwd)
-        .await
-        .map(|_| ())
+    run_script_with_timeout(
+        shell,
+        &script,
+        SNAPSHOT_TIMEOUT,
+        /*use_login_shell*/ false,
+        cwd,
+    )
+    .await
+    .map(|_| ())
 }
 
-async fn run_shell_script(shell: &Shell, script: &str, cwd: &Path) -> Result<String> {
-    run_script_with_timeout(shell, script, SNAPSHOT_TIMEOUT, true, cwd).await
+async fn run_shell_script(shell: &Shell, script: &str, cwd: &AbsolutePathBuf) -> Result<String> {
+    run_script_with_timeout(
+        shell,
+        script,
+        SNAPSHOT_TIMEOUT,
+        /*use_login_shell*/ true,
+        cwd,
+    )
+    .await
 }
 
 async fn run_script_with_timeout(
@@ -257,7 +278,7 @@ async fn run_script_with_timeout(
     script: &str,
     snapshot_timeout: Duration,
     use_login_shell: bool,
-    cwd: &Path,
+    cwd: &AbsolutePathBuf,
 ) -> Result<String> {
     let args = shell.derive_exec_args(script, use_login_shell);
     let shell_name = shell.name();
@@ -360,19 +381,17 @@ alias_count=$(alias -p | wc -l | tr -d ' ')
 echo "# aliases $alias_count"
 alias -p
 echo ''
-export_lines=$(export -p | awk '
-/^(export|declare -x|typeset -x) / {
-  line=$0
-  name=line
-  sub(/^(export|declare -x|typeset -x) /, "", name)
-  sub(/=.*/, "", name)
-  if (name ~ /^(EXCLUDED_EXPORTS)$/) {
-    next
-  }
-  if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
-    print line
-  }
-}')
+export_lines=$(
+  while IFS= read -r name; do
+    if [[ "$name" =~ ^(EXCLUDED_EXPORTS)$ ]]; then
+      continue
+    fi
+    if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      continue
+    fi
+    declare -xp "$name" 2>/dev/null || true
+  done < <(compgen -e)
+)
 export_count=$(printf '%s\n' "$export_lines" | sed '/^$/d' | wc -l | tr -d ' ')
 echo "# exports $export_count"
 if [ -n "$export_lines" ]; then
@@ -478,7 +497,11 @@ $envVars | ForEach-Object {
 /// Removes shell snapshots that either lack a matching session rollout file or
 /// whose rollouts have not been updated within the retention window.
 /// The active session id is exempt from cleanup.
-pub async fn cleanup_stale_snapshots(codex_home: &Path, active_session_id: ThreadId) -> Result<()> {
+pub async fn cleanup_stale_snapshots(
+    codex_home: &AbsolutePathBuf,
+    active_session_id: ThreadId,
+    state_db: Option<StateDbHandle>,
+) -> Result<()> {
     let snapshot_dir = codex_home.join(SNAPSHOT_DIR);
 
     let mut entries = match fs::read_dir(&snapshot_dir).await {
@@ -499,18 +522,16 @@ pub async fn cleanup_stale_snapshots(codex_home: &Path, active_session_id: Threa
 
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
-        let (session_id, _) = match file_name.rsplit_once('.') {
-            Some((stem, ext)) => (stem, ext),
-            None => {
-                remove_snapshot_file(&path).await;
-                continue;
-            }
+        let Some(session_id) = snapshot_session_id_from_file_name(&file_name) else {
+            remove_snapshot_file(&path).await;
+            continue;
         };
         if session_id == active_session_id {
             continue;
         }
 
-        let rollout_path = find_thread_path_by_id_str(codex_home, session_id).await?;
+        let rollout_path =
+            find_thread_path_by_id_str(codex_home, session_id, state_db.as_deref()).await?;
         let Some(rollout_path) = rollout_path else {
             remove_snapshot_file(&path).await;
             continue;
@@ -545,373 +566,18 @@ async fn remove_snapshot_file(path: &Path) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStrExt;
-    #[cfg(unix)]
-    use std::process::Command;
-    #[cfg(target_os = "linux")]
-    use std::process::Command as StdCommand;
-
-    use tempfile::tempdir;
-
-    #[cfg(unix)]
-    struct BlockingStdinPipe {
-        original: i32,
-        write_end: i32,
-    }
-
-    #[cfg(unix)]
-    impl BlockingStdinPipe {
-        fn install() -> Result<Self> {
-            let mut fds = [0i32; 2];
-            if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
-                return Err(std::io::Error::last_os_error()).context("create stdin pipe");
-            }
-
-            let original = unsafe { libc::dup(libc::STDIN_FILENO) };
-            if original == -1 {
-                let err = std::io::Error::last_os_error();
-                unsafe {
-                    libc::close(fds[0]);
-                    libc::close(fds[1]);
-                }
-                return Err(err).context("dup stdin");
-            }
-
-            if unsafe { libc::dup2(fds[0], libc::STDIN_FILENO) } == -1 {
-                let err = std::io::Error::last_os_error();
-                unsafe {
-                    libc::close(fds[0]);
-                    libc::close(fds[1]);
-                    libc::close(original);
-                }
-                return Err(err).context("replace stdin");
-            }
-
-            unsafe {
-                libc::close(fds[0]);
-            }
-
-            Ok(Self {
-                original,
-                write_end: fds[1],
-            })
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for BlockingStdinPipe {
-        fn drop(&mut self) {
-            unsafe {
-                libc::dup2(self.original, libc::STDIN_FILENO);
-                libc::close(self.original);
-                libc::close(self.write_end);
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn assert_posix_snapshot_sections(snapshot: &str) {
-        assert!(snapshot.contains("# Snapshot file"));
-        assert!(snapshot.contains("aliases "));
-        assert!(snapshot.contains("exports "));
-        assert!(
-            snapshot.contains("PATH"),
-            "snapshot should capture a PATH export"
-        );
-        assert!(snapshot.contains("setopts "));
-    }
-
-    async fn get_snapshot(shell_type: ShellType) -> Result<String> {
-        let dir = tempdir()?;
-        let path = dir.path().join("snapshot.sh");
-        write_shell_snapshot(shell_type, &path, dir.path()).await?;
-        let content = fs::read_to_string(&path).await?;
-        Ok(content)
-    }
-
-    #[test]
-    fn strip_snapshot_preamble_removes_leading_output() {
-        let snapshot = "noise\n# Snapshot file\nexport PATH=/bin\n";
-        let cleaned = strip_snapshot_preamble(snapshot).expect("snapshot marker exists");
-        assert_eq!(cleaned, "# Snapshot file\nexport PATH=/bin\n");
-    }
-
-    #[test]
-    fn strip_snapshot_preamble_requires_marker() {
-        let result = strip_snapshot_preamble("missing header");
-        assert!(result.is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn bash_snapshot_filters_invalid_exports() -> Result<()> {
-        let output = Command::new("/bin/bash")
-            .arg("-c")
-            .arg(bash_snapshot_script())
-            .env("BASH_ENV", "/dev/null")
-            .env("VALID_NAME", "ok")
-            .env("PWD", "/tmp/stale")
-            .env("NEXTEST_BIN_EXE_codex-write-config-schema", "/path/to/bin")
-            .env("BAD-NAME", "broken")
-            .output()?;
-
-        assert!(output.status.success());
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("VALID_NAME"));
-        assert!(!stdout.contains("PWD=/tmp/stale"));
-        assert!(!stdout.contains("NEXTEST_BIN_EXE_codex-write-config-schema"));
-        assert!(!stdout.contains("BAD-NAME"));
-
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn try_new_creates_and_deletes_snapshot_file() -> Result<()> {
-        let dir = tempdir()?;
-        let shell = Shell {
-            shell_type: ShellType::Bash,
-            shell_path: PathBuf::from("/bin/bash"),
-            shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
-        };
-
-        let snapshot = ShellSnapshot::try_new(dir.path(), ThreadId::new(), dir.path(), &shell)
-            .await
-            .expect("snapshot should be created");
-        let path = snapshot.path.clone();
-        assert!(path.exists());
-        assert_eq!(snapshot.cwd, dir.path().to_path_buf());
-
-        drop(snapshot);
-
-        assert!(!path.exists());
-
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
-        let _stdin_guard = BlockingStdinPipe::install()?;
-
-        let dir = tempdir()?;
-        let home = dir.path();
-        fs::write(home.join(".bashrc"), "read -r ignored\n").await?;
-
-        let shell = Shell {
-            shell_type: ShellType::Bash,
-            shell_path: PathBuf::from("/bin/bash"),
-            shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
-        };
-
-        let home_display = home.display();
-        let script = format!(
-            "HOME=\"{home_display}\"; export HOME; {}",
-            bash_snapshot_script()
-        );
-        let output =
-            run_script_with_timeout(&shell, &script, Duration::from_millis(500), true, home)
-                .await
-                .context("run snapshot command")?;
-
-        assert!(
-            output.contains("# Snapshot file"),
-            "expected snapshot marker in output; output={output:?}"
-        );
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn timed_out_snapshot_shell_is_terminated() -> Result<()> {
-        use std::process::Stdio;
-        use tokio::time::Duration as TokioDuration;
-        use tokio::time::Instant;
-        use tokio::time::sleep;
-
-        let dir = tempdir()?;
-        let pid_path = dir.path().join("pid");
-        let script = format!("echo $$ > \"{}\"; sleep 30", pid_path.display());
-
-        let shell = Shell {
-            shell_type: ShellType::Sh,
-            shell_path: PathBuf::from("/bin/sh"),
-            shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
-        };
-
-        let err =
-            run_script_with_timeout(&shell, &script, Duration::from_secs(1), true, dir.path())
-                .await
-                .expect_err("snapshot shell should time out");
-        assert!(
-            err.to_string().contains("timed out"),
-            "expected timeout error, got {err:?}"
-        );
-
-        let pid = fs::read_to_string(&pid_path)
-            .await
-            .expect("snapshot shell writes its pid before timing out")
-            .trim()
-            .parse::<i32>()?;
-
-        let deadline = Instant::now() + TokioDuration::from_secs(1);
-        loop {
-            let kill_status = StdCommand::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .stderr(Stdio::null())
-                .stdout(Stdio::null())
-                .status()?;
-            if !kill_status.success() {
-                break;
-            }
-            if Instant::now() >= deadline {
-                panic!("timed out snapshot shell is still alive after grace period");
-            }
-            sleep(TokioDuration::from_millis(50)).await;
-        }
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn macos_zsh_snapshot_includes_sections() -> Result<()> {
-        let snapshot = get_snapshot(ShellType::Zsh).await?;
-        assert_posix_snapshot_sections(&snapshot);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn linux_bash_snapshot_includes_sections() -> Result<()> {
-        let snapshot = get_snapshot(ShellType::Bash).await?;
-        assert_posix_snapshot_sections(&snapshot);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn linux_sh_snapshot_includes_sections() -> Result<()> {
-        let snapshot = get_snapshot(ShellType::Sh).await?;
-        assert_posix_snapshot_sections(&snapshot);
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    #[ignore]
-    #[tokio::test]
-    async fn windows_powershell_snapshot_includes_sections() -> Result<()> {
-        let snapshot = get_snapshot(ShellType::PowerShell).await?;
-        assert!(snapshot.contains("# Snapshot file"));
-        assert!(snapshot.contains("aliases "));
-        assert!(snapshot.contains("exports "));
-        Ok(())
-    }
-
-    async fn write_rollout_stub(codex_home: &Path, session_id: ThreadId) -> Result<PathBuf> {
-        let dir = codex_home
-            .join("sessions")
-            .join("2025")
-            .join("01")
-            .join("01");
-        fs::create_dir_all(&dir).await?;
-        let path = dir.join(format!("rollout-2025-01-01T00-00-00-{session_id}.jsonl"));
-        fs::write(&path, "").await?;
-        Ok(path)
-    }
-
-    #[tokio::test]
-    async fn cleanup_stale_snapshots_removes_orphans_and_keeps_live() -> Result<()> {
-        let dir = tempdir()?;
-        let codex_home = dir.path();
-        let snapshot_dir = codex_home.join(SNAPSHOT_DIR);
-        fs::create_dir_all(&snapshot_dir).await?;
-
-        let live_session = ThreadId::new();
-        let orphan_session = ThreadId::new();
-        let live_snapshot = snapshot_dir.join(format!("{live_session}.sh"));
-        let orphan_snapshot = snapshot_dir.join(format!("{orphan_session}.sh"));
-        let invalid_snapshot = snapshot_dir.join("not-a-snapshot.txt");
-
-        write_rollout_stub(codex_home, live_session).await?;
-        fs::write(&live_snapshot, "live").await?;
-        fs::write(&orphan_snapshot, "orphan").await?;
-        fs::write(&invalid_snapshot, "invalid").await?;
-
-        cleanup_stale_snapshots(codex_home, ThreadId::new()).await?;
-
-        assert_eq!(live_snapshot.exists(), true);
-        assert_eq!(orphan_snapshot.exists(), false);
-        assert_eq!(invalid_snapshot.exists(), false);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cleanup_stale_snapshots_removes_stale_rollouts() -> Result<()> {
-        let dir = tempdir()?;
-        let codex_home = dir.path();
-        let snapshot_dir = codex_home.join(SNAPSHOT_DIR);
-        fs::create_dir_all(&snapshot_dir).await?;
-
-        let stale_session = ThreadId::new();
-        let stale_snapshot = snapshot_dir.join(format!("{stale_session}.sh"));
-        let rollout_path = write_rollout_stub(codex_home, stale_session).await?;
-        fs::write(&stale_snapshot, "stale").await?;
-
-        set_file_mtime(&rollout_path, SNAPSHOT_RETENTION + Duration::from_secs(60))?;
-
-        cleanup_stale_snapshots(codex_home, ThreadId::new()).await?;
-
-        assert_eq!(stale_snapshot.exists(), false);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cleanup_stale_snapshots_skips_active_session() -> Result<()> {
-        let dir = tempdir()?;
-        let codex_home = dir.path();
-        let snapshot_dir = codex_home.join(SNAPSHOT_DIR);
-        fs::create_dir_all(&snapshot_dir).await?;
-
-        let active_session = ThreadId::new();
-        let active_snapshot = snapshot_dir.join(format!("{active_session}.sh"));
-        let rollout_path = write_rollout_stub(codex_home, active_session).await?;
-        fs::write(&active_snapshot, "active").await?;
-
-        set_file_mtime(&rollout_path, SNAPSHOT_RETENTION + Duration::from_secs(60))?;
-
-        cleanup_stale_snapshots(codex_home, active_session).await?;
-
-        assert_eq!(active_snapshot.exists(), true);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    fn set_file_mtime(path: &Path, age: Duration) -> Result<()> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs()
-            .saturating_sub(age.as_secs());
-        let tv_sec = now
-            .try_into()
-            .map_err(|_| anyhow!("Snapshot mtime is out of range for libc::timespec"))?;
-        let ts = libc::timespec { tv_sec, tv_nsec: 0 };
-        let times = [ts, ts];
-        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        let result = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
-        if result != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(())
+fn snapshot_session_id_from_file_name(file_name: &str) -> Option<&str> {
+    let (stem, extension) = file_name.rsplit_once('.')?;
+    match extension {
+        "sh" | "ps1" => Some(
+            stem.split_once('.')
+                .map_or(stem, |(session_id, _generation)| session_id),
+        ),
+        _ if extension.starts_with("tmp-") => Some(stem),
+        _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "shell_snapshot_tests.rs"]
+mod tests;

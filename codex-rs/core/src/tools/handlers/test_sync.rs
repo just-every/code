@@ -1,22 +1,23 @@
-use codex_protocol::models::FunctionCallOutputBody;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::Barrier;
 use tokio::time::sleep;
 
 use crate::function_tool::FunctionCallError;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::test_sync_spec::create_test_sync_tool;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 
 pub struct TestSyncHandler;
 
@@ -55,13 +56,26 @@ fn barrier_map() -> &'static tokio::sync::Mutex<HashMap<String, BarrierState>> {
     BARRIERS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
 }
 
-#[async_trait]
 impl ToolHandler for TestSyncHandler {
+    type Output = FunctionToolOutput;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("test_sync_tool")
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(create_test_sync_tool())
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation { payload, .. } = invocation;
 
         let arguments = match payload {
@@ -91,10 +105,7 @@ impl ToolHandler for TestSyncHandler {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text("ok".to_string()),
-            success: Some(true),
-        })
+        Ok(FunctionToolOutput::from_text("ok".to_string(), Some(true)))
     }
 }
 
