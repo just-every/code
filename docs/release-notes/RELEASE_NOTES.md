@@ -1,24 +1,24 @@
-## @just-every/code v0.6.98
+## @just-every/code v0.6.99
 
-This release improves TUI workflows, thread handling, plugin sharing, and Linux portability across Code.
+This release improves packaging, profiles, goals, plugins, and remote-control reliability across the CLI and TUI.
 
 ### Changes
 
-- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish.
-- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync.
-- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details.
-- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently.
-- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux.
+- Install: unify npm and standalone releases around packaged archives, and bundle the zsh runtime for macOS x64 builds.
+- CLI/Permissions: standardize on `--profile`, add profile-aware `codex sandbox`, and surface managed permission profiles more consistently.
+- TUI/Goals: enable goals by default, improve `/goal` flows, and fix startup issues around working directories and Windows terminal setup.
+- Plugins: tabulate `plugin list`, add marketplace workflows, and fix plugin bundle installs plus shared icon assets.
+- Remote Control: improve daemon UX, reconnect dropped sessions more reliably, and cap reconnect backoff after failures.
 
 ### Install
 
-```bash
+```
 npm install -g @just-every/code@latest
 code
 ```
 
 ### Thanks
 
-Thanks to @owenlin0, @alfozan111, and @vincentkoc for contributions!
+Thanks to @owenliang, @caseychow, @abhinav, @antonp, @michaelbolin, @channingconger, @celia, @wonpark and @tom for contributions!
 
-Compare: https://github.com/just-every/code/compare/v0.6.97...v0.6.98
+Compare: https://github.com/just-every/code/compare/v0.6.98...v0.6.99

@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.99] - 2026-05-23
+
+- Install: unify npm and standalone releases around packaged archives, and bundle the zsh runtime for macOS x64 builds. (110b30d5, e389e01f, c7bcb90f, 0febb110, ed47f1ab, cfa16fcc)
+- CLI/Permissions: standardize on `--profile`, add profile-aware `codex sandbox`, and surface managed permission profiles more consistently. (8a511d58, 36a71a88, fcff0d6c, ed80e5f5, fe7c069f)
+- TUI/Goals: enable goals by default, improve `/goal` flows, and fix startup issues around working directories and Windows terminal setup. (0e9d2221, b132fec0, 27c4c67b, acd851e8)
+- Plugins: tabulate `plugin list`, add marketplace workflows, and fix plugin bundle installs plus shared icon assets. (3075061b, 74a1b46a, dc255b0d, 7d47056e, 247e22a9)
+- Remote Control: improve daemon UX, reconnect dropped sessions more reliably, and cap reconnect backoff after failures. (6a331a66, 512f8f80, de80fa6e, 03e6c5f6, 58be470d)
+
 ## [0.6.98] - 2026-05-08
 
 - TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish. (4b469854, 3b2ebb36, 5e0a4adb, 48402be6)
