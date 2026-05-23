@@ -96,6 +96,24 @@ impl NetworkContext {
             denied_domains,
         }
     }
+
+    fn render(&self) -> String {
+        let mut rendered = "<network enabled=\"true\">".to_string();
+        Self::push_rendered_domain_element(&mut rendered, "allowed", &self.allowed_domains);
+        Self::push_rendered_domain_element(&mut rendered, "denied", &self.denied_domains);
+        rendered.push_str("</network>");
+        rendered
+    }
+
+    fn push_rendered_domain_element(rendered_network: &mut String, name: &str, domains: &[String]) {
+        if domains.is_empty() {
+            return;
+        }
+
+        rendered_network.push_str(&format!("<{name}>"));
+        rendered_network.push_str(&domains.join(","));
+        rendered_network.push_str(&format!("</{name}>"));
+    }
 }
 
 impl EnvironmentContext {
@@ -251,9 +269,20 @@ impl EnvironmentContext {
 }
 
 impl ContextualUserFragment for EnvironmentContext {
-    const ROLE: &'static str = "user";
-    const START_MARKER: &'static str = codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
-    const END_MARKER: &'static str = codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG;
+    fn role() -> &'static str {
+        "user"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        (
+            codex_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG,
+            codex_protocol::protocol::ENVIRONMENT_CONTEXT_CLOSE_TAG,
+        )
+    }
 
     fn body(&self) -> String {
         let mut lines = Vec::new();
@@ -288,14 +317,7 @@ impl ContextualUserFragment for EnvironmentContext {
         }
         match &self.network {
             Some(network) => {
-                lines.push("  <network enabled=\"true\">".to_string());
-                for allowed in &network.allowed_domains {
-                    lines.push(format!("    <allowed>{allowed}</allowed>"));
-                }
-                for denied in &network.denied_domains {
-                    lines.push(format!("    <denied>{denied}</denied>"));
-                }
-                lines.push("  </network>".to_string());
+                lines.push(format!("  {}", network.render()));
             }
             None => {
                 // TODO(mbolin): Include this line if it helps the model.

@@ -116,6 +116,7 @@ pub async fn run_codex_tool_session(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         },
         trace: None,
     };
@@ -165,6 +166,7 @@ pub async fn run_codex_tool_session_reply(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
     {
@@ -331,6 +333,7 @@ async fn run_codex_tool_session_inner(
                     }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::TurnStarted(_)
+                    | EventMsg::ThreadSettingsApplied(_)
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::AgentReasoningSectionBreak(_)
@@ -364,7 +367,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentMessageContentDelta(_)
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
-                    | EventMsg::SkillsUpdateAvailable
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::RequestUserInput(_)
                     | EventMsg::RequestPermissions(_)
