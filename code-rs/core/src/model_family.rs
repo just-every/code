@@ -521,7 +521,10 @@ mod tests {
     fn bundled_model_metadata_applies_upstream_reasoning_default() {
         let family = find_family_for_model("gpt-5.4").expect("known upstream model");
 
-        assert_eq!(family.default_reasoning_effort, Some(ReasoningEffort::XHigh));
+        assert_eq!(
+            family.default_reasoning_effort,
+            Some(ReasoningEffort::Medium)
+        );
     }
 }
 
