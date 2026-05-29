@@ -18731,8 +18731,14 @@ impl ChatWidget<'_> {
 
         #[cfg(target_os = "macos")]
         {
-            let brew_formula = macos_brew_formula_for_command(&cmd);
-            let script = format!("brew install {brew_formula}");
+            let script = if cmd.eq_ignore_ascii_case("agy")
+                || cmd.eq_ignore_ascii_case("antigravity")
+            {
+                "curl -fsSL https://antigravity.google/cli/install.sh | bash".to_string()
+            } else {
+                let brew_formula = macos_brew_formula_for_command(&cmd);
+                format!("brew install {brew_formula}")
+            };
             let command = vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()];
             return Some((command, script));
         }
@@ -18788,10 +18794,14 @@ fi\n\
             }
 
             let lowercase = agent_name.trim().to_ascii_lowercase();
+            let cmd_lowercase = cmd.trim().to_ascii_lowercase();
             let script = match lowercase.as_str() {
                 "claude" => linux_agent_install_script(&cmd, "@anthropic-ai/claude-code"),
                 "gemini" => linux_agent_install_script(&cmd, "@google/gemini-cli"),
                 "qwen" => linux_agent_install_script(&cmd, "@qwen-code/qwen-code"),
+                _ if cmd_lowercase == "agy" || cmd_lowercase == "antigravity" => {
+                    "curl -fsSL https://antigravity.google/cli/install.sh | bash".to_string()
+                }
                 _ => format!(
                     "{cmd} --version || (echo \"Please install {cmd} via your package manager\" && false)",
                     cmd = cmd
@@ -35145,7 +35155,7 @@ use code_core::protocol::OrderMeta;
             write_requested: Some(false),
             models: Some(vec![
                 "claude-sonnet-4.5".to_string(),
-                "gemini-3-pro".to_string(),
+                "gemini-3.1-pro".to_string(),
             ]),
         }];
         chat.auto_state.pending_agent_timing = Some(AutoTurnAgentsTiming::Blocking);
@@ -35159,7 +35169,7 @@ use code_core::protocol::OrderMeta;
         assert!(message.contains("Run diagnostics"));
         assert!(message.contains("Please run agent.create"));
         assert!(message.contains("write: false"));
-        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-3-pro]"));
+        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-3.1-pro]"));
         assert!(message.contains("Draft alternative fix"));
         assert!(message.contains("Focus on parser module"));
         assert!(message.contains("agent.wait"));

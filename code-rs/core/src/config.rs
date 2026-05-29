@@ -3060,6 +3060,20 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn upgrade_legacy_model_slugs_updates_provider_agent_presets() {
+        let mut cfg = ConfigToml {
+            model: Some("claude-opus-4.6".to_string()),
+            review_model: Some("gemini-3-flash".to_string()),
+            ..Default::default()
+        };
+
+        upgrade_legacy_model_slugs(&mut cfg);
+
+        assert_eq!(cfg.model.as_deref(), Some("claude-opus-4.8"));
+        assert_eq!(cfg.review_model.as_deref(), Some("gemini-3.5-flash"));
+    }
+
+    #[test]
     fn test_compact_prompt_override_prefers_cli_string() -> std::io::Result<()> {
         let fixture = create_test_fixture()?;
         let mut cfg = fixture.cfg.clone();
@@ -3146,7 +3160,8 @@ model_verbosity = "high"
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
         assert!(enabled_names.contains("code-gpt-5.4"));
         assert!(enabled_names.contains("claude-sonnet-4.5"));
-        assert!(enabled_names.contains("gemini-3-pro"));
+        assert!(enabled_names.contains("gemini-3.1-pro"));
+        assert!(enabled_names.contains("gemini-3.5-flash"));
         assert!(enabled_names.contains("qwen-3-coder"));
         Ok(())
     }
@@ -3358,20 +3373,20 @@ mod agent_merge_tests {
     fn gemini_alias_and_canonical_dedupe_prefers_last_state() {
         let agents = vec![
             agent("gemini-2.5-pro", "gemini", true),
-            agent("gemini-3-pro", "gemini", false),
+            agent("gemini-3.1-pro", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later canonical disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"
@@ -3381,21 +3396,21 @@ mod agent_merge_tests {
     #[test]
     fn gemini_alias_disable_overrides_prior_canonical_enable() {
         let agents = vec![
-            agent("gemini-3-pro", "gemini", true),
+            agent("gemini-3.1-pro", "gemini", true),
             agent("gemini-2.5-pro", "gemini", false),
         ];
         let merged = merge_with_default_agents(agents);
 
         let gemini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+            .find(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro"))
             .expect("gemini present");
 
         assert!(!gemini.enabled, "later alias disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3-pro"))
+                .filter(|a| a.name.eq_ignore_ascii_case("gemini-3.1-pro"))
                 .count(),
             1,
             "should dedupe gemini alias/canonical"

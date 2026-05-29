@@ -193,20 +193,28 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some(format!("gpt-5.1-codex{rest}"));
     }
 
-    // Upgrade Anthropic Opus 4.1/4.5 to 4.6
-    if slug.eq_ignore_ascii_case("claude-opus-4.1") || slug.eq_ignore_ascii_case("claude-opus-4.5")
-    {
-        return Some("claude-opus-4.6".to_string());
+    // Upgrade older Anthropic Opus slugs to the current built-in.
+    if matches!(
+        slug.to_ascii_lowercase().as_str(),
+        "claude-opus-4.1" | "claude-opus-4.5" | "claude-opus-4.6" | "claude-opus-4.7"
+    ) {
+        return Some("claude-opus-4.8".to_string());
     }
 
-    // Upgrade Gemini 2.5 Pro to Gemini 3 Pro (or preview alias)
-    if slug.eq_ignore_ascii_case("gemini-2.5-pro") || slug.eq_ignore_ascii_case("gemini-3-pro-preview") {
-        return Some("gemini-3-pro".to_string());
+    // Upgrade Gemini Pro aliases to the current Gemini CLI preset.
+    if matches!(
+        slug.to_ascii_lowercase().as_str(),
+        "gemini-2.5-pro" | "gemini-3-pro" | "gemini-3-pro-preview"
+    ) {
+        return Some("gemini-3.1-pro".to_string());
     }
 
-    // Upgrade Gemini 2.5 Flash to Gemini 3 Flash
-    if slug.eq_ignore_ascii_case("gemini-2.5-flash") {
-        return Some("gemini-3-flash".to_string());
+    // Upgrade Gemini Flash aliases to the Antigravity CLI forward path.
+    if matches!(
+        slug.to_ascii_lowercase().as_str(),
+        "gemini-2.5-flash" | "gemini-3-flash" | "gemini-3-flash-preview"
+    ) {
+        return Some("gemini-3.5-flash".to_string());
     }
 
     // Keep codex variants on their existing line; upgrades are surfaced via the

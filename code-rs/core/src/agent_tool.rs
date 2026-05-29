@@ -1622,7 +1622,16 @@ async fn execute_model_with_permissions(
     fn is_known_family(s: &str) -> bool {
         matches!(
             s,
-            "claude" | "gemini" | "copilot" | "qwen" | "codex" | "code" | "cloud" | "coder"
+            "claude"
+                | "gemini"
+                | "antigravity"
+                | "agy"
+                | "copilot"
+                | "qwen"
+                | "codex"
+                | "code"
+                | "cloud"
+                | "coder"
         )
     }
 
@@ -1681,8 +1690,8 @@ async fn execute_model_with_permissions(
     };
 
     // Configuration overrides for Codex CLI families. External CLIs (claude,
-    // gemini, copilot, qwen) do not understand our config flags, so only attach these
-    // when launching Codex binaries.
+    // gemini, antigravity, copilot, qwen) do not understand our config flags,
+    // so only attach these when launching Codex binaries.
     let effort_override = format!(
         "model_reasoning_effort={}",
         clamped_effort.to_string().to_ascii_lowercase()
@@ -1702,7 +1711,7 @@ async fn execute_model_with_permissions(
             final_args.push("-p".into());
             final_args.push(prompt.to_string());
         }
-        "claude" | "gemini" | "qwen" => {
+        "claude" | "gemini" | "antigravity" | "agy" | "qwen" => {
             let mut defaults = default_params_for(slug_for_defaults, read_only);
             strip_model_flags(&mut defaults);
             final_args.extend(defaults);
@@ -2430,7 +2439,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
                 },
             }),
                 description: Some(
-                    "Optional array of model names (e.g., ['code-gpt-5.4','claude-sonnet-4.5','code-gpt-5.3-codex-spark','gemini-3-flash'])".to_string(),
+                    "Optional array of model names (e.g., ['code-gpt-5.4','claude-sonnet-4.5','code-gpt-5.3-codex-spark','gemini-3.5-flash'])".to_string(),
                 ),
         },
     );

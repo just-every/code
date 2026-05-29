@@ -25,8 +25,8 @@ const CLAUDE_HAIKU_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS
 const CLAUDE_HAIKU_WRITE: &[&str] = &["--dangerously-skip-permissions"];
 const GEMINI_PRO_READ_ONLY: &[&str] = &[];
 const GEMINI_PRO_WRITE: &[&str] = &["-y"];
-const GEMINI_FLASH_READ_ONLY: &[&str] = &[];
-const GEMINI_FLASH_WRITE: &[&str] = &["-y"];
+const ANTIGRAVITY_FLASH_READ_ONLY: &[&str] = &[];
+const ANTIGRAVITY_FLASH_WRITE: &[&str] = &["--sandbox=false", "--dangerously-skip-permissions"];
 const COPILOT_READ_ONLY: &[&str] = &["--autopilot", "--allow-all-tools", "--no-ask-user", "-s"];
 const COPILOT_WRITE: &[&str] = &["--autopilot", "--yolo", "--no-ask-user", "-s"];
 const QWEN_3_CODER_READ_ONLY: &[&str] = &[];
@@ -44,11 +44,11 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "code-gpt-5.4-mini",
     "code-gpt-5.3-codex",
     "code-gpt-5.3-codex-spark",
-    "claude-opus-4.6",
-    "gemini-3-pro",
+    "claude-opus-4.8",
+    "gemini-3.1-pro",
     // Straightforward / cost-aware
     "claude-sonnet-4.5",
-    "gemini-3-flash",
+    "gemini-3.5-flash",
     "github-copilot",
     // Mixed/general and alternates
     "claude-haiku-4.5",
@@ -182,7 +182,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: true,
     },
     AgentModelSpec {
-        slug: "claude-opus-4.6",
+        slug: "claude-opus-4.8",
         family: "claude",
         cli: "claude",
         read_only_args: CLAUDE_OPUS_READ_ONLY,
@@ -190,7 +190,13 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "opus"],
         description: "Higher-capacity Claude model for complex reasoning; use when you want the strongest Claude.",
         enabled_by_default: true,
-        aliases: &["claude-opus", "claude-opus-4.1", "claude-opus-4.5"],
+        aliases: &[
+            "claude-opus",
+            "claude-opus-4.1",
+            "claude-opus-4.5",
+            "claude-opus-4.6",
+            "claude-opus-4.7",
+        ],
         gating_env: None,
         is_frontline: true,
         pro_only: false,
@@ -224,15 +230,16 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "gemini-3-pro",
+        slug: "gemini-3.1-pro",
         family: "gemini",
         cli: "gemini",
         read_only_args: GEMINI_PRO_READ_ONLY,
         write_args: GEMINI_PRO_WRITE,
-        model_args: &["--model", "pro"],
-        description: "Higher-capacity Gemini model for harder tasks; use when gemini-3-flash misses details.",
+        model_args: &["--model", "gemini-3.1-pro-preview"],
+        description: "Higher-capacity Gemini CLI model for harder tasks; use when Gemini Flash misses details.",
         enabled_by_default: true,
         aliases: &[
+            "gemini-3-pro",
             "gemini-3-pro-preview",
             "gemini-3",
             "gemini3",
@@ -244,15 +251,23 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "gemini-3-flash",
-        family: "gemini",
-        cli: "gemini",
-        read_only_args: GEMINI_FLASH_READ_ONLY,
-        write_args: GEMINI_FLASH_WRITE,
-        model_args: &["--model", "flash"],
-        description: "Primary Gemini default for most tasks; fast and low-cost with near gemini-3-pro quality.",
+        slug: "gemini-3.5-flash",
+        family: "antigravity",
+        cli: "agy",
+        read_only_args: ANTIGRAVITY_FLASH_READ_ONLY,
+        write_args: ANTIGRAVITY_FLASH_WRITE,
+        model_args: &[],
+        description: "Antigravity CLI default powered by Gemini 3.5 Flash; fast forward path for Google agents.",
         enabled_by_default: true,
-        aliases: &["gemini", "gemini-flash", "gemini-2.5-flash"],
+        aliases: &[
+            "gemini",
+            "gemini-flash",
+            "gemini-3-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "antigravity",
+            "agy",
+        ],
         gating_env: None,
         is_frontline: false,
         pro_only: false,
@@ -739,6 +754,30 @@ mod tests {
     fn qwen_uses_dashscope_model_id() {
         let qwen = agent_model_spec("qwen-3-coder").expect("qwen spec present");
         assert_eq!(qwen.model_args, &["-m", "qwen3-coder-plus"]);
+    }
+
+    #[test]
+    fn refreshed_provider_agent_aliases_resolve_to_current_defaults() {
+        let opus = agent_model_spec("claude-opus-4.6").expect("legacy opus alias resolves");
+        assert_eq!(opus.slug, "claude-opus-4.8");
+        assert_eq!(opus.model_args, &["--model", "opus"]);
+
+        let gemini = agent_model_spec("gemini").expect("gemini alias resolves");
+        assert_eq!(gemini.slug, "gemini-3.5-flash");
+        assert_eq!(gemini.cli, "agy");
+        assert_eq!(gemini.model_args, &[] as &[&str]);
+        assert_eq!(
+            default_params_for("gemini", false),
+            vec!["--sandbox=false", "--dangerously-skip-permissions"]
+        );
+
+        let legacy_flash =
+            agent_model_spec("gemini-3-flash").expect("legacy gemini flash alias resolves");
+        assert_eq!(legacy_flash.slug, "gemini-3.5-flash");
+
+        let pro = agent_model_spec("gemini-3-pro").expect("legacy gemini pro alias resolves");
+        assert_eq!(pro.slug, "gemini-3.1-pro");
+        assert_eq!(pro.cli, "gemini");
     }
 
     #[test]

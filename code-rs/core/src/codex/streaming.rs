@@ -8458,6 +8458,7 @@ fn resolve_agent_command_for_check(
         "code" | "codex" | "cloud" => ("coder".to_string(), true),
         "claude" => ("claude".to_string(), false),
         "gemini" => ("gemini".to_string(), false),
+        "antigravity" | "agy" => ("agy".to_string(), false),
         "qwen" => ("qwen".to_string(), false),
         other => (other.to_string(), false),
     }

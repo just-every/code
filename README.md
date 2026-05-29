@@ -98,7 +98,7 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 - **API key** (usage-based)
   - Set `export OPENAI_API_KEY=xyz` and run `code`
 
-### Install Claude & Gemini (optional)
+### Install Claude, Antigravity & Gemini (optional)
 
 Every Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
 
@@ -114,9 +114,11 @@ export npm_config_prefix="${npm_config_prefix:-$HOME/.npm-global}"
 mkdir -p "$npm_config_prefix/bin"
 export PATH="$npm_config_prefix/bin:$PATH"
 npm install -g @anthropic-ai/claude-code @google/gemini-cli @qwen-code/qwen-code
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # Quick smoke tests
 claude --version
+agy --version
 gemini --version
 qwen --version
 ```
