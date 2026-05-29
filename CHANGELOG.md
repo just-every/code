@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.100] - 2026-05-29
+
+- TUI: render markdown tables and web links more cleanly, add vim text objects, and make turn interruption keybinds configurable. (6b4b15a1, 26c95021, 7a264978, 8d398d3c, 2d1ad374)
+- Auth: refresh ChatGPT tokens before expiry and improve Google preset login handling so long-running sessions stay signed in. (15d85ea3, e5afe5bf, 76937a5b)
+- Remote/App Server: migrate remote control to server tokens, resume threads with their turns page, and add `codex app-server --stdio`. (912d7d4f, 2a1158b8, b90ec463)
+- Sandbox/Security: add named permission profiles in the TUI, block repository-configured code execution in `/diff`, and tighten Unix socket and websocket checks. (f6fd7530, 2e0c4f49, bf72be59, a027135b)
+- CLI: add standalone websearch, allow API-key auth for remote exec-server registration, and make standalone installs and updates work noninteractively. (a22706df, c57dee98, 8ed38fe3, 5314f550)
+
 ## [0.6.99] - 2026-05-23
 
 - Install: unify npm and standalone releases around packaged archives, and bundle the zsh runtime for macOS x64 builds. (110b30d5, e389e01f, c7bcb90f, 0febb110, ed47f1ab, cfa16fcc)
