@@ -356,7 +356,9 @@ fn should_proactively_refresh_auth(
     if let Some(access_token) = access_token
         && let Ok(Some(expires_at)) = parse_jwt_expiration(access_token)
     {
-        return expires_at <= Utc::now();
+        return expires_at
+            <= Utc::now()
+                + chrono::Duration::minutes(CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES);
     }
 
     last_refresh.is_some_and(|last_refresh| {
@@ -486,7 +488,11 @@ pub async fn auth_for_stored_account(
             let now = Utc::now();
             let refresh_needed = if account.mode == AuthMode::ChatGPT {
                 if let Ok(Some(expires_at)) = parse_jwt_expiration(&tokens.access_token) {
-                    expires_at <= now
+                    expires_at
+                        <= now
+                            + chrono::Duration::minutes(
+                                CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES,
+                            )
                 } else {
                     last_refresh
                         .map(|last| last < now - chrono::Duration::days(28))
@@ -975,6 +981,7 @@ pub struct AuthDotJson {
 
 // Shared constant for token refresh (client id used for oauth token refresh flow)
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CHATGPT_ACCESS_TOKEN_REFRESH_WINDOW_MINUTES: i64 = 5;
 
 use std::sync::RwLock;
 
@@ -1370,12 +1377,15 @@ mod tests {
         let fresh = Utc::now() - chrono::Duration::days(1);
         let stale = Utc::now() - chrono::Duration::days(29);
         let future_access = build_jwt(serde_json::json!({ "exp": Utc::now().timestamp() + 3600 }));
+        let expiring_access =
+            build_jwt(serde_json::json!({ "exp": Utc::now().timestamp() + 240 }));
         let expired_access = build_jwt(serde_json::json!({ "exp": Utc::now().timestamp() - 60 }));
 
         assert!(!should_proactively_refresh_auth(Some(fresh), None));
         assert!(should_proactively_refresh_auth(Some(stale), None));
         assert!(!should_proactively_refresh_auth(None, None));
         assert!(!should_proactively_refresh_auth(Some(stale), Some(&future_access)));
+        assert!(should_proactively_refresh_auth(Some(fresh), Some(&expiring_access)));
         assert!(should_proactively_refresh_auth(Some(fresh), Some(&expired_access)));
     }
 
