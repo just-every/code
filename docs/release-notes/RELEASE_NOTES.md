@@ -1,14 +1,14 @@
-## @just-every/code v0.6.100
+## @just-every/code v0.6.101
 
-This release improves session reliability, TUI usability, and remote execution security across Code.
+This release improves model routing, session workflows, plugin discovery, and execution reliability.
 
 ### Changes
 
-- TUI: render markdown tables and web links more cleanly, add vim text objects, and make turn interruption keybinds configurable.
-- Auth: refresh ChatGPT tokens before expiry and improve Google preset login handling so long-running sessions stay signed in.
-- Remote/App Server: migrate remote control to server tokens, resume threads with their turns page, and add `codex app-server --stdio`.
-- Sandbox/Security: add named permission profiles in the TUI, block repository-configured code execution in `/diff`, and tighten Unix socket and websocket checks.
-- CLI: add standalone websearch, allow API-key auth for remote exec-server registration, and make standalone installs and updates work noninteractively.
+- Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers.
+- CLI/Threads: add archive commands and keep resumed prompt history scoped to the session.
+- Plugins/Skills: improve connector and install suggestions, and add runtime extra skill roots.
+- Sandbox/Exec: preserve deny-read protections, tighten Windows requirements, and clean up filesystem helpers.
+- TUI/Tools: fix Vim editing, render multiline hook output, show web search activity, and finalize image generation natively.
 
 ### Install
 
@@ -19,6 +19,6 @@ code
 
 ### Thanks
 
-Thanks to @stevendcoffey and @owenlin0 for contributions!
+Thanks to @owenlin0 for contributions!
 
-Compare: https://github.com/just-every/code/compare/v0.6.99...v0.6.100
+Compare: https://github.com/just-every/code/compare/v0.6.100...v0.6.101

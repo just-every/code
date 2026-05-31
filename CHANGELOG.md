@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.101] - 2026-05-31
+
+- Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers. (f1d069bf, efc01e06, 96693212)
+- CLI/Threads: add archive commands and keep resumed prompt history scoped to the session. (3e7baa00, 36cd3662, 56958f25)
+- Plugins/Skills: improve connector and install suggestions, and add runtime extra skill roots. (e929bb5c, 8e5f5616, f0a839ea)
+- Sandbox/Exec: preserve deny-read protections, tighten Windows requirements, and clean up filesystem helpers. (6e101421, a5a94ee5, 451b3864, a717e4ef)
+- TUI/Tools: fix Vim editing, render multiline hook output, show web search activity, and finalize image generation natively. (f2e7b462, 251b2412, 96f1347f, 10b03990)
+
 ## [0.6.100] - 2026-05-29
 
 - TUI: render markdown tables and web links more cleanly, add vim text objects, and make turn interruption keybinds configurable. (6b4b15a1, 26c95021, 7a264978, 8d398d3c, 2d1ad374)
