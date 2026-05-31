@@ -482,6 +482,7 @@ mod tests {
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            tool_mode: None,
             prefer_websockets: false,
             used_fallback_model_metadata: false,
         }
