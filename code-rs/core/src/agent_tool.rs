@@ -2962,7 +2962,7 @@ mod tests {
 
         let output = execute_model_with_permissions(
             "agent-test",
-            "code-gpt-5.3-codex",
+            "code-gpt-5.5",
             "ok",
             true,
             None,
