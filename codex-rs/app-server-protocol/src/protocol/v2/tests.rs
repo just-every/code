@@ -1670,6 +1670,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             }]),
             allowed_approvals_reviewers: None,
             allowed_sandbox_modes: None,
+            allowed_windows_sandbox_implementations: None,
             allowed_permissions: None,
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
@@ -2624,6 +2625,27 @@ fn skills_list_params_serialization_uses_force_reload() {
             "forceReload": true,
         }),
     );
+}
+
+#[test]
+fn skills_extra_roots_set_params_serialization_uses_extra_roots() {
+    assert_eq!(
+        serde_json::to_value(SkillsExtraRootsSetParams {
+            extra_roots: vec![absolute_path("tmp/skills")],
+        })
+        .unwrap(),
+        json!({
+            "extraRoots": [absolute_path_string("tmp/skills")],
+        }),
+    );
+}
+
+#[test]
+fn skills_extra_roots_set_params_rejects_relative_roots() {
+    let result = serde_json::from_value::<SkillsExtraRootsSetParams>(json!({
+        "extraRoots": ["relative/path"],
+    }));
+    assert!(result.is_err());
 }
 
 #[test]
