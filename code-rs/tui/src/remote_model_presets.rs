@@ -45,6 +45,9 @@ pub(crate) fn merge_remote_models(
         if remote_slugs.contains(&preset.model.to_ascii_lowercase()) {
             continue;
         }
+        if should_skip_chatgpt_account_catalog_fallback(&preset, auth_mode) {
+            continue;
+        }
         preset.is_default = false;
         remote_presets.push(preset);
     }
@@ -58,6 +61,20 @@ pub(crate) fn merge_remote_models(
     }
 
     remote_presets
+}
+
+fn should_skip_chatgpt_account_catalog_fallback(
+    preset: &ModelPreset,
+    auth_mode: Option<AuthMode>,
+) -> bool {
+    if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
+        return false;
+    }
+
+    matches!(
+        preset.model.to_ascii_lowercase().as_str(),
+        "gpt-5.2" | "gpt-5.2-codex" | "gpt-5.3-codex" | "gpt-5.3-codex-spark"
+    )
 }
 
 fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
@@ -99,6 +116,69 @@ fn model_info_to_preset(info: ModelInfo) -> ModelPreset {
         }),
         pro_only,
         show_in_picker,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote_model(slug: &str, priority: i32) -> ModelInfo {
+        serde_json::from_value(serde_json::json!({
+            "slug": slug,
+            "display_name": slug,
+            "description": format!("{slug} desc"),
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "low"},
+                {"effort": "medium", "description": "medium"}
+            ],
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": priority,
+            "upgrade": null,
+            "base_instructions": "",
+            "supports_reasoning_summaries": false,
+            "support_verbosity": false,
+            "default_verbosity": null,
+            "apply_patch_tool_type": null,
+            "truncation_policy": {"mode": "bytes", "limit": 10000},
+            "supports_parallel_tool_calls": false,
+            "context_window": null,
+            "experimental_supported_tools": []
+        }))
+        .expect("valid model")
+    }
+
+    #[test]
+    fn chatgpt_remote_catalog_does_not_resurrect_sunset_local_models() {
+        let merged = merge_remote_models(
+            vec![remote_model("gpt-5.5", 0), remote_model("gpt-5.4", 1)],
+            code_common::model_presets::builtin_model_presets(Some(AuthMode::ChatGPT), true),
+            Some(AuthMode::ChatGPT),
+            true,
+        );
+
+        let ids: Vec<&str> = merged.iter().map(|preset| preset.id.as_str()).collect();
+        assert!(ids.contains(&"gpt-5.5"));
+        assert!(ids.contains(&"gpt-5.4"));
+        assert!(!ids.contains(&"gpt-5.2"));
+        assert!(!ids.contains(&"gpt-5.2-codex"));
+        assert!(!ids.contains(&"gpt-5.3-codex"));
+        assert!(!ids.contains(&"gpt-5.3-codex-spark"));
+    }
+
+    #[test]
+    fn api_key_presets_keep_gpt_5_3_codex_available() {
+        let merged = merge_remote_models(
+            vec![remote_model("gpt-5.5", 0)],
+            code_common::model_presets::builtin_model_presets(Some(AuthMode::ApiKey), false),
+            Some(AuthMode::ApiKey),
+            false,
+        );
+
+        assert!(merged.iter().any(|preset| preset.id == "gpt-5.3-codex"));
     }
 }
 

@@ -66,8 +66,8 @@ const MAX_QUEUED_CONVERSATION_UPDATES: usize = 24;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
-const AUTO_DRIVE_CLI_MODEL_PRIMARY: &str = "gpt-5.3-codex";
-const AUTO_DRIVE_CLI_MODEL_SPARK: &str = "gpt-5.3-codex-spark";
+const AUTO_DRIVE_CLI_MODEL_PRIMARY: &str = "gpt-5.5";
+const AUTO_DRIVE_CLI_MODEL_FAST: &str = "gpt-5.4-mini";
 const AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION: &str =
     "Hard planning and complex problem solving";
 const AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION: &str =
@@ -160,7 +160,7 @@ fn default_auto_drive_cli_routing_entries() -> Vec<AutoDriveCliRoutingEntry> {
             description: AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION.to_string(),
         },
         AutoDriveCliRoutingEntry {
-            model: AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+            model: AUTO_DRIVE_CLI_MODEL_FAST.to_string(),
             reasoning_levels: vec![ReasoningEffort::High],
             description: AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION.to_string(),
         },
@@ -168,24 +168,10 @@ fn default_auto_drive_cli_routing_entries() -> Vec<AutoDriveCliRoutingEntry> {
 }
 
 fn auto_drive_cli_routing_entries_for_auth(
-    auth_mode: Option<code_app_server_protocol::AuthMode>,
-    supports_pro_only_models: bool,
+    _auth_mode: Option<code_app_server_protocol::AuthMode>,
+    _supports_pro_only_models: bool,
 ) -> Vec<AutoDriveCliRoutingEntry> {
-    let mut entries = vec![AutoDriveCliRoutingEntry {
-        model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
-        reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
-        description: AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION.to_string(),
-    }];
-    if auth_mode.is_some_and(code_app_server_protocol::AuthMode::is_chatgpt)
-        && supports_pro_only_models
-    {
-        entries.push(AutoDriveCliRoutingEntry {
-            model: AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
-            reasoning_levels: vec![ReasoningEffort::High],
-            description: AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION.to_string(),
-        });
-    }
-    entries
+    default_auto_drive_cli_routing_entries()
 }
 
 #[cfg(test)]
@@ -268,9 +254,6 @@ fn resolve_auto_drive_cli_routing_entries(
     available_models: &[String],
 ) -> Vec<AutoDriveCliRoutingEntry> {
     let mut entries = normalize_auto_drive_cli_routing_entries(&settings.model_routing_entries);
-    if !auth_mode.is_some_and(|mode| mode.is_chatgpt()) || !supports_pro_only_models {
-        entries.retain(|entry| !entry.model.eq_ignore_ascii_case(AUTO_DRIVE_CLI_MODEL_SPARK));
-    }
     entries.retain(|entry| {
         available_models
             .iter()
@@ -1183,7 +1166,7 @@ mod tests {
             "status_title": "Fixing tests",
             "status_sent_to_user": "Running clear failing-test loops.",
             "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
-            "cli_model": "gpt-5.3-codex-spark",
+            "cli_model": "gpt-5.4-mini",
             "cli_reasoning_effort": "high"
         }"#;
 
@@ -1197,18 +1180,18 @@ mod tests {
         .expect("routing-enabled decision should parse");
 
         let cli = decision.cli.expect("cli action expected");
-        assert_eq!(cli.model_override.as_deref(), Some("gpt-5.3-codex-spark"));
+        assert_eq!(cli.model_override.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(cli.reasoning_effort_override, Some(ReasoningEffort::High));
     }
 
     #[test]
-    fn parse_decision_rejects_spark_when_not_allowed() {
+    fn parse_decision_rejects_fast_model_when_not_allowed() {
         let raw = r#"{
             "finish_status": "continue",
             "status_title": "Fixing tests",
             "status_sent_to_user": "Running clear failing-test loops.",
             "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
-            "cli_model": "gpt-5.3-codex-spark",
+            "cli_model": "gpt-5.4-mini",
             "cli_reasoning_effort": "high"
         }"#;
 
@@ -1223,7 +1206,7 @@ mod tests {
                 }],
             },
         )
-        .expect_err("non-pro routing should reject spark");
+        .expect_err("routing should reject unavailable fast model");
 
         assert!(err.to_string().contains("unsupported cli_model"));
         assert!(err.to_string().contains(AUTO_DRIVE_CLI_MODEL_PRIMARY));
@@ -1236,7 +1219,7 @@ mod tests {
             "status_title": "Fixing tests",
             "status_sent_to_user": "Running clear failing-test loops.",
             "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
-            "cli_model": "gpt-5.3-codex",
+            "cli_model": "gpt-5.5",
             "cli_reasoning_effort": "xhigh"
         }"#;
 
@@ -1259,25 +1242,25 @@ mod tests {
     }
 
     #[test]
-    fn auto_drive_cli_models_gates_spark_by_auth() {
+    fn auto_drive_cli_models_include_primary_and_fast_for_auth_modes() {
         let pro_models = auto_drive_cli_models_for_auth(Some(AuthMode::Chatgpt), true);
         assert!(pro_models.contains(&AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()));
-        assert!(pro_models.contains(&AUTO_DRIVE_CLI_MODEL_SPARK.to_string()));
+        assert!(pro_models.contains(&AUTO_DRIVE_CLI_MODEL_FAST.to_string()));
 
         let non_pro_models = auto_drive_cli_models_for_auth(Some(AuthMode::Chatgpt), false);
         assert!(non_pro_models.contains(&AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()));
-        assert!(!non_pro_models.contains(&AUTO_DRIVE_CLI_MODEL_SPARK.to_string()));
+        assert!(non_pro_models.contains(&AUTO_DRIVE_CLI_MODEL_FAST.to_string()));
 
         let api_key_models = auto_drive_cli_models_for_auth(Some(AuthMode::ApiKey), false);
         assert!(api_key_models.contains(&AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string()));
-        assert!(!api_key_models.contains(&AUTO_DRIVE_CLI_MODEL_SPARK.to_string()));
+        assert!(api_key_models.contains(&AUTO_DRIVE_CLI_MODEL_FAST.to_string()));
     }
 
     #[test]
     fn resolve_cli_routing_entries_falls_back_when_enabled_entries_missing() {
         let mut settings = AutoDriveSettings::default();
         settings.model_routing_entries = vec![AutoDriveModelRoutingEntry {
-            model: "gpt-5.3-codex".to_string(),
+            model: "gpt-5.5".to_string(),
             enabled: false,
             reasoning_levels: vec![ReasoningEffort::High],
             description: "disabled".to_string(),
@@ -1285,7 +1268,7 @@ mod tests {
 
         let available_models = vec![
             AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
-            AUTO_DRIVE_CLI_MODEL_SPARK.to_string(),
+            AUTO_DRIVE_CLI_MODEL_FAST.to_string(),
         ];
 
         let entries = resolve_auto_drive_cli_routing_entries(
@@ -1296,7 +1279,7 @@ mod tests {
         );
 
         assert!(entries.iter().any(|entry| entry.model == AUTO_DRIVE_CLI_MODEL_PRIMARY));
-        assert!(entries.iter().any(|entry| entry.model == AUTO_DRIVE_CLI_MODEL_SPARK));
+        assert!(entries.iter().any(|entry| entry.model == AUTO_DRIVE_CLI_MODEL_FAST));
     }
 
     #[test]

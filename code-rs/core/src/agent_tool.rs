@@ -2439,7 +2439,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
                 },
             }),
                 description: Some(
-                    "Optional array of model names (e.g., ['code-gpt-5.4','claude-sonnet-4.5','code-gpt-5.3-codex-spark','gemini-3.5-flash'])".to_string(),
+                    "Optional array of model names (e.g., ['code-gpt-5.5','claude-sonnet-4.6','code-gpt-5.4-mini','gemini-3.5-flash'])".to_string(),
                 ),
         },
     );
@@ -2997,7 +2997,7 @@ mod tests {
         }
 
         let cfg = AgentConfig {
-            name: "claude-sonnet-4.5".to_string(),
+            name: "claude-sonnet-4.6".to_string(),
             command: "claude".to_string(),
             args: Vec::new(),
             read_only: true,
@@ -3011,7 +3011,7 @@ mod tests {
 
         let output = execute_model_with_permissions(
             "agent-test",
-            "claude-sonnet-4.5",
+            "claude-sonnet-4.6",
             "ok",
             true,
             None,

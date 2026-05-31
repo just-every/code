@@ -295,8 +295,8 @@ mod tests {
         }
 
         let defaults = get_default_models();
+        assert!(defaults.iter().any(|v| v == "code-gpt-5.5"));
         assert!(defaults.iter().any(|v| v == "code-gpt-5.4"));
-        assert!(defaults.iter().any(|v| v == "code-gpt-5.3-codex"));
         assert!(!defaults.iter().any(|v| v == "qwen-3-coder"));
         assert!(!defaults.iter().any(|v| v == "gemini-3-flash"));
         assert!(!defaults.iter().any(|v| v == "claude-sonnet-4.5"));
@@ -334,7 +334,7 @@ mod tests {
         }
 
         let defaults = get_default_models();
-        assert!(defaults.iter().any(|v| v == "claude-sonnet-4.5"));
+        assert!(defaults.iter().any(|v| v == "claude-sonnet-4.6"));
 
         restore_var("PATH", orig_path);
         restore_var("HOME", orig_home);
@@ -375,8 +375,8 @@ mod tests {
         let plan_prompt = result.unwrap();
         assert!(plan_prompt.contains("final, comprehensive plan"));
         // Default agents list should include non-Codex providers when no [[agents]] configured
+        assert!(plan_prompt.contains("code-gpt-5.5"));
         assert!(plan_prompt.contains("code-gpt-5.4"));
-        assert!(plan_prompt.contains("code-gpt-5.3-codex"));
         assert!(!plan_prompt.contains("cloud-gpt-5.1-codex-max"));
 
         // Test /solve command

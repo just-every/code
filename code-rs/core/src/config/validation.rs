@@ -201,6 +201,10 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("claude-opus-4.8".to_string());
     }
 
+    if slug.eq_ignore_ascii_case("claude-sonnet-4.5") {
+        return Some("claude-sonnet-4.6".to_string());
+    }
+
     // Upgrade Gemini Pro aliases to the current Gemini CLI preset.
     if matches!(
         slug.to_ascii_lowercase().as_str(),

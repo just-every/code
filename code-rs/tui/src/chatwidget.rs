@@ -35154,7 +35154,7 @@ use code_core::protocol::OrderMeta;
             write: false,
             write_requested: Some(false),
             models: Some(vec![
-                "claude-sonnet-4.5".to_string(),
+                "claude-sonnet-4.6".to_string(),
                 "gemini-3.1-pro".to_string(),
             ]),
         }];
@@ -35169,7 +35169,7 @@ use code_core::protocol::OrderMeta;
         assert!(message.contains("Run diagnostics"));
         assert!(message.contains("Please run agent.create"));
         assert!(message.contains("write: false"));
-        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-3.1-pro]"));
+        assert!(message.contains("Models: [claude-sonnet-4.6, gemini-3.1-pro]"));
         assert!(message.contains("Draft alternative fix"));
         assert!(message.contains("Focus on parser module"));
         assert!(message.contains("agent.wait"));

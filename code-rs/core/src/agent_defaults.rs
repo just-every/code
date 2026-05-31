@@ -40,14 +40,13 @@ const MODELS_MANIFEST: &str = include_str!("../../../codex-rs/models-manager/mod
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
+    "code-gpt-5.5",
     "code-gpt-5.4",
     "code-gpt-5.4-mini",
-    "code-gpt-5.3-codex",
-    "code-gpt-5.3-codex-spark",
     "claude-opus-4.8",
     "gemini-3.1-pro",
     // Straightforward / cost-aware
-    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
     "gemini-3.5-flash",
     "github-copilot",
     // Mixed/general and alternates
@@ -148,7 +147,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.3-codex"],
         description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
-        enabled_by_default: true,
+        enabled_by_default: false,
         aliases: &[
             "code-gpt-5.2-codex",
             "code-gpt-5.1-codex-max",
@@ -159,9 +158,6 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
             "gpt-5.1-codex-max",
             "gpt-5.1-codex",
             "gpt-5-codex",
-            "coder",
-            "code",
-            "codex",
         ],
         gating_env: None,
         is_frontline: true,
@@ -175,7 +171,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.3-codex-spark"],
         description: "Fast codex variant tuned for responsive coding loops and smaller edits.",
-        enabled_by_default: true,
+        enabled_by_default: false,
         aliases: &["gpt-5.3-codex-spark", "code-gpt-5.3-spark", "codex-spark"],
         gating_env: None,
         is_frontline: false,
@@ -202,7 +198,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "claude-sonnet-4.5",
+        slug: "claude-sonnet-4.6",
         family: "claude",
         cli: "claude",
         read_only_args: CLAUDE_SONNET_READ_ONLY,
@@ -210,7 +206,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "sonnet"],
         description: "Balanced Claude model for implementation and debugging; a solid default when you want Claude.",
         enabled_by_default: true,
-        aliases: &["claude", "claude-sonnet"],
+        aliases: &["claude", "claude-sonnet", "claude-sonnet-4.5"],
         gating_env: None,
         is_frontline: false,
         pro_only: false,
@@ -369,7 +365,7 @@ fn dynamic_code_agent_spec(model: ManifestModel) -> Option<AgentModelSpec> {
     let model_slug = leak_str(model.slug);
     let description = leak_str(model.description);
     let _display_name = leak_str(model.display_name);
-    let aliases = leak_str_slice(vec![model_slug]);
+    let aliases = dynamic_code_agent_aliases(model_slug);
     let model_args = leak_str_slice(vec!["--model", model_slug]);
     let pro_only = matches!(track, CodeAgentTrack::CodexSpark);
     let is_frontline = !matches!(track, CodeAgentTrack::Mini | CodeAgentTrack::CodexSpark);
@@ -388,6 +384,14 @@ fn dynamic_code_agent_spec(model: ManifestModel) -> Option<AgentModelSpec> {
         is_frontline,
         pro_only,
     })
+}
+
+fn dynamic_code_agent_aliases(model_slug: &'static str) -> &'static [&'static str] {
+    if model_slug.eq_ignore_ascii_case("gpt-5.5") {
+        return leak_str_slice(vec![model_slug, "coder", "code", "codex"]);
+    }
+
+    leak_str_slice(vec![model_slug])
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -546,7 +550,7 @@ fn model_guide_intro(active_agents: &[String]) -> String {
         .collect();
 
     if present_frontline.is_empty() {
-        present_frontline.push("code-gpt-5.4".to_string());
+        present_frontline.push("code-gpt-5.5".to_string());
     }
     let frontline_str = present_frontline.join(", ");
 
@@ -720,6 +724,11 @@ mod tests {
 
     #[test]
     fn gpt_codex_aliases_resolve() {
+        for alias in ["coder", "code", "codex"] {
+            let spec = agent_model_spec(alias).expect("generic codex alias resolves");
+            assert_eq!(spec.slug, "code-gpt-5.5");
+        }
+
         let codex = agent_model_spec("gpt-5.1-codex").expect("alias for codex present");
         assert_eq!(codex.slug, "code-gpt-5.3-codex");
 
@@ -762,6 +771,11 @@ mod tests {
         assert_eq!(opus.slug, "claude-opus-4.8");
         assert_eq!(opus.model_args, &["--model", "opus"]);
 
+        let sonnet =
+            agent_model_spec("claude-sonnet-4.5").expect("legacy sonnet alias resolves");
+        assert_eq!(sonnet.slug, "claude-sonnet-4.6");
+        assert_eq!(sonnet.model_args, &["--model", "sonnet"]);
+
         let gemini = agent_model_spec("gemini").expect("gemini alias resolves");
         assert_eq!(gemini.slug, "gemini-3.5-flash");
         assert_eq!(gemini.cli, "agy");
@@ -781,12 +795,30 @@ mod tests {
     }
 
     #[test]
-    fn spark_agent_model_requires_pro_chatgpt_auth() {
+    fn spark_agent_model_remains_explicit_pro_only() {
+        let spark = agent_model_spec("gpt-5.3-codex-spark").expect("spark spec present");
+        assert!(!spark.is_enabled());
+        assert!(agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::Chatgpt),
+            true
+        ));
+        assert!(!agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::Chatgpt),
+            false
+        ));
+        assert!(!agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::ApiKey),
+            false
+        ));
+
         let pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), true);
         assert!(
             pro_specs
                 .iter()
-                .any(|spec| spec.slug == "code-gpt-5.3-codex-spark")
+                .all(|spec| spec.slug != "code-gpt-5.3-codex-spark")
         );
 
         let non_pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), false);
@@ -843,6 +875,11 @@ mod tests {
             enabled_agent_model_specs()
                 .iter()
                 .all(|spec| spec.slug != "code-gpt-5.2")
+        );
+        assert!(
+            enabled_agent_model_specs()
+                .iter()
+                .all(|spec| spec.slug != "code-gpt-5.3-codex")
         );
     }
 }

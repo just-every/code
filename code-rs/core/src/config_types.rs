@@ -956,13 +956,13 @@ fn default_auto_drive_model_routing_reasoning_levels() -> Vec<ReasoningEffort> {
 pub fn default_auto_drive_model_routing_entries() -> Vec<AutoDriveModelRoutingEntry> {
     vec![
         AutoDriveModelRoutingEntry {
-            model: "gpt-5.3-codex".to_string(),
+            model: "gpt-5.5".to_string(),
             enabled: true,
             reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
             description: "Hard planning and complex problem solving".to_string(),
         },
         AutoDriveModelRoutingEntry {
-            model: "gpt-5.3-codex-spark".to_string(),
+            model: "gpt-5.4-mini".to_string(),
             enabled: true,
             reasoning_levels: vec![ReasoningEffort::High],
             description: "Fast implementation loops and failing-test iteration".to_string(),

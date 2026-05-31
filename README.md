@@ -19,8 +19,8 @@
   - Stress tests now cover heavy agent churn plus concurrent Auto Review + Esc/typing responsiveness.
 
 - **New/updated models and agents**
-  - Auto Drive CLI model support includes `gpt-5.3-codex` (planning/problem-solving) and `gpt-5.3-codex-spark` (fast coding/fix loops), with `medium | high | xhigh` reasoning controls.
-  - Frontline and alias-aware agent model handling now includes `code-gpt-5.3-codex` and `code-gpt-5.3-codex-spark`, with compatibility alias upgrades for `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.2-codex`, etc.
+  - Auto Drive CLI model support defaults to `gpt-5.5` (planning/problem-solving) and `gpt-5.4-mini` (fast coding/fix loops), with `medium | high | xhigh` reasoning controls.
+  - Frontline and alias-aware agent model handling now includes `code-gpt-5.5`, `code-gpt-5.4`, `claude-opus-4.8`, and `claude-sonnet-4.6`, with compatibility aliases for older model names where supported.
   - Auto Drive decision schema and coordinator payloads now enforce bounded history while preserving goal and recent context.
 
   See commit `60727b068` and related Auto Drive hardening commits in git history for details.

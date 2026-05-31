@@ -75,7 +75,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
             ],
             supported_text_verbosity: ALL_TEXT_VERBOSITY,
-            is_default: false,
+            is_default: true,
             upgrade: None,
             pro_only: false,
             show_in_picker: true,
@@ -226,14 +226,14 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 },
             ],
             supported_text_verbosity: &[TextVerbosityConfig::Medium],
-            is_default: true,
+            is_default: false,
             upgrade: Some(ModelUpgrade {
                 id: "gpt-5.3-codex".to_string(),
                 reasoning_effort_mapping: None,
                 migration_config_key: HIDE_GPT_5_2_CODEX_MIGRATION_PROMPT_CONFIG.to_string(),
             }),
             pro_only: false,
-            show_in_picker: true,
+            show_in_picker: false,
         },
         ModelPreset {
             id: "gpt-5.2".to_string(),
@@ -577,7 +577,7 @@ pub fn model_preset_available_for_auth(
 
     match auth_mode {
         Some(AuthMode::ApiKey) => {
-            preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex"
+            preset.id != "gpt-5.2-codex" && preset.id != "gpt-5.3-codex-spark"
         }
         _ => true,
     }
@@ -668,13 +668,13 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_codex_hidden_for_api_key_auth() {
+    fn deprecated_and_chatgpt_only_codex_models_hidden_for_api_key_auth() {
         let presets = builtin_model_presets(Some(AuthMode::ApiKey), false);
         assert!(presets.iter().all(|preset| {
             preset.id != "gpt-5.2-codex"
-                && preset.id != "gpt-5.3-codex"
                 && preset.id != "gpt-5.3-codex-spark"
         }));
+        assert!(presets.iter().any(|preset| preset.id == "gpt-5.3-codex"));
     }
 
     #[test]

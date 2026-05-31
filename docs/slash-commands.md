@@ -119,10 +119,10 @@ Implementation Notes
 - Prompt formatting for `/plan`, `/solve`, and `/code` lives in
   `code-rs/core/src/slash_commands.rs`.
   When no `[[agents]]` are configured, the orchestrator advertises the
-  following model slugs to the LLM for multi-agent runs: `code-gpt-5.4`,
-  `code-gpt-5.4-mini`, `code-gpt-5.3-codex`, `code-gpt-5.3-codex-spark`,
+  following model slugs to the LLM for multi-agent runs: `code-gpt-5.5`,
+  `code-gpt-5.4`, `code-gpt-5.4-mini`,
   `claude-opus-4.8`, `gemini-3.1-pro`,
-  `claude-sonnet-4.5`, `gemini-3.5-flash`,
+  `claude-sonnet-4.6`, `gemini-3.5-flash`,
   `claude-haiku-4.5`, and `qwen-3-coder` (with
   `cloud-gpt-5.1-codex-max` gated by `CODE_ENABLE_CLOUD_AGENT_MODEL`). (`gemini`
   resolves to `gemini-3.5-flash`.) You can replace or pin this set via
