@@ -25,8 +25,8 @@ const CLAUDE_HAIKU_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS
 const CLAUDE_HAIKU_WRITE: &[&str] = &["--dangerously-skip-permissions"];
 const GEMINI_PRO_READ_ONLY: &[&str] = &[];
 const GEMINI_PRO_WRITE: &[&str] = &["-y"];
-const GEMINI_FLASH_READ_ONLY: &[&str] = &[];
-const GEMINI_FLASH_WRITE: &[&str] = &["-y"];
+const ANTIGRAVITY_FLASH_READ_ONLY: &[&str] = &[];
+const ANTIGRAVITY_FLASH_WRITE: &[&str] = &["--sandbox=false", "--dangerously-skip-permissions"];
 const COPILOT_READ_ONLY: &[&str] = &["--autopilot", "--allow-all-tools", "--no-ask-user", "-s"];
 const COPILOT_WRITE: &[&str] = &["--autopilot", "--yolo", "--no-ask-user", "-s"];
 const QWEN_3_CODER_READ_ONLY: &[&str] = &[];
@@ -40,15 +40,14 @@ const MODELS_MANIFEST: &str = include_str!("../../../codex-rs/models-manager/mod
 /// CLI-name lookups.
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
+    "code-gpt-5.5",
     "code-gpt-5.4",
     "code-gpt-5.4-mini",
-    "code-gpt-5.3-codex",
-    "code-gpt-5.3-codex-spark",
-    "claude-opus-4.6",
-    "gemini-3-pro",
+    "claude-opus-4.8",
+    "gemini-3.1-pro",
     // Straightforward / cost-aware
-    "claude-sonnet-4.5",
-    "gemini-3-flash",
+    "claude-sonnet-4.6",
+    "gemini-3.5-flash",
     "github-copilot",
     // Mixed/general and alternates
     "claude-haiku-4.5",
@@ -148,7 +147,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.3-codex"],
         description: "Primary coding agent for implementation and multi-file edits; strong speed and reliability.",
-        enabled_by_default: true,
+        enabled_by_default: false,
         aliases: &[
             "code-gpt-5.2-codex",
             "code-gpt-5.1-codex-max",
@@ -159,9 +158,6 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
             "gpt-5.1-codex-max",
             "gpt-5.1-codex",
             "gpt-5-codex",
-            "coder",
-            "code",
-            "codex",
         ],
         gating_env: None,
         is_frontline: true,
@@ -175,14 +171,14 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         write_args: CODE_GPT5_CODEX_WRITE,
         model_args: &["--model", "gpt-5.3-codex-spark"],
         description: "Fast codex variant tuned for responsive coding loops and smaller edits.",
-        enabled_by_default: true,
+        enabled_by_default: false,
         aliases: &["gpt-5.3-codex-spark", "code-gpt-5.3-spark", "codex-spark"],
         gating_env: None,
         is_frontline: false,
         pro_only: true,
     },
     AgentModelSpec {
-        slug: "claude-opus-4.6",
+        slug: "claude-opus-4.8",
         family: "claude",
         cli: "claude",
         read_only_args: CLAUDE_OPUS_READ_ONLY,
@@ -190,13 +186,19 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "opus"],
         description: "Higher-capacity Claude model for complex reasoning; use when you want the strongest Claude.",
         enabled_by_default: true,
-        aliases: &["claude-opus", "claude-opus-4.1", "claude-opus-4.5"],
+        aliases: &[
+            "claude-opus",
+            "claude-opus-4.1",
+            "claude-opus-4.5",
+            "claude-opus-4.6",
+            "claude-opus-4.7",
+        ],
         gating_env: None,
         is_frontline: true,
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "claude-sonnet-4.5",
+        slug: "claude-sonnet-4.6",
         family: "claude",
         cli: "claude",
         read_only_args: CLAUDE_SONNET_READ_ONLY,
@@ -204,7 +206,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         model_args: &["--model", "sonnet"],
         description: "Balanced Claude model for implementation and debugging; a solid default when you want Claude.",
         enabled_by_default: true,
-        aliases: &["claude", "claude-sonnet"],
+        aliases: &["claude", "claude-sonnet", "claude-sonnet-4.5"],
         gating_env: None,
         is_frontline: false,
         pro_only: false,
@@ -224,15 +226,16 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "gemini-3-pro",
+        slug: "gemini-3.1-pro",
         family: "gemini",
         cli: "gemini",
         read_only_args: GEMINI_PRO_READ_ONLY,
         write_args: GEMINI_PRO_WRITE,
-        model_args: &["--model", "pro"],
-        description: "Higher-capacity Gemini model for harder tasks; use when gemini-3-flash misses details.",
+        model_args: &["--model", "gemini-3.1-pro-preview"],
+        description: "Higher-capacity Gemini CLI model for harder tasks; use when Gemini Flash misses details.",
         enabled_by_default: true,
         aliases: &[
+            "gemini-3-pro",
             "gemini-3-pro-preview",
             "gemini-3",
             "gemini3",
@@ -244,15 +247,23 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "gemini-3-flash",
-        family: "gemini",
-        cli: "gemini",
-        read_only_args: GEMINI_FLASH_READ_ONLY,
-        write_args: GEMINI_FLASH_WRITE,
-        model_args: &["--model", "flash"],
-        description: "Primary Gemini default for most tasks; fast and low-cost with near gemini-3-pro quality.",
+        slug: "gemini-3.5-flash",
+        family: "antigravity",
+        cli: "agy",
+        read_only_args: ANTIGRAVITY_FLASH_READ_ONLY,
+        write_args: ANTIGRAVITY_FLASH_WRITE,
+        model_args: &[],
+        description: "Antigravity CLI default powered by Gemini 3.5 Flash; fast forward path for Google agents.",
         enabled_by_default: true,
-        aliases: &["gemini", "gemini-flash", "gemini-2.5-flash"],
+        aliases: &[
+            "gemini",
+            "gemini-flash",
+            "gemini-3-flash",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "antigravity",
+            "agy",
+        ],
         gating_env: None,
         is_frontline: false,
         pro_only: false,
@@ -277,7 +288,7 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         cli: "qwen",
         read_only_args: QWEN_3_CODER_READ_ONLY,
         write_args: QWEN_3_CODER_WRITE,
-        model_args: &["-m", "qwen-3-coder"],
+        model_args: &["-m", "qwen3-coder-plus"],
         description: "Fast and capable alternative; useful as a second opinion or for cross-checking.",
         enabled_by_default: true,
         aliases: &["qwen", "qwen3"],
@@ -354,7 +365,7 @@ fn dynamic_code_agent_spec(model: ManifestModel) -> Option<AgentModelSpec> {
     let model_slug = leak_str(model.slug);
     let description = leak_str(model.description);
     let _display_name = leak_str(model.display_name);
-    let aliases = leak_str_slice(vec![model_slug]);
+    let aliases = dynamic_code_agent_aliases(model_slug);
     let model_args = leak_str_slice(vec!["--model", model_slug]);
     let pro_only = matches!(track, CodeAgentTrack::CodexSpark);
     let is_frontline = !matches!(track, CodeAgentTrack::Mini | CodeAgentTrack::CodexSpark);
@@ -373,6 +384,14 @@ fn dynamic_code_agent_spec(model: ManifestModel) -> Option<AgentModelSpec> {
         is_frontline,
         pro_only,
     })
+}
+
+fn dynamic_code_agent_aliases(model_slug: &'static str) -> &'static [&'static str] {
+    if model_slug.eq_ignore_ascii_case("gpt-5.5") {
+        return leak_str_slice(vec![model_slug, "coder", "code", "codex"]);
+    }
+
+    leak_str_slice(vec![model_slug])
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -531,7 +550,7 @@ fn model_guide_intro(active_agents: &[String]) -> String {
         .collect();
 
     if present_frontline.is_empty() {
-        present_frontline.push("code-gpt-5.4".to_string());
+        present_frontline.push("code-gpt-5.5".to_string());
     }
     let frontline_str = present_frontline.join(", ");
 
@@ -705,6 +724,11 @@ mod tests {
 
     #[test]
     fn gpt_codex_aliases_resolve() {
+        for alias in ["coder", "code", "codex"] {
+            let spec = agent_model_spec(alias).expect("generic codex alias resolves");
+            assert_eq!(spec.slug, "code-gpt-5.5");
+        }
+
         let codex = agent_model_spec("gpt-5.1-codex").expect("alias for codex present");
         assert_eq!(codex.slug, "code-gpt-5.3-codex");
 
@@ -736,12 +760,65 @@ mod tests {
     }
 
     #[test]
-    fn spark_agent_model_requires_pro_chatgpt_auth() {
+    fn qwen_uses_dashscope_model_id() {
+        let qwen = agent_model_spec("qwen-3-coder").expect("qwen spec present");
+        assert_eq!(qwen.model_args, &["-m", "qwen3-coder-plus"]);
+    }
+
+    #[test]
+    fn refreshed_provider_agent_aliases_resolve_to_current_defaults() {
+        let opus = agent_model_spec("claude-opus-4.6").expect("legacy opus alias resolves");
+        assert_eq!(opus.slug, "claude-opus-4.8");
+        assert_eq!(opus.model_args, &["--model", "opus"]);
+
+        let sonnet =
+            agent_model_spec("claude-sonnet-4.5").expect("legacy sonnet alias resolves");
+        assert_eq!(sonnet.slug, "claude-sonnet-4.6");
+        assert_eq!(sonnet.model_args, &["--model", "sonnet"]);
+
+        let gemini = agent_model_spec("gemini").expect("gemini alias resolves");
+        assert_eq!(gemini.slug, "gemini-3.5-flash");
+        assert_eq!(gemini.cli, "agy");
+        assert_eq!(gemini.model_args, &[] as &[&str]);
+        assert_eq!(
+            default_params_for("gemini", false),
+            vec!["--sandbox=false", "--dangerously-skip-permissions"]
+        );
+
+        let legacy_flash =
+            agent_model_spec("gemini-3-flash").expect("legacy gemini flash alias resolves");
+        assert_eq!(legacy_flash.slug, "gemini-3.5-flash");
+
+        let pro = agent_model_spec("gemini-3-pro").expect("legacy gemini pro alias resolves");
+        assert_eq!(pro.slug, "gemini-3.1-pro");
+        assert_eq!(pro.cli, "gemini");
+    }
+
+    #[test]
+    fn spark_agent_model_remains_explicit_pro_only() {
+        let spark = agent_model_spec("gpt-5.3-codex-spark").expect("spark spec present");
+        assert!(!spark.is_enabled());
+        assert!(agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::Chatgpt),
+            true
+        ));
+        assert!(!agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::Chatgpt),
+            false
+        ));
+        assert!(!agent_model_available_for_auth(
+            spark,
+            Some(AuthMode::ApiKey),
+            false
+        ));
+
         let pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), true);
         assert!(
             pro_specs
                 .iter()
-                .any(|spec| spec.slug == "code-gpt-5.3-codex-spark")
+                .all(|spec| spec.slug != "code-gpt-5.3-codex-spark")
         );
 
         let non_pro_specs = enabled_agent_model_specs_for_auth(Some(AuthMode::Chatgpt), false);
@@ -798,6 +875,11 @@ mod tests {
             enabled_agent_model_specs()
                 .iter()
                 .all(|spec| spec.slug != "code-gpt-5.2")
+        );
+        assert!(
+            enabled_agent_model_specs()
+                .iter()
+                .all(|spec| spec.slug != "code-gpt-5.3-codex")
         );
     }
 }

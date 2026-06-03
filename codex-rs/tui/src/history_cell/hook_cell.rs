@@ -11,9 +11,12 @@
 //!    first drawn.
 //! 4. Completed runs only persist when they have output or a non-success status.
 use super::HistoryCell;
-use crate::exec_cell::spinner;
+use super::plain_lines;
+use crate::motion::MotionMode;
+use crate::motion::ReducedMotionIndicator;
+use crate::motion::activity_indicator;
+use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
-use crate::shimmer::shimmer_spans;
 use codex_app_server_protocol::HookEventName;
 use codex_app_server_protocol::HookOutputEntry;
 use codex_app_server_protocol::HookOutputEntryKind;
@@ -44,6 +47,9 @@ const HOOK_RUN_REVEAL_DELAY: Duration = Duration::from_millis(300);
 /// This pairs with `HOOK_RUN_REVEAL_DELAY`: once the user has seen a hook row, keep it stable long
 /// enough to read instead of removing it immediately when the success event arrives.
 const QUIET_HOOK_MIN_VISIBLE: Duration = Duration::from_millis(600);
+
+const HOOK_OUTPUT_INDENT: &str = "  ";
+const HOOK_OUTPUT_BODY_INDENT: &str = "    ";
 
 #[derive(Debug)]
 struct HookRunCell {
@@ -338,6 +344,10 @@ impl HistoryCell for HookCell {
         self.display_lines(width)
     }
 
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.display_lines(u16::MAX))
+    }
+
     /// Produces a coarse cache key for transcript overlays while hook animations are active.
     fn transcript_animation_tick(&self) -> Option<u64> {
         if !self.animations_enabled {
@@ -436,10 +446,18 @@ impl HookRunCell {
                     .into(),
                 );
                 for entry in entries {
-                    // Output entries are already short hook-authored strings; keep their prefixes
-                    // explicit so warnings/stops/errors remain easy to scan in history.
-                    lines
-                        .push(format!("  {}{}", hook_output_prefix(entry.kind), entry.text).into());
+                    let prefix = hook_output_prefix(entry.kind);
+                    let mut output_lines = entry.text.split('\n');
+                    if let Some(first_line) = output_lines.next() {
+                        lines.push(format!("{HOOK_OUTPUT_INDENT}{prefix}{first_line}").into());
+                    }
+                    for line in output_lines {
+                        if line.is_empty() {
+                            lines.push("".into());
+                        } else {
+                            lines.push(format!("{HOOK_OUTPUT_BODY_INDENT}{line}").into());
+                        }
+                    }
                 }
             }
             HookRunState::PendingReveal { .. } => {}
@@ -626,11 +644,17 @@ fn push_running_hook_header(
     status_message: Option<&str>,
     animations_enabled: bool,
 ) {
-    let mut header = vec![spinner(start_time, animations_enabled), " ".into()];
-    if animations_enabled {
-        header.extend(shimmer_spans(hook_text));
-    } else {
-        header.push(hook_text.to_string().bold());
+    let mut header = Vec::new();
+    let motion_mode = MotionMode::from_animations_enabled(animations_enabled);
+    if let Some(indicator) =
+        activity_indicator(start_time, motion_mode, ReducedMotionIndicator::Hidden)
+    {
+        header.push(indicator);
+        header.push(" ".into());
+    }
+    header.extend(shimmer_text(hook_text, motion_mode));
+    if !animations_enabled && let Some(span) = header.last_mut() {
+        span.style = span.style.patch(Style::default().bold());
     }
     if let Some(status_message) = status_message
         && !status_message.is_empty()
@@ -703,8 +727,12 @@ fn hook_event_label(event_name: HookEventName) -> &'static str {
         HookEventName::PreToolUse => "PreToolUse",
         HookEventName::PermissionRequest => "PermissionRequest",
         HookEventName::PostToolUse => "PostToolUse",
+        HookEventName::PreCompact => "PreCompact",
+        HookEventName::PostCompact => "PostCompact",
         HookEventName::SessionStart => "SessionStart",
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
+        HookEventName::SubagentStart => "SubagentStart",
+        HookEventName::SubagentStop => "SubagentStop",
         HookEventName::Stop => "Stop",
     }
 }
@@ -729,6 +757,50 @@ mod tests {
         assert_eq!(bullet.content.as_ref(), "•");
         assert_eq!(bullet.style.fg, None);
         assert!(bullet.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn completed_hook_multiline_context_preserves_display_and_raw_lines() {
+        let cell = completed_hook_cell(
+            HookEventName::SessionStart,
+            HookRunStatus::Completed,
+            vec![HookOutputEntry {
+                kind: HookOutputEntryKind::Context,
+                text: "## Working Memory Recall\n\nSource: Codex compaction\nScope: Durable workspace memory"
+                    .to_string(),
+            }],
+        );
+        let expected = vec![
+            "• SessionStart hook (completed)".to_string(),
+            "  hook context: ## Working Memory Recall".to_string(),
+            "".to_string(),
+            "    Source: Codex compaction".to_string(),
+            "    Scope: Durable workspace memory".to_string(),
+        ];
+
+        assert_eq!(line_texts(&cell.display_lines(/*width*/ 80)), expected);
+        assert_eq!(line_texts(&cell.raw_lines()), expected);
+    }
+
+    #[test]
+    fn completed_hook_multiline_warning_prefixes_first_line_only() {
+        let cell = completed_hook_cell(
+            HookEventName::PostToolUse,
+            HookRunStatus::Completed,
+            vec![HookOutputEntry {
+                kind: HookOutputEntryKind::Warning,
+                text: "Heads up\nReview generated files".to_string(),
+            }],
+        );
+
+        assert_eq!(
+            line_texts(&cell.display_lines(/*width*/ 80)),
+            vec![
+                "• PostToolUse hook (completed)".to_string(),
+                "  warning: Heads up".to_string(),
+                "    Review generated files".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -759,6 +831,53 @@ mod tests {
         cell.advance_time(Instant::now());
 
         assert_eq!(cell.transcript_animation_tick(), None);
+    }
+
+    #[test]
+    fn visible_hook_without_animations_omits_spinner() {
+        let mut cell = HookCell::new_active(
+            hook_run_summary("hook-1"),
+            /*animations_enabled*/ false,
+        );
+        cell.reveal_running_runs_now_for_test();
+        cell.advance_time(Instant::now());
+
+        let rendered: Vec<String> = cell
+            .display_lines(/*width*/ 80)
+            .iter()
+            .map(line_text)
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec!["Running PostToolUse hook: checking output policy".to_string()]
+        );
+    }
+
+    fn completed_hook_cell(
+        event_name: HookEventName,
+        status: HookRunStatus,
+        entries: Vec<HookOutputEntry>,
+    ) -> HookCell {
+        let mut run = hook_run_summary("hook-1");
+        run.event_name = event_name;
+        run.status = status;
+        run.status_message = None;
+        run.completed_at = Some(2);
+        run.duration_ms = Some(1);
+        run.entries = entries;
+        HookCell::new_completed(run, /*animations_enabled*/ false)
+    }
+
+    fn line_texts(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter().map(line_text).collect()
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 
     fn hook_run_summary(id: &str) -> HookRunSummary {

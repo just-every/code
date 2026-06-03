@@ -4,16 +4,10 @@ pub(crate) mod dispatcher;
 pub(crate) mod output_parser;
 pub(crate) mod schema_loader;
 
-use std::collections::HashMap;
-
-use codex_config::ConfigLayerStack;
-use codex_plugin::PluginHookSource;
-use codex_protocol::protocol::HookEventName;
-use codex_protocol::protocol::HookHandlerType;
-use codex_protocol::protocol::HookRunSummary;
-use codex_protocol::protocol::HookSource;
-use codex_utils_absolute_path::AbsolutePathBuf;
-
+use crate::events::compact::PostCompactRequest;
+use crate::events::compact::PreCompactOutcome;
+use crate::events::compact::PreCompactRequest;
+use crate::events::compact::StatelessHookOutcome;
 use crate::events::permission_request::PermissionRequestOutcome;
 use crate::events::permission_request::PermissionRequestRequest;
 use crate::events::post_tool_use::PostToolUseOutcome;
@@ -26,6 +20,17 @@ use crate::events::stop::StopOutcome;
 use crate::events::stop::StopRequest;
 use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
+use crate::output_spill::HookOutputSpiller;
+use codex_config::ConfigLayerStack;
+use codex_plugin::PluginHookSource;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::HookEventName;
+use codex_protocol::protocol::HookHandlerType;
+use codex_protocol::protocol::HookRunSummary;
+use codex_protocol::protocol::HookSource;
+use codex_protocol::protocol::HookTrustStatus;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommandShell {
@@ -61,8 +66,12 @@ impl ConfiguredHandler {
             codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
             codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
             codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
+            codex_protocol::protocol::HookEventName::PreCompact => "pre-compact",
+            codex_protocol::protocol::HookEventName::PostCompact => "post-compact",
             codex_protocol::protocol::HookEventName::SessionStart => "session-start",
             codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
+            codex_protocol::protocol::HookEventName::SubagentStart => "subagent-start",
+            codex_protocol::protocol::HookEventName::SubagentStop => "subagent-stop",
             codex_protocol::protocol::HookEventName::Stop => "stop",
         }
     }
@@ -83,6 +92,8 @@ pub struct HookListEntry {
     pub display_order: i64,
     pub enabled: bool,
     pub is_managed: bool,
+    pub current_hash: String,
+    pub trust_status: HookTrustStatus,
 }
 
 #[derive(Clone)]
@@ -90,11 +101,13 @@ pub(crate) struct ClaudeHooksEngine {
     handlers: Vec<ConfiguredHandler>,
     warnings: Vec<String>,
     shell: CommandShell,
+    output_spiller: HookOutputSpiller,
 }
 
 impl ClaudeHooksEngine {
     pub(crate) fn new(
         enabled: bool,
+        bypass_hook_trust: bool,
         config_layer_stack: Option<&ConfigLayerStack>,
         plugin_hook_sources: Vec<PluginHookSource>,
         plugin_hook_load_warnings: Vec<String>,
@@ -105,6 +118,7 @@ impl ClaudeHooksEngine {
                 handlers: Vec::new(),
                 warnings: Vec::new(),
                 shell,
+                output_spiller: HookOutputSpiller::new(),
             };
         }
 
@@ -113,11 +127,13 @@ impl ClaudeHooksEngine {
             config_layer_stack,
             plugin_hook_sources,
             plugin_hook_load_warnings,
+            bypass_hook_trust,
         );
         Self {
             handlers: discovered.handlers,
             warnings: discovered.warnings,
             shell,
+            output_spiller: HookOutputSpiller::new(),
         }
     }
 
@@ -155,11 +171,23 @@ impl ClaudeHooksEngine {
         request: SessionStartRequest,
         turn_id: Option<String>,
     ) -> SessionStartOutcome {
-        crate::events::session_start::run(&self.handlers, &self.shell, request, turn_id).await
+        let session_id = request.session_id;
+        let mut outcome =
+            crate::events::session_start::run(&self.handlers, &self.shell, request, turn_id).await;
+        outcome.additional_contexts = self
+            .maybe_spill_texts(session_id, outcome.additional_contexts)
+            .await;
+        outcome
     }
 
     pub(crate) async fn run_pre_tool_use(&self, request: PreToolUseRequest) -> PreToolUseOutcome {
-        crate::events::pre_tool_use::run(&self.handlers, &self.shell, request).await
+        let session_id = request.session_id;
+        let mut outcome =
+            crate::events::pre_tool_use::run(&self.handlers, &self.shell, request).await;
+        outcome.additional_contexts = self
+            .maybe_spill_texts(session_id, outcome.additional_contexts)
+            .await;
+        outcome
     }
 
     pub(crate) async fn run_permission_request(
@@ -173,7 +201,35 @@ impl ClaudeHooksEngine {
         &self,
         request: PostToolUseRequest,
     ) -> PostToolUseOutcome {
-        crate::events::post_tool_use::run(&self.handlers, &self.shell, request).await
+        let session_id = request.session_id;
+        let mut outcome =
+            crate::events::post_tool_use::run(&self.handlers, &self.shell, request).await;
+        outcome.additional_contexts = self
+            .maybe_spill_texts(session_id, outcome.additional_contexts)
+            .await;
+        outcome.feedback_message = self
+            .maybe_spill_text(session_id, outcome.feedback_message)
+            .await;
+        outcome
+    }
+
+    pub(crate) fn preview_pre_compact(&self, request: &PreCompactRequest) -> Vec<HookRunSummary> {
+        crate::events::compact::preview_pre(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_pre_compact(&self, request: PreCompactRequest) -> PreCompactOutcome {
+        crate::events::compact::run_pre(&self.handlers, &self.shell, request).await
+    }
+
+    pub(crate) fn preview_post_compact(&self, request: &PostCompactRequest) -> Vec<HookRunSummary> {
+        crate::events::compact::preview_post(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_post_compact(
+        &self,
+        request: PostCompactRequest,
+    ) -> StatelessHookOutcome {
+        crate::events::compact::run_post(&self.handlers, &self.shell, request).await
     }
 
     pub(crate) fn preview_user_prompt_submit(
@@ -187,7 +243,13 @@ impl ClaudeHooksEngine {
         &self,
         request: UserPromptSubmitRequest,
     ) -> UserPromptSubmitOutcome {
-        crate::events::user_prompt_submit::run(&self.handlers, &self.shell, request).await
+        let session_id = request.session_id;
+        let mut outcome =
+            crate::events::user_prompt_submit::run(&self.handlers, &self.shell, request).await;
+        outcome.additional_contexts = self
+            .maybe_spill_texts(session_id, outcome.additional_contexts)
+            .await;
+        outcome
     }
 
     pub(crate) fn preview_stop(&self, request: &StopRequest) -> Vec<HookRunSummary> {
@@ -195,7 +257,35 @@ impl ClaudeHooksEngine {
     }
 
     pub(crate) async fn run_stop(&self, request: StopRequest) -> StopOutcome {
-        crate::events::stop::run(&self.handlers, &self.shell, request).await
+        let session_id = request.session_id;
+        let mut outcome = crate::events::stop::run(&self.handlers, &self.shell, request).await;
+        outcome.continuation_fragments = self
+            .maybe_spill_prompt_fragments(session_id, outcome.continuation_fragments)
+            .await;
+        outcome
+    }
+
+    async fn maybe_spill_texts(&self, session_id: ThreadId, texts: Vec<String>) -> Vec<String> {
+        self.output_spiller
+            .maybe_spill_texts(session_id, texts)
+            .await
+    }
+
+    async fn maybe_spill_text(&self, session_id: ThreadId, text: Option<String>) -> Option<String> {
+        match text {
+            Some(text) => Some(self.output_spiller.maybe_spill_text(session_id, text).await),
+            None => None,
+        }
+    }
+
+    async fn maybe_spill_prompt_fragments(
+        &self,
+        session_id: ThreadId,
+        fragments: Vec<codex_protocol::items::HookPromptFragment>,
+    ) -> Vec<codex_protocol::items::HookPromptFragment> {
+        self.output_spiller
+            .maybe_spill_prompt_fragments(session_id, fragments)
+            .await
     }
 }
 

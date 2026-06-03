@@ -30,7 +30,7 @@ use crate::unified_exec;
 static TEST_MODEL_PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     let mut response = bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
-    response.models.sort_by(|a, b| a.priority.cmp(&b.priority));
+    response.models.sort_by_key(|model| model.priority);
     let mut presets: Vec<ModelPreset> = response.models.into_iter().map(Into::into).collect();
     ModelPreset::mark_default_by_picker_visibility(&mut presets);
     presets
@@ -70,6 +70,22 @@ pub fn thread_manager_with_models_provider_and_home(
         provider,
         codex_home,
         environment_manager,
+    )
+}
+
+pub fn thread_manager_with_models_provider_home_and_state(
+    auth: CodexAuth,
+    provider: ModelProviderInfo,
+    codex_home: PathBuf,
+    environment_manager: Arc<EnvironmentManager>,
+    state_db: Option<crate::StateDbHandle>,
+) -> ThreadManager {
+    ThreadManager::with_models_provider_home_and_state_for_tests(
+        auth,
+        provider,
+        codex_home,
+        environment_manager,
+        state_db,
     )
 }
 

@@ -48,6 +48,7 @@ impl AppEventSender {
                 | AppEvent::RequestRedraw
                 | AppEvent::Redraw
                 | AppEvent::ExitRequest
+                | AppEvent::ClearUi
                 | AppEvent::SetTerminalTitle { .. }
                 | AppEvent::EmitTuiNotification { .. }
                 | AppEvent::AutoCoordinatorCountdown { .. }

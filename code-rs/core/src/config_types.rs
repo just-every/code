@@ -956,13 +956,13 @@ fn default_auto_drive_model_routing_reasoning_levels() -> Vec<ReasoningEffort> {
 pub fn default_auto_drive_model_routing_entries() -> Vec<AutoDriveModelRoutingEntry> {
     vec![
         AutoDriveModelRoutingEntry {
-            model: "gpt-5.3-codex".to_string(),
+            model: "gpt-5.5".to_string(),
             enabled: true,
             reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
             description: "Hard planning and complex problem solving".to_string(),
         },
         AutoDriveModelRoutingEntry {
-            model: "gpt-5.3-codex-spark".to_string(),
+            model: "gpt-5.4-mini".to_string(),
             enabled: true,
             reasoning_levels: vec![ReasoningEffort::High],
             description: "Fast implementation loops and failing-test iteration".to_string(),
@@ -1501,6 +1501,31 @@ pub enum ServiceTier {
     Standard,
     Fast,
     Flex,
+}
+
+/// Request/config sentinel for explicit standard routing.
+///
+/// This is not a catalog service tier id. It means the user intentionally
+/// selected no service tier, so model catalog defaults should not apply.
+pub const SERVICE_TIER_DEFAULT_REQUEST_VALUE: &str = "default";
+
+impl ServiceTier {
+    pub const fn request_value(self) -> &'static str {
+        match self {
+            Self::Standard => SERVICE_TIER_DEFAULT_REQUEST_VALUE,
+            Self::Fast => "priority",
+            Self::Flex => "flex",
+        }
+    }
+
+    pub fn from_request_value(value: &str) -> Option<Self> {
+        match value {
+            "default" | "standard" => Some(Self::Standard),
+            "fast" | "priority" => Some(Self::Fast),
+            "flex" => Some(Self::Flex),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display)]

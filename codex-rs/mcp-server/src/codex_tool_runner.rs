@@ -44,12 +44,10 @@ pub(crate) fn create_call_tool_result_with_thread_id(
         "threadId": thread_id,
         "content": content_text,
     });
-    CallToolResult {
-        content,
-        is_error,
-        structured_content: Some(structured_content),
-        meta: None,
-    }
+    let mut result = CallToolResult::success(content);
+    result.is_error = is_error;
+    result.structured_content = Some(structured_content);
+    result
 }
 
 /// Run a complete Codex session and stream events back to the client.
@@ -71,12 +69,9 @@ pub async fn run_codex_tool_session(
     } = match thread_manager.start_thread(config.clone()).await {
         Ok(res) => res,
         Err(e) => {
-            let result = CallToolResult {
-                content: vec![Content::text(format!("Failed to start Codex session: {e}"))],
-                is_error: Some(true),
-                structured_content: None,
-                meta: None,
-            };
+            let result = CallToolResult::error(vec![Content::text(format!(
+                "Failed to start Codex session: {e}"
+            ))]);
             outgoing.send_response(id.clone(), result).await;
             return;
         }
@@ -116,7 +111,10 @@ pub async fn run_codex_tool_session(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         },
+        client_user_message_id: None,
         trace: None,
     };
 
@@ -165,6 +163,8 @@ pub async fn run_codex_tool_session_reply(
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
         })
         .await
     {
@@ -222,6 +222,7 @@ async fn run_codex_tool_session_inner(
                         let approval_id = ev.effective_approval_id();
                         let ExecApprovalRequestEvent {
                             turn_id: _,
+                            started_at_ms: _,
                             command,
                             cwd,
                             call_id,
@@ -278,6 +279,7 @@ async fn run_codex_tool_session_inner(
                     EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
                         call_id,
                         turn_id: _,
+                        started_at_ms: _,
                         reason,
                         grant_root,
                         changes,
@@ -318,9 +320,6 @@ async fn run_codex_tool_session_inner(
                     EventMsg::SessionConfigured(_) => {
                         tracing::error!("unexpected SessionConfigured event");
                     }
-                    EventMsg::ThreadNameUpdated(_) => {
-                        // Ignore session metadata updates in MCP tool runner.
-                    }
                     EventMsg::ThreadGoalUpdated(_) => {
                         // Ignore thread goal metadata updates in MCP tool runner.
                     }
@@ -332,13 +331,12 @@ async fn run_codex_tool_session_inner(
                     }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::TurnStarted(_)
+                    | EventMsg::ThreadSettingsApplied(_)
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::AgentReasoningSectionBreak(_)
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
-                    | EventMsg::McpListToolsResponse(_)
-                    | EventMsg::ListSkillsResponse(_)
                     | EventMsg::RealtimeConversationListVoicesResponse(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::TerminalInteraction(_)
@@ -351,14 +349,13 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TurnDiff(_)
                     | EventMsg::WebSearchBegin(_)
                     | EventMsg::WebSearchEnd(_)
-                    | EventMsg::GetHistoryEntryResponse(_)
                     | EventMsg::PlanUpdate(_)
                     | EventMsg::TurnAborted(_)
                     | EventMsg::UserMessage(_)
                     | EventMsg::ShutdownComplete
-                    | EventMsg::ViewImageToolCall(_)
                     | EventMsg::ImageGenerationBegin(_)
                     | EventMsg::ImageGenerationEnd(_)
+                    | EventMsg::ViewImageToolCall(_)
                     | EventMsg::RawResponseItem(_)
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ItemStarted(_)
@@ -368,7 +365,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentMessageContentDelta(_)
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
-                    | EventMsg::SkillsUpdateAvailable
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::RequestUserInput(_)
                     | EventMsg::RequestPermissions(_)

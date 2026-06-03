@@ -1,32 +1,24 @@
 //! Built-in model tool handlers for persisted thread goals.
 //!
-//! The public tool contract intentionally splits goal creation from completion:
-//! `create_goal` starts an active objective, while `update_goal` can only mark
-//! the existing goal complete.
+//! The public tool contract intentionally splits goal creation from stopped
+//! status updates: `create_goal` starts an active objective, while
+//! `update_goal` can only mark the existing goal complete or blocked.
 
 use crate::function_tool::FunctionCallError;
-use crate::goals::CreateGoalRequest;
-use crate::goals::GoalRuntimeEvent;
-use crate::goals::SetGoalRequest;
-use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
-use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolPayload;
-use crate::tools::handlers::parse_arguments;
-use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
-use codex_tools::CREATE_GOAL_TOOL_NAME;
-use codex_tools::GET_GOAL_TOOL_NAME;
-use codex_tools::UPDATE_GOAL_TOOL_NAME;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt::Write as _;
-use std::sync::Arc;
 
-pub struct GoalHandler;
+mod create_goal;
+mod get_goal;
+mod update_goal;
+
+pub use create_goal::CreateGoalHandler;
+pub use get_goal::GetGoalHandler;
+pub use update_goal::UpdateGoalHandler;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,113 +68,6 @@ impl GoalToolResponse {
     }
 }
 
-impl ToolHandler for GoalHandler {
-    type Output = FunctionToolOutput;
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            payload,
-            tool_name,
-            ..
-        } = invocation;
-
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "goal handler received unsupported payload".to_string(),
-                ));
-            }
-        };
-
-        match tool_name.name.as_str() {
-            GET_GOAL_TOOL_NAME => handle_get_goal(session.as_ref()).await,
-            CREATE_GOAL_TOOL_NAME => {
-                handle_create_goal(session.as_ref(), turn.as_ref(), &arguments).await
-            }
-            UPDATE_GOAL_TOOL_NAME => handle_update_goal(&session, turn.as_ref(), &arguments).await,
-            other => Err(FunctionCallError::Fatal(format!(
-                "goal handler received unsupported tool: {other}"
-            ))),
-        }
-    }
-}
-
-async fn handle_get_goal(session: &Session) -> Result<FunctionToolOutput, FunctionCallError> {
-    let goal = session
-        .get_thread_goal()
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_goal_error(err)))?;
-    goal_response(goal, CompletionBudgetReport::Omit)
-}
-
-async fn handle_create_goal(
-    session: &Session,
-    turn_context: &TurnContext,
-    arguments: &str,
-) -> Result<FunctionToolOutput, FunctionCallError> {
-    let args: CreateGoalArgs = parse_arguments(arguments)?;
-    let goal = session
-        .create_thread_goal(
-            turn_context,
-            CreateGoalRequest {
-                objective: args.objective,
-                token_budget: args.token_budget,
-            },
-        )
-        .await
-        .map_err(|err| {
-            if err
-                .chain()
-                .any(|cause| cause.to_string().contains("already has a goal"))
-            {
-                FunctionCallError::RespondToModel(
-                    "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
-                        .to_string(),
-                )
-            } else {
-                FunctionCallError::RespondToModel(format_goal_error(err))
-            }
-        })?;
-    goal_response(Some(goal), CompletionBudgetReport::Omit)
-}
-
-async fn handle_update_goal(
-    session: &Arc<Session>,
-    turn_context: &TurnContext,
-    arguments: &str,
-) -> Result<FunctionToolOutput, FunctionCallError> {
-    let args: UpdateGoalArgs = parse_arguments(arguments)?;
-    if args.status != ThreadGoalStatus::Complete {
-        return Err(FunctionCallError::RespondToModel(
-            "update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system"
-                .to_string(),
-        ));
-    }
-    session
-        .goal_runtime_apply(GoalRuntimeEvent::ToolCompletedGoal { turn_context })
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_goal_error(err)))?;
-    let goal = session
-        .set_thread_goal(
-            turn_context,
-            SetGoalRequest {
-                objective: None,
-                status: Some(ThreadGoalStatus::Complete),
-                token_budget: None,
-            },
-        )
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format_goal_error(err)))?;
-    goal_response(Some(goal), CompletionBudgetReport::Include)
-}
-
 fn format_goal_error(err: anyhow::Error) -> String {
     let mut message = err.to_string();
     for cause in err.chain().skip(1) {
@@ -202,20 +87,13 @@ fn goal_response(
 }
 
 fn completion_budget_report(goal: &ThreadGoal) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(budget) = goal.token_budget {
-        parts.push(format!("tokens used: {} of {budget}", goal.tokens_used));
-    }
-    if goal.time_used_seconds > 0 {
-        parts.push(format!("time used: {} seconds", goal.time_used_seconds));
-    }
-    if parts.is_empty() {
+    if goal.token_budget.is_none() && goal.time_used_seconds <= 0 {
         None
     } else {
-        Some(format!(
-            "Goal achieved. Report final budget usage to the user: {}.",
-            parts.join("; ")
-        ))
+        Some(
+            "Goal achieved. Report final usage from this tool result's structured goal fields. If `goal.tokenBudget` is present, include token usage from `goal.tokensUsed` and `goal.tokenBudget`. If `goal.timeUsedSeconds` is greater than 0, summarize elapsed time in a concise, human-friendly form appropriate to the response language."
+                .to_string(),
+        )
     }
 }
 
@@ -246,7 +124,7 @@ mod tests {
                 goal: Some(goal),
                 remaining_tokens: Some(6_750),
                 completion_budget_report: Some(
-                    "Goal achieved. Report final budget usage to the user: tokens used: 3250 of 10000; time used: 75 seconds."
+                    "Goal achieved. Report final usage from this tool result's structured goal fields. If `goal.tokenBudget` is present, include token usage from `goal.tokensUsed` and `goal.tokenBudget`. If `goal.timeUsedSeconds` is greater than 0, summarize elapsed time in a concise, human-friendly form appropriate to the response language."
                         .to_string()
                 ),
             }

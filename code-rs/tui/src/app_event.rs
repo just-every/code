@@ -181,6 +181,9 @@ pub(crate) enum AppEvent {
     /// Request to exit the application gracefully.
     ExitRequest,
 
+    /// Clear the terminal UI and start a fresh chat.
+    ClearUi,
+
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(code_core::protocol::Op),

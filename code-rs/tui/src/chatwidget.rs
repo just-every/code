@@ -1856,6 +1856,7 @@ pub(crate) struct ChatWidget<'a> {
     login_add_view_state: Option<Weak<RefCell<LoginAddAccountState>>>,
     active_exec_cell: Option<ExecCell>,
     history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
+    clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     history_cell_ids: Vec<Option<HistoryId>>,
     history_live_window: Option<(usize, usize)>,
     history_frozen_width: u16,
@@ -6979,6 +6980,7 @@ impl ChatWidget<'_> {
             login_add_view_state: None,
             active_exec_cell: None,
             history_cells,
+            clipboard_lease: None,
             config: config.clone(),
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
@@ -7354,6 +7356,7 @@ impl ChatWidget<'_> {
             login_add_view_state: None,
             active_exec_cell: None,
             history_cells,
+            clipboard_lease: None,
             config: config.clone(),
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
@@ -17140,6 +17143,43 @@ impl ChatWidget<'_> {
         self.show_settings_overlay(Some(SettingsSection::Skills));
     }
 
+    /// Copy the last assistant response (raw markdown) to the system clipboard.
+    pub(crate) fn copy_last_agent_markdown(&mut self) {
+        self.copy_last_agent_markdown_with(crate::clipboard_copy::copy_to_clipboard);
+    }
+
+    fn copy_last_agent_markdown_with(
+        &mut self,
+        copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
+    ) {
+        let markdown = self.history_cells.iter().rev().find_map(|cell| {
+            cell.as_any()
+                .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                .map(|assistant| assistant.markdown().to_string())
+                .filter(|text| !text.is_empty())
+        });
+
+        match markdown {
+            Some(markdown) => match copy_fn(&markdown) {
+                Ok(lease) => {
+                    self.clipboard_lease = lease;
+                    self.history_push_plain_state(history_cell::plain_message_state_from_lines(
+                        vec![Line::from("Copied last message to clipboard")],
+                        crate::history_cell::HistoryCellType::Notice,
+                    ));
+                }
+                Err(error) => self.history_push_plain_state(history_cell::new_error_event(
+                    format!("Copy failed: {error}"),
+                )),
+            },
+            None => self.history_push_plain_state(history_cell::new_error_event(
+                "No agent response to copy".to_string(),
+            )),
+        }
+
+        self.request_redraw();
+    }
+
     #[allow(dead_code)]
     pub(crate) fn add_agents_output(&mut self) {
         use ratatui::text::Line;
@@ -18706,8 +18746,14 @@ impl ChatWidget<'_> {
 
         #[cfg(target_os = "macos")]
         {
-            let brew_formula = macos_brew_formula_for_command(&cmd);
-            let script = format!("brew install {brew_formula}");
+            let script = if cmd.eq_ignore_ascii_case("agy")
+                || cmd.eq_ignore_ascii_case("antigravity")
+            {
+                "curl -fsSL https://antigravity.google/cli/install.sh | bash".to_string()
+            } else {
+                let brew_formula = macos_brew_formula_for_command(&cmd);
+                format!("brew install {brew_formula}")
+            };
             let command = vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()];
             return Some((command, script));
         }
@@ -18763,10 +18809,14 @@ fi\n\
             }
 
             let lowercase = agent_name.trim().to_ascii_lowercase();
+            let cmd_lowercase = cmd.trim().to_ascii_lowercase();
             let script = match lowercase.as_str() {
                 "claude" => linux_agent_install_script(&cmd, "@anthropic-ai/claude-code"),
                 "gemini" => linux_agent_install_script(&cmd, "@google/gemini-cli"),
                 "qwen" => linux_agent_install_script(&cmd, "@qwen-code/qwen-code"),
+                _ if cmd_lowercase == "agy" || cmd_lowercase == "antigravity" => {
+                    "curl -fsSL https://antigravity.google/cli/install.sh | bash".to_string()
+                }
                 _ => format!(
                     "{cmd} --version || (echo \"Please install {cmd} via your package manager\" && false)",
                     cmd = cmd
@@ -35119,8 +35169,8 @@ use code_core::protocol::OrderMeta;
             write: false,
             write_requested: Some(false),
             models: Some(vec![
-                "claude-sonnet-4.5".to_string(),
-                "gemini-3-pro".to_string(),
+                "claude-sonnet-4.6".to_string(),
+                "gemini-3.1-pro".to_string(),
             ]),
         }];
         chat.auto_state.pending_agent_timing = Some(AutoTurnAgentsTiming::Blocking);
@@ -35134,7 +35184,7 @@ use code_core::protocol::OrderMeta;
         assert!(message.contains("Run diagnostics"));
         assert!(message.contains("Please run agent.create"));
         assert!(message.contains("write: false"));
-        assert!(message.contains("Models: [claude-sonnet-4.5, gemini-3-pro]"));
+        assert!(message.contains("Models: [claude-sonnet-4.6, gemini-3.1-pro]"));
         assert!(message.contains("Draft alternative fix"));
         assert!(message.contains("Focus on parser module"));
         assert!(message.contains("agent.wait"));

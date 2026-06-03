@@ -89,7 +89,9 @@ pub(crate) async fn stream_chat_completions(
             ResponseItem::FunctionCallOutput { .. } | ResponseItem::ToolSearchOutput { .. } => {
                 last_emitted_role = Some("tool")
             }
-            ResponseItem::CompactionSummary { .. } => last_emitted_role = Some("assistant"),
+            ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
+                last_emitted_role = Some("assistant")
+            }
             ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
             ResponseItem::CustomToolCall { .. } => {}
             ResponseItem::CustomToolCallOutput { .. } => {}
@@ -221,7 +223,7 @@ pub(crate) async fn stream_chat_completions(
                     messages.push(json!({"role": role, "content": text}));
                 }
             }
-            ResponseItem::CompactionSummary { .. } => {
+            ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
                 // Compaction summaries are only meaningful to the Responses API; omit them
                 // when translating to Chat Completions.
                 continue;

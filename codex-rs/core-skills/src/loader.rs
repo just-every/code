@@ -19,6 +19,7 @@ use codex_protocol::protocol::Product;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
+use codex_utils_plugins::PluginSkillRoot;
 use codex_utils_plugins::plugin_namespace_for_skill_path;
 use dirs::home_dir;
 use serde::Deserialize;
@@ -29,6 +30,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 use std::path::Component;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use toml::Value as TomlValue;
@@ -152,6 +154,8 @@ pub struct SkillRoot {
     pub path: AbsolutePathBuf,
     pub scope: SkillScope,
     pub file_system: Arc<dyn ExecutorFileSystem>,
+    pub plugin_id: Option<String>,
+    pub plugin_root: Option<AbsolutePathBuf>,
 }
 
 pub async fn load_skills_from_roots<I>(roots: I) -> SkillLoadOutcome
@@ -167,7 +171,15 @@ where
         let root_path = canonicalize_for_skill_identity(&root.path);
         let fs = root.file_system;
         let skills_before_root = outcome.skills.len();
-        discover_skills_under_root(fs.as_ref(), &root_path, root.scope, &mut outcome).await;
+        discover_skills_under_root(
+            fs.as_ref(),
+            &root_path,
+            root.scope,
+            root.plugin_id.as_deref(),
+            root.plugin_root.as_ref(),
+            &mut outcome,
+        )
+        .await;
         for skill in &outcome.skills[skills_before_root..] {
             if !skill_roots.contains(&root_path) {
                 skill_roots.push(root_path.clone());
@@ -222,7 +234,8 @@ pub(crate) async fn skill_roots(
     fs: Option<Arc<dyn ExecutorFileSystem>>,
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
-    plugin_skill_roots: Vec<AbsolutePathBuf>,
+    plugin_skill_roots: Vec<PluginSkillRoot>,
+    extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
     let home_dir =
         home_dir().and_then(|path| AbsolutePathBuf::from_absolute_path_checked(path).ok());
@@ -232,6 +245,7 @@ pub(crate) async fn skill_roots(
         cwd,
         home_dir.as_ref(),
         plugin_skill_roots,
+        extra_skill_roots,
     )
     .await
 }
@@ -241,13 +255,23 @@ async fn skill_roots_with_home_dir(
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
     home_dir: Option<&AbsolutePathBuf>,
-    plugin_skill_roots: Vec<AbsolutePathBuf>,
+    plugin_skill_roots: Vec<PluginSkillRoot>,
+    extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
     let mut roots = skill_roots_from_layer_stack_inner(config_layer_stack, home_dir, fs.clone());
-    roots.extend(plugin_skill_roots.into_iter().map(|path| SkillRoot {
+    roots.extend(plugin_skill_roots.into_iter().map(|root| SkillRoot {
+        path: root.path,
+        scope: SkillScope::User,
+        file_system: Arc::clone(&LOCAL_FS),
+        plugin_id: Some(root.plugin_id),
+        plugin_root: Some(root.plugin_root),
+    }));
+    roots.extend(extra_skill_roots.into_iter().map(|path| SkillRoot {
         path,
         scope: SkillScope::User,
         file_system: Arc::clone(&LOCAL_FS),
+        plugin_id: None,
+        plugin_root: None,
     }));
     roots.extend(repo_agents_skill_roots(fs, config_layer_stack, cwd).await);
     dedupe_skill_roots_by_path(&mut roots);
@@ -276,6 +300,8 @@ fn skill_roots_from_layer_stack_inner(
                         path: config_folder.join(SKILLS_DIR_NAME),
                         scope: SkillScope::Repo,
                         file_system: Arc::clone(repo_fs),
+                        plugin_id: None,
+                        plugin_root: None,
                     });
                 }
             }
@@ -286,6 +312,8 @@ fn skill_roots_from_layer_stack_inner(
                     path: config_folder.join(SKILLS_DIR_NAME),
                     scope: SkillScope::User,
                     file_system: Arc::clone(&LOCAL_FS),
+                    plugin_id: None,
+                    plugin_root: None,
                 });
 
                 // `$HOME/.agents/skills` (user-installed skills).
@@ -294,6 +322,8 @@ fn skill_roots_from_layer_stack_inner(
                         path: home_dir.join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
                         scope: SkillScope::User,
                         file_system: Arc::clone(&LOCAL_FS),
+                        plugin_id: None,
+                        plugin_root: None,
                     });
                 }
 
@@ -303,6 +333,8 @@ fn skill_roots_from_layer_stack_inner(
                     path: system_cache_root_dir(&config_folder),
                     scope: SkillScope::System,
                     file_system: Arc::clone(&LOCAL_FS),
+                    plugin_id: None,
+                    plugin_root: None,
                 });
             }
             ConfigLayerSource::System { .. } => {
@@ -312,6 +344,8 @@ fn skill_roots_from_layer_stack_inner(
                     path: config_folder.join(SKILLS_DIR_NAME),
                     scope: SkillScope::Admin,
                     file_system: Arc::clone(&LOCAL_FS),
+                    plugin_id: None,
+                    plugin_root: None,
                 });
             }
             ConfigLayerSource::Mdm { .. }
@@ -343,6 +377,8 @@ async fn repo_agents_skill_roots(
                 path: agents_skills,
                 scope: SkillScope::Repo,
                 file_system: Arc::clone(&fs),
+                plugin_id: None,
+                plugin_root: None,
             }),
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -441,9 +477,12 @@ async fn discover_skills_under_root(
     fs: &dyn ExecutorFileSystem,
     root: &AbsolutePathBuf,
     scope: SkillScope,
+    plugin_id: Option<&str>,
+    plugin_root: Option<&AbsolutePathBuf>,
     outcome: &mut SkillLoadOutcome,
 ) {
     let root = canonicalize_for_skill_identity(root);
+    let plugin_root = plugin_root.map(canonicalize_for_skill_identity);
 
     match fs.get_metadata(&root, /*sandbox*/ None).await {
         Ok(metadata) if metadata.is_directory => {}
@@ -553,7 +592,7 @@ async fn discover_skills_under_root(
             }
 
             if metadata.is_file && file_name == SKILLS_FILENAME {
-                match parse_skill_file(fs, &path, scope).await {
+                match parse_skill_file(fs, &path, scope, plugin_id, plugin_root.as_ref()).await {
                     Ok(skill) => {
                         outcome.skills.push(skill);
                     }
@@ -583,6 +622,8 @@ async fn parse_skill_file(
     fs: &dyn ExecutorFileSystem,
     path: &AbsolutePathBuf,
     scope: SkillScope,
+    plugin_id: Option<&str>,
+    plugin_root: Option<&AbsolutePathBuf>,
 ) -> Result<SkillMetadata, SkillParseError> {
     let contents = fs
         .read_file_text(path, /*sandbox*/ None)
@@ -616,7 +657,7 @@ async fn parse_skill_file(
         interface,
         dependencies,
         policy,
-    } = load_skill_metadata(fs, path).await;
+    } = load_skill_metadata(fs, path, plugin_root).await;
 
     validate_len(&name, MAX_NAME_LEN, "name")?;
     validate_len(&description, MAX_DESCRIPTION_LEN, "description")?;
@@ -639,6 +680,7 @@ async fn parse_skill_file(
         policy,
         path_to_skills_md: resolved_path,
         scope,
+        plugin_id: plugin_id.map(str::to_string),
     })
 }
 
@@ -668,6 +710,7 @@ async fn namespaced_skill_name(
 async fn load_skill_metadata(
     fs: &dyn ExecutorFileSystem,
     skill_path: &AbsolutePathBuf,
+    plugin_root: Option<&AbsolutePathBuf>,
 ) -> LoadedSkillMetadata {
     // Fail open: optional metadata should not block loading SKILL.md.
     let Some(skill_dir) = skill_path.parent() else {
@@ -725,7 +768,7 @@ async fn load_skill_metadata(
         policy,
     } = parsed;
     LoadedSkillMetadata {
-        interface: resolve_interface(interface, &skill_dir),
+        interface: resolve_interface(interface, &skill_dir, plugin_root),
         dependencies: resolve_dependencies(dependencies),
         policy: resolve_policy(policy),
     }
@@ -734,6 +777,7 @@ async fn load_skill_metadata(
 fn resolve_interface(
     interface: Option<Interface>,
     skill_dir: &AbsolutePathBuf,
+    plugin_root: Option<&AbsolutePathBuf>,
 ) -> Option<SkillInterface> {
     let interface = interface?;
     let interface = SkillInterface {
@@ -747,8 +791,18 @@ fn resolve_interface(
             MAX_SHORT_DESCRIPTION_LEN,
             "interface.short_description",
         ),
-        icon_small: resolve_asset_path(skill_dir, "interface.icon_small", interface.icon_small),
-        icon_large: resolve_asset_path(skill_dir, "interface.icon_large", interface.icon_large),
+        icon_small: resolve_asset_path(
+            skill_dir,
+            plugin_root,
+            "interface.icon_small",
+            interface.icon_small,
+        ),
+        icon_large: resolve_asset_path(
+            skill_dir,
+            plugin_root,
+            "interface.icon_large",
+            interface.icon_large,
+        ),
         brand_color: resolve_color_str(interface.brand_color, "interface.brand_color"),
         default_prompt: resolve_str(
             interface.default_prompt,
@@ -826,10 +880,12 @@ fn resolve_dependency_tool(tool: DependencyTool) -> Option<SkillToolDependency> 
 
 fn resolve_asset_path(
     skill_dir: &AbsolutePathBuf,
+    plugin_root: Option<&AbsolutePathBuf>,
     field: &'static str,
     path: Option<PathBuf>,
 ) -> Option<AbsolutePathBuf> {
-    // Icons must be relative paths under the skill's assets/ directory; otherwise return None.
+    // Icons must stay under the skill's assets directory. Plugin skills may
+    // also share icons from the plugin-level assets directory.
     let path = path?;
     if path.as_os_str().is_empty() {
         return None;
@@ -850,8 +906,7 @@ fn resolve_asset_path(
             Component::CurDir => {}
             Component::Normal(component) => normalized.push(component),
             Component::ParentDir => {
-                tracing::warn!("ignoring {field}: icon path must not contain '..'");
-                return None;
+                return resolve_plugin_shared_asset_path(skill_dir, plugin_root, field, &path);
             }
             _ => {
                 tracing::warn!("ignoring {field}: icon path must be under assets/");
@@ -870,6 +925,48 @@ fn resolve_asset_path(
     }
 
     Some(skill_dir.join(normalized))
+}
+
+fn resolve_plugin_shared_asset_path(
+    skill_dir: &AbsolutePathBuf,
+    plugin_root: Option<&AbsolutePathBuf>,
+    field: &'static str,
+    path: &Path,
+) -> Option<AbsolutePathBuf> {
+    let Some(plugin_root) = plugin_root else {
+        tracing::warn!("ignoring {field}: icon path must not contain '..'");
+        return None;
+    };
+
+    let plugin_assets_dir = lexically_normalize(plugin_root.join("assets").as_path());
+    let resolved = lexically_normalize(skill_dir.join(path).as_path());
+    if !resolved.starts_with(&plugin_assets_dir) {
+        tracing::warn!("ignoring {field}: icon path with '..' must resolve under plugin assets/");
+        return None;
+    }
+
+    AbsolutePathBuf::try_from(resolved)
+        .map_err(|err| {
+            tracing::warn!("ignoring {field}: icon path must resolve to an absolute path: {err}");
+            err
+        })
+        .ok()
+}
+
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 fn sanitize_single_line(raw: &str) -> String {
@@ -964,7 +1061,15 @@ pub(crate) async fn skill_roots_from_layer_stack(
     cwd: &AbsolutePathBuf,
     home_dir: Option<&AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
-    skill_roots_with_home_dir(Some(fs), config_layer_stack, cwd, home_dir, Vec::new()).await
+    skill_roots_with_home_dir(
+        Some(fs),
+        config_layer_stack,
+        cwd,
+        home_dir,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
 }
 
 #[cfg(test)]

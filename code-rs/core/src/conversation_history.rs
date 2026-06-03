@@ -75,6 +75,7 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::CompactionSummary { .. }
+        | ResponseItem::ContextCompaction { .. }
         | ResponseItem::GhostSnapshot { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::WebSearchCall { .. }

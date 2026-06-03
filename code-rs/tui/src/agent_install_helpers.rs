@@ -15,6 +15,9 @@ pub(crate) fn macos_brew_formula_for_command(command: &str) -> Cow<'_, str> {
     if trimmed.eq_ignore_ascii_case("gemini") {
         return Cow::Borrowed("gemini-cli");
     }
+    if trimmed.eq_ignore_ascii_case("agy") || trimmed.eq_ignore_ascii_case("antigravity") {
+        return Cow::Borrowed("agy");
+    }
     if trimmed.eq_ignore_ascii_case("qwen") {
         return Cow::Borrowed("qwen-code");
     }

@@ -155,7 +155,10 @@ async fn external_agent_config_import_sends_completion_notification_for_local_pl
     assert_eq!(notification.method, "externalAgentConfig/import/completed");
 
     let request_id = mcp
-        .send_plugin_list_request(PluginListParams { cwds: None })
+        .send_plugin_list_request(PluginListParams {
+            cwds: None,
+            marketplace_kinds: None,
+        })
         .await?;
     let response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -388,6 +391,7 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
     let request_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
+            client_user_message_id: None,
             input: vec![UserInput::Text {
                 text: "follow up".to_string(),
                 text_elements: Vec::new(),
@@ -961,6 +965,7 @@ async fn external_agent_config_import_compacts_huge_session_before_first_follow_
     let request_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
+            client_user_message_id: None,
             input: vec![UserInput::Text {
                 text: "follow up".to_string(),
                 text_elements: Vec::new(),

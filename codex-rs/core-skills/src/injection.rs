@@ -59,6 +59,7 @@ pub async fn build_skill_injections(
                     skill_name: skill.name.clone(),
                     skill_scope: skill.scope,
                     skill_path: skill.path_to_skills_md.to_path_buf(),
+                    plugin_id: skill.plugin_id.clone(),
                     invocation_type: InvocationType::Explicit,
                 });
                 result.items.push(SkillInjection {
@@ -131,7 +132,7 @@ pub fn collect_explicit_skill_mentions(
     let mut blocked_plain_names: HashSet<String> = HashSet::new();
 
     for input in inputs {
-        if let UserInput::Skill { name, path } = input {
+        if let UserInput::Skill { name, path, .. } = input {
             blocked_plain_names.insert(name.clone());
             let Ok(path) = AbsolutePathBuf::relative_to_current_dir(path) else {
                 continue;

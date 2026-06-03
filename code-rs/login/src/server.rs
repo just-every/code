@@ -327,7 +327,7 @@ fn build_authorize_url(
         ("code_challenge", &pkce.code_challenge),
         ("code_challenge_method", "S256"),
         ("id_token_add_organizations", "true"),
-        ("code_cli_simplified_flow", "true"),
+        ("codex_cli_simplified_flow", "true"),
         ("state", state),
         ("originator", originator),
     ];
@@ -621,4 +621,36 @@ pub(crate) async fn obtain_api_key(
     }
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorize_url_uses_codex_simplified_flow_parameter() {
+        let pkce = PkceCodes {
+            code_verifier: "verifier".to_string(),
+            code_challenge: "challenge".to_string(),
+        };
+        let auth_url = build_authorize_url(
+            "https://auth.openai.com",
+            "client",
+            "http://localhost:1455/auth/callback",
+            &pkce,
+            "state",
+            "code_cli_rs",
+        );
+        let parsed = url::Url::parse(&auth_url).expect("valid auth url");
+        let params = parsed.query_pairs().collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            params.get("codex_cli_simplified_flow").map(|value| value.as_ref()),
+            Some("true")
+        );
+        assert!(
+            !params.contains_key("code_cli_simplified_flow"),
+            "OpenAI auth rejects the fork-local parameter name as unknown"
+        );
+    }
 }

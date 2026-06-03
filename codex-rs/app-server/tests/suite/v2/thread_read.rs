@@ -24,6 +24,7 @@ use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeInitialTurnsPageParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
@@ -31,8 +32,10 @@ use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadTurnsItemsListParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
@@ -45,6 +48,7 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource as ProtocolSessionSource;
@@ -174,6 +178,7 @@ async fn thread_read_can_include_turns() -> Result<()> {
     assert_eq!(thread.turns.len(), 1);
     let turn = &thread.turns[0];
     assert_eq!(turn.status, TurnStatus::Completed);
+    assert_eq!(turn.items_view, TurnItemsView::Full);
     assert_eq!(turn.items.len(), 1, "expected user message item");
     match &turn.items[0] {
         ThreadItem::UserMessage { content, .. } => {
@@ -221,6 +226,7 @@ async fn thread_turns_list_can_page_backward_and_forward() -> Result<()> {
             cursor: None,
             limit: Some(2),
             sort_direction: Some(SortDirection::Desc),
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -234,6 +240,10 @@ async fn thread_turns_list_can_page_backward_and_forward() -> Result<()> {
         backwards_cursor,
     } = to_response::<ThreadTurnsListResponse>(read_resp)?;
     assert_eq!(turn_user_texts(&data), vec!["third", "second"]);
+    assert!(
+        data.iter()
+            .all(|turn| turn.items_view == TurnItemsView::Summary)
+    );
     let next_cursor = next_cursor.expect("expected nextCursor for older turns");
     let backwards_cursor = backwards_cursor.expect("expected backwardsCursor for newest turn");
 
@@ -243,6 +253,7 @@ async fn thread_turns_list_can_page_backward_and_forward() -> Result<()> {
             cursor: Some(next_cursor),
             limit: Some(10),
             sort_direction: Some(SortDirection::Desc),
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -261,6 +272,7 @@ async fn thread_turns_list_can_page_backward_and_forward() -> Result<()> {
             cursor: Some(backwards_cursor),
             limit: Some(10),
             sort_direction: Some(SortDirection::Asc),
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -270,6 +282,74 @@ async fn thread_turns_list_can_page_backward_and_forward() -> Result<()> {
     .await??;
     let ThreadTurnsListResponse { data, .. } = to_response::<ThreadTurnsListResponse>(read_resp)?;
     assert_eq!(turn_user_texts(&data), vec!["third", "fourth"]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_turns_list_supports_requested_items_view() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "first",
+        vec![],
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let rollout_path = rollout_path(codex_home.path(), filename_ts, &conversation_id);
+    append_agent_message(rollout_path.as_path(), "2025-01-05T12:01:00Z", "draft")?;
+    append_agent_message(rollout_path.as_path(), "2025-01-05T12:02:00Z", "final")?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let full = read_single_turn_items_view(
+        &mut mcp,
+        conversation_id.as_str(),
+        Some(TurnItemsView::Full),
+    )
+    .await?;
+    assert_eq!(full.items_view, TurnItemsView::Full);
+    assert_eq!(
+        turn_agent_texts(std::slice::from_ref(&full)),
+        vec!["draft", "final"]
+    );
+
+    let summary = read_single_turn_items_view(
+        &mut mcp,
+        conversation_id.as_str(),
+        Some(TurnItemsView::Summary),
+    )
+    .await?;
+    assert_eq!(summary.items_view, TurnItemsView::Summary);
+    assert_eq!(
+        turn_user_texts(std::slice::from_ref(&summary)),
+        vec!["first"]
+    );
+    assert_eq!(
+        turn_agent_texts(std::slice::from_ref(&summary)),
+        vec!["final"]
+    );
+
+    let not_loaded = read_single_turn_items_view(
+        &mut mcp,
+        conversation_id.as_str(),
+        Some(TurnItemsView::NotLoaded),
+    )
+    .await?;
+    assert_eq!(not_loaded.items_view, TurnItemsView::NotLoaded);
+    assert!(not_loaded.items.is_empty());
+    assert_eq!(not_loaded.id, full.id);
+    assert_eq!(not_loaded.status, full.status);
+    assert_eq!(not_loaded.started_at, full.started_at);
+    assert_eq!(not_loaded.completed_at, full.completed_at);
+    assert_eq!(not_loaded.duration_ms, full.duration_ms);
 
     Ok(())
 }
@@ -296,10 +376,12 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
+        state_db: None,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli.into(),
@@ -327,6 +409,7 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
                 cursor: None,
                 limit: Some(10),
                 sort_direction: Some(SortDirection::Asc),
+                items_view: None,
             },
         })
         .await?
@@ -334,6 +417,90 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
     let ThreadTurnsListResponse { data, .. } = serde_json::from_value(result)?;
 
     assert_eq!(turn_user_texts(&data), vec!["history from store"]);
+
+    client.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+
+    let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .loader_overrides(loader_overrides.clone())
+        .build()
+        .await?;
+    let client = in_process::start(InProcessStartArgs {
+        arg0_paths: Arg0DispatchPaths::default(),
+        config: Arc::new(config),
+        cli_overrides: Vec::new(),
+        loader_overrides,
+        strict_config: false,
+        cloud_requirements: CloudRequirementsLoader::default(),
+        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+        feedback: CodexFeedback::new(),
+        log_db: None,
+        state_db: None,
+        environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+        config_warnings: Vec::new(),
+        session_source: SessionSource::Cli.into(),
+        enable_codex_api_key_env: false,
+        initialize: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-app-server-tests".to_string(),
+                title: None,
+                version: "0.1.0".to_string(),
+            },
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        },
+        channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+    })
+    .await?;
+
+    let result = client
+        .request(ClientRequest::ThreadStart {
+            request_id: RequestId::Integer(1),
+            params: ThreadStartParams {
+                model: Some("mock-model".to_string()),
+                ..Default::default()
+            },
+        })
+        .await?
+        .expect("thread/start should succeed");
+    let ThreadStartResponse { thread, .. } = serde_json::from_value(result)?;
+    assert_eq!(thread.path, None);
+
+    let thread_id = codex_protocol::ThreadId::from_string(&thread.id)?;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: store_history_items(),
+        })
+        .await?;
+
+    let result = client
+        .request(ClientRequest::ThreadRead {
+            request_id: RequestId::Integer(2),
+            params: ThreadReadParams {
+                thread_id: thread.id,
+                include_turns: true,
+            },
+        })
+        .await?
+        .expect("thread/read should succeed");
+    let ThreadReadResponse { thread, .. } = serde_json::from_value(result)?;
+
+    assert_eq!(turn_user_texts(&thread.turns), vec!["history from store"]);
 
     client.shutdown().await?;
     Ok(())
@@ -361,10 +528,12 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
+        state_db: None,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli.into(),
@@ -464,6 +633,77 @@ async fn thread_read_can_return_archived_threads_by_id() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_resume_initial_turns_page_matches_requested_turns_list_page() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "first",
+        vec![],
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let rollout_path = rollout_path(codex_home.path(), filename_ts, &conversation_id);
+    append_user_message(rollout_path.as_path(), "2025-01-05T12:01:00Z", "second")?;
+    append_user_message(rollout_path.as_path(), "2025-01-05T12:02:00Z", "third")?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let turns_list_id = mcp
+        .send_thread_turns_list_request(ThreadTurnsListParams {
+            thread_id: conversation_id.clone(),
+            cursor: None,
+            limit: Some(2),
+            sort_direction: Some(SortDirection::Asc),
+            items_view: Some(TurnItemsView::NotLoaded),
+        })
+        .await?;
+    let turns_list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turns_list_id)),
+    )
+    .await??;
+    let expected_page = to_response::<ThreadTurnsListResponse>(turns_list_resp)?;
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id,
+            exclude_turns: true,
+            initial_turns_page: Some(ThreadResumeInitialTurnsPageParams {
+                limit: Some(2),
+                sort_direction: Some(SortDirection::Asc),
+                items_view: Some(TurnItemsView::NotLoaded),
+            }),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let ThreadResumeResponse {
+        thread,
+        initial_turns_page,
+        ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    assert!(thread.turns.is_empty());
+    assert_eq!(
+        initial_turns_page,
+        Some(codex_app_server_protocol::TurnsPage::from(expected_page))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_turns_list_rejects_cursor_when_anchor_turn_is_rolled_back() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -492,6 +732,7 @@ async fn thread_turns_list_rejects_cursor_when_anchor_turn_is_rolled_back() -> R
             cursor: None,
             limit: Some(2),
             sort_direction: Some(SortDirection::Desc),
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -516,6 +757,7 @@ async fn thread_turns_list_rejects_cursor_when_anchor_turn_is_rolled_back() -> R
             cursor: Some(backwards_cursor),
             limit: Some(10),
             sort_direction: Some(SortDirection::Asc),
+            items_view: None,
         })
         .await?;
     let read_err: JSONRPCError = timeout(
@@ -872,6 +1114,7 @@ async fn thread_turns_list_rejects_unmaterialized_loaded_thread() -> Result<()> 
             cursor: None,
             limit: None,
             sort_direction: None,
+            items_view: None,
         })
         .await?;
     let read_err: JSONRPCError = timeout(
@@ -887,6 +1130,39 @@ async fn thread_turns_list_rejects_unmaterialized_loaded_thread() -> Result<()> 
             .contains("thread/turns/list is unavailable before first user message"),
         "unexpected error: {}",
         read_err.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_turns_items_list_returns_unsupported() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let read_id = mcp
+        .send_thread_turns_items_list_request(ThreadTurnsItemsListParams {
+            thread_id: "thr_123".to_string(),
+            turn_id: "turn_456".to_string(),
+            cursor: None,
+            limit: None,
+            sort_direction: None,
+        })
+        .await?;
+    let read_err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+
+    assert_eq!(read_err.error.code, -32601);
+    assert_eq!(
+        read_err.error.message,
+        "thread/turns/items/list is not supported yet"
     );
 
     Ok(())
@@ -922,6 +1198,7 @@ async fn thread_read_reports_system_error_idle_flag_after_failed_turn() -> Resul
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
+            client_user_message_id: None,
             input: vec![UserInput::Text {
                 text: "fail this turn".to_string(),
                 text_elements: Vec::new(),
@@ -977,6 +1254,24 @@ fn append_user_message(path: &Path, timestamp: &str, text: &str) -> std::io::Res
     )
 }
 
+fn append_agent_message(path: &Path, timestamp: &str, text: &str) -> anyhow::Result<()> {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": serde_json::to_value(EventMsg::AgentMessage(AgentMessageEvent {
+                message: text.to_string(),
+                phase: None,
+                memory_citation: None,
+            }))?,
+        })
+    )?;
+    Ok(())
+}
+
 fn append_thread_rollback(path: &Path, timestamp: &str, num_turns: u32) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     writeln!(
@@ -993,6 +1288,31 @@ fn append_thread_rollback(path: &Path, timestamp: &str, num_turns: u32) -> std::
     )
 }
 
+async fn read_single_turn_items_view(
+    mcp: &mut McpProcess,
+    thread_id: &str,
+    items_view: Option<TurnItemsView>,
+) -> anyhow::Result<codex_app_server_protocol::Turn> {
+    let read_id = mcp
+        .send_thread_turns_list_request(ThreadTurnsListParams {
+            thread_id: thread_id.to_string(),
+            cursor: None,
+            limit: Some(10),
+            sort_direction: Some(SortDirection::Asc),
+            items_view,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let ThreadTurnsListResponse { mut data, .. } =
+        to_response::<ThreadTurnsListResponse>(read_resp)?;
+    assert_eq!(data.len(), 1);
+    Ok(data.remove(0))
+}
+
 fn turn_user_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {
     turns
         .iter()
@@ -1004,6 +1324,17 @@ fn turn_user_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {
                 | UserInput::Skill { .. }
                 | UserInput::Mention { .. } => None,
             },
+            _ => None,
+        })
+        .collect()
+}
+
+fn turn_agent_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {
+    turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .filter_map(|item| match item {
+            ThreadItem::AgentMessage { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect()
@@ -1028,6 +1359,7 @@ async fn seed_pathless_store_thread(
             thread_id,
             forked_from_id: None,
             source: ProtocolSessionSource::Cli,
+            thread_source: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             metadata: ThreadPersistenceMetadata {
@@ -1048,7 +1380,7 @@ async fn seed_pathless_store_thread(
         .update_thread_metadata(UpdateThreadMetadataParams {
             thread_id,
             patch: ThreadMetadataPatch {
-                name: Some("named pathless thread".to_string()),
+                name: Some(Some("named pathless thread".to_string())),
                 ..Default::default()
             },
             include_archived: true,
@@ -1060,10 +1392,12 @@ async fn seed_pathless_store_thread(
 fn store_history_items() -> Vec<RolloutItem> {
     vec![RolloutItem::EventMsg(EventMsg::UserMessage(
         UserMessageEvent {
+            client_id: None,
             message: "history from store".to_string(),
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         },
     ))]
 }

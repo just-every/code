@@ -236,7 +236,7 @@ impl AutoDriveSettingsView {
     }
 
     fn default_routing_model() -> String {
-        "gpt-5.3-codex".to_string()
+        "gpt-5.5".to_string()
     }
 
     fn normalize_routing_model(model: &str) -> Option<String> {
@@ -1278,7 +1278,7 @@ mod tests {
         let (tx, _rx) = channel();
         AutoDriveSettingsView::new(
             AppEventSender::new(tx),
-            "gpt-5.3-codex".to_string(),
+            "gpt-5.5".to_string(),
             ReasoningEffort::High,
             false,
             true,
@@ -1287,7 +1287,7 @@ mod tests {
             true,
             model_routing_enabled,
             entries,
-            vec!["gpt-5.3-codex".to_string(), "gpt-5.3-codex-spark".to_string()],
+            vec!["gpt-5.5".to_string(), "gpt-5.4-mini".to_string()],
             AutoContinueMode::Manual,
         )
     }
@@ -1297,7 +1297,7 @@ mod tests {
         let mut view = build_view(
             true,
             vec![AutoDriveModelRoutingEntry {
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.5".to_string(),
                 enabled: true,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),
@@ -1318,7 +1318,7 @@ mod tests {
         let mut view = build_view(
             true,
             vec![AutoDriveModelRoutingEntry {
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.5".to_string(),
                 enabled: true,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),
@@ -1349,7 +1349,7 @@ mod tests {
         let mut view = build_view(
             false,
             vec![AutoDriveModelRoutingEntry {
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.5".to_string(),
                 enabled: false,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),
@@ -1373,7 +1373,7 @@ mod tests {
         let mut view = build_view(
             true,
             vec![AutoDriveModelRoutingEntry {
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.5".to_string(),
                 enabled: true,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),
@@ -1409,7 +1409,7 @@ mod tests {
         let mut view = build_view(
             true,
             vec![AutoDriveModelRoutingEntry {
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.5".to_string(),
                 enabled: true,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),

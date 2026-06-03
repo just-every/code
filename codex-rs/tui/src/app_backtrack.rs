@@ -245,7 +245,10 @@ impl App {
         let was_backtrack = self.backtrack.overlay_preview_active;
         if !self.deferred_history_lines.is_empty() {
             let lines = std::mem::take(&mut self.deferred_history_lines);
-            tui.insert_history_lines(lines);
+            tui.insert_history_hyperlink_lines_with_wrap_policy(
+                lines,
+                self.history_line_wrap_policy(),
+            );
         }
         self.overlay = None;
         self.backtrack.overlay_preview_active = false;
@@ -259,9 +262,17 @@ impl App {
     /// Useful when switching sessions to ensure prior history remains visible.
     pub(crate) fn render_transcript_once(&mut self, tui: &mut tui::Tui) {
         if !self.transcript_cells.is_empty() {
-            let width = tui.terminal.last_known_screen_size.width;
+            let width = self
+                .chat_widget
+                .history_wrap_width(tui.terminal.last_known_screen_size.width);
             for cell in &self.transcript_cells {
-                tui.insert_history_lines(cell.display_lines(width));
+                tui.insert_history_hyperlink_lines_with_wrap_policy(
+                    cell.display_hyperlink_lines_for_mode(
+                        width,
+                        self.chat_widget.history_render_mode(),
+                    ),
+                    self.history_line_wrap_policy(),
+                );
             }
         }
     }
@@ -394,7 +405,7 @@ impl App {
             tui.draw(u16::MAX, |frame| {
                 let width = frame.area().width.max(1);
                 t.sync_live_tail(width, active_key, |w| {
-                    chat_widget.active_cell_transcript_lines(w)
+                    chat_widget.active_cell_transcript_hyperlink_lines(w)
                 });
                 t.render(frame.area(), frame.buffer);
             })?;

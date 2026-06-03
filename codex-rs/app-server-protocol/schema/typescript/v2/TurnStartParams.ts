@@ -4,14 +4,13 @@
 import type { Personality } from "../Personality";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { ReasoningSummary } from "../ReasoningSummary";
-import type { ServiceTier } from "../ServiceTier";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { ApprovalsReviewer } from "./ApprovalsReviewer";
 import type { AskForApproval } from "./AskForApproval";
 import type { SandboxPolicy } from "./SandboxPolicy";
 import type { UserInput } from "./UserInput";
 
-export type TurnStartParams = {threadId: string, input: Array<UserInput>, /**
+export type TurnStartParams = {threadId: string, clientUserMessageId?: string | null, input: Array<UserInput>, /**
  * Override the working directory for this turn and subsequent turns.
  */
 cwd?: string | null, /**
@@ -30,7 +29,7 @@ sandboxPolicy?: SandboxPolicy | null, /**
 model?: string | null, /**
  * Override the service tier for this turn and subsequent turns.
  */
-serviceTier?: ServiceTier | null | null, /**
+serviceTier?: string | null | null, /**
  * Override the reasoning effort for this turn and subsequent turns.
  */
 effort?: ReasoningEffort | null, /**

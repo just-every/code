@@ -7,6 +7,38 @@
 
 - (none)
 
+## [0.6.101] - 2026-05-31
+
+- Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers. (f1d069bf, efc01e06, 96693212)
+- CLI/Threads: add archive commands and keep resumed prompt history scoped to the session. (3e7baa00, 36cd3662, 56958f25)
+- Plugins/Skills: improve connector and install suggestions, and add runtime extra skill roots. (e929bb5c, 8e5f5616, f0a839ea)
+- Sandbox/Exec: preserve deny-read protections, tighten Windows requirements, and clean up filesystem helpers. (6e101421, a5a94ee5, 451b3864, a717e4ef)
+- TUI/Tools: fix Vim editing, render multiline hook output, show web search activity, and finalize image generation natively. (f2e7b462, 251b2412, 96f1347f, 10b03990)
+
+## [0.6.100] - 2026-05-29
+
+- TUI: render markdown tables and web links more cleanly, add vim text objects, and make turn interruption keybinds configurable. (6b4b15a1, 26c95021, 7a264978, 8d398d3c, 2d1ad374)
+- Auth: refresh ChatGPT tokens before expiry and improve Google preset login handling so long-running sessions stay signed in. (15d85ea3, e5afe5bf, 76937a5b)
+- Remote/App Server: migrate remote control to server tokens, resume threads with their turns page, and add `codex app-server --stdio`. (912d7d4f, 2a1158b8, b90ec463)
+- Sandbox/Security: add named permission profiles in the TUI, block repository-configured code execution in `/diff`, and tighten Unix socket and websocket checks. (f6fd7530, 2e0c4f49, bf72be59, a027135b)
+- CLI: add standalone websearch, allow API-key auth for remote exec-server registration, and make standalone installs and updates work noninteractively. (a22706df, c57dee98, 8ed38fe3, 5314f550)
+
+## [0.6.99] - 2026-05-23
+
+- Install: unify npm and standalone releases around packaged archives, and bundle the zsh runtime for macOS x64 builds. (110b30d5, e389e01f, c7bcb90f, 0febb110, ed47f1ab, cfa16fcc)
+- CLI/Permissions: standardize on `--profile`, add profile-aware `codex sandbox`, and surface managed permission profiles more consistently. (8a511d58, 36a71a88, fcff0d6c, ed80e5f5, fe7c069f)
+- TUI/Goals: enable goals by default, improve `/goal` flows, and fix startup issues around working directories and Windows terminal setup. (0e9d2221, b132fec0, 27c4c67b, acd851e8)
+- Plugins: tabulate `plugin list`, add marketplace workflows, and fix plugin bundle installs plus shared icon assets. (3075061b, 74a1b46a, dc255b0d, 7d47056e, 247e22a9)
+- Remote Control: improve daemon UX, reconnect dropped sessions more reliably, and cap reconnect backoff after failures. (6a331a66, 512f8f80, de80fa6e, 03e6c5f6, 58be470d)
+
+## [0.6.98] - 2026-05-08
+
+- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish. (4b469854, 3b2ebb36, 5e0a4adb, 48402be6)
+- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync. (a9862351, 06e5dfa4, 0d0835dd, eb0462f2)
+- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details. (5119680f, ae153432, 11106016, 40e28284)
+- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently. (9cbd4c03, 07b69519, 1bfc3d97, 9669756b, 78421fac)
+- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux. (26f355b6, a736cb55, 22326e26, 8b95d546, 5b80f87c)
+
 ## [0.6.97] - 2026-05-01
 
 - CLI/TUI: add configurable keymaps, a Vim composer mode, and a dedicated `codex update` command for faster keyboard-driven workflows. (5e737372, b6f81257, b985768d)

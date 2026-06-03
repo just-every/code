@@ -19,8 +19,8 @@
   - Stress tests now cover heavy agent churn plus concurrent Auto Review + Esc/typing responsiveness.
 
 - **New/updated models and agents**
-  - Auto Drive CLI model support includes `gpt-5.3-codex` (planning/problem-solving) and `gpt-5.3-codex-spark` (fast coding/fix loops), with `medium | high | xhigh` reasoning controls.
-  - Frontline and alias-aware agent model handling now includes `code-gpt-5.3-codex` and `code-gpt-5.3-codex-spark`, with compatibility alias upgrades for `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.2-codex`, etc.
+  - Auto Drive CLI model support defaults to `gpt-5.5` (planning/problem-solving) and `gpt-5.4-mini` (fast coding/fix loops), with `medium | high | xhigh` reasoning controls.
+  - Frontline and alias-aware agent model handling now includes `code-gpt-5.5`, `code-gpt-5.4`, `claude-opus-4.8`, and `claude-sonnet-4.6`, with compatibility aliases for older model names where supported.
   - Auto Drive decision schema and coordinator payloads now enforce bounded history while preserving goal and recent context.
 
   See commit `60727b068` and related Auto Drive hardening commits in git history for details.
@@ -98,7 +98,7 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 - **API key** (usage-based)
   - Set `export OPENAI_API_KEY=xyz` and run `code`
 
-### Install Claude & Gemini (optional)
+### Install Claude, Antigravity & Gemini (optional)
 
 Every Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
 
@@ -114,9 +114,11 @@ export npm_config_prefix="${npm_config_prefix:-$HOME/.npm-global}"
 mkdir -p "$npm_config_prefix/bin"
 export PATH="$npm_config_prefix/bin:$PATH"
 npm install -g @anthropic-ai/claude-code @google/gemini-cli @qwen-code/qwen-code
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 # Quick smoke tests
 claude --version
+agy --version
 gemini --version
 qwen --version
 ```

@@ -200,10 +200,12 @@ async fn mcp_resource_read_returns_error_for_unknown_thread() -> Result<()> {
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
+        strict_config: false,
         cloud_requirements: CloudRequirementsLoader::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
+        state_db: None,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,
@@ -286,11 +288,8 @@ struct ResourceAppsMcpServer;
 
 impl ServerHandler for ResourceAppsMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2025_06_18,
-            capabilities: ServerCapabilities::builder().enable_resources().build(),
-            ..ServerInfo::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
     }
 
     async fn read_resource(
@@ -306,21 +305,19 @@ impl ServerHandler for ResourceAppsMcpServer {
             ));
         }
 
-        Ok(ReadResourceResult {
-            contents: vec![
-                ResourceContents::TextResourceContents {
-                    uri: TEST_RESOURCE_URI.to_string(),
-                    mime_type: Some("text/markdown".to_string()),
-                    text: TEST_RESOURCE_TEXT.to_string(),
-                    meta: None,
-                },
-                ResourceContents::BlobResourceContents {
-                    uri: TEST_BLOB_RESOURCE_URI.to_string(),
-                    mime_type: Some("application/octet-stream".to_string()),
-                    blob: TEST_RESOURCE_BLOB.to_string(),
-                    meta: None,
-                },
-            ],
-        })
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::TextResourceContents {
+                uri: TEST_RESOURCE_URI.to_string(),
+                mime_type: Some("text/markdown".to_string()),
+                text: TEST_RESOURCE_TEXT.to_string(),
+                meta: None,
+            },
+            ResourceContents::BlobResourceContents {
+                uri: TEST_BLOB_RESOURCE_URI.to_string(),
+                mime_type: Some("application/octet-stream".to_string()),
+                blob: TEST_RESOURCE_BLOB.to_string(),
+                meta: None,
+            },
+        ]))
     }
 }

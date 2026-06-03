@@ -4,11 +4,11 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::format_allow_prefixes;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::WritableRoot;
 use codex_utils_template::Template;
 use std::path::Path;
@@ -69,9 +69,11 @@ impl PermissionsInstructions {
         exec_permission_approvals_enabled: bool,
         request_permissions_tool_enabled: bool,
     ) -> Self {
-        let (sandbox_mode, writable_roots) = sandbox_prompt_from_profile(permission_profile, cwd);
+        let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
+        let (sandbox_mode, writable_roots) =
+            sandbox_prompt_from_policy(&file_system_sandbox_policy, cwd);
 
-        Self::from_permissions_with_network(
+        Self::from_permissions_with_network_and_denied_reads(
             sandbox_mode,
             network_access_from_policy(permission_profile.network_sandbox_policy()),
             PermissionsPromptConfig {
@@ -82,35 +84,32 @@ impl PermissionsInstructions {
                 request_permissions_tool_enabled,
             },
             writable_roots,
+            denied_reads_text(&file_system_sandbox_policy, cwd),
         )
     }
 
-    /// Builds permissions instructions from a legacy sandbox policy.
-    pub fn from_policy(
-        sandbox_policy: &SandboxPolicy,
-        approval_policy: AskForApproval,
-        approvals_reviewer: ApprovalsReviewer,
-        exec_policy: &Policy,
-        cwd: &Path,
-        exec_permission_approvals_enabled: bool,
-        request_permissions_tool_enabled: bool,
-    ) -> Self {
-        Self::from_permission_profile(
-            &PermissionProfile::from_legacy_sandbox_policy(sandbox_policy),
-            approval_policy,
-            approvals_reviewer,
-            exec_policy,
-            cwd,
-            exec_permission_approvals_enabled,
-            request_permissions_tool_enabled,
-        )
-    }
-
+    #[cfg(test)]
     fn from_permissions_with_network(
         sandbox_mode: SandboxMode,
         network_access: NetworkAccess,
         config: PermissionsPromptConfig<'_>,
         writable_roots: Option<Vec<WritableRoot>>,
+    ) -> Self {
+        Self::from_permissions_with_network_and_denied_reads(
+            sandbox_mode,
+            network_access,
+            config,
+            writable_roots,
+            /*denied_reads*/ None,
+        )
+    }
+
+    fn from_permissions_with_network_and_denied_reads(
+        sandbox_mode: SandboxMode,
+        network_access: NetworkAccess,
+        config: PermissionsPromptConfig<'_>,
+        writable_roots: Option<Vec<WritableRoot>>,
+        denied_reads: Option<String>,
     ) -> Self {
         let mut text = String::new();
         append_section(&mut text, &sandbox_text(sandbox_mode, network_access));
@@ -127,6 +126,9 @@ impl PermissionsInstructions {
         if let Some(writable_roots) = writable_roots_text(writable_roots) {
             append_section(&mut text, &writable_roots);
         }
+        if let Some(denied_reads) = denied_reads {
+            append_section(&mut text, &denied_reads);
+        }
         if !text.ends_with('\n') {
             text.push('\n');
         }
@@ -134,27 +136,19 @@ impl PermissionsInstructions {
     }
 }
 
-fn sandbox_prompt_from_profile(
-    permission_profile: &PermissionProfile,
+fn sandbox_prompt_from_policy(
+    file_system_policy: &FileSystemSandboxPolicy,
     cwd: &Path,
 ) -> (SandboxMode, Option<Vec<WritableRoot>>) {
-    match permission_profile {
-        PermissionProfile::Disabled | PermissionProfile::External { .. } => {
-            (SandboxMode::DangerFullAccess, None)
-        }
-        PermissionProfile::Managed { .. } => {
-            let file_system_policy = permission_profile.file_system_sandbox_policy();
-            if file_system_policy.has_full_disk_write_access() {
-                return (SandboxMode::DangerFullAccess, None);
-            }
+    if file_system_policy.has_full_disk_write_access() {
+        return (SandboxMode::DangerFullAccess, None);
+    }
 
-            let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd);
-            if writable_roots.is_empty() {
-                (SandboxMode::ReadOnly, None)
-            } else {
-                (SandboxMode::WorkspaceWrite, Some(writable_roots))
-            }
-        }
+    let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd);
+    if writable_roots.is_empty() {
+        (SandboxMode::ReadOnly, None)
+    } else {
+        (SandboxMode::WorkspaceWrite, Some(writable_roots))
     }
 }
 
@@ -167,9 +161,17 @@ fn network_access_from_policy(network_policy: NetworkSandboxPolicy) -> NetworkAc
 }
 
 impl ContextualUserFragment for PermissionsInstructions {
-    const ROLE: &'static str = "developer";
-    const START_MARKER: &'static str = "<permissions instructions>";
-    const END_MARKER: &'static str = "</permissions instructions>";
+    fn role() -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("<permissions instructions>", "</permissions instructions>")
+    }
 
     fn body(&self) -> String {
         self.text.clone()
@@ -251,10 +253,11 @@ fn sandbox_text(mode: SandboxMode, network_access: NetworkAccess) -> String {
 }
 
 fn writable_roots_text(writable_roots: Option<Vec<WritableRoot>>) -> Option<String> {
-    let roots = writable_roots?;
+    let mut roots = writable_roots?;
     if roots.is_empty() {
         return None;
     }
+    roots.sort_by(|left, right| left.root.as_path().cmp(right.root.as_path()));
 
     let roots_list: Vec<String> = roots
         .iter()
@@ -265,6 +268,28 @@ fn writable_roots_text(writable_roots: Option<Vec<WritableRoot>>) -> Option<Stri
     } else {
         format!(" The writable roots are {}.", roots_list.join(", "))
     })
+}
+
+fn denied_reads_text(file_system_policy: &FileSystemSandboxPolicy, cwd: &Path) -> Option<String> {
+    let mut entries = file_system_policy
+        .get_unreadable_roots_with_cwd(cwd)
+        .into_iter()
+        .map(|root| format!("- path `{}`", root.to_string_lossy()))
+        .collect::<Vec<_>>();
+    entries.extend(
+        file_system_policy
+            .get_unreadable_globs_with_cwd(cwd)
+            .into_iter()
+            .map(|glob| format!("- glob `{glob}`")),
+    );
+    if entries.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "## Denied filesystem reads\nThe active permission profile denies reading these paths/globs. Do not request escalation or additional permissions to read them; these denials are policy restrictions.\n{}",
+        entries.join("\n")
+    ))
 }
 
 fn approved_command_prefixes_text(exec_policy: &Policy) -> Option<String> {

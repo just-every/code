@@ -4,19 +4,23 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::McpProcess;
+use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SkillsChangedNotification;
-use codex_app_server_protocol::SkillsListExtraRootsForCwd;
+use codex_app_server_protocol::SkillsExtraRootsSetParams;
+use codex_app_server_protocol::SkillsExtraRootsSetResponse;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -36,6 +40,23 @@ fn write_skill(root: &TempDir, name: &str) -> Result<()> {
     std::fs::create_dir_all(&skill_dir)?;
     let content = format!("---\nname: {name}\ndescription: {name} description\n---\n\n# Body\n");
     std::fs::write(skill_dir.join("SKILL.md"), content)?;
+    Ok(())
+}
+
+async fn expect_skills_changed_notification(
+    mcp: &mut McpProcess,
+    timeout_duration: Duration,
+) -> Result<()> {
+    let notification = timeout(
+        timeout_duration,
+        mcp.read_stream_until_notification_message("skills/changed"),
+    )
+    .await??;
+    let params = notification
+        .params
+        .context("skills/changed params must be present")?;
+    let notification: SkillsChangedNotification = serde_json::from_value(params)?;
+    assert_eq!(notification, SkillsChangedNotification {});
     Ok(())
 }
 
@@ -116,7 +137,7 @@ fn write_plugin_with_skill(
 fn write_cached_remote_plugin_with_skill(
     codex_home: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let plugin_root = codex_home.join("plugins/cache/chatgpt-global/linear/local");
+    let plugin_root = codex_home.join("plugins/cache/openai-curated-remote/linear/local");
     std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
     std::fs::write(
         plugin_root.join(".codex-plugin/plugin.json"),
@@ -131,44 +152,6 @@ fn write_cached_remote_plugin_with_skill(
         "---\nname: triage-issues\ndescription: Triage Linear issues\n---\n\n# Body\n",
     )?;
     Ok(skill_path)
-}
-
-#[tokio::test]
-async fn skills_list_includes_skills_from_per_cwd_extra_user_roots() -> Result<()> {
-    let codex_home = TempDir::new()?;
-    let cwd = TempDir::new()?;
-    let extra_root = TempDir::new()?;
-    write_skill(&extra_root, "extra-skill")?;
-
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
-
-    let request_id = mcp
-        .send_skills_list_request(SkillsListParams {
-            cwds: vec![cwd.path().to_path_buf()],
-            force_reload: true,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: cwd.path().to_path_buf(),
-                extra_user_roots: vec![extra_root.path().to_path_buf()],
-            }]),
-        })
-        .await?;
-
-    let response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let SkillsListResponse { data } = to_response(response)?;
-    assert_eq!(data.len(), 1);
-    assert_eq!(data[0].cwd.as_path(), cwd.path());
-    assert!(
-        data[0]
-            .skills
-            .iter()
-            .any(|skill| skill.name == "extra-skill")
-    );
-    Ok(())
 }
 
 #[tokio::test]
@@ -266,7 +249,6 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
         .send_skills_list_request(SkillsListParams {
             cwds: vec![cwd.path().to_path_buf()],
             force_reload: true,
-            per_cwd_extra_user_roots: None,
         })
         .await?;
     let stale_skills_list_response: JSONRPCResponse = timeout(
@@ -299,7 +281,10 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
     }
 
     let plugin_list_request_id = mcp
-        .send_plugin_list_request(PluginListParams { cwds: None })
+        .send_plugin_list_request(PluginListParams {
+            cwds: None,
+            marketplace_kinds: None,
+        })
         .await?;
     let plugin_list_response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -314,7 +299,6 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
                 .send_skills_list_request(SkillsListParams {
                     cwds: vec![cwd.path().to_path_buf()],
                     force_reload: false,
-                    per_cwd_extra_user_roots: None,
                 })
                 .await?;
             let skills_list_response: JSONRPCResponse = timeout(
@@ -389,7 +373,6 @@ async fn skills_list_excludes_plugin_skills_when_workspace_codex_plugins_disable
         .send_skills_list_request(SkillsListParams {
             cwds: vec![repo_root.path().to_path_buf()],
             force_reload: true,
-            per_cwd_extra_user_roots: None,
         })
         .await?;
 
@@ -421,9 +404,13 @@ async fn skills_list_excludes_plugin_skills_when_workspace_codex_plugins_disable
 async fn skills_list_skips_cwd_roots_when_environment_disabled() -> Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
-    let extra_root = TempDir::new()?;
     write_skill(&codex_home, "home-skill")?;
-    write_skill(&extra_root, "extra-skill")?;
+    let repo_skill_dir = cwd.path().join(".codex/skills/repo-skill");
+    std::fs::create_dir_all(&repo_skill_dir)?;
+    std::fs::write(
+        repo_skill_dir.join("SKILL.md"),
+        "---\nname: repo-skill\ndescription: from repo root\n---\n\n# Body\n",
+    )?;
 
     let mut mcp = McpProcess::new_with_env(
         codex_home.path(),
@@ -436,10 +423,6 @@ async fn skills_list_skips_cwd_roots_when_environment_disabled() -> Result<()> {
         .send_skills_list_request(SkillsListParams {
             cwds: vec![cwd.path().to_path_buf()],
             force_reload: true,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: cwd.path().to_path_buf(),
-                extra_user_roots: vec![extra_root.path().to_path_buf()],
-            }]),
         })
         .await?;
 
@@ -462,41 +445,7 @@ async fn skills_list_skips_cwd_roots_when_environment_disabled() -> Result<()> {
         data[0]
             .skills
             .iter()
-            .all(|skill| skill.name != "extra-skill")
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn skills_list_rejects_relative_extra_user_roots() -> Result<()> {
-    let codex_home = TempDir::new()?;
-    let cwd = TempDir::new()?;
-
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
-
-    let request_id = mcp
-        .send_skills_list_request(SkillsListParams {
-            cwds: vec![cwd.path().to_path_buf()],
-            force_reload: true,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: cwd.path().to_path_buf(),
-                extra_user_roots: vec![std::path::PathBuf::from("relative/skills")],
-            }]),
-        })
-        .await?;
-
-    let err = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    assert!(
-        err.error
-            .message
-            .contains("perCwdExtraUserRoots extraUserRoots paths must be absolute"),
-        "unexpected error: {}",
-        err.error.message
+            .all(|skill| skill.name != "repo-skill")
     );
     Ok(())
 }
@@ -514,7 +463,6 @@ async fn skills_list_accepts_relative_cwds() -> Result<()> {
         .send_skills_list_request(SkillsListParams {
             cwds: vec![relative_cwd.clone()],
             force_reload: true,
-            per_cwd_extra_user_roots: None,
         })
         .await?;
 
@@ -531,24 +479,21 @@ async fn skills_list_accepts_relative_cwds() -> Result<()> {
 }
 
 #[tokio::test]
-async fn skills_list_ignores_per_cwd_extra_roots_for_unknown_cwd() -> Result<()> {
+async fn skills_list_preserves_requested_cwd_order() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let requested_cwd = TempDir::new()?;
-    let unknown_cwd = TempDir::new()?;
-    let extra_root = TempDir::new()?;
-    write_skill(&extra_root, "ignored-extra-skill")?;
+    let first_cwd = TempDir::new()?;
+    let second_cwd = TempDir::new()?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
         .send_skills_list_request(SkillsListParams {
-            cwds: vec![requested_cwd.path().to_path_buf()],
+            cwds: vec![
+                first_cwd.path().to_path_buf(),
+                second_cwd.path().to_path_buf(),
+            ],
             force_reload: true,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: unknown_cwd.path().to_path_buf(),
-                extra_user_roots: vec![extra_root.path().to_path_buf()],
-            }]),
         })
         .await?;
 
@@ -558,13 +503,14 @@ async fn skills_list_ignores_per_cwd_extra_roots_for_unknown_cwd() -> Result<()>
     )
     .await??;
     let SkillsListResponse { data } = to_response(response)?;
-    assert_eq!(data.len(), 1);
-    assert_eq!(data[0].cwd.as_path(), requested_cwd.path());
-    assert!(
-        data[0]
-            .skills
-            .iter()
-            .all(|skill| skill.name != "ignored-extra-skill")
+    assert_eq!(
+        data.iter()
+            .map(|entry| entry.cwd.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            first_cwd.path().to_path_buf(),
+            second_cwd.path().to_path_buf(),
+        ]
     );
     Ok(())
 }
@@ -573,18 +519,15 @@ async fn skills_list_ignores_per_cwd_extra_roots_for_unknown_cwd() -> Result<()>
 async fn skills_list_uses_cached_result_until_force_reload() -> Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
-    let extra_root = TempDir::new()?;
-    write_skill(&extra_root, "late-extra-skill")?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
-    // Seed the cwd cache first without extra roots.
+    // Seed the cwd cache before the cwd-local skill exists.
     let first_request_id = mcp
         .send_skills_list_request(SkillsListParams {
             cwds: vec![cwd.path().to_path_buf()],
             force_reload: false,
-            per_cwd_extra_user_roots: None,
         })
         .await?;
     let first_response: JSONRPCResponse = timeout(
@@ -601,14 +544,17 @@ async fn skills_list_uses_cached_result_until_force_reload() -> Result<()> {
             .all(|skill| skill.name != "late-extra-skill")
     );
 
+    let skill_dir = cwd.path().join(".codex/skills/late-extra-skill");
+    std::fs::create_dir_all(&skill_dir)?;
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: late-extra-skill\ndescription: late skill\n---\n\n# Body\n",
+    )?;
+
     let second_request_id = mcp
         .send_skills_list_request(SkillsListParams {
             cwds: vec![cwd.path().to_path_buf()],
             force_reload: false,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: cwd.path().to_path_buf(),
-                extra_user_roots: vec![extra_root.path().to_path_buf()],
-            }]),
         })
         .await?;
     let second_response: JSONRPCResponse = timeout(
@@ -629,10 +575,6 @@ async fn skills_list_uses_cached_result_until_force_reload() -> Result<()> {
         .send_skills_list_request(SkillsListParams {
             cwds: vec![cwd.path().to_path_buf()],
             force_reload: true,
-            per_cwd_extra_user_roots: Some(vec![SkillsListExtraRootsForCwd {
-                cwd: cwd.path().to_path_buf(),
-                extra_user_roots: vec![extra_root.path().to_path_buf()],
-            }]),
         })
         .await?;
     let third_response: JSONRPCResponse = timeout(
@@ -652,18 +594,191 @@ async fn skills_list_uses_cached_result_until_force_reload() -> Result<()> {
 }
 
 #[tokio::test]
-async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<()> {
+async fn skills_extra_roots_set_updates_process_runtime_roots() -> Result<()> {
     let codex_home = TempDir::new()?;
-    write_skill(&codex_home, "demo")?;
+    let cwd = TempDir::new()?;
+    let extra_root = TempDir::new()?;
+    let extra_skills_root = extra_root.path().join("skills");
+    let skill_dir = extra_skills_root.join("runtime-skill");
+    std::fs::create_dir_all(&skill_dir)?;
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: runtime-skill\ndescription: runtime skill\n---\n\n# Body\n",
+    )?;
 
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let set_request_id = mcp
+        .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
+            extra_roots: vec![AbsolutePathBuf::from_absolute_path(&extra_skills_root)?],
+        })
+        .await?;
+    let set_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(set_request_id)),
+    )
+    .await??;
+    let _: SkillsExtraRootsSetResponse = to_response(set_response)?;
+    expect_skills_changed_notification(&mut mcp, DEFAULT_TIMEOUT).await?;
+
+    let skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![cwd.path().to_path_buf()],
+            force_reload: false,
+        })
+        .await?;
+    let skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .any(|skill| skill.name == "runtime-skill")
+    );
+
+    let missing_root = extra_root.path().join("missing-skills");
+    let reset_request_id = mcp
+        .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
+            extra_roots: vec![AbsolutePathBuf::from_absolute_path(&missing_root)?],
+        })
+        .await?;
+    let reset_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(reset_request_id)),
+    )
+    .await??;
+    let _: SkillsExtraRootsSetResponse = to_response(reset_response)?;
+    expect_skills_changed_notification(&mut mcp, DEFAULT_TIMEOUT).await?;
+
+    let skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![cwd.path().to_path_buf()],
+            force_reload: false,
+        })
+        .await?;
+    let skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .all(|skill| skill.name != "runtime-skill")
+    );
+
+    let clear_request_id = mcp
+        .send_skills_extra_roots_set_request(SkillsExtraRootsSetParams {
+            extra_roots: Vec::new(),
+        })
+        .await?;
+    let clear_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(clear_request_id)),
+    )
+    .await??;
+    let _: SkillsExtraRootsSetResponse = to_response(clear_response)?;
+    expect_skills_changed_notification(&mut mcp, DEFAULT_TIMEOUT).await?;
+    let skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![cwd.path().to_path_buf()],
+            force_reload: false,
+        })
+        .await?;
+    let skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .all(|skill| skill.name != "runtime-skill")
+    );
+
+    drop(mcp);
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![cwd.path().to_path_buf()],
+            force_reload: false,
+        })
+        .await?;
+    let skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].errors, Vec::new());
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .all(|skill| skill.name != "runtime-skill")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    write_mock_responses_config_toml_with_chatgpt_base_url(
+        codex_home.path(),
+        &server.uri(),
+        &server.uri(),
+    )?;
+    write_skill(&codex_home, "demo")?;
+
+    let mut mcp =
+        McpProcess::new_with_env(codex_home.path(), &[(CODEX_EXEC_SERVER_URL_ENV_VAR, None)])
+            .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let initial_skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: true,
+        })
+        .await?;
+    let initial_skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(initial_skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(initial_skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .any(|skill| { skill.name == "demo" && skill.description == "demo description" })
+    );
+
     let thread_start_request_id = mcp
         .send_thread_start_request(ThreadStartParams {
             model: None,
             model_provider: None,
             service_tier: None,
             cwd: None,
+            runtime_workspace_roots: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox: None,
@@ -675,6 +790,7 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
             personality: None,
             ephemeral: None,
             session_start_source: None,
+            thread_source: None,
             dynamic_tools: None,
             environments: None,
             mock_experimental_field: None,
@@ -709,5 +825,24 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
     let notification: SkillsChangedNotification = serde_json::from_value(params)?;
 
     assert_eq!(notification, SkillsChangedNotification {});
+    let updated_skills_request_id = mcp
+        .send_skills_list_request(SkillsListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            force_reload: false,
+        })
+        .await?;
+    let updated_skills_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(updated_skills_request_id)),
+    )
+    .await??;
+    let SkillsListResponse { data } = to_response(updated_skills_response)?;
+    assert_eq!(data.len(), 1);
+    assert!(
+        data[0]
+            .skills
+            .iter()
+            .any(|skill| skill.name == "demo" && skill.description == "updated")
+    );
     Ok(())
 }

@@ -8,7 +8,9 @@ use std::str::FromStr;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use strum::IntoEnumIterator;
 use strum_macros::Display;
 use strum_macros::EnumIter;
@@ -17,6 +19,8 @@ use ts_rs::TS;
 
 use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary;
+use crate::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
@@ -115,6 +119,13 @@ pub struct ModelAvailabilityNux {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Metadata describing a Codex-supported model.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct ModelPreset {
@@ -133,9 +144,15 @@ pub struct ModelPreset {
     /// Whether this model supports personality-specific instructions.
     #[serde(default)]
     pub supports_personality: bool,
-    /// Additional speed tiers this model can run with beyond the standard path.
+    /// Deprecated: use `service_tiers` instead.
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    /// Service tiers this model can run with.
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
+    /// Catalog default service tier id for this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_service_tier: Option<String>,
     /// Whether this is the default model for new users.
     pub is_default: bool,
     /// recommended upgrade model
@@ -192,7 +209,6 @@ pub enum ConfigShellToolType {
 #[serde(rename_all = "snake_case")]
 pub enum ApplyPatchToolType {
     Freeform,
-    Function,
 }
 
 #[derive(
@@ -211,6 +227,25 @@ pub enum WebSearchToolType {
 pub enum TruncationMode {
     Bytes,
     Tokens,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, TS, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolMode {
+    Direct,
+    CodeMode,
+    CodeModeOnly,
+}
+
+fn deserialize_optional_model_selector<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let Some(value) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_value(serde_json::Value::String(value)).ok())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, TS, JsonSchema)]
@@ -258,6 +293,10 @@ pub struct ModelInfo {
     pub priority: i32,
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_service_tier: Option<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
     pub base_instructions: String,
@@ -300,6 +339,12 @@ pub struct ModelInfo {
     pub used_fallback_model_metadata: bool,
     #[serde(default)]
     pub supports_search_tool: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_model_selector"
+    )]
+    pub tool_mode: Option<ToolMode>,
 }
 
 impl ModelInfo {
@@ -442,6 +487,8 @@ impl From<ModelInfo> for ModelPreset {
             supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
             supports_personality,
             additional_speed_tiers: info.additional_speed_tiers,
+            service_tiers: info.service_tiers,
+            default_service_tier: info.default_service_tier,
             is_default: false, // default is the highest priority available model
             upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
                 id: upgrade.model.clone(),
@@ -464,11 +511,32 @@ impl From<ModelInfo> for ModelPreset {
 
 impl ModelPreset {
     pub fn supports_fast_mode(&self) -> bool {
-        self.additional_speed_tiers
+        self.service_tiers
             .iter()
-            .any(|tier| tier == SPEED_TIER_FAST)
+            .any(|tier| tier.id == ServiceTier::Fast.request_value())
+            || self
+                .additional_speed_tiers
+                .iter()
+                .any(|tier| tier == SPEED_TIER_FAST)
+    }
+}
+
+impl ModelInfo {
+    pub fn supports_service_tier(&self, service_tier: &str) -> bool {
+        self.service_tiers
+            .iter()
+            .any(|tier| tier.id == service_tier)
     }
 
+    pub fn service_tier_for_request(&self, service_tier: Option<String>) -> Option<String> {
+        service_tier.filter(|service_tier| {
+            service_tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE
+                && self.supports_service_tier(service_tier)
+        })
+    }
+}
+
+impl ModelPreset {
     /// Filter models based on authentication mode.
     ///
     /// In ChatGPT mode, all models are visible. Otherwise, only API-supported models are shown.
@@ -548,6 +616,8 @@ mod tests {
             supported_in_api: true,
             priority: 1,
             additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
             availability_nux: None,
             upgrade: None,
             base_instructions: "base".to_string(),
@@ -569,6 +639,7 @@ mod tests {
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            tool_mode: None,
         }
     }
 
@@ -786,6 +857,44 @@ mod tests {
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert!(!model.supports_search_tool);
+        assert_eq!(model.tool_mode, None);
+    }
+
+    #[test]
+    fn model_info_deserializes_known_tool_mode() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        let object = value
+            .as_object_mut()
+            .expect("model info should be an object");
+        object.insert(
+            "tool_mode".to_string(),
+            serde_json::Value::String("code_mode_only".to_string()),
+        );
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+
+        assert_eq!(model.tool_mode, Some(ToolMode::CodeModeOnly));
+    }
+
+    #[test]
+    fn model_info_treats_unknown_tool_mode_as_omitted() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        let object = value
+            .as_object_mut()
+            .expect("model info should be an object");
+        object.insert(
+            "tool_mode".to_string(),
+            serde_json::Value::String("future_tool_mode".to_string()),
+        );
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+
+        assert_eq!(model.tool_mode, None);
+        let serialized = serde_json::to_value(model).expect("serialize model info");
+        let object = serialized
+            .as_object()
+            .expect("model info should be an object");
+        assert!(!object.contains_key("tool_mode"));
     }
 
     #[test]
@@ -818,6 +927,8 @@ mod tests {
                 message: "Try Spark.".to_string(),
             }),
             additional_speed_tiers: vec![SPEED_TIER_FAST.to_string()],
+            default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+            service_tiers: Vec::new(),
             ..test_model(/*spec*/ None)
         });
 
@@ -828,5 +939,79 @@ mod tests {
             })
         );
         assert!(preset.supports_fast_mode());
+        assert_eq!(
+            preset.default_service_tier,
+            Some(ServiceTier::Fast.request_value().to_string())
+        );
+    }
+
+    #[test]
+    fn model_preset_supports_fast_mode_from_service_tiers() {
+        let preset = ModelPreset::from(ModelInfo {
+            service_tiers: vec![ModelServiceTier {
+                id: ServiceTier::Fast.request_value().to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        });
+
+        assert!(preset.supports_fast_mode());
+    }
+
+    #[test]
+    fn service_tier_for_request_omits_explicit_default_tier() {
+        let model = ModelInfo {
+            default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+            service_tiers: vec![ModelServiceTier {
+                id: ServiceTier::Fast.request_value().to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        };
+
+        assert_eq!(
+            model.service_tier_for_request(Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn service_tier_for_request_filters_unsupported_tiers() {
+        let model = ModelInfo {
+            default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+            service_tiers: vec![ModelServiceTier {
+                id: ServiceTier::Fast.request_value().to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        };
+
+        assert_eq!(
+            model.service_tier_for_request(Some(ServiceTier::Fast.request_value().to_string())),
+            Some(ServiceTier::Fast.request_value().to_string())
+        );
+        assert_eq!(
+            model.service_tier_for_request(Some("unsupported".to_string())),
+            None
+        );
+        assert_eq!(model.service_tier_for_request(/*service_tier*/ None), None);
+    }
+
+    #[test]
+    fn service_tier_for_request_does_not_apply_catalog_default() {
+        let model = ModelInfo {
+            default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+            service_tiers: vec![ModelServiceTier {
+                id: ServiceTier::Fast.request_value().to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }],
+            ..test_model(/*spec*/ None)
+        };
+
+        assert_eq!(model.service_tier_for_request(/*service_tier*/ None), None);
     }
 }

@@ -4,12 +4,23 @@
 //! limits, add-credit nudges, and feedback uploads. Results are routed back through `AppEvent` so
 //! the main event loop remains single-threaded.
 
+use super::plugin_mentions::fetch_plugin_mentions;
 use super::*;
+use crate::app_event::ConnectorsSnapshot;
+use codex_app_server_protocol::AppsListParams;
+use codex_app_server_protocol::AppsListResponse;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveParams;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::MarketplaceUpgradeParams;
+use codex_app_server_protocol::MarketplaceUpgradeResponse;
+
 use codex_app_server_protocol::RequestId;
+
+use crate::hooks_rpc::fetch_hooks_list;
+use crate::hooks_rpc::write_hook_trust;
+use crate::hooks_rpc::write_hook_trusts;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 impl App {
@@ -17,15 +28,31 @@ impl App {
         &mut self,
         app_server: &AppServerSession,
         detail: McpServerStatusDetail,
+        thread_id: Option<ThreadId>,
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        let request_thread_id = self.mcp_inventory_request_thread_id(thread_id);
         tokio::spawn(async move {
-            let result = fetch_all_mcp_server_statuses(request_handle, detail)
+            let result = fetch_all_mcp_server_statuses(request_handle, detail, request_thread_id)
                 .await
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::McpInventoryLoaded { result, detail });
+            app_event_tx.send(AppEvent::McpInventoryLoaded {
+                result,
+                detail,
+                thread_id,
+            });
         });
+    }
+
+    fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
+        thread_id.filter(|thread_id| {
+            self.active_thread_id == Some(*thread_id)
+                && self
+                    .agent_navigation
+                    .get(thread_id)
+                    .is_none_or(|entry| !entry.is_closed)
+        })
     }
 
     /// Spawns a background task to fetch account rate limits and deliver the
@@ -81,6 +108,27 @@ impl App {
                 .await
                 .map_err(|err| format!("{err:#}"));
             app_event_tx.send(AppEvent::SkillsListLoaded { result });
+        });
+    }
+
+    pub(super) fn fetch_connectors_list(
+        &mut self,
+        app_server: &AppServerSession,
+        force_refetch: bool,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        let thread_id = self
+            .current_displayed_thread_id()
+            .map(|thread_id| thread_id.to_string());
+        tokio::spawn(async move {
+            let result = fetch_connectors_list(request_handle, force_refetch, thread_id)
+                .await
+                .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::ConnectorsLoaded {
+                result,
+                is_final: true,
+            });
         });
     }
 
@@ -163,6 +211,26 @@ impl App {
                 cwd: cwd_for_event,
                 marketplace_name: marketplace_name_for_event,
                 marketplace_display_name,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn fetch_marketplace_upgrade(
+        &mut self,
+        app_server: &AppServerSession,
+        cwd: PathBuf,
+        marketplace_name: Option<String>,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let cwd_for_event = cwd.clone();
+            let result = fetch_marketplace_upgrade(request_handle, marketplace_name)
+                .await
+                .map_err(|err| format!("Failed to upgrade marketplace: {err}"));
+            app_event_tx.send(AppEvent::MarketplaceUpgradeLoaded {
+                cwd: cwd_for_event,
                 result,
             });
         });
@@ -298,24 +366,59 @@ impl App {
         });
     }
 
-    pub(super) fn refresh_plugin_mentions(&mut self) {
-        let config = self.config.clone();
+    pub(super) fn trust_hook(
+        &mut self,
+        app_server: &AppServerSession,
+        key: String,
+        current_hash: String,
+    ) {
+        let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
-        if !config.features.enabled(Feature::Plugins) {
+        tokio::spawn(async move {
+            let result = write_hook_trust(request_handle, key, current_hash)
+                .await
+                .map(|_| ())
+                .map_err(|err| format!("Failed to trust hook: {err}"));
+            app_event_tx.send(AppEvent::HookTrusted { result });
+        });
+    }
+
+    pub(super) fn trust_hooks(
+        &mut self,
+        app_server: &AppServerSession,
+        updates: Vec<HookTrustUpdate>,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = write_hook_trusts(request_handle, updates)
+                .await
+                .map(|_| ())
+                .map_err(|err| format!("Failed to trust hooks: {err}"));
+            app_event_tx.send(AppEvent::HookTrusted { result });
+        });
+    }
+
+    pub(super) fn refresh_plugin_mentions(&mut self, app_server: &AppServerSession) {
+        let cwd = self.config.cwd.to_path_buf();
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        if !self.config.features.enabled(Feature::Plugins) {
             app_event_tx.send(AppEvent::PluginMentionsLoaded { plugins: None });
             return;
         }
 
         tokio::spawn(async move {
-            let plugins_input = config.plugins_config_input();
-            let plugins = PluginsManager::new(config.codex_home.to_path_buf())
-                .plugins_for_config(&plugins_input)
-                .await
-                .capability_summaries()
-                .to_vec();
-            app_event_tx.send(AppEvent::PluginMentionsLoaded {
-                plugins: Some(plugins),
-            });
+            match fetch_plugin_mentions(request_handle, cwd).await {
+                Ok(plugins) => {
+                    app_event_tx.send(AppEvent::PluginMentionsLoaded {
+                        plugins: Some(plugins),
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "plugin/list failed while refreshing plugin mention candidates");
+                }
+            }
         });
     }
 
@@ -442,14 +545,18 @@ impl App {
     /// Process the completed MCP inventory fetch: clear the loading spinner, then
     /// render either the full tool/resource listing or an error into chat history.
     ///
-    /// When both the local config and the app-server report zero servers, a special
-    /// "empty" cell is shown instead of the full table.
+    /// When the app-server reports zero servers, a special "empty" cell is shown
+    /// instead of the full table.
     pub(super) fn handle_mcp_inventory_result(
         &mut self,
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
+        thread_id: Option<ThreadId>,
     ) {
-        let config = self.chat_widget.config_ref().clone();
+        if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
+            return;
+        }
+
         self.chat_widget.clear_mcp_inventory_loading();
         self.clear_committed_mcp_inventory_loading();
 
@@ -462,7 +569,7 @@ impl App {
             }
         };
 
-        if config.mcp_servers.get().is_empty() && statuses.is_empty() {
+        if statuses.is_empty() {
             self.chat_widget
                 .add_to_history(history_cell::empty_mcp_output());
             return;
@@ -470,7 +577,7 @@ impl App {
 
         self.chat_widget
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
-                &config, &statuses, detail,
+                &statuses, detail,
             ));
     }
 
@@ -493,9 +600,11 @@ impl App {
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
     detail: McpServerStatusDetail,
+    thread_id: Option<ThreadId>,
 ) -> Result<Vec<McpServerStatus>> {
     let mut cursor = None;
     let mut statuses = Vec::new();
+    let thread_id = thread_id.map(|id| id.to_string());
 
     loop {
         let request_id = RequestId::String(format!("mcp-inventory-{}", Uuid::new_v4()));
@@ -506,6 +615,7 @@ pub(super) async fn fetch_all_mcp_server_statuses(
                     cursor: cursor.clone(),
                     limit: Some(100),
                     detail: Some(detail),
+                    thread_id: thread_id.clone(),
                 },
             })
             .await
@@ -565,44 +675,44 @@ pub(super) async fn fetch_skills_list(
             params: SkillsListParams {
                 cwds: vec![cwd],
                 force_reload: true,
-                per_cwd_extra_user_roots: None,
             },
         })
         .await
         .wrap_err("skills/list failed in TUI")
 }
 
+pub(super) async fn fetch_connectors_list(
+    request_handle: AppServerRequestHandle,
+    force_refetch: bool,
+    thread_id: Option<String>,
+) -> Result<ConnectorsSnapshot> {
+    let request_id = RequestId::String(format!("apps-list-{}", Uuid::new_v4()));
+    let response: AppsListResponse = request_handle
+        .request_typed(ClientRequest::AppsList {
+            request_id,
+            params: AppsListParams {
+                cursor: None,
+                limit: None,
+                thread_id,
+                force_refetch,
+            },
+        })
+        .await
+        .wrap_err("app/list failed in TUI")?;
+    Ok(ConnectorsSnapshot {
+        connectors: response.data,
+    })
+}
+
 pub(super) async fn fetch_plugins_list(
     request_handle: AppServerRequestHandle,
     cwd: PathBuf,
 ) -> Result<PluginListResponse> {
-    let cwd = AbsolutePathBuf::try_from(cwd).wrap_err("plugin list cwd must be absolute")?;
-    let request_id = RequestId::String(format!("plugin-list-{}", Uuid::new_v4()));
-    let mut response = request_handle
-        .request_typed(ClientRequest::PluginList {
-            request_id,
-            params: PluginListParams {
-                cwds: Some(vec![cwd]),
-            },
-        })
+    let mut response = request_plugin_list(request_handle, cwd)
         .await
-        .wrap_err("plugin/list failed in TUI")?;
+        .wrap_err("plugin/list failed while loading the plugins menu")?;
     hide_cli_only_plugin_marketplaces(&mut response);
     Ok(response)
-}
-
-pub(super) async fn fetch_hooks_list(
-    request_handle: AppServerRequestHandle,
-    cwd: PathBuf,
-) -> Result<HooksListResponse> {
-    let request_id = RequestId::String(format!("hooks-list-{}", Uuid::new_v4()));
-    request_handle
-        .request_typed(ClientRequest::HooksList {
-            request_id,
-            params: HooksListParams { cwds: vec![cwd] },
-        })
-        .await
-        .wrap_err("hooks/list failed in TUI")
 }
 
 const CLI_HIDDEN_PLUGIN_MARKETPLACES: &[&str] = &["openai-bundled"];
@@ -611,6 +721,24 @@ pub(super) fn hide_cli_only_plugin_marketplaces(response: &mut PluginListRespons
     response
         .marketplaces
         .retain(|marketplace| !CLI_HIDDEN_PLUGIN_MARKETPLACES.contains(&marketplace.name.as_str()));
+}
+
+pub(super) async fn request_plugin_list(
+    request_handle: AppServerRequestHandle,
+    cwd: PathBuf,
+) -> Result<PluginListResponse> {
+    let cwd = AbsolutePathBuf::try_from(cwd).wrap_err("plugin list cwd must be absolute")?;
+    let request_id = RequestId::String(format!("plugin-list-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::PluginList {
+            request_id,
+            params: PluginListParams {
+                cwds: Some(vec![cwd]),
+                marketplace_kinds: None,
+            },
+        })
+        .await
+        .wrap_err("plugin/list failed in TUI")
 }
 
 pub(super) async fn fetch_plugin_detail(
@@ -684,6 +812,20 @@ pub(super) async fn fetch_marketplace_remove(
         })
         .await
         .wrap_err("marketplace/remove failed in TUI")
+}
+
+pub(super) async fn fetch_marketplace_upgrade(
+    request_handle: AppServerRequestHandle,
+    marketplace_name: Option<String>,
+) -> Result<MarketplaceUpgradeResponse> {
+    let request_id = RequestId::String(format!("marketplace-upgrade-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::MarketplaceUpgrade {
+            request_id,
+            params: MarketplaceUpgradeParams { marketplace_name },
+        })
+        .await
+        .wrap_err("marketplace/upgrade failed in TUI")
 }
 pub(super) async fn fetch_plugin_install(
     request_handle: AppServerRequestHandle,
@@ -845,6 +987,7 @@ pub(super) fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_support::make_test_app;
     use codex_app_server_protocol::PluginMarketplaceEntry;
     use codex_protocol::mcp::Tool;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -918,6 +1061,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 name: "docs".to_string(),
+                server_info: None,
                 tools: HashMap::from([(
                     "list".to_string(),
                     Tool {
@@ -937,6 +1081,7 @@ mod tests {
             },
             McpServerStatus {
                 name: "disabled".to_string(),
+                server_info: None,
                 tools: HashMap::new(),
                 resources: Vec::new(),
                 resource_templates: Vec::new(),
@@ -961,6 +1106,26 @@ mod tests {
             auth_statuses.get("disabled"),
             Some(&McpAuthStatus::Unsupported)
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_inventory_omits_thread_id_for_closed_agent_thread() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.active_thread_id = Some(thread_id);
+        app.agent_navigation.upsert(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+
+        assert_eq!(
+            app.mcp_inventory_request_thread_id(Some(thread_id)),
+            Some(thread_id)
+        );
+
+        app.agent_navigation.mark_closed(thread_id);
+
+        assert_eq!(app.mcp_inventory_request_thread_id(Some(thread_id)), None);
     }
 
     #[test]

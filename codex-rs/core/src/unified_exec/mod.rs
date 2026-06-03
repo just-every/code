@@ -27,9 +27,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
 
+use codex_exec_server::Environment;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_output_truncation::TruncationPolicy;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
@@ -37,6 +39,7 @@ use tokio::sync::Mutex;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::shell::ShellType;
 use crate::tools::network_approval::DeferredNetworkApproval;
 
 mod async_watcher;
@@ -67,9 +70,6 @@ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 
-// Send a warning message to the models when it reaches this number of processes.
-pub(crate) const WARNING_UNIFIED_EXEC_PROCESSES: usize = 60;
-
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
     pub turn: Arc<TurnContext>,
@@ -89,11 +89,14 @@ impl UnifiedExecContext {
 #[derive(Debug)]
 pub(crate) struct ExecCommandRequest {
     pub command: Vec<String>,
+    pub shell_type: ShellType,
     pub hook_command: String,
     pub process_id: i32,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
-    pub workdir: Option<AbsolutePathBuf>,
+    pub cwd: AbsolutePathBuf,
+    pub sandbox_cwd: AbsolutePathBuf,
+    pub environment: Arc<Environment>,
     pub network: Option<NetworkProxy>,
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
@@ -109,6 +112,7 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
+    pub truncation_policy: TruncationPolicy,
 }
 
 #[derive(Default)]

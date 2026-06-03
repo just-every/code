@@ -615,6 +615,27 @@ impl App<'_> {
                     self.input_running.store(false, Ordering::Release);
                     break 'main;
                 }
+                AppEvent::ClearUi => {
+                    terminal.clear()?;
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.abort_active_turn_for_new_chat();
+                    }
+                    let mut new_widget = ChatWidget::new(
+                        self.config.clone(),
+                        self.app_event_tx.clone(),
+                        None,
+                        Vec::new(),
+                        self.enhanced_keys_supported,
+                        self.terminal_info.clone(),
+                        self.show_order_overlay,
+                        self.latest_upgrade_version.clone(),
+                    );
+                    new_widget.enable_perf(self.timing_enabled);
+                    new_widget.set_standard_terminal_mode(!self.alt_screen_active);
+                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    self.terminal_runs.clear();
+                    self.app_event_tx.send(AppEvent::RequestRedraw);
+                }
                 AppEvent::CancelRunningTask => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.cancel_running_task_from_approval();
@@ -1179,7 +1200,24 @@ impl App<'_> {
                                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
                             }
                         }
-                        SlashCommand::Quit => { break 'main; }
+                        SlashCommand::Quit | SlashCommand::Exit => { break 'main; }
+                        SlashCommand::Clear => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                if widget.is_task_running() {
+                                    widget.history_push_plain_state(history_cell::new_error_event(
+                                        "'/clear' is disabled while a task is in progress.".to_string(),
+                                    ));
+                                    self.app_event_tx.send(AppEvent::RequestRedraw);
+                                } else {
+                                    self.app_event_tx.send(AppEvent::ClearUi);
+                                }
+                            }
+                        }
+                        SlashCommand::Copy => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.copy_last_agent_markdown();
+                            }
+                        }
                         SlashCommand::Login => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_login_command();

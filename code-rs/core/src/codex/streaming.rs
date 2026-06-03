@@ -4448,7 +4448,7 @@ async fn handle_response_item(
             }
             None
         }
-        ResponseItem::CompactionSummary { .. } => {
+        ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
             // Keep compaction summaries in history; no user-visible event to emit.
             None
         }
@@ -8552,6 +8552,7 @@ fn resolve_agent_command_for_check(
         "code" | "codex" | "cloud" => ("coder".to_string(), true),
         "claude" => ("claude".to_string(), false),
         "gemini" => ("gemini".to_string(), false),
+        "antigravity" | "agy" => ("agy".to_string(), false),
         "qwen" => ("qwen".to_string(), false),
         other => (other.to_string(), false),
     }

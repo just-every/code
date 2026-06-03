@@ -75,6 +75,8 @@ async fn models_client_hits_models_endpoint() {
             supported_in_api: true,
             priority: 1,
             additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
             upgrade: None,
             base_instructions: "base instructions".to_string(),
             model_messages: None,
@@ -96,6 +98,7 @@ async fn models_client_hits_models_endpoint() {
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            tool_mode: None,
         }],
     };
 

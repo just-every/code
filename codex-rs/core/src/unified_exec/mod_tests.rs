@@ -10,6 +10,7 @@ use crate::tools::context::ExecCommandToolOutput;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::process::OutputHandles;
 use codex_sandboxing::SandboxType;
+use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use core_test_support::get_remote_test_env;
 use core_test_support::skip_if_sandbox;
@@ -66,6 +67,7 @@ fn test_exec_request(
         ExecExpiration::DefaultTimeout,
         ExecCapturePolicy::ShellTool,
         SandboxType::None,
+        turn.config.effective_workspace_roots(),
         turn.windows_sandbox_level,
         windows_sandbox_private_desktop,
         permission_profile,
@@ -83,6 +85,7 @@ async fn exec_command_with_tty(
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
+    #[allow(deprecated)]
     let cwd = workdir
         .as_ref()
         .map_or_else(|| turn.cwd.clone(), |workdir| turn.cwd.join(workdir));
@@ -96,7 +99,11 @@ async fn exec_command_with_tty(
                 &request,
                 tty,
                 Box::new(NoopSpawnLifecycle),
-                turn.environment.as_ref().expect("turn environment"),
+                turn.environments
+                    .primary()
+                    .expect("turn environment")
+                    .environment
+                    .as_ref(),
             )
             .await?,
     );
@@ -157,6 +164,7 @@ async fn exec_command_with_tty(
         chunk_id: generate_chunk_id(),
         wall_time,
         raw_output: collected,
+        truncation_policy: turn.truncation_policy,
         max_output_tokens: None,
         process_id: response_process_id,
         exit_code,
@@ -190,6 +198,7 @@ async fn write_stdin(
             input,
             yield_time_ms,
             max_output_tokens: None,
+            truncation_policy: TruncationPolicy::Tokens(10_000),
         })
         .await
 }
@@ -255,7 +264,9 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        out_2.truncated_output().contains("codex"),
+        out_2
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("codex"),
         "expected environment variable output"
     );
 
@@ -296,7 +307,9 @@ async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
         "short command should not report a process id if it exits quickly"
     );
     assert!(
-        !out_2.truncated_output().contains("codex"),
+        !out_2
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("codex"),
         "short command should run in a fresh shell"
     );
 
@@ -308,7 +321,9 @@ async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        out_3.truncated_output().contains("codex"),
+        out_3
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("codex"),
         "session should preserve state"
     );
 
@@ -345,7 +360,9 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        !out_2.truncated_output().contains(TEST_VAR_VALUE),
+        !out_2
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains(TEST_VAR_VALUE),
         "timeout too short should yield incomplete output"
     );
 
@@ -354,7 +371,9 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
     let out_3 = write_stdin(&session, process_id, "", /*yield_time_ms*/ 100).await?;
 
     assert!(
-        out_3.truncated_output().contains(TEST_VAR_VALUE),
+        out_3
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains(TEST_VAR_VALUE),
         "subsequent poll should retrieve output"
     );
 
@@ -389,7 +408,9 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
         "pause should block the unified exec yield timeout"
     );
     assert!(
-        response.truncated_output().contains("unified-exec-done"),
+        response
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("unified-exec-done"),
         "exec_command should wait for output after the pause lifts"
     );
     assert!(
@@ -415,7 +436,11 @@ async fn requests_with_large_timeout_are_capped() -> anyhow::Result<()> {
     .await?;
 
     assert!(result.process_id.is_some());
-    assert!(result.truncated_output().contains("codex"));
+    assert!(
+        result
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("codex")
+    );
 
     Ok(())
 }
@@ -437,7 +462,11 @@ async fn completed_commands_do_not_persist_sessions() -> anyhow::Result<()> {
         result.process_id.is_some(),
         "completed command should report a process id"
     );
-    assert!(result.truncated_output().contains("codex"));
+    assert!(
+        result
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("codex")
+    );
 
     assert!(
         session
@@ -497,10 +526,12 @@ async fn reusing_completed_process_returns_unknown_process() -> anyhow::Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
+    #[allow(deprecated)]
+    let cwd = turn.cwd.clone();
     let request = test_exec_request(
         &turn,
         vec!["bash".to_string(), "-lc".to_string(), "exit 17".to_string()],
-        turn.cwd.clone(),
+        cwd,
         shell_env(),
     );
 
@@ -591,12 +622,15 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
 
     let remote_test_env = remote_test_env().await?;
     let (_, mut turn) = make_session_and_context().await;
-    turn.environment = Some(Arc::new(remote_test_env.environment().clone()));
+    turn.environments.turn_environments[0].environment =
+        Arc::new(remote_test_env.environment().clone());
 
+    #[allow(deprecated)]
+    let cwd = turn.cwd.clone();
     let request = test_exec_request(
         &turn,
         vec!["bash".to_string(), "-lc".to_string(), "echo ok".to_string()],
-        turn.cwd.clone(),
+        cwd,
         shell_env(),
     );
 
@@ -609,7 +643,11 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
-            turn.environment.as_ref().expect("turn environment"),
+            turn.environments
+                .primary()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
         )
         .await
         .expect_err("expected inherited fd rejection");

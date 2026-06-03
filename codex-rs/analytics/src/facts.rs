@@ -25,8 +25,15 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillScope;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::request_permissions::RequestPermissionsResponse;
 use serde::Serialize;
 use std::path::PathBuf;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AcceptedLineFingerprint {
+    pub path_hash: String,
+    pub line_hash: String,
+}
 
 #[derive(Clone)]
 pub struct TrackEventsContext {
@@ -173,6 +180,7 @@ pub struct SkillInvocation {
     pub skill_name: String,
     pub skill_scope: SkillScope,
     pub skill_path: PathBuf,
+    pub plugin_id: Option<String>,
     pub invocation_type: InvocationType,
 }
 
@@ -191,6 +199,7 @@ pub struct AppInvocation {
 
 #[derive(Clone)]
 pub struct SubAgentThreadStartedInput {
+    pub session_id: String,
     pub thread_id: String,
     pub parent_thread_id: Option<String>,
     pub product_client_id: String,
@@ -221,6 +230,7 @@ pub enum CompactionReason {
 #[serde(rename_all = "snake_case")]
 pub enum CompactionImplementation {
     Responses,
+    ResponsesCompactionV2,
     ResponsesCompact,
 }
 
@@ -295,7 +305,17 @@ pub(crate) enum AnalyticsFact {
         request: Box<ServerRequest>,
     },
     ServerResponse {
+        completed_at_ms: u64,
         response: Box<ServerResponse>,
+    },
+    EffectivePermissionsApprovalResponse {
+        completed_at_ms: u64,
+        request_id: RequestId,
+        response: Box<RequestPermissionsResponse>,
+    },
+    ServerRequestAborted {
+        completed_at_ms: u64,
+        request_id: RequestId,
     },
     Notification(Box<ServerNotification>),
     // Facts that do not naturally exist on the app-server protocol surface, or
