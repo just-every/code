@@ -973,6 +973,8 @@ Hook commands run inside the same sandbox mode as the session and appear in the 
   - For `stop`, the stderr text becomes a continuation prompt. If multiple hooks block, their prompts are joined with a blank line and sent back to the model as a follow-up user message.
 - Non-empty stdout from a `user.prompt_submit` hook is injected into conversation history as developer context before the model request is built. This happens even if the prompt is blocked, matching the upstream spirit of preserving hook-supplied context for later turns.
 
+When multiple `user.prompt_submit` or `stop` hooks are configured, their model-visible outputs are applied in configuration order. This keeps prompt context and stop continuation prompts deterministic for integrations that depend on lifecycle interception rather than best-effort notification.
+
 The `stop` hook includes `stop_hook_active` in its payload. Code allows at most one stop-driven continuation per turn; if a second stop continuation is requested while one is already active, the request is ignored and a background warning is emitted.
 
 In the TUI, the primary surface for a blocked `user.prompt_submit` hook is the hook's own exec cell, which shows the hook exit code and stderr text. Code may also emit a background summary when it can do so without interfering with turn startup.
