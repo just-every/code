@@ -383,6 +383,12 @@ pub(crate) async fn stream_chat_completions(
         }
     }
 
+    // Some OpenAI-compatible providers (DeepSeek, Moonshot/Kimi, certain Groq
+    // wrappers, etc.) strictly validate the Chat Completions `role` enum and
+    // reject any non-standard value (e.g. "developer") with a 400. Normalize
+    // outgoing roles to the accepted set before the payload is serialized.
+    sanitize_message_roles(&mut payload);
+
     let endpoint = provider.get_full_url(&None);
     debug!(
         "POST to {}: {}",
@@ -1309,4 +1315,102 @@ fn header_map_to_json(headers: &HeaderMap) -> serde_json::Value {
     }
 
     serde_json::to_value(ordered).unwrap_or(serde_json::Value::Null)
+}
+
+/// Normalize outgoing Chat Completions message roles to the set accepted by
+/// strict OpenAI-compatible providers (`system`, `user`, `assistant`, `tool`).
+///
+/// OpenAI itself tolerates custom roles such as `developer`, but many
+/// self-hosted or third-party gateways validate the role against a strict
+/// serde enum and return a 400 for unknown variants. Any unrecognized or
+/// non-string role is rewritten to `system`, which preserves the instructional
+/// intent of custom roles while leaving message `content` untouched.
+fn sanitize_message_roles(payload: &mut serde_json::Value) {
+    if let Some(messages) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
+        for message in messages.iter_mut() {
+            if let Some(obj) = message.as_object_mut() {
+                let is_standard = matches!(
+                    obj.get("role").and_then(|r| r.as_str()),
+                    Some("system" | "user" | "assistant" | "tool")
+                );
+                if !is_standard {
+                    obj.insert(
+                        "role".to_string(),
+                        serde_json::Value::String("system".to_string()),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_message_roles;
+    use serde_json::json;
+
+    #[test]
+    fn normalizes_developer_role_to_system_before_serialization() {
+        let mut payload = json!({
+            "model": "kimi-k2",
+            "messages": [
+                {"role": "developer", "content": "instructions"},
+                {"role": "user", "content": "hello"},
+            ],
+        });
+
+        sanitize_message_roles(&mut payload);
+
+        let messages = payload["messages"].as_array().unwrap();
+        // The rejected variant is rewritten...
+        assert_eq!(messages[0]["role"], "system");
+        // ...but the content (the actual instruction) is preserved.
+        assert_eq!(messages[0]["content"], "instructions");
+        // Standard roles are left untouched.
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "hello");
+
+        // The serialized body that hits the wire must not carry the variant
+        // that strict providers reject with a 400.
+        let body = serde_json::to_string(&payload).unwrap();
+        assert!(
+            !body.contains("\"role\":\"developer\""),
+            "serialized payload still contains the rejected role: {body}"
+        );
+    }
+
+    #[test]
+    fn rewrites_unknown_and_non_string_roles_but_keeps_standard_ones() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "a"},
+                {"role": "tool", "tool_call_id": "1", "content": "t"},
+                {"role": "agent", "content": "custom"},
+                {"role": 42, "content": "numeric role"},
+                {"content": "missing role"},
+            ],
+        });
+
+        sanitize_message_roles(&mut payload);
+
+        let roles: Vec<&str> = payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().expect("role should be a string"))
+            .collect();
+        assert_eq!(
+            roles,
+            vec!["system", "user", "assistant", "tool", "system", "system", "system"]
+        );
+    }
+
+    #[test]
+    fn payload_without_messages_is_left_unchanged() {
+        let mut payload = json!({"model": "x"});
+        sanitize_message_roles(&mut payload);
+        assert_eq!(payload, json!({"model": "x"}));
+    }
 }
