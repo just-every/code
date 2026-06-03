@@ -10,11 +10,11 @@ use code_core::project_features::ProjectHooks;
 use code_core::protocol::{AskForApproval, EventMsg, InputItem, Op, SandboxPolicy};
 use code_core::{CodexAuth, CodexConversation, ConversationManager, ModelProviderInfo};
 use serde_json::json;
-use std::sync::Arc;
-use std::fs::{self, File};
-use tempfile::TempDir;
-use tokio::time::{timeout, Duration};
 use serial_test::serial;
+use std::fs::{self, File};
+use std::sync::Arc;
+use tempfile::TempDir;
+use tokio::time::{Duration, timeout};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -115,7 +115,9 @@ async fn collect_events_until_idle(conversation: &Arc<CodexConversation>) -> Vec
     events
 }
 
-async fn collect_events_until_task_complete(conversation: &Arc<CodexConversation>) -> Vec<EventMsg> {
+async fn collect_events_until_task_complete(
+    conversation: &Arc<CodexConversation>,
+) -> Vec<EventMsg> {
     let mut events = Vec::new();
     let mut saw_task_complete = false;
     for _ in 0..40 {
@@ -149,7 +151,10 @@ async fn tool_hooks_fire_for_shell_exec() {
         vec![
             "bash".to_string(),
             "-lc".to_string(),
-            format!("echo {label}:${{CODE_HOOK_EVENT}} >> {}", log_path.display()),
+            format!(
+                "echo {label}:${{CODE_HOOK_EVENT}} >> {}",
+                log_path.display()
+            ),
         ]
     };
 
@@ -193,10 +198,7 @@ async fn tool_hooks_fire_for_shell_exec() {
             "arguments": function_call_args.to_string(),
         }
     });
-    let body_one = sse_body(&[
-        function_call_item,
-        response_completed_event("resp-1"),
-    ]);
+    let body_one = sse_body(&[function_call_item, response_completed_event("resp-1")]);
     let body_two = sse_body(&[
         assistant_message_event("done"),
         response_completed_event("resp-2"),
@@ -231,9 +233,19 @@ async fn tool_hooks_fire_for_shell_exec() {
     });
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2, "expected two model requests (tool + follow-up)");
-    assert!(hook_before_seen, "tool.before hook did not emit ExecCommandBegin");
-    assert!(hook_after_seen, "tool.after hook did not emit ExecCommandEnd");
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected two model requests (tool + follow-up)"
+    );
+    assert!(
+        hook_before_seen,
+        "tool.before hook did not emit ExecCommandBegin"
+    );
+    assert!(
+        hook_after_seen,
+        "tool.after hook did not emit ExecCommandEnd"
+    );
 
     let log_contents = fs::read_to_string(&log_path).unwrap();
     let lines: Vec<&str> = log_contents.lines().collect();
@@ -297,6 +309,65 @@ async fn user_prompt_submit_hook_fires_and_injects_context() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
+async fn user_prompt_submit_hooks_inject_context_in_config_order() {
+    let code_home = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+
+    let hook_configs = vec![
+        ProjectHookConfig {
+            event: ProjectHookEvent::UserPromptSubmit,
+            name: Some("prompt-a".to_string()),
+            command: hook_cmd("echo 'first hook context'"),
+            cwd: None,
+            env: None,
+            timeout_ms: None,
+            run_in_background: Some(false),
+        },
+        ProjectHookConfig {
+            event: ProjectHookEvent::UserPromptSubmit,
+            name: Some("prompt-b".to_string()),
+            command: hook_cmd("echo 'second hook context'"),
+            cwd: None,
+            env: None,
+            timeout_ms: None,
+            run_in_background: Some(false),
+        },
+    ];
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(sse_response(sse_body(&[
+            assistant_message_event("done"),
+            response_completed_event("resp-1"),
+        ])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let config = configure_test(&code_home, &project_dir, hook_configs, &server);
+    let conversation = new_conversation(config).await;
+
+    submit_prompt(&conversation, "hello world").await;
+    collect_events_until_task_complete(&conversation).await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "expected a single model request");
+    let body = String::from_utf8_lossy(&requests[0].body);
+    let first_idx = body
+        .find("first hook context")
+        .expect("first hook context should be injected");
+    let second_idx = body
+        .find("second hook context")
+        .expect("second hook context should be injected");
+    assert!(
+        first_idx < second_idx,
+        "prompt hook context should preserve configuration order"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
 async fn blocked_user_prompt_submit_surfaces_and_skips_model_request() {
     let code_home = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
@@ -333,12 +404,18 @@ async fn blocked_user_prompt_submit_surfaces_and_skips_model_request() {
         _ => false,
     }));
     assert!(
-        !events.iter().any(|msg| matches!(msg, EventMsg::TaskStarted | EventMsg::TaskComplete(_))),
+        !events
+            .iter()
+            .any(|msg| matches!(msg, EventMsg::TaskStarted | EventMsg::TaskComplete(_))),
         "blocked prompt should not start a task"
     );
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 0, "blocked prompt should not reach the model");
+    assert_eq!(
+        requests.len(),
+        0,
+        "blocked prompt should not reach the model"
+    );
 
     let log_contents = fs::read_to_string(&log_path).unwrap();
     assert!(log_contents.contains("prompt:user.prompt_submit"));
@@ -464,7 +541,11 @@ async fn stop_hook_fires_and_joins_continuation_prompts() {
     collect_events_until_task_complete(&conversation).await;
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2, "stop hook should trigger a continuation turn");
+    assert_eq!(
+        requests.len(),
+        2,
+        "stop hook should trigger a continuation turn"
+    );
     let second_body = String::from_utf8_lossy(&requests[1].body);
     assert!(second_body.contains("retry with tests"));
     assert!(second_body.contains("also mention lint"));
@@ -531,13 +612,21 @@ async fn stop_hook_loop_guard_ignores_second_continuation_request() {
     submit_prompt(&conversation, "finish this task").await;
     let events = collect_events_until_task_complete(&conversation).await;
 
-    assert!(events.iter().any(|msg| match msg {
-        EventMsg::BackgroundEvent(ev) => ev.message.contains("Stop hook requested another continuation"),
-        _ => false,
+    assert!(events.iter().any(|msg| {
+        match msg {
+            EventMsg::BackgroundEvent(ev) => ev
+                .message
+                .contains("Stop hook requested another continuation"),
+            _ => false,
+        }
     }));
 
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2, "loop guard should cap stop continuations at one extra turn");
+    assert_eq!(
+        requests.len(),
+        2,
+        "loop guard should cap stop continuations at one extra turn"
+    );
     let second_body = String::from_utf8_lossy(&requests[1].body);
     assert_eq!(
         second_body.matches("retry forever").count(),
@@ -546,7 +635,11 @@ async fn stop_hook_loop_guard_ignores_second_continuation_request() {
     );
 
     let log_contents = fs::read_to_string(&log_path).unwrap();
-    assert_eq!(log_contents.lines().count(), 2, "stop hook should fire for both completions");
+    assert_eq!(
+        log_contents.lines().count(),
+        2,
+        "stop hook should fire for both completions"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
