@@ -455,14 +455,13 @@ impl MessageProcessor {
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config.plugins_config_input(),
-                    auth_manager.clone(),
+                    auth_manager,
                     Some(on_effective_plugins_changed),
                 );
         }
         let config_processor = ConfigRequestProcessor::new(
             outgoing.clone(),
             config_manager.clone(),
-            auth_manager,
             thread_manager.clone(),
             analytics_events_client,
         );
@@ -916,6 +915,21 @@ impl MessageProcessor {
             ClientRequest::RemoteControlStatusRead { .. } => self
                 .remote_control_processor
                 .status_read()
+                .map(|response| Some(response.into())),
+            ClientRequest::RemoteControlPairingStart { params, .. } => self
+                .remote_control_processor
+                .pairing_start(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::RemoteControlClientsList { params, .. } => self
+                .remote_control_processor
+                .clients_list(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::RemoteControlClientsRevoke { params, .. } => self
+                .remote_control_processor
+                .clients_revoke(params)
+                .await
                 .map(|response| Some(response.into())),
             ClientRequest::ConfigRequirementsRead { params: _, .. } => self
                 .config_processor

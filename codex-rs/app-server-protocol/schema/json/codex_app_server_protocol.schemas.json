@@ -3783,6 +3783,13 @@
         "cwd": {
           "$ref": "#/definitions/v2/AbsolutePathBuf"
         },
+        "environmentId": {
+          "default": null,
+          "type": [
+            "null",
+            "string"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -5720,6 +5727,7 @@
       },
       "AccountRateLimitsUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Sparse rolling rate-limit update.\n\nClients should merge available values into the most recent `account/rateLimits/read` response or refetch that snapshot. Nullable account metadata may be unavailable in a rolling update and does not clear a previously observed value.",
         "properties": {
           "rateLimits": {
             "$ref": "#/definitions/v2/RateLimitSnapshot"
@@ -5951,6 +5959,16 @@
       },
       "AppConfig": {
         "properties": {
+          "approvals_reviewer": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ApprovalsReviewer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "default_tools_approval_mode": {
             "anyOf": [
               {
@@ -7601,6 +7619,33 @@
               "type"
             ],
             "title": "SystemConfigLayerSource",
+            "type": "object"
+          },
+          {
+            "description": "Enterprise-managed config layer delivered by the cloud config bundle.",
+            "properties": {
+              "id": {
+                "description": "Stable identifier for the delivered layer.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Admin-facing name for the delivered layer. This is surfaced in diagnostics so users know which cloud layer needs administrator attention.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "enterpriseManaged"
+                ],
+                "title": "EnterpriseManagedConfigLayerSourceType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "type"
+            ],
+            "title": "EnterpriseManagedConfigLayerSource",
             "type": "object"
           },
           {
@@ -10091,6 +10136,7 @@
           "sessionFlags",
           "plugin",
           "cloudRequirements",
+          "cloudManagedConfig",
           "legacyManagedConfigFile",
           "legacyManagedConfigMdm",
           "unknown"
@@ -13299,6 +13345,16 @@
               }
             ]
           },
+          "individualLimit": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/SpendControlLimitSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limitId": {
             "type": [
               "string",
@@ -13469,15 +13525,8 @@
         "type": "object"
       },
       "ReasoningEffort": {
-        "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
-        "enum": [
-          "none",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
+        "description": "A non-empty reasoning effort value advertised by the model.",
+        "minLength": 1,
         "type": "string"
       },
       "ReasoningEffortOption": {
@@ -15241,6 +15290,31 @@
         ],
         "type": "string"
       },
+      "SpendControlLimitSnapshot": {
+        "properties": {
+          "limit": {
+            "type": "string"
+          },
+          "remainingPercent": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "resetsAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "used": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "remainingPercent",
+          "resetsAt",
+          "used"
+        ],
+        "type": "object"
+      },
       "SubAgentSource": {
         "oneOf": [
           {
@@ -15480,6 +15554,13 @@
           },
           "name": {
             "description": "Optional user-facing thread title.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentThreadId": {
+            "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
             "type": [
               "string",
               "null"

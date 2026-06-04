@@ -1204,7 +1204,6 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         let upgrade_info = model.upgrade_info.clone();
         ModelUpgrade {
             id: upgrade_id,
-            reasoning_effort_mapping: None,
             migration_config_key: model.model.clone(),
             model_link: upgrade_info
                 .as_ref()
@@ -1273,7 +1272,8 @@ fn config_request_overrides_from_config(
         "model_reasoning_effort",
         config
             .model_reasoning_effort
-            .map(|effort| effort.to_string()),
+            .as_ref()
+            .map(std::string::ToString::to_string),
     );
     insert(
         "model_reasoning_summary",
@@ -1418,7 +1418,6 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         session_start_source,
         thread_source: Some(ThreadSource::User),
-        persist_extended_history: false,
         ..ThreadStartParams::default()
     }
 }
@@ -1457,7 +1456,6 @@ fn thread_resume_params_from_config(
         sandbox,
         permissions,
         config: config_request_overrides_from_config(&config),
-        persist_extended_history: false,
         ..ThreadResumeParams::default()
     }
 }
@@ -1500,7 +1498,6 @@ fn thread_fork_params_from_config(
         developer_instructions: config.developer_instructions.clone(),
         ephemeral: config.ephemeral,
         thread_source: Some(ThreadSource::User),
-        persist_extended_history: false,
         ..ThreadForkParams::default()
     }
 }
@@ -1589,7 +1586,7 @@ async fn thread_session_state_from_thread_start_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1630,7 +1627,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1662,7 +1659,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.cwd.clone(),
         response.runtime_workspace_roots.clone(),
         response.instruction_sources.clone(),
-        response.reasoning_effort,
+        response.reasoning_effort.clone(),
         config,
     )
     .await
@@ -1807,6 +1804,7 @@ mod tests {
             }),
             secondary: None,
             credits: None,
+            individual_limit: None,
             plan_type: None,
             rate_limit_reached_type: None,
         }
@@ -2279,6 +2277,7 @@ mod tests {
                 id: thread_id.to_string(),
                 session_id: ThreadId::new().to_string(),
                 forked_from_id: Some(forked_from_id.to_string()),
+                parent_thread_id: None,
                 preview: "hello".to_string(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),

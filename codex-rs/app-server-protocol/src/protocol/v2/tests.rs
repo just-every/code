@@ -142,6 +142,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             id: "thr_123".to_string(),
             session_id: "thr_123".to_string(),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: String::new(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -399,6 +400,7 @@ fn permissions_request_approval_uses_request_permission_profile() {
         "threadId": "thr_123",
         "turnId": "turn_123",
         "itemId": "call_123",
+        "environmentId": "remote",
         "startedAtMs": 1,
         "cwd": absolute_path_string("repo"),
         "reason": "Select a workspace root",
@@ -415,6 +417,7 @@ fn permissions_request_approval_uses_request_permission_profile() {
     .expect("permissions request should deserialize");
 
     assert_eq!(params.cwd, absolute_path("repo"));
+    assert_eq!(params.environment_id.as_deref(), Some("remote"));
     assert_eq!(
         params.permissions,
         RequestPermissionProfile {
@@ -3581,6 +3584,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     let fork: ThreadForkResponse = serde_json::from_value(response).expect("thread/fork response");
 
     assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.thread.parent_thread_id, None);
     assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
     assert_eq!(start.active_permission_profile, None);

@@ -2,8 +2,11 @@ use anyhow::Result;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::MarketplaceConfigUpdate;
 use codex_config::record_user_marketplace;
+use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -485,6 +488,172 @@ async fn plugin_list_prints_plugins_in_a_table() -> Result<()> {
         .stdout(contains("sample@debug"))
         .stdout(contains("not installed"))
         .stdout(contains(plugin_path.display().to_string()));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_list_json_prints_available_plugins_when_requested() -> Result<()> {
+    let (codex_home, source) = setup_local_marketplace()?;
+    let plugin_path = source.path().join("plugins").join("sample");
+    let source_path = source.path().to_string_lossy().into_owned();
+
+    let assert = codex_command(codex_home.path())?
+        .args(["plugin", "list", "--available", "--json"])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.as_slice();
+    let actual: serde_json::Value = serde_json::from_slice(stdout)?;
+
+    assert_eq!(
+        actual,
+        json!({
+            "installed": [],
+            "available": [
+                {
+                    "pluginId": "sample@debug",
+                    "name": "sample",
+                    "marketplaceName": "debug",
+                    "version": "1.2.3",
+                    "installed": false,
+                    "enabled": false,
+                    "source": {
+                        "source": "local",
+                        "path": plugin_path.display().to_string(),
+                    },
+                    "marketplaceSource": {
+                        "sourceType": "local",
+                        "source": source_path,
+                    },
+                    "installPolicy": "AVAILABLE",
+                    "authPolicy": "ON_INSTALL",
+                },
+            ],
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_list_json_includes_configured_git_marketplace_source() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let marketplace_root = codex_home
+        .path()
+        .join(".tmp")
+        .join("marketplaces")
+        .join("debug");
+    write_plugins_enabled_config(codex_home.path())?;
+    write_marketplace_source(&marketplace_root)?;
+    let update = MarketplaceConfigUpdate {
+        last_updated: "2026-06-04T08:39:49Z",
+        last_revision: Some("abc123"),
+        source_type: "git",
+        source: "https://example.com/acme/agent-skills.git",
+        ref_name: None,
+        sparse_paths: &[],
+    };
+    record_user_marketplace(codex_home.path(), "debug", &update)?;
+    let plugin_path = marketplace_root.join("plugins").join("sample");
+    let normalized_plugin_path = canonicalize_existing_preserving_symlinks(&plugin_path)?;
+
+    let assert = codex_command(codex_home.path())?
+        .args(["plugin", "list", "--available", "--json"])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.as_slice();
+    let actual: serde_json::Value = serde_json::from_slice(stdout)?;
+
+    assert_eq!(
+        actual,
+        json!({
+            "installed": [],
+            "available": [
+                {
+                    "pluginId": "sample@debug",
+                    "name": "sample",
+                    "marketplaceName": "debug",
+                    "version": "1.2.3",
+                    "installed": false,
+                    "enabled": false,
+                    "source": {
+                        "source": "local",
+                        "path": normalized_plugin_path.display().to_string(),
+                    },
+                    "marketplaceSource": {
+                        "sourceType": "git",
+                        "source": "https://example.com/acme/agent-skills.git",
+                    },
+                    "installPolicy": "AVAILABLE",
+                    "authPolicy": "ON_INSTALL",
+                },
+            ],
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_list_json_prints_installed_plugins() -> Result<()> {
+    let (codex_home, source) = setup_local_marketplace()?;
+    let plugin_path = source.path().join("plugins").join("sample");
+    let source_path = source.path().to_string_lossy().into_owned();
+
+    codex_command(codex_home.path())?
+        .args(["plugin", "add", "sample@debug"])
+        .assert()
+        .success();
+
+    let assert = codex_command(codex_home.path())?
+        .args(["plugin", "list", "--json"])
+        .assert()
+        .success();
+    let stdout = assert.get_output().stdout.as_slice();
+    let actual: serde_json::Value = serde_json::from_slice(stdout)?;
+
+    assert_eq!(
+        actual,
+        json!({
+            "installed": [
+                {
+                    "pluginId": "sample@debug",
+                    "name": "sample",
+                    "marketplaceName": "debug",
+                    "version": "1.2.3",
+                    "installed": true,
+                    "enabled": true,
+                    "source": {
+                        "source": "local",
+                        "path": plugin_path.display().to_string(),
+                    },
+                    "marketplaceSource": {
+                        "sourceType": "local",
+                        "source": source_path,
+                    },
+                    "installPolicy": "AVAILABLE",
+                    "authPolicy": "ON_INSTALL",
+                },
+            ],
+            "available": [],
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_list_available_requires_json() -> Result<()> {
+    let (codex_home, _source) = setup_local_marketplace()?;
+
+    codex_command(codex_home.path())?
+        .args(["plugin", "list", "--available"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "the following required arguments were not provided",
+        ))
+        .stderr(contains("--json"));
 
     Ok(())
 }

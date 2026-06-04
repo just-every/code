@@ -324,7 +324,11 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                self.chat_widget.prepare_local_op_submission(&op);
                 self.submit_active_thread_op(app_server, op).await?;
+            }
+            AppEvent::RestoreCancelledTurn(prompt) => {
+                self.apply_cancelled_turn_edit(prompt);
             }
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
@@ -398,6 +402,9 @@ impl App {
             }
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
+            }
+            AppEvent::OpenDesktopThread { thread_id } => {
+                self.open_desktop_thread(thread_id);
             }
             AppEvent::PetSelected { pet_id } => {
                 self.handle_pet_selected(tui, pet_id);
@@ -743,7 +750,7 @@ impl App {
                 self.chat_widget.on_connectors_loaded(result, is_final);
             }
             AppEvent::UpdateReasoningEffort(effort) => {
-                self.on_update_reasoning_effort(effort);
+                self.on_update_reasoning_effort(effort.clone());
                 self.sync_active_thread_reasoning_setting(app_server, effort)
                     .await;
             }
@@ -1293,19 +1300,23 @@ impl App {
             AppEvent::PersistModelSelection { model, effort } => {
                 match crate::config_update::write_config_batch(
                     app_server.request_handle(),
-                    crate::config_update::build_model_selection_edits(model.as_str(), effort),
+                    crate::config_update::build_model_selection_edits(
+                        model.as_str(),
+                        effort.as_ref(),
+                    ),
                 )
                 .await
                 {
                     Ok(_) => {
                         let effort_label = effort
-                            .map(|selected_effort| selected_effort.to_string())
+                            .as_ref()
+                            .map(std::string::ToString::to_string)
                             .unwrap_or_else(|| "default".to_string());
                         tracing::info!("Selected model: {model}, Selected effort: {effort_label}");
                         let mut message = format!("Model changed to {model}");
-                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                        if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
                             message.push(' ');
-                            message.push_str(label);
+                            message.push_str(&label);
                         }
                         self.chat_widget.add_info_message(message, /*hint*/ None);
                     }
@@ -1600,7 +1611,7 @@ impl App {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
-                self.config.plan_mode_reasoning_effort = effort;
+                self.config.plan_mode_reasoning_effort = effort.clone();
                 self.chat_widget.set_plan_mode_reasoning_effort(effort);
                 self.sync_active_thread_plan_mode_reasoning_setting(app_server)
                     .await;
@@ -1852,12 +1863,20 @@ impl App {
                     ));
                 }
                 ApprovalRequest::Permissions {
+                    environment_id,
                     permissions,
                     reason,
                     ..
                 } => {
                     let _ = tui.enter_alt_screen();
                     let mut lines = Vec::new();
+                    if let Some(environment_id) = environment_id {
+                        lines.push(Line::from(vec![
+                            "Environment: ".into(),
+                            environment_id.bold(),
+                        ]));
+                        lines.push(Line::from(""));
+                    }
                     if let Some(reason) = reason {
                         lines.push(Line::from(vec!["Reason: ".into(), reason.italic()]));
                         lines.push(Line::from(""));

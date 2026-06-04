@@ -100,7 +100,6 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
@@ -173,6 +172,7 @@ struct ModelClientState {
     provider: SharedModelProvider,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
+    parent_thread_id: Option<ThreadId>,
     model_verbosity: Option<VerbosityConfig>,
     enable_request_compression: bool,
     include_timing_metrics: bool,
@@ -321,6 +321,7 @@ impl ModelClient {
         installation_id: String,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
+        parent_thread_id: Option<ThreadId>,
         model_verbosity: Option<VerbosityConfig>,
         enable_request_compression: bool,
         include_timing_metrics: bool,
@@ -344,6 +345,7 @@ impl ModelClient {
                 provider: model_provider,
                 auth_env_telemetry,
                 session_source,
+                parent_thread_id,
                 model_verbosity,
                 enable_request_compression,
                 include_timing_metrics,
@@ -637,7 +639,7 @@ impl ModelClient {
 
     fn build_responses_identity_headers(&self) -> ApiHeaderMap {
         let mut extra_headers = self.build_subagent_headers();
-        if let Some(parent_thread_id) = parent_thread_id_header_value(&self.state.session_source)
+        if let Some(parent_thread_id) = parent_thread_id_header_value(self.state.parent_thread_id)
             && let Ok(val) = HeaderValue::from_str(&parent_thread_id)
         {
             extra_headers.insert(X_CODEX_PARENT_THREAD_ID_HEADER, val);
@@ -664,7 +666,7 @@ impl ModelClient {
         if let Some(subagent) = subagent_header_value(&self.state.session_source) {
             client_metadata.insert(X_OPENAI_SUBAGENT_HEADER.to_string(), subagent);
         }
-        if let Some(parent_thread_id) = parent_thread_id_header_value(&self.state.session_source) {
+        if let Some(parent_thread_id) = parent_thread_id_header_value(self.state.parent_thread_id) {
             client_metadata.insert(
                 X_CODEX_PARENT_THREAD_ID_HEADER.to_string(),
                 parent_thread_id,
@@ -719,7 +721,7 @@ impl ModelClient {
     ) -> Option<Reasoning> {
         if model_info.supports_reasoning_summaries {
             Some(Reasoning {
-                effort: effort.or(model_info.default_reasoning_level),
+                effort: effort.or_else(|| model_info.default_reasoning_level.clone()),
                 summary: if summary == ReasoningSummaryConfig::None {
                     None
                 } else {
@@ -962,18 +964,6 @@ impl ModelClientSession {
         self.websocket_session.last_response_from_untraced_warmup = false;
         self.websocket_session
             .set_connection_reused(/*connection_reused*/ false);
-    }
-
-    pub(crate) async fn send_response_processed(&self, response_id: &str) {
-        let Some(connection) = self.websocket_session.connection.as_ref() else {
-            return;
-        };
-        if let Err(err) = connection
-            .send_response_processed(response_id.to_string())
-            .await
-        {
-            debug!("failed to send response.processed websocket request: {err}");
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1277,7 +1267,7 @@ impl ModelClientSession {
                 &client_setup.api_provider,
                 prompt,
                 model_info,
-                effort,
+                effort.clone(),
                 summary,
                 service_tier.clone(),
             )?;
@@ -1386,7 +1376,7 @@ impl ModelClientSession {
                 &client_setup.api_provider,
                 prompt,
                 model_info,
-                effort,
+                effort.clone(),
                 summary,
                 service_tier.clone(),
             )?;
@@ -1605,7 +1595,7 @@ impl ModelClientSession {
                             prompt,
                             model_info,
                             session_telemetry,
-                            effort,
+                            effort.clone(),
                             summary,
                             service_tier.clone(),
                             turn_metadata_header,
@@ -1669,9 +1659,7 @@ fn parse_turn_metadata_header(turn_metadata_header: Option<&str>) -> Option<Head
 /// Meant to be called just before sending the request over the socket, to capture realistic
 /// transport timing.
 fn stamp_ws_stream_request_start_ms(request: &mut ResponsesWsRequest) {
-    let ResponsesWsRequest::ResponseCreate(payload) = request else {
-        return;
-    };
+    let ResponsesWsRequest::ResponseCreate(payload) = request;
     payload
         .client_metadata
         .get_or_insert_with(HashMap::new)
@@ -1733,10 +1721,8 @@ fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
     }
 }
 
-fn parent_thread_id_header_value(session_source: &SessionSource) -> Option<String> {
-    session_source
-        .parent_thread_id()
-        .map(|parent_thread_id| parent_thread_id.to_string())
+fn parent_thread_id_header_value(parent_thread_id: Option<ThreadId>) -> Option<String> {
+    parent_thread_id.map(|parent_thread_id| parent_thread_id.to_string())
 }
 
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;

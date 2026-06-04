@@ -5,10 +5,6 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
-const PERSIST_EXTENDED_HISTORY_DEPRECATION_SUMMARY: &str =
-    "persistExtendedHistory is deprecated and ignored";
-const PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS: &str =
-    "Remove this parameter. App-server always uses limited history persistence.";
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -162,7 +158,7 @@ fn merge_persisted_resume_metadata(
     typesafe_overrides.model = persisted_metadata.model.clone();
     typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
 
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
@@ -663,12 +659,6 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
-    async fn instruction_sources_from_config(config: &Config) -> Vec<AbsolutePathBuf> {
-        codex_core::AgentsMdManager::new(config)
-            .instruction_sources(LOCAL_FS.as_ref())
-            .await
-    }
-
     async fn load_thread(
         &self,
         thread_id: &str,
@@ -849,16 +839,11 @@ impl ThreadRequestProcessor {
             session_start_source,
             thread_source,
             environments,
-            persist_extended_history,
         } = params;
         if sandbox.is_some() && permissions.is_some() {
             return Err(invalid_request(
                 "`permissions` cannot be combined with `sandbox`",
             ));
-        }
-        if persist_extended_history {
-            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
-                .await;
         }
         let environment_selections = self.parse_environment_selections(environments)?;
         let mut typesafe_overrides = self.build_thread_config_overrides(
@@ -950,18 +935,6 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
     ) -> Option<codex_protocol::protocol::W3cTraceContext> {
         self.outgoing.request_trace_context(request_id).await
-    }
-
-    async fn send_persist_extended_history_deprecation_notice(&self, connection_id: ConnectionId) {
-        self.outgoing
-            .send_server_notification_to_connections(
-                &[connection_id],
-                ServerNotification::DeprecationNotice(DeprecationNoticeNotification {
-                    summary: PERSIST_EXTENDED_HISTORY_DEPRECATION_SUMMARY.to_string(),
-                    details: Some(PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS.to_string()),
-                }),
-            )
-            .await;
     }
 
     async fn submit_core_op(
@@ -1064,7 +1037,6 @@ impl ThreadRequestProcessor {
                 .map_err(|err| config_load_error(&err))?;
         }
 
-        let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let environments = environments.unwrap_or_else(|| {
             listener_task_context
                 .thread_manager
@@ -1106,7 +1078,6 @@ impl ThreadRequestProcessor {
                 session_source: None,
                 thread_source,
                 dynamic_tools: core_dynamic_tools,
-                persist_extended_history: false,
                 metrics_service_name: service_name,
                 parent_trace: request_trace,
                 environments,
@@ -1115,7 +1086,6 @@ impl ThreadRequestProcessor {
                 "app_server.thread_start.create_thread",
                 otel.name = "app_server.thread_start.create_thread",
                 thread_start.dynamic_tool_count = core_dynamic_tool_count,
-                thread_start.persist_extended_history = false,
             ))
             .await
             .map_err(|err| match err {
@@ -1136,6 +1106,7 @@ impl ThreadRequestProcessor {
         )
         .await?;
 
+        let instruction_sources = thread.instruction_sources().await;
         let config_snapshot = thread
             .config_snapshot()
             .instrument(tracing::info_span!(
@@ -2380,6 +2351,7 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         connection_ids: Vec<ConnectionId>,
     ) {
+        let mut raw_events_enabled = false;
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;
             let loaded_thread = build_thread_from_snapshot(
@@ -2389,16 +2361,21 @@ impl ThreadRequestProcessor {
                 thread.rollout_path(),
             );
             self.thread_watch_manager.upsert_thread(loaded_thread).await;
+            if let Some(parent_thread_id) = config_snapshot.parent_thread_id {
+                raw_events_enabled = self
+                    .thread_state_manager
+                    .thread_state(parent_thread_id)
+                    .await
+                    .lock()
+                    .await
+                    .experimental_raw_events;
+            }
         }
 
         for connection_id in connection_ids {
             log_listener_attach_result(
-                self.ensure_conversation_listener(
-                    thread_id,
-                    connection_id,
-                    /*raw_events_enabled*/ false,
-                )
-                .await,
+                self.ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
+                    .await,
                 thread_id,
                 connection_id,
                 "thread",
@@ -2439,10 +2416,6 @@ impl ThreadRequestProcessor {
                 )
                 .await;
             return Ok(());
-        }
-        if params.persist_extended_history {
-            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
-                .await;
         }
         let redact_resume_payloads =
             should_redact_thread_resume_payloads(app_server_client_name.as_deref());
@@ -2490,7 +2463,6 @@ impl ThreadRequestProcessor {
             personality,
             exclude_turns,
             initial_turns_page,
-            persist_extended_history: _persist_extended_history,
         } = params;
         let include_turns = !exclude_turns;
 
@@ -2546,16 +2518,14 @@ impl ThreadRequestProcessor {
             }
         };
 
-        let instruction_sources = Self::instruction_sources_from_config(&config).await;
         let response_history = thread_history.clone();
 
         match self
             .thread_manager
             .resume_thread_with_history(
-                config.clone(),
+                config,
                 thread_history,
                 self.auth_manager.clone(),
-                /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -2576,6 +2546,7 @@ impl ThreadRequestProcessor {
                     self.outgoing.send_error(request_id, err).await;
                     return Ok(());
                 }
+                let instruction_sources = codex_thread.instruction_sources().await;
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
                 let Some(rollout_path) = rollout_path else {
                     let error =
@@ -2789,7 +2760,7 @@ impl ThreadRequestProcessor {
                 .as_ref()
                 .or(source_thread.rollout_path.as_ref());
             if let (Some(requested_path), Some(active_path)) = (params.path.as_ref(), active_path)
-                && requested_path != active_path
+                && !path_utils::paths_match_after_normalization(requested_path, active_path)
             {
                 return Err(invalid_request(format!(
                     "cannot resume running thread {existing_thread_id} with stale path: requested `{}`, active `{}`",
@@ -2876,10 +2847,7 @@ impl ThreadRequestProcessor {
                 /*include_turns*/ false,
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
-            let mut config_for_instruction_sources = self.config.as_ref().clone();
-            config_for_instruction_sources.cwd = config_snapshot.cwd.clone();
-            let instruction_sources =
-                Self::instruction_sources_from_config(&config_for_instruction_sources).await;
+            let instruction_sources = existing_thread.instruction_sources().await;
 
             let listener_command_tx = {
                 let thread_state = thread_state.lock().await;
@@ -3185,7 +3153,6 @@ impl ThreadRequestProcessor {
             ephemeral,
             thread_source,
             exclude_turns,
-            persist_extended_history,
         } = params;
         let include_turns = !exclude_turns;
         if sandbox.is_some() && permissions.is_some() {
@@ -3193,15 +3160,14 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
-        if persist_extended_history {
-            self.send_persist_extended_history_deprecation_notice(request_id.connection_id)
-                .await;
-        }
-
         let source_thread = self
             .read_stored_thread_for_resume(&thread_id, path.as_ref(), /*include_history*/ true)
             .await?;
         let source_thread_id = source_thread.thread_id;
+        let source_thread_name = source_thread
+            .name
+            .as_deref()
+            .and_then(codex_core::util::normalize_thread_name);
         let history_items = source_thread
             .history
             .as_ref()
@@ -3258,7 +3224,6 @@ impl ThreadRequestProcessor {
             .map_err(|err| config_load_error(&err))?;
 
         let fallback_model_provider = config.model_provider_id.clone();
-        let instruction_sources = Self::instruction_sources_from_config(&config).await;
 
         let NewThread {
             thread_id,
@@ -3276,7 +3241,6 @@ impl ThreadRequestProcessor {
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
                 thread_source.map(Into::into),
-                /*persist_extended_history*/ false,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -3294,6 +3258,23 @@ impl ThreadRequestProcessor {
             app_server_client_version,
         )
         .await?;
+        if session_configured.rollout_path.is_some()
+            && let Some(name) = source_thread_name.clone()
+        {
+            self.thread_manager
+                .update_thread_metadata(
+                    thread_id,
+                    StoreThreadMetadataPatch {
+                        name: Some(Some(name)),
+                        ..Default::default()
+                    },
+                    /*include_archived*/ true,
+                )
+                .await
+                .map_err(|err| core_thread_write_error("inherit source thread name", err))?;
+        }
+
+        let instruction_sources = forked_thread.instruction_sources().await;
 
         // Auto-attach a conversation listener when forking a thread.
         log_listener_attach_result(
@@ -3321,7 +3302,6 @@ impl ThreadRequestProcessor {
             )
         } else {
             let config_snapshot = forked_thread.config_snapshot().await;
-            // forked thread names do not inherit the source thread name
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
@@ -3339,6 +3319,9 @@ impl ThreadRequestProcessor {
             }
             thread
         };
+        if let Some(name) = source_thread_name {
+            set_thread_name_from_title(&mut thread, name);
+        }
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = forked_thread
             .config_snapshot()
@@ -4012,6 +3995,7 @@ pub(crate) fn thread_from_stored_thread(
         id: thread_id.clone(),
         session_id: thread_id,
         forked_from_id: thread.forked_from_id.map(|id| id.to_string()),
+        parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),
         preview: thread.preview,
         ephemeral: false,
         model_provider: if thread.model_provider.is_empty() {
@@ -4220,6 +4204,7 @@ fn build_thread_from_snapshot(
         id: thread_id.to_string(),
         session_id,
         forked_from_id: None,
+        parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),

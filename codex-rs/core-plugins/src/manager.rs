@@ -2,11 +2,13 @@ use super::PluginLoadOutcome;
 use super::startup_remote_sync::start_startup_remote_plugin_sync_once;
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
 use crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
+use crate::loader::PluginHookLoadOutcome;
 use crate::loader::configured_curated_plugin_ids_from_codex_home;
 use crate::loader::curated_plugin_cache_version;
 use crate::loader::installed_plugin_telemetry_metadata;
 use crate::loader::load_plugin_apps;
 use crate::loader::load_plugin_hooks;
+use crate::loader::load_plugin_hooks_from_layer_stack;
 use crate::loader::load_plugin_mcp_servers;
 use crate::loader::load_plugin_skills;
 use crate::loader::load_plugins_from_layer_stack;
@@ -492,6 +494,7 @@ impl PluginsManager {
             self.remote_installed_plugin_configs(),
             &self.store,
             self.restriction_product,
+            config.remote_plugin_enabled,
         )
         .await;
         log_plugin_load_errors(&outcome);
@@ -537,6 +540,25 @@ impl PluginsManager {
             self.remote_installed_plugin_configs(),
             &self.store,
             self.restriction_product,
+            config.remote_plugin_enabled,
+        )
+        .await
+    }
+
+    /// Resolve plugin hooks for a config layer stack without loading other plugin capabilities.
+    pub async fn plugin_hooks_for_layer_stack(
+        &self,
+        config_layer_stack: &ConfigLayerStack,
+        config: &PluginsConfigInput,
+    ) -> PluginHookLoadOutcome {
+        if !config.plugins_enabled {
+            return PluginHookLoadOutcome::default();
+        }
+        load_plugin_hooks_from_layer_stack(
+            config_layer_stack,
+            self.remote_installed_plugin_configs(),
+            &self.store,
+            config.remote_plugin_enabled,
         )
         .await
     }
@@ -588,6 +610,31 @@ impl PluginsManager {
         };
         let plugins = cache.as_ref()?;
         Some(crate::remote::group_remote_installed_plugins_by_marketplaces(plugins, visible_scopes))
+    }
+
+    pub fn cached_global_remote_discoverable_plugins_for_config(
+        &self,
+        config: &PluginsConfigInput,
+        auth: Option<&CodexAuth>,
+    ) -> Vec<crate::remote::RemoteDiscoverablePlugin> {
+        if !config.plugins_enabled || !config.remote_plugin_enabled {
+            return Vec::new();
+        }
+        let Some(auth) = auth.filter(|auth| auth.uses_codex_backend()) else {
+            return Vec::new();
+        };
+        let Some(account_id) = auth.get_account_id() else {
+            return Vec::new();
+        };
+        if account_id.is_empty() {
+            return Vec::new();
+        }
+
+        crate::remote::cached_global_remote_discoverable_plugins(
+            self.codex_home.as_path(),
+            &remote_plugin_service_config(config),
+            auth,
+        )
     }
 
     pub async fn build_and_cache_remote_installed_plugin_marketplaces(
@@ -1546,9 +1593,30 @@ impl PluginsManager {
                 );
                 manager.maybe_start_remote_installed_plugin_bundle_sync(
                     &config_for_remote_sync,
-                    auth,
+                    auth.clone(),
                     on_effective_plugins_changed,
                 );
+                if config_for_remote_sync.remote_plugin_enabled {
+                    match crate::remote::fetch_and_cache_global_remote_plugin_catalog(
+                        manager.codex_home.as_path(),
+                        &remote_plugin_service_config(&config_for_remote_sync),
+                        auth.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(
+                            RemotePluginCatalogError::AuthRequired
+                            | RemotePluginCatalogError::UnsupportedAuthMode,
+                        ) => {}
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "failed to warm remote plugin catalog cache"
+                            );
+                        }
+                    }
+                }
             });
 
             let config = config.clone();

@@ -187,6 +187,27 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
 }
 
 #[test]
+fn spawn_agent_tool_caps_reasoning_effort_value_length() {
+    let mut model = model_preset("visible", /*show_in_picker*/ true);
+    let custom_effort = ReasoningEffort::Custom(
+        "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION + 1),
+    );
+    model.default_reasoning_effort = custom_effort.clone();
+    model.supported_reasoning_efforts = vec![ReasoningEffortPreset {
+        effort: custom_effort,
+        description: "Model-defined".to_string(),
+    }];
+
+    assert_eq!(
+        spawn_agent_models_description(&[model]),
+        format!(
+            "Available model overrides (optional; inherited parent model is preferred):\n- `visible-model`: visible description Reasoning efforts: {} (default). Service tiers: priority.",
+            "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION)
+        )
+    );
+}
+
+#[test]
 fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
@@ -197,7 +218,12 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         max_concurrent_threads_per_session: Some(4),
     });
 
-    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = tool else {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        ..
+    }) = tool
+    else {
         panic!("spawn_agent should be a function tool");
     };
     let properties = parameters
@@ -209,6 +235,8 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("reasoning_effort"));
     assert!(!properties.contains_key("service_tier"));
+    assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
+    assert!(!description.contains("Available model overrides"));
 }
 
 #[test]
@@ -247,17 +275,17 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn assign_task_tool_requires_message_and_has_no_output_schema() {
+fn followup_task_tool_requires_message_and_has_no_output_schema() {
     let ToolSpec::Function(ResponsesApiTool {
         name,
         parameters,
         output_schema,
         ..
-    }) = create_assign_task_tool()
+    }) = create_followup_task_tool()
     else {
-        panic!("assign_task should be a function tool");
+        panic!("followup_task should be a function tool");
     };
-    assert_eq!(name, "assign_task");
+    assert_eq!(name, "followup_task");
     assert_eq!(
         parameters.schema_type,
         Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
@@ -265,7 +293,7 @@ fn assign_task_tool_requires_message_and_has_no_output_schema() {
     let properties = parameters
         .properties
         .as_ref()
-        .expect("assign_task should use object params");
+        .expect("followup_task should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
     assert!(!properties.contains_key("items"));
