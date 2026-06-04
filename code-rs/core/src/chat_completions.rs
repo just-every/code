@@ -385,9 +385,12 @@ pub(crate) async fn stream_chat_completions(
 
     // Some OpenAI-compatible providers (DeepSeek, Moonshot/Kimi, certain Groq
     // wrappers, etc.) strictly validate the Chat Completions `role` enum and
-    // reject any non-standard value (e.g. "developer") with a 400. Normalize
-    // outgoing roles to the accepted set before the payload is serialized.
-    sanitize_message_roles(&mut payload);
+    // reject custom values such as "developer" with a 400. Normalize only for
+    // those strict-compatible endpoints; OpenAI's Chat Completions API accepts
+    // `developer` as a first-class instruction role for newer models.
+    if !provider.is_public_openai_chat_endpoint() {
+        sanitize_message_roles_for_strict_chat_providers(&mut payload);
+    }
 
     let endpoint = provider.get_full_url(&None);
     debug!(
@@ -1317,27 +1320,28 @@ fn header_map_to_json(headers: &HeaderMap) -> serde_json::Value {
     serde_json::to_value(ordered).unwrap_or(serde_json::Value::Null)
 }
 
-/// Normalize outgoing Chat Completions message roles to the set accepted by
-/// strict OpenAI-compatible providers (`system`, `user`, `assistant`, `tool`).
+/// Normalize outgoing Chat Completions message roles to the string role set
+/// accepted by strict OpenAI-compatible providers (`system`, `user`,
+/// `assistant`, `tool`).
 ///
-/// OpenAI itself tolerates custom roles such as `developer`, but many
-/// self-hosted or third-party gateways validate the role against a strict
-/// serde enum and return a 400 for unknown variants. Any unrecognized or
-/// non-string role is rewritten to `system`, which preserves the instructional
-/// intent of custom roles while leaving message `content` untouched.
-fn sanitize_message_roles(payload: &mut serde_json::Value) {
+/// OpenAI Chat Completions accepts `developer`, but many self-hosted or
+/// third-party gateways validate the role against a strict serde enum and
+/// return a 400 for unknown string variants. Custom string roles are rewritten
+/// to `system`, which preserves the instructional intent while leaving message
+/// `content` untouched. Missing or non-string roles are left unchanged so
+/// malformed payloads fail visibly instead of being silently repaired.
+fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Value) {
     if let Some(messages) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
         for message in messages.iter_mut() {
             if let Some(obj) = message.as_object_mut() {
-                let is_standard = matches!(
-                    obj.get("role").and_then(|r| r.as_str()),
-                    Some("system" | "user" | "assistant" | "tool")
-                );
-                if !is_standard {
-                    obj.insert(
-                        "role".to_string(),
-                        serde_json::Value::String("system".to_string()),
-                    );
+                match obj.get("role").and_then(|r| r.as_str()) {
+                    Some("system" | "user" | "assistant" | "tool") | None => {}
+                    Some(_) => {
+                        obj.insert(
+                            "role".to_string(),
+                            serde_json::Value::String("system".to_string()),
+                        );
+                    }
                 }
             }
         }
@@ -1346,11 +1350,11 @@ fn sanitize_message_roles(payload: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_message_roles;
+    use super::sanitize_message_roles_for_strict_chat_providers;
     use serde_json::json;
 
     #[test]
-    fn normalizes_developer_role_to_system_before_serialization() {
+    fn normalizes_developer_role_to_system_before_strict_provider_serialization() {
         let mut payload = json!({
             "model": "kimi-k2",
             "messages": [
@@ -1359,7 +1363,7 @@ mod tests {
             ],
         });
 
-        sanitize_message_roles(&mut payload);
+        sanitize_message_roles_for_strict_chat_providers(&mut payload);
 
         let messages = payload["messages"].as_array().unwrap();
         // The rejected variant is rewritten...
@@ -1380,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_unknown_and_non_string_roles_but_keeps_standard_ones() {
+    fn rewrites_unknown_string_roles_but_keeps_standard_ones() {
         let mut payload = json!({
             "messages": [
                 {"role": "system", "content": "sys"},
@@ -1388,12 +1392,10 @@ mod tests {
                 {"role": "assistant", "content": "a"},
                 {"role": "tool", "tool_call_id": "1", "content": "t"},
                 {"role": "agent", "content": "custom"},
-                {"role": 42, "content": "numeric role"},
-                {"content": "missing role"},
             ],
         });
 
-        sanitize_message_roles(&mut payload);
+        sanitize_message_roles_for_strict_chat_providers(&mut payload);
 
         let roles: Vec<&str> = payload["messages"]
             .as_array()
@@ -1403,14 +1405,36 @@ mod tests {
             .collect();
         assert_eq!(
             roles,
-            vec!["system", "user", "assistant", "tool", "system", "system", "system"]
+            vec!["system", "user", "assistant", "tool", "system"]
         );
     }
 
     #[test]
     fn payload_without_messages_is_left_unchanged() {
         let mut payload = json!({"model": "x"});
-        sanitize_message_roles(&mut payload);
+        sanitize_message_roles_for_strict_chat_providers(&mut payload);
         assert_eq!(payload, json!({"model": "x"}));
+    }
+
+    #[test]
+    fn malformed_roles_are_left_unchanged() {
+        let mut payload = json!({
+            "messages": [
+                {"role": 42, "content": "numeric role"},
+                {"content": "missing role"},
+            ],
+        });
+
+        sanitize_message_roles_for_strict_chat_providers(&mut payload);
+
+        assert_eq!(
+            payload,
+            json!({
+                "messages": [
+                    {"role": 42, "content": "numeric role"},
+                    {"content": "missing role"},
+                ],
+            })
+        );
     }
 }
