@@ -1,7 +1,11 @@
 set working-directory := "codex-rs"
 set positional-arguments
+export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
+set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
+set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 
 rust_min_stack := "8388608" # 8 MiB
+python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help
 help:
@@ -10,14 +14,16 @@ help:
 # `codex`
 alias c := codex
 codex *args:
-    cargo run --bin codex -- "$@"
+    cargo run --bin codex -- {args}
 
 # `codex exec`
 exec *args:
-    cargo run --bin codex -- exec "$@"
+    cargo run --bin codex -- exec {args}
 
 # Start `codex exec-server` and run codex-tui.
 [no-cd]
+[positional-arguments]
+[unix]
 tui-with-exec-server *args:
     {{ justfile_directory() }}/scripts/run_tui_with_exec_server.sh "$@"
 
@@ -30,11 +36,12 @@ fmt:
     cargo fmt -- --config imports_granularity=Item 2>/dev/null
 
 fix *args:
-    cargo clippy --fix --tests --allow-dirty "$@"
+    cargo clippy --fix --tests --allow-dirty {args}
 
 clippy *args:
-    cargo clippy --tests "$@"
+    cargo clippy --tests {args}
 
+[unix]
 install:
     rustup show active-toolchain
     cargo fetch
@@ -49,36 +56,45 @@ test:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast
 
 # Build and run Codex from source using Bazel.
-# Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
-# to ensure that Bazel runs the command in the current working directory.
+# On Unix, use `[no-cd]` and `--run_under="cd $PWD &&"` to ensure Bazel runs
+# the command in the current working directory.
 [no-cd]
+[unix]
 bazel-codex *args:
     bazel run //codex-rs/cli:codex --run_under="cd $PWD &&" -- "$@"
+
+[windows]
+bazel-codex *args:
+    bazel run //codex-rs/cli:codex --run_under='cd /d "{{ invocation_directory_native() }}" &&' -- @($args | Select-Object -Skip 1)
 
 [no-cd]
 bazel-lock-update:
     bazel mod deps --lockfile_mode=update
 
 [no-cd]
+[unix]
 bazel-lock-check:
     {{ justfile_directory() }}/scripts/check-module-bazel-lock.sh
+
+[windows]
+bazel-lock-check:
+    bazel mod deps --lockfile_mode=error; if ($LASTEXITCODE -ne 0) { Write-Error "MODULE.bazel.lock is out of date. Run 'just bazel-lock-update' and commit the updated lockfile."; exit 1 }
 
 bazel-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
 
 [no-cd]
+[unix]
 bazel-clippy:
     bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && bazel build --config=clippy -- ${bazel_targets}
 
 [no-cd]
+[unix]
 bazel-argument-comment-lint:
     bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
 
-bazel-remote-test:
-    bazel test --test_tag_filters=-argument-comment-lint //... --config=remote --platforms=//:rbe --keep_going
-
 build-for-release:
-    bazel build //codex-rs/cli:release_binaries --config=remote
+    bazel build //codex-rs/cli:release_binaries
 
 # Run the MCP server
 mcp-server-run *args:

@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+from run_bazel_with_buildbuddy import bazel_command
 from rusty_v8_module_bazel import (
     RustyV8ChecksumError,
     check_module_bazel,
@@ -32,25 +33,21 @@ LLVM_RANLIB_LABEL = "@llvm//tools:llvm-ranlib"
 
 
 def bazel_execroot() -> Path:
-    result = subprocess.run(
-        ["bazel", "info", "execution_root"],
+    output = subprocess.check_output(
+        bazel_command("info", "execution_root"),
         cwd=ROOT,
-        check=True,
-        capture_output=True,
         text=True,
     )
-    return Path(result.stdout.strip())
+    return Path(output.strip())
 
 
 def bazel_output_base() -> Path:
-    result = subprocess.run(
-        ["bazel", "info", "output_base"],
+    output = subprocess.check_output(
+        bazel_command("info", "output_base"),
         cwd=ROOT,
-        check=True,
-        capture_output=True,
         text=True,
     )
-    return Path(result.stdout.strip())
+    return Path(output.strip())
 
 
 def bazel_output_path(path: str) -> Path:
@@ -67,9 +64,8 @@ def bazel_output_files(
 ) -> list[Path]:
     expression = "set(" + " ".join(labels) + ")"
     bazel_configs = bazel_configs or []
-    result = subprocess.run(
-        [
-            "bazel",
+    output = subprocess.check_output(
+        bazel_command(
             "cquery",
             "-c",
             compilation_mode,
@@ -77,13 +73,13 @@ def bazel_output_files(
             *[f"--config={config}" for config in bazel_configs],
             "--output=files",
             expression,
-        ],
+        ),
         cwd=ROOT,
-        check=True,
-        capture_output=True,
         text=True,
     )
-    return [bazel_output_path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+    return [
+        bazel_output_path(line.strip()) for line in output.splitlines() if line.strip()
+    ]
 
 
 def bazel_build(
@@ -94,15 +90,14 @@ def bazel_build(
 ) -> None:
     bazel_configs = bazel_configs or []
     subprocess.run(
-        [
-            "bazel",
+        bazel_command(
             "build",
             "-c",
             compilation_mode,
             f"--platforms=@llvm//platforms:{platform}",
             *[f"--config={config}" for config in bazel_configs],
             *labels,
-        ],
+        ),
         cwd=ROOT,
         check=True,
     )
@@ -149,7 +144,7 @@ def resolved_v8_crate_version() -> str:
     matches = sorted(
         set(
             re.findall(
-                r'https://static\.crates\.io/crates/v8/v8-([0-9]+\.[0-9]+\.[0-9]+)\.crate',
+                r"https://static\.crates\.io/crates/v8/v8-([0-9]+\.[0-9]+\.[0-9]+)\.crate",
                 module_bazel,
             )
         )

@@ -14,6 +14,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _load_root_format_script_module():
+    """Load the root formatter driver so tests exercise its real command graph."""
+    script_path = ROOT.parents[1] / "scripts" / "format.py"
+    spec = importlib.util.spec_from_file_location("format_repo", script_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"Failed to load script module: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_update_script_module():
     script_path = ROOT / "scripts" / "update_sdk_artifacts.py"
     spec = importlib.util.spec_from_file_location("update_sdk_artifacts", script_path)
@@ -347,7 +359,7 @@ def test_stage_runtime_release_can_pin_wheel_platform_tag(tmp_path: Path) -> Non
     )
 
     pyproject = (staged / "pyproject.toml").read_text()
-    assert 'platform-tag = "musllinux_1_1_x86_64"' in pyproject
+    assert 'platform-tag = "manylinux_2_17_x86_64"' in pyproject
 
 
 def test_stage_sdk_release_injects_exact_runtime_pin(tmp_path: Path) -> None:
@@ -486,7 +498,7 @@ def test_stage_runtime_stages_binary_without_type_generation(tmp_path: Path) -> 
             "--codex-version",
             "rust-v0.116.0-alpha.1",
             "--platform-tag",
-            "musllinux_1_1_x86_64",
+            "manylinux_2_17_x86_64",
         ]
     )
 
