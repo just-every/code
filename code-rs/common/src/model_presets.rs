@@ -612,7 +612,7 @@ fn find_preset_for_model(model: &str) -> Option<&'static ModelPreset> {
     })
 }
 
-fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
+fn reasoning_effort_rank(effort: &ReasoningEffort) -> u8 {
     match effort {
         ReasoningEffort::None => 0,
         ReasoningEffort::Minimal => 0,
@@ -620,6 +620,7 @@ fn reasoning_effort_rank(effort: ReasoningEffort) -> u8 {
         ReasoningEffort::Medium => 2,
         ReasoningEffort::High => 3,
         ReasoningEffort::XHigh => 4,
+        ReasoningEffort::Custom(_) => 2,
     }
 }
 
@@ -639,16 +640,16 @@ pub fn clamp_reasoning_effort_for_model(
         return requested;
     }
 
-    let requested_rank = reasoning_effort_rank(requested);
+    let requested_rank = reasoning_effort_rank(&requested);
 
     preset
         .supported_reasoning_efforts
         .iter()
         .min_by_key(|opt| {
-            let rank = reasoning_effort_rank(opt.effort);
+            let rank = reasoning_effort_rank(&opt.effort);
             (requested_rank.abs_diff(rank), u8::MAX - rank)
         })
-        .map(|opt| opt.effort)
+        .map(|opt| opt.effort.clone())
         .unwrap_or(requested)
 }
 

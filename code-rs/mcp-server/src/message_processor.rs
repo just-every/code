@@ -1572,7 +1572,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
 }
 
 fn preset_effort(preset: &ModelPreset) -> ReasoningEffort {
-    preset.default_reasoning_effort.into()
+    preset.default_reasoning_effort.clone().into()
 }
 
 fn resolve_model_selection(model_id: &acp::ModelId, config: &Config) -> Option<ModelSelection> {

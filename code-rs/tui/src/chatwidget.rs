@@ -23184,7 +23184,7 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn preset_effort_for_model(preset: &ModelPreset) -> ReasoningEffort {
-        preset.default_reasoning_effort.into()
+        preset.default_reasoning_effort.clone().into()
     }
 
     fn clamp_reasoning_for_model(model: &str, requested: ReasoningEffort) -> ReasoningEffort {
@@ -23665,7 +23665,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let supported: Vec<ReasoningEffort> = preset
             .supported_reasoning_efforts
             .iter()
-            .map(|opt| ReasoningEffort::from(opt.effort))
+            .map(|opt| ReasoningEffort::from(opt.effort.clone()))
             .collect();
         if supported.iter().any(|effort| *effort == requested) {
             return requested;

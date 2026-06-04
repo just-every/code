@@ -4,14 +4,22 @@
 //! are used to preserve compatibility when older payloads omit newly introduced attributes.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::InstanceType;
+use schemars::schema::Metadata;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
+use schemars::schema::StringValidation;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 use serde::de::DeserializeOwned;
-use strum::IntoEnumIterator;
+use serde::de::Error;
 use strum_macros::Display;
 use strum_macros::EnumIter;
 use tracing::warn;
@@ -27,23 +35,8 @@ const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 pub const SPEED_TIER_FAST: &str = "fast";
 
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
-#[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Default,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Display,
-    JsonSchema,
-    TS,
-    EnumIter,
-    Hash,
-)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
+#[derive(Debug, Default, Clone, PartialEq, Eq, TS, Hash)]
+#[ts(type = "string")]
 pub enum ReasoningEffort {
     None,
     Minimal,
@@ -52,14 +45,87 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
+    /// A model-defined effort value that this client does not know yet.
+    Custom(String),
+}
+
+impl ReasoningEffort {
+    /// Returns the exact value used on the wire.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Custom(effort) => effort,
+        }
+    }
+}
+
+impl fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl JsonSchema for ReasoningEffort {
+    fn schema_name() -> String {
+        "ReasoningEffort".to_string()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "A non-empty reasoning effort value advertised by the model.".to_string(),
+                ),
+                ..Default::default()
+            })),
+            string: Some(Box::new(StringValidation {
+                min_length: Some(1),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
+}
+
+impl Serialize for ReasoningEffort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReasoningEffort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let effort = String::deserialize(deserializer)?;
+        effort.parse().map_err(D::Error::custom)
+    }
 }
 
 impl FromStr for ReasoningEffort {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_value(serde_json::Value::String(s.to_string()))
-            .map_err(|_| format!("invalid reasoning_effort: {s}"))
+        match s {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "" => Err("reasoning_effort must not be empty".to_string()),
+            effort => Ok(Self::Custom(effort.to_string())),
+        }
     }
 }
 
@@ -572,16 +638,28 @@ fn reasoning_effort_mapping_from_presets(
     }
 
     // Map every canonical effort to the closest supported effort for the new model.
-    let supported: Vec<ReasoningEffort> = presets.iter().map(|p| p.effort).collect();
+    let supported: Vec<ReasoningEffort> = presets.iter().map(|p| p.effort.clone()).collect();
     let mut map = HashMap::new();
-    for effort in ReasoningEffort::iter() {
-        let nearest = nearest_effort(effort, &supported);
+    for effort in canonical_reasoning_efforts() {
+        let nearest = nearest_effort(effort.clone(), &supported);
         map.insert(effort, nearest);
     }
     Some(map)
 }
 
-fn effort_rank(effort: ReasoningEffort) -> i32 {
+fn canonical_reasoning_efforts() -> impl Iterator<Item = ReasoningEffort> {
+    [
+        ReasoningEffort::None,
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ]
+    .into_iter()
+}
+
+fn effort_rank(effort: &ReasoningEffort) -> i32 {
     match effort {
         ReasoningEffort::None => 0,
         ReasoningEffort::Minimal => 1,
@@ -589,15 +667,16 @@ fn effort_rank(effort: ReasoningEffort) -> i32 {
         ReasoningEffort::Medium => 3,
         ReasoningEffort::High => 4,
         ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Custom(_) => 3,
     }
 }
 
 fn nearest_effort(target: ReasoningEffort, supported: &[ReasoningEffort]) -> ReasoningEffort {
-    let target_rank = effort_rank(target);
+    let target_rank = effort_rank(&target);
     supported
         .iter()
-        .copied()
-        .min_by_key(|candidate| (effort_rank(*candidate) - target_rank).abs())
+        .min_by_key(|candidate| (effort_rank(candidate) - target_rank).abs())
+        .cloned()
         .unwrap_or(target)
 }
 
@@ -1005,10 +1084,22 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_from_str_rejects_unknown_values() {
+    fn reasoning_effort_from_str_accepts_custom_values() {
         assert_eq!(
             "unsupported".parse::<ReasoningEffort>(),
-            Err("invalid reasoning_effort: unsupported".to_string())
+            Ok(ReasoningEffort::Custom("unsupported".to_string()))
+        );
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Custom("custom-fast".to_string())).unwrap(),
+            "\"custom-fast\""
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_from_str_rejects_empty_values() {
+        assert_eq!(
+            "".parse::<ReasoningEffort>(),
+            Err("reasoning_effort must not be empty".to_string())
         );
     }
 }

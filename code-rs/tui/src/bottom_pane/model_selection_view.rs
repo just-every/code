@@ -41,11 +41,11 @@ impl FlatPreset {
             .map(|effort_preset| {
                 FlatPreset {
                     model: preset.model.to_string(),
-                    effort: effort_preset.effort.into(),
+                    effort: effort_preset.effort.clone().into(),
                     label: format!(
                         "{} {}",
                         preset.display_name,
-                        Self::effort_label(effort_preset.effort.into()).to_lowercase()
+                        Self::effort_label(effort_preset.effort.clone().into()).to_lowercase()
                     ),
                     description: effort_preset.description.to_string(),
                 }

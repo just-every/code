@@ -427,7 +427,7 @@ fn apply_model_info_overrides_with_personality(
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
     family.prefer_websockets = info.prefer_websockets;
-    if let Some(effort) = info.default_reasoning_level {
+    if let Some(effort) = info.default_reasoning_level.as_ref() {
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
     }
     family.default_reasoning_summary = map_reasoning_summary(info.default_reasoning_summary);
@@ -564,7 +564,7 @@ fn map_apply_patch_tool_type(tool_type: &ProtocolApplyPatchToolType) -> ApplyPat
     }
 }
 
-fn map_reasoning_effort(effort: ProtocolReasoningEffort) -> crate::config_types::ReasoningEffort {
+fn map_reasoning_effort(effort: &ProtocolReasoningEffort) -> crate::config_types::ReasoningEffort {
     use crate::config_types::ReasoningEffort as LocalEffort;
 
     match effort {
@@ -574,6 +574,7 @@ fn map_reasoning_effort(effort: ProtocolReasoningEffort) -> crate::config_types:
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
         ProtocolReasoningEffort::XHigh => LocalEffort::XHigh,
+        ProtocolReasoningEffort::Custom(_) => LocalEffort::Medium,
     }
 }
 

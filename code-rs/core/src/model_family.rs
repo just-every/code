@@ -209,14 +209,18 @@ fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
     family.context_window = model_info
         .resolved_context_window()
         .and_then(|limit| u64::try_from(limit).ok());
-    family.default_reasoning_effort = model_info.default_reasoning_level.map(|effort| match effort {
-        code_protocol::openai_models::ReasoningEffort::None
-        | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
-        code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
-        code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
-        code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
-        code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
-    });
+    family.default_reasoning_effort = model_info
+        .default_reasoning_level
+        .as_ref()
+        .map(|effort| match effort {
+            code_protocol::openai_models::ReasoningEffort::None
+            | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
+            code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
+            code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
+            code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
+            code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
+            code_protocol::openai_models::ReasoningEffort::Custom(_) => ReasoningEffort::Medium,
+        });
     family.default_reasoning_summary = model_info.default_reasoning_summary.into();
     family.supports_reasoning_summaries = model_info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = model_info.supports_parallel_tool_calls;
