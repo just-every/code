@@ -1,24 +1,17 @@
-## @just-every/code v0.6.100
+## @just-every/code v0.6.103
 
-This release improves session reliability, TUI usability, and remote execution security across Code.
+This release expands project hooks with new lifecycle events and richer runtime context.
 
 ### Changes
 
-- TUI: render markdown tables and web links more cleanly, add vim text objects, and make turn interruption keybinds configurable.
-- Auth: refresh ChatGPT tokens before expiry and improve Google preset login handling so long-running sessions stay signed in.
-- Remote/App Server: migrate remote control to server tokens, resume threads with their turns page, and add `codex app-server --stdio`.
-- Sandbox/Security: add named permission profiles in the TUI, block repository-configured code execution in `/diff`, and tighten Unix socket and websocket checks.
-- CLI: add standalone websearch, allow API-key auth for remote exec-server registration, and make standalone installs and updates work noninteractively.
+- Hooks: add user prompt submit and stop project lifecycle hooks.
+- Core: enrich hook payloads with session, turn, transcript, and model metadata while preserving hook output order.
 
 ### Install
 
-```bash
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-
-Thanks to @stevendcoffey and @owenlin0 for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.99...v0.6.100
+Compare: https://github.com/just-every/code/compare/v0.6.102...v0.6.103

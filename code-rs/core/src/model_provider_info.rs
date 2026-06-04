@@ -514,6 +514,28 @@ impl ModelProviderInfo {
             .unwrap_or(true)
     }
 
+    pub(crate) fn is_public_openai_chat_endpoint(&self) -> bool {
+        if !matches!(self.wire_api, WireApi::Chat) {
+            return false;
+        }
+
+        if self.name.eq_ignore_ascii_case("azure") {
+            return false;
+        }
+
+        if self.base_url.as_ref().is_some_and(|base| {
+            base.contains("/backend-api") || matches_azure_responses_base_url(base)
+        }) {
+            return false;
+        }
+
+        self.base_url
+            .as_ref()
+            .and_then(|base| reqwest::Url::parse(base).ok())
+            .and_then(|parsed| parsed.host_str().map(|host| host.eq_ignore_ascii_case("api.openai.com")))
+            .unwrap_or(true)
+    }
+
     /// Apply provider-specific HTTP headers (both static and environment-based)
     /// onto an existing `reqwest::RequestBuilder` and return the updated
     /// builder.
@@ -1004,6 +1026,36 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn detects_public_openai_chat_endpoint() {
+        fn provider_for(name: &str, base_url: Option<&str>) -> ModelProviderInfo {
+            ModelProviderInfo {
+                name: name.into(),
+                base_url: base_url.map(str::to_string),
+                env_key: None,
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                auth: None,
+                wire_api: WireApi::Chat,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                websocket_connect_timeout_ms: None,
+                requires_openai_auth: false,
+                openrouter: None,
+            }
+        }
+
+        assert!(provider_for("OpenAI", Some("https://api.openai.com/v1")).is_public_openai_chat_endpoint());
+        assert!(provider_for("OpenAI", None).is_public_openai_chat_endpoint());
+        assert!(!provider_for("Azure", Some("https://api.openai.com/v1")).is_public_openai_chat_endpoint());
+        assert!(!provider_for("Kimi", Some("https://api.moonshot.ai/v1")).is_public_openai_chat_endpoint());
+        assert!(!provider_for("OpenAI", Some("https://foo.openai.azure.com/openai")).is_public_openai_chat_endpoint());
     }
 
     #[test]

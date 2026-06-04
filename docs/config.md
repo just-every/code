@@ -940,18 +940,44 @@ timeout_ms = 60000
 [[projects."/Users/me/src/my-app".hooks]]
 event = "tool.after"
 run = "npm run lint -- --changed"
+
+[[projects."/Users/me/src/my-app".hooks]]
+event = "user.prompt_submit"
+run = "./scripts/review-prompt.sh"
+
+[[projects."/Users/me/src/my-app".hooks]]
+event = "stop"
+run = "./scripts/continue-before-finish.sh"
 ```
 
 Supported hook events:
 
 - `session.start`: after the session is configured (once per launch)
 - `session.end`: before shutdown completes
+- `user.prompt_submit`: before a user message is turned into model input
 - `tool.before`: immediately before each exec/tool command runs
 - `tool.after`: once an exec/tool command finishes (regardless of exit code)
 - `file.before_write`: right before an `apply_patch` is applied
 - `file.after_write`: after an `apply_patch` completes and diffs are emitted
+- `stop`: after the assistant has produced a terminal response for the turn, but before the turn is finalized
 
-Hook commands run inside the same sandbox mode as the session and appear in the TUI as their own exec cells. Failures are surfaced as background events but do not block the main task. Each invocation receives environment variables such as `CODE_HOOK_EVENT`, `CODE_HOOK_NAME`, `CODE_HOOK_INDEX`, `CODE_HOOK_CALL_ID`, `CODE_HOOK_PAYLOAD` (JSON describing the context), `CODE_SESSION_CWD`, and—when applicable—`CODE_HOOK_SOURCE_CALL_ID`. Hooks may also set `cwd`, provide additional `env` entries, and specify `timeout_ms`.
+For compatibility with upstream Codex hook names, `event = "UserPromptSubmit"` and `event = "Stop"` are accepted as aliases. The documented `code-rs` names remain `user.prompt_submit` and `stop`.
+
+Hook commands run inside the same sandbox mode as the session and appear in the TUI as their own exec cells. Failures are surfaced as background events and, for ordinary lifecycle hooks, do not block the main task. Each invocation receives environment variables such as `CODE_HOOK_EVENT`, `CODE_HOOK_NAME`, `CODE_HOOK_INDEX`, `CODE_HOOK_CALL_ID`, `CODE_HOOK_PAYLOAD` (JSON describing the context), `CODE_SESSION_CWD`, and—when applicable—`CODE_HOOK_SOURCE_CALL_ID`. Hooks may also set `cwd`, provide additional `env` entries, and specify `timeout_ms`.
+
+`user.prompt_submit` and `stop` have minimal upstream-like control semantics:
+
+- Exit `0`: continue normally.
+- Exit `2` with a non-empty stderr: block.
+  - For `user.prompt_submit`, the user message is not sent to the model and the block reason is surfaced in the hook's exec cell.
+  - For `stop`, the stderr text becomes a continuation prompt. If multiple hooks block, their prompts are joined with a blank line and sent back to the model as a follow-up user message.
+- Non-empty stdout from a `user.prompt_submit` hook is injected into conversation history as developer context before the model request is built. This happens even if the prompt is blocked, matching the upstream spirit of preserving hook-supplied context for later turns.
+
+When multiple `user.prompt_submit` or `stop` hooks are configured, their model-visible outputs are applied in configuration order. This keeps prompt context and stop continuation prompts deterministic for integrations that depend on lifecycle interception rather than best-effort notification.
+
+The `stop` hook includes `stop_hook_active` in its payload. Code allows at most one stop-driven continuation per turn; if a second stop continuation is requested while one is already active, the request is ignored and a background warning is emitted.
+
+In the TUI, the primary surface for a blocked `user.prompt_submit` hook is the hook's own exec cell, which shows the hook exit code and stderr text. Code may also emit a background summary when it can do so without interfering with turn startup.
 
 Example `tool.after` payload:
 
@@ -966,6 +992,35 @@ Example `tool.after` payload:
   "stdout": "…output truncated…",
   "stderr": "…",
   "timed_out": false
+}
+```
+
+Example `user.prompt_submit` payload:
+
+```json
+{
+  "event": "user.prompt_submit",
+  "session_id": "0195f3f5-0dcb-7f5c-8dc5-7b4b24f8f0aa",
+  "turn_id": "42",
+  "transcript_path": "/Users/me/.code/sessions/rollout-2026-05-06T12-00-00-0195f3f5-0dcb-7f5c-8dc5-7b4b24f8f0aa.jsonl",
+  "cwd": "/Users/me/src/my-app",
+  "model": "gpt-5.1-codex",
+  "prompt": "please finish this task"
+}
+```
+
+Example `stop` payload:
+
+```json
+{
+  "event": "stop",
+  "session_id": "0195f3f5-0dcb-7f5c-8dc5-7b4b24f8f0aa",
+  "turn_id": "42",
+  "transcript_path": "/Users/me/.code/sessions/rollout-2026-05-06T12-00-00-0195f3f5-0dcb-7f5c-8dc5-7b4b24f8f0aa.jsonl",
+  "cwd": "/Users/me/src/my-app",
+  "model": "gpt-5.1-codex",
+  "stop_hook_active": false,
+  "last_assistant_message": "Implementation is complete and tests are green."
 }
 ```
 

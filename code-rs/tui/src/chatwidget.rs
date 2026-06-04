@@ -11193,8 +11193,23 @@ impl ChatWidget<'_> {
 
     /// Push a cell using a synthetic key at the TOP of the NEXT request.
     fn history_push_top_next_req(&mut self, cell: impl HistoryCell + 'static) {
-        let key = self.next_req_key_top();
-        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prelude", None);
+        if cell.kind() == HistoryCellType::BackgroundEvent {
+            let key = self.system_order_key(SystemPlacement::PrePromptInCurrent, None);
+            let _ = self.history_insert_with_key_global_tagged(
+                Box::new(cell),
+                key,
+                "background",
+                None,
+            );
+        } else {
+            let key = self.next_req_key_top();
+            let _ = self.history_insert_with_key_global_tagged(
+                Box::new(cell),
+                key,
+                "prelude",
+                None,
+            );
+        }
     }
     fn history_replace_with_record(
         &mut self,

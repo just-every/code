@@ -73,6 +73,11 @@ impl PlanType {
             Self::Unknown(s) => s.clone(),
         }
     }
+
+    pub(crate) fn supports_pro_only_models(&self) -> bool {
+        matches!(self, Self::Known(KnownPlan::Pro | KnownPlan::ProLite))
+            || matches!(self, Self::Unknown(plan) if plan.eq_ignore_ascii_case("prolite"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +86,7 @@ pub(crate) enum KnownPlan {
     Free,
     Plus,
     Pro,
+    ProLite,
     Team,
     Business,
     Enterprise,
@@ -222,6 +228,39 @@ mod tests {
         assert_eq!(info.email.as_deref(), Some("user@example.com"));
         assert_eq!(info.get_chatgpt_plan_type().as_deref(), Some("Pro"));
         assert!(!info.is_fedramp_account());
+    }
+
+    #[test]
+    fn prolite_plan_supports_pro_only_models() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+        let payload = serde_json::json!({
+            "email": "user@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "prolite"
+            }
+        });
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        let header_b64 = b64url_no_pad(&serde_json::to_vec(&header).unwrap());
+        let payload_b64 = b64url_no_pad(&serde_json::to_vec(&payload).unwrap());
+        let signature_b64 = b64url_no_pad(b"sig");
+        let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+        let info = parse_id_token(&fake_jwt).expect("should parse");
+        let plan = info.chatgpt_plan_type.expect("plan should parse");
+        assert_eq!(plan.as_string(), "prolite");
+        assert!(plan.supports_pro_only_models());
     }
 
     #[test]

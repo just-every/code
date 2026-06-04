@@ -1593,6 +1593,8 @@ pub enum ProjectHookEvent {
     SessionStart,
     #[serde(rename = "session.end")]
     SessionEnd,
+    #[serde(rename = "user.prompt_submit", alias = "UserPromptSubmit")]
+    UserPromptSubmit,
     #[serde(rename = "tool.before")]
     ToolBefore,
     #[serde(rename = "tool.after")]
@@ -1601,6 +1603,8 @@ pub enum ProjectHookEvent {
     FileBeforeWrite,
     #[serde(rename = "file.after_write")]
     FileAfterWrite,
+    #[serde(rename = "stop", alias = "Stop")]
+    Stop,
 }
 
 impl ProjectHookEvent {
@@ -1608,10 +1612,12 @@ impl ProjectHookEvent {
         match self {
             ProjectHookEvent::SessionStart => "session.start",
             ProjectHookEvent::SessionEnd => "session.end",
+            ProjectHookEvent::UserPromptSubmit => "user.prompt_submit",
             ProjectHookEvent::ToolBefore => "tool.before",
             ProjectHookEvent::ToolAfter => "tool.after",
             ProjectHookEvent::FileBeforeWrite => "file.before_write",
             ProjectHookEvent::FileAfterWrite => "file.after_write",
+            ProjectHookEvent::Stop => "stop",
         }
     }
 
@@ -1619,10 +1625,12 @@ impl ProjectHookEvent {
         match self {
             ProjectHookEvent::SessionStart => "session_start",
             ProjectHookEvent::SessionEnd => "session_end",
+            ProjectHookEvent::UserPromptSubmit => "user_prompt_submit",
             ProjectHookEvent::ToolBefore => "tool_before",
             ProjectHookEvent::ToolAfter => "tool_after",
             ProjectHookEvent::FileBeforeWrite => "file_before_write",
             ProjectHookEvent::FileAfterWrite => "file_after_write",
+            ProjectHookEvent::Stop => "stop",
         }
     }
 }
@@ -2021,5 +2029,26 @@ mod tests {
         assert_eq!(cfg.max_raw_memories_for_global, 9);
         assert_eq!(cfg.phase_1_model.as_deref(), Some("phase1"));
         assert_eq!(cfg.phase_2_model.as_deref(), Some("phase2"));
+    }
+
+    #[test]
+    fn project_hook_event_deserializes_upstream_aliases() {
+        let user_prompt: ProjectHookConfig = toml::from_str(
+            r#"
+            event = "UserPromptSubmit"
+            run = ["echo", "hello"]
+        "#,
+        )
+        .expect("should deserialize user prompt submit alias");
+        let stop: ProjectHookConfig = toml::from_str(
+            r#"
+            event = "Stop"
+            run = ["echo", "hello"]
+        "#,
+        )
+        .expect("should deserialize stop alias");
+
+        assert_eq!(user_prompt.event, ProjectHookEvent::UserPromptSubmit);
+        assert_eq!(stop.event, ProjectHookEvent::Stop);
     }
 }
