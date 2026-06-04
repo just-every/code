@@ -259,8 +259,9 @@ impl CodexAuth {
     pub fn supports_pro_only_models(&self) -> bool {
         self.uses_codex_backend()
             && self
-                .get_plan_type()
-                .is_some_and(|plan| plan.eq_ignore_ascii_case("pro"))
+                .get_current_token_data()
+                .and_then(|t| t.id_token.chatgpt_plan_type)
+                .is_some_and(|plan| plan.supports_pro_only_models())
     }
 
     fn get_current_auth_json(&self) -> Option<AuthDotJson> {
@@ -430,6 +431,7 @@ pub fn login_with_chatgpt_auth_tokens(
             "free" => PlanType::Known(KnownPlan::Free),
             "plus" => PlanType::Known(KnownPlan::Plus),
             "pro" => PlanType::Known(KnownPlan::Pro),
+            "prolite" => PlanType::Known(KnownPlan::ProLite),
             "team" => PlanType::Known(KnownPlan::Team),
             "business" => PlanType::Known(KnownPlan::Business),
             "enterprise" => PlanType::Known(KnownPlan::Enterprise),
@@ -1118,6 +1120,27 @@ mod tests {
             },
             auth_dot_json
         )
+    }
+
+    #[test]
+    fn prolite_account_supports_pro_only_models() {
+        let auth = CodexAuth::from_tokens_with_originator(
+            TokenData {
+                id_token: IdTokenInfo {
+                    email: Some("user@example.com".to_string()),
+                    chatgpt_plan_type: Some(PlanType::Known(KnownPlan::ProLite)),
+                    chatgpt_account_is_fedramp: false,
+                    raw_jwt: "header.payload.signature".to_string(),
+                },
+                access_token: "test-access-token".to_string(),
+                refresh_token: "test-refresh-token".to_string(),
+                account_id: None,
+            },
+            None,
+            "code_cli_rs",
+        );
+
+        assert!(auth.supports_pro_only_models());
     }
 
     /// Even if the OPENAI_API_KEY is set in auth.json, if the plan is not in
