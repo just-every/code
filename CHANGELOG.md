@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.102] - 2026-06-04
+
+- Core: prevent strict providers from rejecting developer or custom chat roles. (d2bfa1ae)
+- Models: apply chat-role normalization only to providers that require it. (3320bb08)
+
 ## [0.6.101] - 2026-05-31
 
 - Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers. (f1d069bf, efc01e06, 96693212)
