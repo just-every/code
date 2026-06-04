@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.103] - 2026-06-04
+
+- Hooks: add user prompt submit and stop project lifecycle hooks. (e5905129)
+- Core: enrich hook payloads with session, turn, transcript, and model metadata while preserving hook output order. (e5905129, 31254116)
+
 ## [0.6.102] - 2026-06-04
 
 - Core: prevent strict providers from rejecting developer or custom chat roles. (d2bfa1ae)
