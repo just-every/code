@@ -1,11 +1,12 @@
-## @just-every/code v0.6.105
+## @just-every/code v0.6.106
 
-This release improves release metadata generation and publish workflow reliability.
+This release improves Responses Lite model handling and release workflow stability.
 
 ### Changes
 
-- Release: parallelize release note generation to reduce publish latency.
-- Release: streamline the release workflow for steadier metadata preparation.
+- Models: honor Responses Lite metadata when selecting remote model behavior.
+- Release: improve Bazel and BuildBuddy workflow stability for release and CI runs.
+- Release: add CI configuration push guidance and clean up Rust release workflow maintenance.
 
 ### Install
 
@@ -14,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.104...v0.6.105
+Compare: https://github.com/just-every/code/compare/v0.6.105...v0.6.106

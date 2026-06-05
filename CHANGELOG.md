@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.106] - 2026-06-05
+
+- Models: honor Responses Lite metadata when selecting remote model behavior. (180829ab)
+- Release: improve Bazel and BuildBuddy workflow stability for release and CI runs. (1d9c9c9f, 4be1a16)
+- Release: add CI configuration push guidance and clean up Rust release workflow maintenance. (e695ec8e, 78eba34b)
+
 ## [0.6.105] - 2026-06-05
 
 - Release: parallelize release note generation to reduce publish latency. (1b3c3f82)
