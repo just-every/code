@@ -803,6 +803,7 @@ jobs:
           Rules
           - Use the provided git log as source of truth; summarize responsibly.
           - Explore codebase directly if commit messages are unclear or need additional context.
+          - This release metadata task is intentionally docs-only. Do not run build, test, cargo, rustup, npm publish, or other validation commands; this workflow has already completed the required validation in earlier jobs.
           - Keep formatting minimal (headers + list bullets). No emojis ever! Basic markdown only.
           - Never reorder older versions. Only touch the section for v${NEW_VERSION}.
           - After writing files, stage and commit with message: docs(changelog): update for v${NEW_VERSION} [skip ci]
@@ -813,8 +814,10 @@ jobs:
 
           # Run Code in fully automated exec mode against the repo root.
           # Note: the working-directory flag is `--cd` on the `exec` subcommand.
+          # Disable project docs so repo-wide validation instructions do not
+          # override this narrow release-metadata task after validation jobs pass.
           OPENAI_BASE_URL="http://127.0.0.1:5058/v1" \
-          ./.code-bin/code exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
+          ./.code-bin/code -c project_doc_max_bytes=0 exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
             echo "Code exec returned non-zero; continuing to check for outputs..." >&2
           }
 
