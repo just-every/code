@@ -763,11 +763,16 @@ impl ModelClient {
             attempt += 1;
 
             let reasoning = self.current_reasoning_param(&request_family, effective_effort);
-            let include: Vec<String> = if !store && reasoning.is_some() {
+            let mut include: Vec<String> = if (!store || request_family.use_responses_lite)
+                && reasoning.is_some()
+            {
                 vec!["reasoning.encrypted_content".to_string()]
             } else {
                 Vec::new()
             };
+            if request_family.use_responses_lite {
+                include.push("codex-lite".to_string());
+            }
 
             let payload = ResponsesApiRequest {
                 model: model_slug,
@@ -775,10 +780,12 @@ impl ModelClient {
                 input: &input_with_instructions,
                 tools: &tools_json,
                 tool_choice: "auto",
-                parallel_tool_calls: request_family.supports_parallel_tool_calls,
+                parallel_tool_calls: request_family.supports_parallel_tool_calls
+                    && !request_family.use_responses_lite,
                 reasoning,
                 text: text_template.clone(),
-                store: self.provider.is_azure_responses_endpoint(),
+                store: self.provider.is_azure_responses_endpoint()
+                    || request_family.use_responses_lite,
                 stream: true,
                 include,
                 service_tier: self
@@ -1239,11 +1246,16 @@ impl ModelClient {
             let reasoning = self.current_reasoning_param(&request_family, effective_effort);
             // Request encrypted COT if we are not storing responses,
             // otherwise reasoning items will be referenced by ID
-            let include: Vec<String> = if !store && reasoning.is_some() {
+            let mut include: Vec<String> = if (!store || request_family.use_responses_lite)
+                && reasoning.is_some()
+            {
                 vec!["reasoning.encrypted_content".to_string()]
             } else {
                 Vec::new()
             };
+            if request_family.use_responses_lite {
+                include.push("codex-lite".to_string());
+            }
 
             let text = text_template.clone();
 
@@ -1253,10 +1265,11 @@ impl ModelClient {
                 input: &input_with_instructions,
                 tools: &tools_json,
                 tool_choice: "auto",
-                parallel_tool_calls: request_family.supports_parallel_tool_calls,
+                parallel_tool_calls: request_family.supports_parallel_tool_calls
+                    && !request_family.use_responses_lite,
                 reasoning,
                 text,
-                store: azure_workaround,
+                store: azure_workaround || request_family.use_responses_lite,
                 stream: true,
                 include,
                 service_tier: self

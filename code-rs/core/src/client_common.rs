@@ -304,6 +304,14 @@ pub(crate) struct Reasoning {
     pub(crate) effort: Option<ReasoningEffortConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<ReasoningSummaryConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) context: Option<ReasoningContext>,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReasoningContext {
+    AllTurns,
 }
 
 /// Text configuration for verbosity/format in OpenAI API responses.
@@ -536,7 +544,13 @@ pub(crate) fn create_reasoning_param_for_request(
         Some(summary)
     };
 
-    Some(Reasoning { effort, summary })
+    Some(Reasoning {
+        effort,
+        summary,
+        context: model_family
+            .use_responses_lite
+            .then_some(ReasoningContext::AllTurns),
+    })
 }
 
 // Removed legacy TextControls helper; use `Text` with `OpenAiTextVerbosity` instead.

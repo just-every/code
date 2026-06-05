@@ -426,6 +426,7 @@ fn apply_model_info_overrides_with_personality(
 
     family.supports_reasoning_summaries = info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = info.supports_parallel_tool_calls;
+    family.use_responses_lite = info.use_responses_lite;
     family.prefer_websockets = info.prefer_websockets;
     if let Some(effort) = info.default_reasoning_level.as_ref() {
         family.default_reasoning_effort = Some(map_reasoning_effort(effort));
@@ -482,6 +483,7 @@ mod tests {
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
             used_fallback_model_metadata: false,

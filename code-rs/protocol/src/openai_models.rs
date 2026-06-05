@@ -401,6 +401,8 @@ pub struct ModelInfo {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_search_tool: bool,
+    #[serde(default)]
+    pub use_responses_lite: bool,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -719,6 +721,7 @@ mod tests {
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
             used_fallback_model_metadata: false,
@@ -935,6 +938,7 @@ mod tests {
         assert_eq!(model.availability_nux, None);
         assert!(!model.supports_image_detail_original);
         assert!(!model.supports_search_tool);
+        assert!(!model.use_responses_lite);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert_eq!(model.tool_mode, None);
     }
