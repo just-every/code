@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.105] - 2026-06-05
+
+- Release: parallelize release note generation to reduce publish latency. (1b3c3f82)
+- Release: streamline the release workflow for steadier metadata preparation. (1b3c3f82)
+
 ## [0.6.104] - 2026-06-05
 
 - Models: accept custom and model-advertised reasoning efforts with ordered TUI shortcuts. (8ac304c2, f6e52965, d1f6b465)
