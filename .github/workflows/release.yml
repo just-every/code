@@ -114,7 +114,6 @@ jobs:
           workspaces: |
             code-rs -> target
           cache-targets: false
-          cache-workspace-crates: true
           cache-on-failure: false
 
       - name: Build CLI (dev-fast)
@@ -204,7 +203,7 @@ jobs:
           CANDIDATE=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$MAX_PUBLISHED" | sort -V | tail -n1)
           # If equal to MAX_PUBLISHED, bump patch once
           if [ "$CANDIDATE" = "$MAX_PUBLISHED" ]; then
-            IFS='.' read -ra V <<< "$CANDIDATE"; CANDIDATE="${V[0]}.${V[1]}.$((${V[2]} + 1))"
+            IFS='.' read -ra V <<< "$CANDIDATE"; CANDIDATE="${V[0]}.${V[1]}.$((V[2] + 1))"
           fi
           # Ensure candidate is globally unused; keep bumping until unique
           while :; do
@@ -215,10 +214,200 @@ jobs:
               fi
             done
             if [ "$used" = false ]; then break; fi
-            IFS='.' read -ra V <<< "$CANDIDATE"; CANDIDATE="${V[0]}.${V[1]}.$((${V[2]} + 1))"
+            IFS='.' read -ra V <<< "$CANDIDATE"; CANDIDATE="${V[0]}.${V[1]}.$((V[2] + 1))"
           done
           NEW_VERSION="$CANDIDATE"
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+  release-notes:
+    name: Generate release notes
+    needs: [determine-version]
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      NEW_VERSION: ${{ needs.determine-version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install release-note tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ripgrep
+          npm install -g @just-every/code@latest
+
+      - name: Start local OpenAI proxy for release notes
+        if: env.OPENAI_API_KEY != ''
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/auto
+          PORT=5058 LOG_DEST=stdout EXIT_ON_5XX=1 RESPONSES_BETA="responses=v1" node scripts/openai-proxy.js > .github/auto/openai-proxy.log 2>&1 &
+          for _ in {1..30}; do if nc -z 127.0.0.1 5058; then break; else sleep 0.2; fi; done || true
+
+      - name: Generate CHANGELOG + release notes
+        if: env.OPENAI_API_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PREV_TAG=$(git tag --sort=-v:refname | head -n1 || true)
+          if [ -z "$PREV_TAG" ]; then
+            BASE=$(git rev-list --max-parents=0 HEAD | tail -n1)
+            RANGE="$BASE..HEAD"
+          else
+            RANGE="$PREV_TAG..HEAD"
+          fi
+          DATE=$(date -u +%Y-%m-%d)
+
+          mkdir -p docs/release-notes
+          : > docs/release-notes/RELEASE_NOTES.md
+
+          {
+            echo "# Release context"
+            echo
+            echo "- Version: v${NEW_VERSION}"
+            echo "- Date (UTC): ${DATE}"
+            echo "- Previous tag: ${PREV_TAG:-none}"
+            echo "- Commit range: ${RANGE}"
+            echo
+            echo "## First-parent summary"
+            echo
+            git log --first-parent --no-color --format='* %h %s (%an)' --abbrev=8 "$RANGE" || true
+            echo
+            echo "## Fork-relevant non-merge commits"
+            echo
+            git log --no-merges --no-color --format='* %h %s (%an)' --abbrev=8 "$RANGE" -- \
+              ':!codex-rs/**' \
+              ':!codex-cli/.pack/**' \
+              ':!docs/release-notes/**' \
+              ':!CHANGELOG.md' \
+              | sed -n '1,160p' || true
+            total=$(git log --no-merges --format='%H' "$RANGE" -- \
+              ':!codex-rs/**' \
+              ':!codex-cli/.pack/**' \
+              ':!docs/release-notes/**' \
+              ':!CHANGELOG.md' \
+              | wc -l | tr -d ' ')
+            if [ "${total:-0}" -gt 160 ]; then
+              echo
+              echo "_Omitted $((total - 160)) additional non-merge commits from the prompt context._"
+            fi
+            echo
+            echo "## First-parent changed files"
+            echo
+            git diff --stat "$RANGE" -- \
+              ':!codex-rs/**' \
+              ':!codex-cli/.pack/**' \
+              ':!docs/release-notes/**' \
+              ':!CHANGELOG.md' \
+              | sed -n '1,120p' || true
+          } > docs/release-notes/context.md
+
+          cat > docs/release-notes/prompt.expanded.txt <<PROMPT
+          You are Code running headless in CI to prepare release metadata.
+
+          Inputs
+          - Version: v${NEW_VERSION}
+          - Date (UTC): ${DATE}
+          - Previous tag: ${PREV_TAG:-none}
+          - Commit range: ${RANGE}
+          - Working directory: repo root (CHANGELOG.md lives at top-level)
+
+          Primary Tasks
+          1) Update CHANGELOG.md with a new entry for this version using the exact house style below.
+          2) Generate GitHub release notes at docs/release-notes/RELEASE_NOTES.md, derived from the same changes.
+
+          Source Priority
+          - Use the curated release context below as the primary source of truth.
+          - Prefer the first-parent summary for what belongs in the release.
+          - Use fork-relevant non-merge commits only as supporting detail.
+          - Ignore codex-rs mirror-only churn unless the first-parent summary calls out a user-visible backport or parity fix.
+
+          CHANGELOG.md House Style
+          - File header stays as-is ("Changelog"). Do not rewrite older sections.
+          - Insert the new section at the top (above previous versions), with this header exactly:
+            ## [${NEW_VERSION}] - ${DATE}
+          - Include 2-5 bullets, each a single line, focusing on user-visible features, fixes, UX, performance, or stability.
+          - Keep bullets concise and scannable. Use present tense.
+          - When helpful, start bullets with a short scope label like "TUI:", "CLI:", "Release:", or "Core:".
+          - End each bullet with abbreviated commit SHA(s) in parentheses, using 7-8 hex chars.
+          - Do not add links, tables, code blocks, subheadings, or PR author attributions in the changelog.
+          - If a section for ${NEW_VERSION} already exists, replace only that section's body and keep the header.
+
+          Release Notes
+          - Write exactly these sections in order:
+            1) Title: ## @just-every/code v${NEW_VERSION}
+            2) One brief intro sentence.
+            3) Section header: ### Changes
+               - The same 2-5 bullets as in the changelog, but SHAs may be omitted.
+            4) Section header: ### Install
+               Code block with exactly:
+               npm install -g @just-every/code@latest
+               code
+          - Include an optional ### Thanks section only if the curated context clearly identifies an external contributor.
+          - Optional final line if a previous tag exists:
+            Compare: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...v${NEW_VERSION}
+
+          Rules
+          - This release metadata task is docs-only. Do not run build, test, cargo, rustup, npm publish, or validation commands.
+          - Only touch CHANGELOG.md and docs/release-notes/RELEASE_NOTES.md.
+          - Keep formatting minimal. No emojis.
+          - Do not stage or commit changes; the publish job will commit release metadata after validation and package assembly.
+
+          Curated context follows:
+          PROMPT
+          cat docs/release-notes/context.md >> docs/release-notes/prompt.expanded.txt
+
+          OPENAI_BASE_URL="http://127.0.0.1:5058/v1" \
+          coder -c project_doc_max_bytes=0 exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
+            echo "Code exec returned non-zero; continuing to check for outputs..." >&2
+          }
+
+          if [ -s .github/auto/RELEASE_AGENT_OUT.txt ]; then
+            if rg -n "^\\[.*\\] ERROR: (stream error|server error|exceeded retry limit)" .github/auto/RELEASE_AGENT_OUT.txt >/dev/null 2>&1; then
+              echo "Agent reported a fatal error (stream/server). Failing job." >&2
+              rg -n "^\\[.*\\] ERROR: (stream error|server error|exceeded retry limit)" .github/auto/RELEASE_AGENT_OUT.txt || true
+              exit 1
+            fi
+          fi
+
+      - name: Fallback release notes without OPENAI_API_KEY
+        if: env.OPENAI_API_KEY == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/release-notes
+          printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > docs/release-notes/RELEASE_NOTES.md
+
+      - name: Assert release metadata exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s docs/release-notes/RELEASE_NOTES.md || { echo "docs/release-notes/RELEASE_NOTES.md missing" >&2; exit 1; }
+          test -f CHANGELOG.md || { echo "CHANGELOG.md missing" >&2; exit 1; }
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            CHANGELOG.md
+            docs/release-notes/RELEASE_NOTES.md
+          compression-level: 0
 
   build-binaries:
     name: Build ${{ matrix.target }}
@@ -288,7 +477,6 @@ jobs:
           workspaces: |
             code-rs -> target
           cache-targets: true
-          cache-workspace-crates: true
           cache-on-failure: true
 
       # sccache: skip compiles when possible (doesn't skip linking)
@@ -300,10 +488,12 @@ jobs:
       - name: Enable sccache
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_IDLE_TIMEOUT=1800" >> "$GITHUB_ENV"
-          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_IDLE_TIMEOUT=1800"
+            echo "SCCACHE_CACHE_SIZE=10G"
+          } >> "$GITHUB_ENV"
 
       # -------- Platform tuning (minimal, proven) --------
 
@@ -333,23 +523,27 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y musl-tools pkg-config
-          echo 'CC=musl-gcc' >> "$GITHUB_ENV"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-musl) echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV" ;;
-            aarch64-unknown-linux-musl) echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV" ;;
-          esac
-          echo 'PKG_CONFIG_ALLOW_CROSS=1' >> "$GITHUB_ENV"
-          echo 'OPENSSL_STATIC=1'         >> "$GITHUB_ENV"
-          echo 'RUSTFLAGS=-Awarnings -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
+          {
+            echo 'CC=musl-gcc'
+            case "${{ matrix.target }}" in
+              x86_64-unknown-linux-musl) echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' ;;
+              aarch64-unknown-linux-musl) echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' ;;
+            esac
+            echo 'PKG_CONFIG_ALLOW_CROSS=1'
+            echo 'OPENSSL_STATIC=1'
+            echo 'RUSTFLAGS=-Awarnings -C debuginfo=0 -C strip=symbols -C panic=abort'
+          } >> "$GITHUB_ENV"
 
       # macOS: stick with Apple toolchain to avoid brew overhead; still cache C via sccache
       - name: macOS tuning
         if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
-          echo 'CC=sccache clang'    >> "$GITHUB_ENV"
-          echo 'CXX=sccache clang++' >> "$GITHUB_ENV"
-          echo 'RUSTFLAGS=-Awarnings -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
+          {
+            echo 'CC=sccache clang'
+            echo 'CXX=sccache clang++'
+            echo 'RUSTFLAGS=-Awarnings -C debuginfo=0 -C strip=symbols -C panic=abort'
+          } >> "$GITHUB_ENV"
 
       # Windows: vcpkg not needed (rustls + pure Rust deps)
 
@@ -489,13 +683,12 @@ jobs:
 
   release:
     name: Publish to npm
-    needs: [determine-version, build-binaries, preflight-tests]
+    needs: [determine-version, release-notes, build-binaries, preflight-tests]
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     timeout-minutes: 30
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       - name: Checkout code
@@ -509,16 +702,6 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Start local OpenAI proxy for release (hardened)
-        if: env.OPENAI_API_KEY != ''
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          mkdir -p .github/auto
-          PORT=5058 LOG_DEST=stdout EXIT_ON_5XX=1 RESPONSES_BETA="responses=v1" node scripts/openai-proxy.js > .github/auto/openai-proxy.log 2>&1 &
-          for i in {1..30}; do if nc -z 127.0.0.1 5058; then break; else sleep 0.2; fi; done || true
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -688,18 +871,7 @@ jobs:
           fi
           echo "ESM integrity OK for coder.js"
 
-      # Generate CHANGELOG and release notes by running our own `code` CLI in headless mode.
-      # It will:
-      #  - Review changes between the previous tag and the new version
-      #  - Update CHANGELOG.md with a new section for vNEW_VERSION
-      #  - Write rich release notes to docs/release-notes/RELEASE_NOTES.md
-      - name: Install zstd (CHANGELOG generation)
-        if: runner.os == 'Linux' && env.OPENAI_API_KEY != ''
-        shell: bash
-        run: sudo apt-get update -qq && sudo apt-get install -y zstd
-
-      - name: Generate CHANGELOG + release notes (Code)
-        if: env.OPENAI_API_KEY != ''
+      - name: Apply generated release metadata
         shell: bash
         env:
           NEW_VERSION: ${{ needs.determine-version.outputs.version }}
@@ -707,128 +879,13 @@ jobs:
           set -euo pipefail
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          meta_dir="artifacts/release-metadata"
+          test -s "$meta_dir/CHANGELOG.md" || { echo "release metadata missing CHANGELOG.md" >&2; exit 1; }
+          test -s "$meta_dir/docs/release-notes/RELEASE_NOTES.md" || { echo "release metadata missing RELEASE_NOTES.md" >&2; exit 1; }
 
-          # Determine previous tag (the most recent tag before the new one).
-          # If none exists, use the initial commit as the base.
-          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p' || true)
-          if [ -z "$PREV_TAG" ]; then
-            BASE=$(git rev-list --max-parents=0 HEAD | tail -n1)
-            RANGE="$BASE..HEAD"
-          else
-            RANGE="$PREV_TAG..HEAD"
-          fi
-          echo "Previous tag: ${PREV_TAG:-<none>}"
-          echo "Range: $RANGE"
-
-          if [ -f CHANGELOG.md ] && [ -f docs/release-notes/RELEASE_NOTES.md ] \
-             && grep -qF "## [${NEW_VERSION}]" CHANGELOG.md 2>/dev/null \
-             && grep -qF "## @just-every/code v${NEW_VERSION}" docs/release-notes/RELEASE_NOTES.md 2>/dev/null; then
-            echo "CHANGELOG.md and docs/release-notes/RELEASE_NOTES.md already contain v${NEW_VERSION}; skipping regeneration."
-            exit 0
-          fi
-
-          # Extract a Linux x86_64 Code binary from artifacts and make it runnable.
-          mkdir -p .code-bin docs/release-notes
-          : > docs/release-notes/RELEASE_NOTES.md
-          LNX_ZST=$(ls -1 release-assets/code-x86_64-unknown-linux-musl.* 2>/dev/null | head -n1 || true)
-          if [ -z "$LNX_ZST" ]; then
-            echo "Could not find linux x86_64 Code artifact in release-assets/" >&2
-            exit 1
-          fi
-          case "$LNX_ZST" in
-            *.zst)
-              zstd -d -q --force "$LNX_ZST" -o .code-bin/code ;;
-            *.tar.gz)
-              tar -xzf "$LNX_ZST" -C .code-bin && mv .code-bin/code-x86_64-unknown-linux-musl .code-bin/code ;;
-            *.zip)
-              unzip -q -o "$LNX_ZST" -d .code-bin && mv .code-bin/code-x86_64-unknown-linux-musl .code-bin/code ;;
-            *)
-              cp "$LNX_ZST" .code-bin/code ;;
-          esac
-          chmod +x .code-bin/code
-
-          # Prepare context for the model.
-          DATE=$(date -u +%Y-%m-%d)
-          echo "# Commit log ($RANGE)" > docs/release-notes/context.md
-          git log --no-color --format='* %h %s (%an)' --abbrev=8 --no-merges $RANGE >> docs/release-notes/context.md || true
-
-          # Build the task prompt (with variables expanded by bash).
-          cat > docs/release-notes/prompt.expanded.txt <<PROMPT
-          You are Code running headless in CI to prepare a new release.
-
-          Inputs
-          - Version: v${NEW_VERSION}
-          - Date (UTC): ${DATE}
-          - Previous tag: ${PREV_TAG:-none}
-          - Commit range: ${RANGE}
-          - Working directory: repo root (CHANGELOG.md lives at top-level)
-
-          Primary Tasks
-          1) Update CHANGELOG.md with a new entry for this version using the EXACT house style below.
-          2) Generate GitHub release notes at docs/release-notes/RELEASE_NOTES.md (concise, user‑facing), derived from the same changes.
-
-          CHANGELOG.md House Style (strict)
-          - File header stays as-is ("Changelog"). Do not rewrite older sections.
-          - Insert the new section at the top (above previous versions), with this header format exactly:
-            ## [${NEW_VERSION}] - ${DATE}
-          - Include 2–5 bullets (no more, no fewer), each a single line, focusing on user-visible features, fixes, UX, performance, or stability.
-          - Keep bullets concise and scannable; avoid long prose. Use present tense.
-          - When helpful, start bullets with a short scope label like "TUI:", "CLI:", or "Core:".
-          - At the end of each bullet, include abbreviated commit SHA(s) in parentheses, using 7–8 hex chars, comma‑separated when multiple, like: (abc1234, def5678).
-          - Map changes from the git commit log in ${RANGE}; ignore pure chores/merges unless user‑visible.
-          - Do NOT add links, tables, code blocks, or subheadings. Do NOT include PR author attributions in the changelog.
-          - Do NOT add any extra headers inside the changelog entry; only bullets under the version header.
-          - Idempotent: if a section for ${NEW_VERSION} already exists, replace only that section’s body with the newly generated bullets and keep the header intact.
-
-          Release Notes (docs/release-notes/RELEASE_NOTES.md)
-          - Write exactly these sections in order; include the optional Thanks section only when applicable:
-            1) Title: ## @just-every/code v${NEW_VERSION}
-            2) One brief intro sentence (1–2 lines max).
-            3) Section header: ### Changes
-               - The same 2–5 bullets as in the changelog (you may omit SHAs).
-            4) Section header: ### Install
-               Code block with exactly:
-               npm install -g @just-every/code@latest
-               code
-            5) Optional section header: ### Thanks
-               - Include ONE line like: "Thanks to @alice and @bob for contributions!"
-               - Only include if at least one merged PR in ${RANGE} is authored by an external contributor.
-               - External contributors are any GitHub users other than: @zemaj, @andrej-griniuk, and NOT upstream contributors.
-               - Treat a username as upstream if it matches the regex /-oai$/i, or clearly belongs to the upstream org (e.g., OpenAI maintainers). Exclude such users from Thanks.
-               - Derive usernames from merge commits, Co-authored-by trailers, or PR references in commit messages. Deduplicate and prefer "@username" form.
-          - Keep notes concise; no walls of text. Do not add any other sections beyond the optional Thanks.
-          - Optional final line (only if a previous tag exists):
-            Compare: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...v${NEW_VERSION}
-
-          Rules
-          - Use the provided git log as source of truth; summarize responsibly.
-          - Explore codebase directly if commit messages are unclear or need additional context.
-          - This release metadata task is intentionally docs-only. Do not run build, test, cargo, rustup, npm publish, or other validation commands; this workflow has already completed the required validation in earlier jobs.
-          - Keep formatting minimal (headers + list bullets). No emojis ever! Basic markdown only.
-          - Never reorder older versions. Only touch the section for v${NEW_VERSION}.
-          - After writing files, stage and commit with message: docs(changelog): update for v${NEW_VERSION} [skip ci]
-
-          Context (git log excerpt follows):
-          PROMPT
-          cat docs/release-notes/context.md >> docs/release-notes/prompt.expanded.txt
-
-          # Run Code in fully automated exec mode against the repo root.
-          # Note: the working-directory flag is `--cd` on the `exec` subcommand.
-          # Disable project docs so repo-wide validation instructions do not
-          # override this narrow release-metadata task after validation jobs pass.
-          OPENAI_BASE_URL="http://127.0.0.1:5058/v1" \
-          ./.code-bin/code -c project_doc_max_bytes=0 exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
-            echo "Code exec returned non-zero; continuing to check for outputs..." >&2
-          }
-
-          # Assert no fatal streaming/server errors if proxy in use
-          if [ -s .github/auto/RELEASE_AGENT_OUT.txt ]; then
-            if rg -n "^\\[.*\\] ERROR: (stream error|server error|exceeded retry limit)" .github/auto/RELEASE_AGENT_OUT.txt >/dev/null 2>&1; then
-              echo "Agent reported a fatal error (stream/server). Failing job." >&2
-              rg -n "^\\[.*\\] ERROR: (stream error|server error|exceeded retry limit)" .github/auto/RELEASE_AGENT_OUT.txt || true
-              exit 1
-            fi
-          fi
+          cp "$meta_dir/CHANGELOG.md" CHANGELOG.md
+          mkdir -p docs/release-notes
+          cp "$meta_dir/docs/release-notes/RELEASE_NOTES.md" docs/release-notes/RELEASE_NOTES.md
 
           # Post-process: scrub upstream contributors from the Thanks section (e.g., usernames ending with -oai)
           if [ -s docs/release-notes/RELEASE_NOTES.md ]; then
@@ -869,16 +926,7 @@ jobs:
           JS
           fi
 
-          # If the agent forgot to write release notes, synthesize a minimal one from CHANGELOG.
-          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
-            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > docs/release-notes/RELEASE_NOTES.md || true
-          fi
-          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
-            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > docs/release-notes/RELEASE_NOTES.md
-          fi
-
-          # Commit CHANGELOG changes if any.
-          if ! git diff --quiet -- CHANGELOG.md; then
+          if ! git diff --quiet -- CHANGELOG.md docs/release-notes/RELEASE_NOTES.md; then
             git add CHANGELOG.md docs/release-notes/RELEASE_NOTES.md || true
             git commit -m "docs(changelog): update for v${NEW_VERSION} [skip ci]" || true
           fi
@@ -903,21 +951,6 @@ jobs:
               body=$(git log -1 --pretty=%b || true)
               git commit --amend -m "${subj} [skip ci]" -m "$body"
             fi
-          fi
-
-      - name: Fallback release notes from CHANGELOG (no OPENAI_API_KEY)
-        if: env.OPENAI_API_KEY == ''
-        shell: bash
-        env:
-          NEW_VERSION: ${{ needs.determine-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p docs/release-notes
-          if [ -f CHANGELOG.md ]; then
-            awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > docs/release-notes/RELEASE_NOTES.md || true
-          fi
-          if [ ! -s docs/release-notes/RELEASE_NOTES.md ]; then
-            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > docs/release-notes/RELEASE_NOTES.md
           fi
 
       - name: Assert release notes exist
@@ -988,7 +1021,7 @@ jobs:
           scripts/check-release-notes-version.sh
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Release v${{ steps.version.outputs.version }}
@@ -1031,7 +1064,7 @@ jobs:
           ver="${{ steps.version.outputs.version }}"
           git commit -m "chore(homebrew): bump Code formula to v${ver}"
           # Ensure default branch exists
-          if ! git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+          if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
             git branch -M main || true
           fi
           git push -u origin HEAD:main
@@ -1056,7 +1089,7 @@ jobs:
               echo "Skip: $name@$version already published"
               continue
             fi
-            echo "Publishing $(basename \"$dir\")"
+            echo "Publishing $(basename "$dir")"
             (cd "$dir" && npm publish --access public)
           done
 
