@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.104] - 2026-06-05
+
+- Models: accept custom and model-advertised reasoning efforts with ordered TUI shortcuts. (8ac304c2, f6e52965, d1f6b465)
+- Plugins/App Server: expose remote MCP servers, marketplace source JSON, and `-c` config overrides. (769c231a, cdc1d592, 881cf191)
+- TUI: support F13-F24 keymaps, clarify shortcut overlays, and restore output-free cancelled prompts. (2f0726ad, 4e540b10, c0ea566b)
+- Core: preserve logical AGENTS.md paths and environment-backed instruction loading. (e64b469b, 59ca3420)
+- Runtime: improve standalone image path hints, rollout compression, and release build performance. (12e8764a, a8a60712, f97d5c32)
+
 ## [0.6.103] - 2026-06-04
 
 - Hooks: add user prompt submit and stop project lifecycle hooks. (e5905129)
