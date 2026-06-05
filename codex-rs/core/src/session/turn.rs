@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -73,7 +74,6 @@ use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
-use codex_git_utils::get_git_repo_root;
 use codex_git_utils::get_git_repo_root_with_fs;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
@@ -196,21 +196,11 @@ pub(crate) async fn run_turn(
     let mut stop_hook_active = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
-    #[allow(deprecated)]
-    let display_root = match turn_context.environments.primary() {
-        Some(turn_environment) => get_git_repo_root_with_fs(
-            turn_environment.environment.get_filesystem().as_ref(),
-            &turn_environment.cwd,
-        )
-        .await
-        .unwrap_or_else(|| turn_environment.cwd.clone())
-        .into_path_buf(),
-        None => get_git_repo_root(turn_context.cwd.as_path())
-            .unwrap_or_else(|| turn_context.cwd.clone().into_path_buf()),
-    };
-    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::with_display_root(
-        display_root,
-    )));
+    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
+        TurnDiffTracker::with_environment_display_roots(
+            turn_diff_display_roots(turn_context.as_ref()).await,
+        ),
+    ));
 
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
@@ -419,6 +409,21 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
+}
+
+async fn turn_diff_display_roots(turn_context: &TurnContext) -> Vec<(String, PathBuf)> {
+    let mut display_roots = Vec::new();
+    for turn_environment in &turn_context.environments.turn_environments {
+        let root = get_git_repo_root_with_fs(
+            turn_environment.environment.get_filesystem().as_ref(),
+            &turn_environment.cwd,
+        )
+        .await
+        .unwrap_or_else(|| turn_environment.cwd.clone())
+        .into_path_buf();
+        display_roots.push((turn_environment.environment_id.clone(), root));
+    }
+    display_roots
 }
 
 async fn run_hooks_and_record_inputs(
@@ -1083,6 +1088,7 @@ async fn run_sampling_request(
             ResponsesStreamRequest::Sampling,
         )
         .await?;
+        turn_context.turn_timing_state.record_sampling_retry();
     }
 }
 
@@ -1392,6 +1398,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
+        | EventMsg::TurnModerationMetadata(_)
         | EventMsg::ContextCompacted(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnStarted(_)
@@ -1794,6 +1801,7 @@ async fn try_run_sampling_request(
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
+    let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let mut stream = client_session
         .stream(
             prompt,
@@ -1924,6 +1932,7 @@ async fn try_run_sampling_request(
                         role == "assistant" && matches!(phase, Some(MessagePhase::Commentary))
                     }
                     ResponseItem::Reasoning { .. } => true,
+                    ResponseItem::AgentMessage { .. } => false,
                     ResponseItem::LocalShellCall { .. }
                     | ResponseItem::FunctionCall { .. }
                     | ResponseItem::ToolSearchCall { .. }
@@ -2055,6 +2064,10 @@ async fn try_run_sampling_request(
                     sess.emit_model_verification(&turn_context, verifications)
                         .await;
                 }
+            }
+            ResponseEvent::TurnModerationMetadata(metadata) => {
+                sess.emit_turn_moderation_metadata(&turn_context, metadata)
+                    .await;
             }
             ResponseEvent::ServerReasoningIncluded(included) => {
                 sess.set_server_reasoning_included(included).await;
@@ -2202,6 +2215,7 @@ async fn try_run_sampling_request(
             }
         }
     };
+    drop(sampling_timing_guard);
 
     flush_assistant_text_segments_all(
         &sess,
@@ -2211,7 +2225,13 @@ async fn try_run_sampling_request(
     )
     .await;
 
+    let tool_blocking_timing_guard = if in_flight.is_empty() {
+        None
+    } else {
+        Some(turn_context.turn_timing_state.begin_tool_blocking())
+    };
     drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    drop(tool_blocking_timing_guard);
 
     if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token
