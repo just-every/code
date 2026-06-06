@@ -3788,6 +3788,7 @@ async fn make_test_app() -> App {
         commit_anim_running: Arc::new(AtomicBool::new(false)),
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        skill_load_warnings: SkillLoadWarningState::default(),
         backtrack: BacktrackState::default(),
         backtrack_render_pending: false,
         feedback: codex_feedback::CodexFeedback::new(),
@@ -3851,6 +3852,7 @@ async fn make_test_app_with_channels() -> (
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
             terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+            skill_load_warnings: SkillLoadWarningState::default(),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: codex_feedback::CodexFeedback::new(),
@@ -5574,6 +5576,34 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     assert!(!app.backtrack_render_pending);
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
+}
+
+#[tokio::test]
+async fn clear_only_ui_reset_allows_active_skill_warning_to_render_again() {
+    let mut app = make_test_app().await;
+    let error = SkillErrorInfo {
+        path: test_path_buf("/tmp/project/.codex/skills/abc/SKILL.md"),
+        message: "invalid description".to_string(),
+    };
+
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        vec![error.clone()]
+    );
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        Vec::<SkillErrorInfo>::new()
+    );
+
+    app.reset_app_ui_state_after_clear();
+
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        vec![error]
+    );
 }
 
 #[tokio::test]
