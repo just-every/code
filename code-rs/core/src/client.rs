@@ -107,6 +107,8 @@ fn preferred_ws_version_from_env() -> ResponsesWebsocketVersion {
 // continuations, websocket reconnects).
 const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
 const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
+const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
+    "x-openai-internal-codex-responses-lite";
 
 const MODEL_CAP_MODEL_HEADER: &str = "x-codex-model-cap-model";
 const MODEL_CAP_RESET_AFTER_HEADER: &str = "x-codex-model-cap-reset-after-seconds";
@@ -860,6 +862,8 @@ impl ModelClient {
 
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+            req_builder =
+                attach_responses_lite_header(req_builder, request_family.use_responses_lite);
             if let Some(state) = turn_state.get() {
                 req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
             }
@@ -1339,6 +1343,8 @@ impl ModelClient {
 
             req_builder = attach_openai_subagent_header(req_builder);
             req_builder = attach_codex_beta_features_header(req_builder, &self.config);
+            req_builder =
+                attach_responses_lite_header(req_builder, request_family.use_responses_lite);
             if let Some(state) = turn_state.get() {
                 req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
             }
@@ -1987,6 +1993,7 @@ impl ModelClient {
 
             request = attach_openai_subagent_header(request);
             request = attach_codex_beta_features_header(request, &self.config);
+            request = attach_responses_lite_header(request, family.use_responses_lite);
             if let Ok(window_id) = HeaderValue::from_str(&self.current_window_id(session_id)) {
                 request = request.header(X_CODEX_WINDOW_ID_HEADER, window_id);
             }
@@ -2131,6 +2138,17 @@ fn attach_codex_beta_features_header(
     }
 
     builder.header("x-codex-beta-features", value)
+}
+
+fn attach_responses_lite_header(
+    builder: reqwest::RequestBuilder,
+    use_responses_lite: bool,
+) -> reqwest::RequestBuilder {
+    if use_responses_lite {
+        builder.header(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER, "true")
+    } else {
+        builder
+    }
 }
 
 fn parse_wrapped_websocket_error_event(payload: &str) -> Option<WrappedWebsocketErrorEvent> {
@@ -3246,6 +3264,49 @@ mod tests {
             .get("OpenAI-Beta")
             .expect("OpenAI-Beta header present");
         assert_eq!(header_value, "custom");
+    }
+
+    #[tokio::test]
+    async fn responses_lite_request_sets_transport_header() {
+        let provider = ModelProviderInfo {
+            name: "openai".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client");
+
+        let request = attach_responses_lite_header(
+            provider
+                .create_request_builder(&client, &None)
+                .await
+                .expect("builder"),
+            true,
+        )
+        .build()
+        .expect("build request");
+
+        let header_value = request
+            .headers()
+            .get(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER)
+            .expect("Responses Lite header present");
+        assert_eq!(header_value, "true");
     }
 
     /// Runs the SSE parser on pre-chunked byte slices and returns every event
