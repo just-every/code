@@ -7,6 +7,10 @@
 
 - (none)
 
+## [0.6.107] - 2026-06-06
+
+- Models: send the Responses Lite transport header on streaming and compact requests. (7344aa90)
+
 ## [0.6.106] - 2026-06-05
 
 - Models: honor Responses Lite metadata when selecting remote model behavior. (180829ab)

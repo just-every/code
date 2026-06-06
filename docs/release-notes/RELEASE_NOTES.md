@@ -1,12 +1,10 @@
-## @just-every/code v0.6.106
+## @just-every/code v0.6.107
 
-This release improves Responses Lite model handling and release workflow stability.
+This release fixes Responses Lite request transport metadata for model calls.
 
 ### Changes
 
-- Models: honor Responses Lite metadata when selecting remote model behavior.
-- Release: improve Bazel and BuildBuddy workflow stability for release and CI runs.
-- Release: add CI configuration push guidance and clean up Rust release workflow maintenance.
+- Models: send the Responses Lite transport header on streaming and compact requests.
 
 ### Install
 
@@ -15,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.105...v0.6.106
+Compare: https://github.com/just-every/code/compare/v0.6.106...v0.6.107
