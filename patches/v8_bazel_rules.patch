@@ -45,7 +45,8 @@ index 9648e4a..88efd41 100644
 +                "-Wno-deprecated-this-capture",
 +                "-Wno-deprecated-declarations",
 +                "-std=c++20",
-+            ],
+             ],
+-            "//conditions:default": [],
          }) + select({
              "@v8//bazel/config:is_gcc_fastbuild": [
                  # Non-debug builds without optimizations fail because
@@ -76,7 +77,7 @@ index 9648e4a..88efd41 100644
      outs = [
          ctx.actions.declare_file(prefix + "/snapshot" + suffix + ".cc"),
          ctx.actions.declare_file(prefix + "/embedded" + suffix + ".S"),
-@@ -476,7 +510,7 @@
+@@ -477,6 +511,6 @@
              outs[1].path,
          ] + ctx.attr.args,
 -        executable = ctx.executable.tool,
