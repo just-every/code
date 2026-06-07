@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.108] - 2026-06-07
+
+- Release: refresh V8 build metadata and Bazel patches for rusty_v8 149.2.0. (43c2b00, b89ce9a)
+- CI: route BuildBuddy secrets through the Bazel environment for steadier remote builds. (2ee3358)
+
 ## [0.6.107] - 2026-06-06
 
 - Models: send the Responses Lite transport header on streaming and compact requests. (7344aa90)
