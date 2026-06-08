@@ -795,6 +795,10 @@ impl ModelClient {
                     .service_tier
                     .map(|service_tier| service_tier.request_value().to_string()),
                 prompt_cache_key: Some(session_id_str.clone()),
+                client_metadata: Some(BTreeMap::from([(
+                    X_CODEX_WINDOW_ID_HEADER.to_string(),
+                    self.current_window_id(session_id),
+                )])),
             };
 
             let mut payload_json = serde_json::to_value(&payload)?;
@@ -1282,6 +1286,10 @@ impl ModelClient {
                     .map(|service_tier| service_tier.request_value().to_string()),
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
+                client_metadata: Some(BTreeMap::from([(
+                    X_CODEX_WINDOW_ID_HEADER.to_string(),
+                    self.current_window_id(session_id),
+                )])),
             };
 
             let mut payload_json = serde_json::to_value(&payload)?;

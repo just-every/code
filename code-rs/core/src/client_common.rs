@@ -17,6 +17,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::Context;
@@ -522,6 +523,8 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) client_metadata: Option<BTreeMap<String, String>>,
 }
 
 pub(crate) fn create_reasoning_param_for_request(
@@ -793,6 +796,7 @@ mod tests {
             include: vec![],
             service_tier: None,
             prompt_cache_key: None,
+            client_metadata: None,
             text: Some(Text { verbosity: OpenAiTextVerbosity::Low, format: None }),
         };
 
@@ -829,6 +833,7 @@ mod tests {
             include: vec![],
             service_tier: None,
             prompt_cache_key: None,
+            client_metadata: None,
             text: Some(Text {
                 verbosity: OpenAiTextVerbosity::Medium,
                 format: Some(TextFormat {
@@ -877,10 +882,44 @@ mod tests {
             include: vec![],
             service_tier: None,
             prompt_cache_key: None,
+            client_metadata: None,
             text: None,
         };
 
         let v = serde_json::to_value(&req).expect("json");
         assert!(v.get("text").is_none());
+    }
+
+    #[test]
+    fn serializes_client_metadata_when_set() {
+        let input: Vec<ResponseItem> = vec![];
+        let tools: Vec<serde_json::Value> = vec![];
+        let req = ResponsesApiRequest {
+            model: "gpt-5.1",
+            instructions: "i",
+            input: &input,
+            tools: &tools,
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            client_metadata: Some(BTreeMap::from([(
+                "x-codex-window-id".to_string(),
+                "session-1:0".to_string(),
+            )])),
+            text: None,
+        };
+
+        let v = serde_json::to_value(&req).expect("json");
+        assert_eq!(
+            v.get("client_metadata")
+                .and_then(|metadata| metadata.get("x-codex-window-id"))
+                .and_then(|window_id| window_id.as_str()),
+            Some("session-1:0")
+        );
     }
 }
