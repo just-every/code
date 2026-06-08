@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.109] - 2026-06-08
+
+- Models: include the window id in Responses metadata so requests stay tied to the active window. (7edc64e0)
+- Release: restore symbol artifacts with line tables for more useful release diagnostics. (6d0e313e)
+- CI: template custom runner names by repository for steadier workflow execution. (2375cb64)
+
 ## [0.6.108] - 2026-06-07
 
 - Release: refresh V8 build metadata and Bazel patches for rusty_v8 149.2.0. (43c2b00, b89ce9a)
