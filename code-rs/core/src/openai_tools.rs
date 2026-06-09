@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::{self, Deserializer};
 use serde::ser::{SerializeStruct, Serializer};
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -403,41 +404,180 @@ impl From<JsonSchema> for AdditionalProperties {
 }
 
 /// Generic JSON‑Schema subset needed for our tool definitions
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum JsonSchema {
     Boolean {
-        #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
     String {
-        #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none", rename = "enum")]
         allowed_values: Option<Vec<String>>,
     },
     /// MCP schema allows "number" | "integer" for Number
-    #[serde(alias = "integer")]
     Number {
-        #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
     Array {
         items: Box<JsonSchema>,
 
-        #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
     Object {
         properties: BTreeMap<String, JsonSchema>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         required: Option<Vec<String>>,
-        #[serde(
-            rename = "additionalProperties",
-            skip_serializing_if = "Option::is_none"
-        )]
         additional_properties: Option<AdditionalProperties>,
     },
+    AnyOf {
+        variants: Vec<JsonSchema>,
+        description: Option<String>,
+    },
+    OneOf {
+        variants: Vec<JsonSchema>,
+        description: Option<String>,
+    },
+    AllOf {
+        variants: Vec<JsonSchema>,
+        description: Option<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for JsonSchema {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        parse_json_schema_value(JsonValue::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+fn parse_json_schema_value(value: JsonValue) -> Result<JsonSchema, String> {
+    let JsonValue::Object(mut map) = value else {
+        return Err("expected JSON schema object".to_string());
+    };
+
+    let description = map
+        .remove("description")
+        .and_then(|value| value.as_str().map(str::to_string));
+
+    for (key, builder) in [
+        ("anyOf", JsonSchema::any_of as fn(Vec<JsonSchema>, Option<String>) -> JsonSchema),
+        ("oneOf", JsonSchema::one_of),
+        ("allOf", JsonSchema::all_of),
+    ] {
+        if let Some(variants) = map.remove(key) {
+            return Ok(builder(parse_schema_variants(key, variants)?, description));
+        }
+    }
+
+    let schema_type = map
+        .remove("type")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .ok_or_else(|| "missing JSON schema type".to_string())?;
+
+    match schema_type.as_str() {
+        "boolean" => Ok(JsonSchema::Boolean { description }),
+        "string" => {
+            let allowed_values = match map.remove("enum") {
+                Some(JsonValue::Array(values)) => Some(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_string)
+                                .ok_or_else(|| "string enum values must be strings".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                Some(_) => return Err("string enum must be an array".to_string()),
+                None => None,
+            };
+            Ok(JsonSchema::String {
+                description,
+                allowed_values,
+            })
+        }
+        "number" | "integer" => Ok(JsonSchema::Number { description }),
+        "array" => {
+            let items = map
+                .remove("items")
+                .ok_or_else(|| "array schema missing items".to_string())
+                .and_then(parse_json_schema_value)?;
+            Ok(JsonSchema::Array {
+                items: Box::new(items),
+                description,
+            })
+        }
+        "object" => {
+            let properties = match map.remove("properties") {
+                Some(JsonValue::Object(properties)) => properties
+                    .into_iter()
+                    .map(|(key, value)| parse_json_schema_value(value).map(|schema| (key, schema)))
+                    .collect::<Result<BTreeMap<_, _>, _>>()?,
+                Some(_) => return Err("object schema properties must be an object".to_string()),
+                None => BTreeMap::new(),
+            };
+            let required = match map.remove("required") {
+                Some(JsonValue::Array(values)) => Some(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_string)
+                                .ok_or_else(|| "required entries must be strings".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                Some(_) => return Err("object schema required must be an array".to_string()),
+                None => None,
+            };
+            let additional_properties = map
+                .remove("additionalProperties")
+                .map(serde_json::from_value::<AdditionalProperties>)
+                .transpose()
+                .map_err(|err| err.to_string())?;
+            Ok(JsonSchema::Object {
+                properties,
+                required,
+                additional_properties,
+            })
+        }
+        other => Err(format!("unsupported JSON schema type {other:?}")),
+    }
+}
+
+fn parse_schema_variants(key: &str, value: JsonValue) -> Result<Vec<JsonSchema>, String> {
+    let JsonValue::Array(values) = value else {
+        return Err(format!("{key} must be an array"));
+    };
+    values
+        .into_iter()
+        .map(parse_json_schema_value)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+impl JsonSchema {
+    fn any_of(variants: Vec<JsonSchema>, description: Option<String>) -> Self {
+        Self::AnyOf {
+            variants,
+            description,
+        }
+    }
+
+    fn one_of(variants: Vec<JsonSchema>, description: Option<String>) -> Self {
+        Self::OneOf {
+            variants,
+            description,
+        }
+    }
+
+    fn all_of(variants: Vec<JsonSchema>, description: Option<String>) -> Self {
+        Self::AllOf {
+            variants,
+            description,
+        }
+    }
 }
 
 impl Serialize for JsonSchema {
@@ -515,6 +655,39 @@ impl Serialize for JsonSchema {
                 state.serialize_field("required", &req)?;
                 if let Some(additional) = additional_properties {
                     state.serialize_field("additionalProperties", additional)?;
+                }
+                state.end()
+            }
+            JsonSchema::AnyOf {
+                variants,
+                description,
+            } => {
+                let mut state = serializer.serialize_struct("JsonSchema", if description.is_some() { 2 } else { 1 })?;
+                state.serialize_field("anyOf", variants)?;
+                if let Some(desc) = description {
+                    state.serialize_field("description", desc)?;
+                }
+                state.end()
+            }
+            JsonSchema::OneOf {
+                variants,
+                description,
+            } => {
+                let mut state = serializer.serialize_struct("JsonSchema", if description.is_some() { 2 } else { 1 })?;
+                state.serialize_field("oneOf", variants)?;
+                if let Some(desc) = description {
+                    state.serialize_field("description", desc)?;
+                }
+                state.end()
+            }
+            JsonSchema::AllOf {
+                variants,
+                description,
+            } => {
+                let mut state = serializer.serialize_struct("JsonSchema", if description.is_some() { 2 } else { 1 })?;
+                state.serialize_field("allOf", variants)?;
+                if let Some(desc) = description {
+                    state.serialize_field("description", desc)?;
                 }
                 state.end()
             }
@@ -1138,6 +1311,10 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                         }
                     }
                 }
+            }
+
+            if ty.is_none() && ["oneOf", "anyOf", "allOf"].iter().any(|key| map.contains_key(*key)) {
+                return;
             }
 
             // Infer type if still missing
@@ -2311,7 +2488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_tool_anyof_defaults_to_string() {
+    fn test_mcp_tool_schema_composition_is_preserved() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
         let mut config = ToolsConfig::new(
             &model_family,
@@ -2325,61 +2502,64 @@ mod tests {
         );
         apply_default_agent_models(&mut config);
 
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "dash/value".to_string(),
-                mcp_types::Tool {
-                    name: "value".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "value": { "anyOf": [ { "type": "string" }, { "type": "number" } ] }
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("AnyOf Value".to_string()),
-                },
-            )])),
-            false,
-            true,
-            &[],
-        );
+        for composition_key in ["anyOf", "oneOf", "allOf"] {
+            let variants = serde_json::json!([
+                { "type": "string" },
+                { "type": "number" }
+            ]);
+            let mut value_schema = serde_json::Map::new();
+            value_schema.insert(composition_key.to_string(), variants.clone());
 
-        assert_eq_tool_names(
-            &tools,
-            &[
-                "shell",
-                "request_user_input",
-                "browser",
-                "agent",
-                "wait",
-                "kill",
-                "gh_run_wait",
-                "code_bridge",
-                "web_search",
-                "dash/value",
-            ],
-        );
-        assert_eq!(
-            tools[9],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "dash/value".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "value".to_string(),
-                        JsonSchema::String { description: None, allowed_values: None }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "AnyOf Value".to_string(),
-                strict: false,
-            })
-        );
+            let tools = get_openai_tools(
+                &config,
+                Some(HashMap::from([(
+                    "dash/value".to_string(),
+                    mcp_types::Tool {
+                        name: "value".to_string(),
+                        input_schema: ToolInputSchema {
+                            properties: Some(serde_json::json!({
+                                "value": JsonValue::Object(value_schema.clone())
+                            })),
+                            required: None,
+                            r#type: "object".to_string(),
+                        },
+                        output_schema: None,
+                        title: None,
+                        annotations: None,
+                        description: Some("Composed Value".to_string()),
+                    },
+                )])),
+                false,
+                true,
+                &[],
+            );
+
+            assert_eq_tool_names(
+                &tools,
+                &[
+                    "shell",
+                    "request_user_input",
+                    "browser",
+                    "agent",
+                    "wait",
+                    "kill",
+                    "gh_run_wait",
+                    "code_bridge",
+                    "web_search",
+                    "dash/value",
+                ],
+            );
+
+            let OpenAiTool::Function(tool) = &tools[9] else {
+                panic!("expected MCP tool to be a function");
+            };
+            let parameters = serde_json::to_value(&tool.parameters)
+                .expect("tool parameters should serialize");
+            assert_eq!(
+                parameters["properties"]["value"],
+                JsonValue::Object(value_schema)
+            );
+        }
     }
 
     #[test]
