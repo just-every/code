@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.110] - 2026-06-09
+
+- Tools: preserve composed MCP schemas so generated tool definitions keep nested input shapes. (f2b9f21d)
+- PR Watch: ignore pending review comments while monitoring PR feedback. (a770e5b8)
+
 ## [0.6.109] - 2026-06-08
 
 - Models: include the window id in Responses metadata so requests stay tied to the active window. (7edc64e0)
