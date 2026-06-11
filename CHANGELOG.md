@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.111] - 2026-06-11
+
+- Models: align Responses request metadata for more consistent remote model handling. (7f345523)
+- Release: reuse and filter release artifacts for npm staging and DotSlash publishing. (387adc6c, f4278010, 9163c0a3)
+- Release: improve Windows release compatibility with ARM64 MinGW powl support and LLD linking. (0b08bbb9, 24aee3eb)
+
 ## [0.6.110] - 2026-06-09
 
 - Tools: preserve composed MCP schemas so generated tool definitions keep nested input shapes. (f2b9f21d)
