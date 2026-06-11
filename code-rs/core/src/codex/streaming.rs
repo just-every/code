@@ -4964,6 +4964,25 @@ async fn handle_function_call(
             )
             .await
         }
+        "apply_patch" => {
+            let params = match parse_apply_patch_arguments(arguments, sess, &call_id) {
+                Ok(params) => params,
+                Err(output) => {
+                    return *output;
+                }
+            };
+            handle_container_exec_with_params(
+                params,
+                sess,
+                turn_diff_tracker,
+                sub_id,
+                call_id,
+                seq_hint,
+                output_index,
+                attempt_req,
+            )
+            .await
+        }
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
         "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
         // agent tool
@@ -5018,6 +5037,45 @@ async fn handle_function_call(
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ApplyPatchToolCallParams {
+    input: String,
+}
+
+fn parse_apply_patch_input(arguments: &str) -> Result<String, serde_json::Error> {
+    serde_json::from_str::<ApplyPatchToolCallParams>(arguments).map(|params| params.input)
+}
+
+fn parse_apply_patch_arguments(
+    arguments: String,
+    sess: &Session,
+    call_id: &str,
+) -> Result<ExecParams, Box<ResponseInputItem>> {
+    match parse_apply_patch_input(&arguments) {
+        Ok(input) => Ok(ExecParams {
+            command: vec!["apply_patch".to_string(), input],
+            shell_script: None,
+            cwd: sess.get_cwd().to_path_buf(),
+            timeout_ms: None,
+            env: HashMap::new(),
+            with_escalated_permissions: None,
+            justification: None,
+        }),
+        Err(err) => {
+            let output = ResponseInputItem::FunctionCallOutput {
+                call_id: call_id.to_string(),
+                output: FunctionCallOutputPayload {
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "failed to parse function arguments: {err}"
+                    )),
+                    success: None,
+                },
+            };
+            Err(Box::new(output))
         }
     }
 }
@@ -14283,6 +14341,7 @@ mod tests {
         image_generation_artifact_path,
         is_context_overflow_stream_error,
         is_usage_limit_stream_error,
+        parse_apply_patch_input,
         save_image_generation_result,
         save_image_generation_sidecar,
         ImageGenerationTurnMetadata,
@@ -14435,6 +14494,14 @@ mod tests {
 
         assert_eq!(text, "[image: hero]");
         assert!(!text.contains("base64"));
+    }
+
+    #[test]
+    fn apply_patch_function_arguments_parse_input() {
+        let patch = "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n";
+        let arguments = serde_json::json!({ "input": patch }).to_string();
+
+        assert_eq!(parse_apply_patch_input(&arguments).expect("valid args"), patch);
     }
 
     #[test]
