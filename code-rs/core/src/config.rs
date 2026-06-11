@@ -1706,7 +1706,7 @@ impl Config {
                 .or(cfg.chatgpt_base_url)
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
             include_plan_tool: include_plan_tool.unwrap_or(false),
-            include_apply_patch_tool: include_apply_patch_tool.unwrap_or(false),
+            include_apply_patch_tool: include_apply_patch_tool.unwrap_or(cfg!(target_os = "windows")),
             tools_web_search_request,
             tools_web_search_external,
             tools_search_tool,
@@ -3634,6 +3634,23 @@ context_mode = "disabled"
         assert_eq!(config.context_mode, Some(ContextMode::Disabled));
         assert_eq!(config.model_context_window, Some(272_000));
         assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        Ok(())
+    }
+
+    #[test]
+    fn include_apply_patch_tool_defaults_on_windows_only() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>("model = \"gpt-5.4\"")?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.include_apply_patch_tool, cfg!(target_os = "windows"));
         Ok(())
     }
 }
