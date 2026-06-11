@@ -236,6 +236,17 @@ impl Prompt {
         input_with_instructions
     }
 
+    pub(crate) fn get_formatted_input_for_request(
+        &self,
+        use_responses_lite: bool,
+    ) -> Vec<ResponseItem> {
+        let mut input = self.get_formatted_input();
+        if use_responses_lite {
+            strip_function_output_image_details(&mut input);
+        }
+        input
+    }
+
     pub fn set_tools(&mut self, tools: Vec<OpenAiTool>) {
         self.tools = tools;
     }
@@ -248,6 +259,26 @@ impl Prompt {
             text: ui.to_string(),
         }
         .into()
+    }
+}
+
+fn strip_function_output_image_details(items: &mut [ResponseItem]) {
+    for item in items {
+        match item {
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content_items) = output.content_items_mut() {
+                    for content_item in content_items {
+                        if let FunctionCallOutputContentItem::InputImage { detail, .. } =
+                            content_item
+                        {
+                            *detail = None;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

@@ -391,6 +391,9 @@ pub struct ModelInfo {
     /// context window when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<i64>,
+    /// Opaque identifier for compaction-compatible model configurations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp_hash: Option<String>,
     /// Percentage of the context window considered usable for inputs, after
     /// reserving headroom for system prompts, tool overhead, and model output.
     #[serde(default = "default_effective_context_window_percent")]
@@ -717,6 +720,7 @@ mod tests {
             context_window: None,
             max_context_window: None,
             auto_compact_token_limit: None,
+            comp_hash: None,
             effective_context_window_percent: 95,
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
