@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
+from _thread import LockType
 from collections import deque
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, TypeVar
 
@@ -49,6 +52,18 @@ from ._version import __version__ as SDK_VERSION
 ModelT = TypeVar("ModelT", bound=BaseModel)
 ApprovalHandler = Callable[[str, JsonObject | None], JsonObject]
 RUNTIME_PKG_NAME = "openai-codex-cli-bin"
+_GOAL_START_TIMEOUT_S = 30.0
+
+
+@dataclass(slots=True)
+class _ThreadStartLock:
+    lock: LockType = field(default_factory=threading.Lock)
+    users: int = 0
+
+
+def _active_turn_id_from_error(exc: InvalidRequestError) -> str | None:
+    match = re.search(r" but found `?([^`]+)`?$", exc.message)
+    return match.group(1) if match is not None else None
 
 
 def _params_dict(
