@@ -5087,6 +5087,8 @@ async fn handle_request_user_input(
 ) -> ResponseInputItem {
     use code_protocol::request_user_input::RequestUserInputArgs;
     use code_protocol::request_user_input::RequestUserInputEvent;
+    use code_protocol::request_user_input::MAX_AUTO_RESOLUTION_MS;
+    use code_protocol::request_user_input::MIN_AUTO_RESOLUTION_MS;
 
     let mut args: RequestUserInputArgs = match serde_json::from_str(&arguments) {
         Ok(args) => args,
@@ -5125,6 +5127,18 @@ async fn handle_request_user_input(
     for question in &mut args.questions {
         question.is_other = true;
     }
+    if let Some(auto_resolution_ms) = args.auto_resolution_ms {
+        let clamped_auto_resolution_ms =
+            auto_resolution_ms.clamp(MIN_AUTO_RESOLUTION_MS, MAX_AUTO_RESOLUTION_MS);
+        if clamped_auto_resolution_ms != auto_resolution_ms {
+            tracing::warn!(
+                auto_resolution_ms,
+                clamped_auto_resolution_ms,
+                "clamped request_user_input autoResolutionMs to supported range"
+            );
+            args.auto_resolution_ms = Some(clamped_auto_resolution_ms);
+        }
+    }
 
     let rx_response = match sess.register_pending_user_input(ctx.sub_id.clone()) {
         Ok(rx) => rx,
@@ -5144,6 +5158,7 @@ async fn handle_request_user_input(
             call_id: ctx.call_id.clone(),
             turn_id: ctx.sub_id.clone(),
             questions: args.questions,
+            auto_resolution_ms: args.auto_resolution_ms,
         }),
     )
     .await;

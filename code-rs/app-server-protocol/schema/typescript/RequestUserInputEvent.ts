@@ -12,4 +12,4 @@ call_id: string,
  * Turn ID that this request belongs to.
  * Uses `#[serde(default)]` for backwards compatibility.
  */
-turn_id: string, questions: Array<RequestUserInputQuestion>, };
+turn_id: string, questions: Array<RequestUserInputQuestion>, autoResolutionMs: bigint | null, };

@@ -1604,6 +1604,7 @@ async fn apply_bespoke_event_handling(
                         }),
                     })
                     .collect(),
+                auto_resolution_ms: request.auto_resolution_ms,
             };
             let value = serde_json::to_value(&params).unwrap_or_default();
             let rx = outgoing

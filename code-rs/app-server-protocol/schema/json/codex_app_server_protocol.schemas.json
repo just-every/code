@@ -3793,6 +3793,14 @@
         },
         {
           "properties": {
+            "autoResolutionMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Responses API call id for the associated tool call, if available.",
               "type": "string"
@@ -9826,6 +9834,14 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
       "properties": {
+        "autoResolutionMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },

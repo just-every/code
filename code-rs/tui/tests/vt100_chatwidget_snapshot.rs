@@ -1549,6 +1549,7 @@ fn request_user_input_picker_allows_selection_and_typing() {
         EventMsg::RequestUserInput(RequestUserInputEvent {
             call_id: "call-1".into(),
             turn_id: "turn-1".into(),
+            auto_resolution_ms: None,
             questions: vec![
                 RequestUserInputQuestion {
                     id: "color".into(),
@@ -1623,6 +1624,7 @@ fn request_user_input_auto_drive_auto_answers_without_modal() {
         EventMsg::RequestUserInput(RequestUserInputEvent {
             call_id: "call-2".into(),
             turn_id: "turn-1".into(),
+            auto_resolution_ms: None,
             questions: vec![RequestUserInputQuestion {
                 id: "confirm".into(),
                 header: "Confirm".into(),

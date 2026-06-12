@@ -1617,6 +1617,14 @@
         },
         {
           "properties": {
+            "autoResolutionMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Responses API call id for the associated tool call, if available.",
               "type": "string"

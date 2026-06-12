@@ -14,6 +14,8 @@ use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use code_protocol::openai_models::WebSearchToolType;
+use code_protocol::request_user_input::MAX_AUTO_RESOLUTION_MS;
+use code_protocol::request_user_input::MIN_AUTO_RESOLUTION_MS;
 use crate::tool_apply_patch::{
     create_apply_patch_freeform_tool, create_apply_patch_json_tool, ApplyPatchToolType,
 };
@@ -985,13 +987,21 @@ fn create_request_user_input_tool() -> OpenAiTool {
         }),
     };
 
+    let auto_resolution_ms_schema = JsonSchema::Number {
+        description: Some(format!(
+            "Optional auto-resolution window in milliseconds, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. Include this only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required before continuing. Use {MIN_AUTO_RESOLUTION_MS} for lightly helpful context and up to {MAX_AUTO_RESOLUTION_MS} when the answer would materially unblock better work."
+        )),
+    };
+
     let mut properties = BTreeMap::new();
     properties.insert("questions".to_string(), questions_schema);
+    properties.insert("autoResolutionMs".to_string(), auto_resolution_ms_schema);
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "request_user_input".to_string(),
-        description: "Request user input for one to three short questions and wait for the response."
-            .to_string(),
+        description: format!(
+            "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required."
+        ),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
