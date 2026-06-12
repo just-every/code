@@ -177,12 +177,16 @@ pub struct W3cTraceContext {
 /// Config payload for refreshing MCP servers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpServerRefreshConfig {
+    /// Complete runtime server map after source and thread-scoped resolution.
     pub mcp_servers: Value,
+    /// OAuth credential store mode to use with this server snapshot.
     pub mcp_oauth_credentials_store_mode: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationStartParams {
+    /// Overrides the configured realtime architecture for this session only.
+    pub architecture: Option<RealtimeConversationArchitecture>,
     /// Overrides the configured realtime model for this session only.
     pub model: Option<String>,
     /// Selects whether the realtime session should produce text or audio output.
@@ -524,7 +528,7 @@ pub enum Op {
         thread_settings: ThreadSettingsOverrides,
     },
 
-    /// Inter-agent communication that should be recorded as assistant history
+    /// Inter-agent communication that should be recorded as agent-message history
     /// while still using the normal thread submission lifecycle.
     InterAgentCommunication {
         communication: InterAgentCommunication,
@@ -710,15 +714,18 @@ impl InterAgentCommunication {
     }
 
     pub fn to_model_input_item(&self) -> ResponseItem {
-        match &self.encrypted_content {
-            Some(encrypted_content) => ResponseItem::AgentMessage {
-                author: self.author.to_string(),
-                recipient: self.recipient.to_string(),
-                content: vec![AgentMessageInputContent::EncryptedContent {
-                    encrypted_content: encrypted_content.clone(),
-                }],
+        let content = match &self.encrypted_content {
+            Some(encrypted_content) => AgentMessageInputContent::EncryptedContent {
+                encrypted_content: encrypted_content.clone(),
             },
-            None => self.to_response_input_item().into(),
+            None => AgentMessageInputContent::InputText {
+                text: self.content.clone(),
+            },
+        };
+        ResponseItem::AgentMessage {
+            author: self.author.to_string(),
+            recipient: self.recipient.to_string(),
+            content: vec![content],
         }
     }
 
@@ -1491,6 +1498,15 @@ pub enum RealtimeConversationVersion {
     V1,
     #[default]
     V2,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RealtimeConversationArchitecture {
+    #[default]
+    #[serde(rename = "realtimeapi")]
+    RealtimeApi,
+    Avas,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -2787,6 +2803,7 @@ fn multi_agent_version_from_items(
             RolloutItem::TurnContext(turn_context) => turn_context.multi_agent_version,
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
+            | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::Compacted(_)
             | RolloutItem::EventMsg(_) => None,
         })
@@ -2882,6 +2899,8 @@ pub struct SessionMetaLine {
 pub enum RolloutItem {
     SessionMeta(SessionMetaLine),
     ResponseItem(ResponseItem),
+    /// Durable delivery metadata reconstructed as a model-visible `agent_message`.
+    InterAgentCommunication(InterAgentCommunication),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     EventMsg(EventMsg),
