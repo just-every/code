@@ -1,11 +1,11 @@
-## @just-every/code v0.6.112
+## @just-every/code v0.6.113
 
-This release improves apply_patch dispatch reliability, especially on Windows.
+This release improves automated tool prompt handling and refreshes fork parity with upstream changes.
 
 ### Changes
 
-- Core: dispatch function apply_patch calls through the dedicated tool path.
-- Windows: route apply_patch through the dedicated tool path by default.
+- Tools: support auto-resolving request-user-input prompts for automated runs.
+- Release: refresh upstream fork history, codex-rs mirror data, and remote workflow changes.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.111...v0.6.112
+Compare: https://github.com/just-every/code/compare/v0.6.112...v0.6.113

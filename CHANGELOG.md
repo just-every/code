@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.113] - 2026-06-12
+
+- Tools: support auto-resolving request-user-input prompts for automated runs. (c179f99b)
+- Release: refresh upstream fork history, codex-rs mirror data, and remote workflow changes. (97bcb153, f329fca8, a00d17cd)
+
 ## [0.6.112] - 2026-06-11
 
 - Core: dispatch function apply_patch calls through the dedicated tool path. (f41e1c3e)
