@@ -1,17 +1,17 @@
-## @just-every/code v0.6.113
+## @just-every/code v0.6.114
 
-This release improves automated tool prompt handling and refreshes fork parity with upstream changes.
+This release pins a vulnerable dependency and refreshes release metadata.
 
 ### Changes
 
-- Tools: support auto-resolving request-user-input prompts for automated runs.
-- Release: refresh upstream fork history, codex-rs mirror data, and remote workflow changes.
+- Dependencies: pin esbuild to address Dependabot alert 117.
+- Release: carry forward the v0.6.113 changelog metadata for publish continuity.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.112...v0.6.113
+Compare: https://github.com/just-every/code/compare/v0.6.113...v0.6.114

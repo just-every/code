@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.114] - 2026-06-12
+
+- Dependencies: pin esbuild to address Dependabot alert 117. (d100b2f2)
+- Release: carry forward the v0.6.113 changelog metadata for publish continuity. (4b99525a)
+
 ## [0.6.113] - 2026-06-12
 
 - Tools: support auto-resolving request-user-input prompts for automated runs. (c179f99b)
