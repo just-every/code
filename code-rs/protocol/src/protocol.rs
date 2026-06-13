@@ -86,6 +86,8 @@ pub struct Submission {
 pub struct McpServerRefreshConfig {
     pub mcp_servers: Value,
     pub mcp_oauth_credentials_store_mode: Value,
+    #[serde(default)]
+    pub auth_keyring_backend_kind: Value,
 }
 
 /// Submission operation

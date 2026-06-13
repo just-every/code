@@ -1961,6 +1961,7 @@ impl ModelClient {
         let session_id = prompt.session_id_override.unwrap_or(self.session_id);
         let session_id_str = session_id.to_string();
         let instructions = prompt.get_full_instructions(&family).into_owned();
+        let turn_state: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
         let mut request_id = String::new();
 
         loop {
@@ -2010,6 +2011,9 @@ impl ModelClient {
             request = attach_openai_subagent_header(request);
             request = attach_codex_beta_features_header(request, &self.config);
             request = attach_responses_lite_header(request, family.use_responses_lite);
+            if let Some(state) = turn_state.get() {
+                request = request.header(X_CODEX_TURN_STATE_HEADER, state);
+            }
             if let Ok(window_id) = HeaderValue::from_str(&self.current_window_id(session_id)) {
                 request = request.header(X_CODEX_WINDOW_ID_HEADER, window_id);
             }
@@ -2052,6 +2056,23 @@ impl ModelClient {
 
             let response = request.send().await?;
             let status = response.status();
+            let headers = response.headers().clone();
+            if let Some(value) = headers
+                .get(X_CODEX_TURN_STATE_HEADER)
+                .and_then(|value| value.to_str().ok())
+            {
+                if let Some(existing) = turn_state.get()
+                    && existing != value
+                {
+                    warn!(
+                        existing,
+                        new = value,
+                        "received unexpected x-codex-turn-state during compact request"
+                    );
+                } else {
+                    let _ = turn_state.set(value.to_string());
+                }
+            }
             let body = response.text().await?;
 
             if status == StatusCode::TOO_MANY_REQUESTS
