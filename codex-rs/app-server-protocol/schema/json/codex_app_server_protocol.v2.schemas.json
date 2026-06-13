@@ -4452,6 +4452,12 @@
             "null"
           ]
         },
+        "allowRemoteControl": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "allowedApprovalPolicies": {
           "items": {
             "$ref": "#/definitions/AskForApproval"
@@ -4851,6 +4857,13 @@
       ],
       "title": "ContextCompactedNotification",
       "type": "object"
+    },
+    "ConversationTextRole": {
+      "enum": [
+        "user",
+        "developer"
+      ],
+      "type": "string"
     },
     "CreditsSnapshot": {
       "properties": {

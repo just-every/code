@@ -310,9 +310,9 @@ fn auth_elicitation_is_under_development() {
 }
 
 #[test]
-fn mentions_v2_is_under_development_and_disabled_by_default() {
-    assert_eq!(Feature::MentionsV2.stage(), Stage::UnderDevelopment);
-    assert_eq!(Feature::MentionsV2.default_enabled(), false);
+fn mentions_v2_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::MentionsV2.stage(), Stage::Stable);
+    assert_eq!(Feature::MentionsV2.default_enabled(), true);
     assert_eq!(feature_for_key("mentions_v2"), Some(Feature::MentionsV2));
 }
 
@@ -711,4 +711,35 @@ fn unstable_warning_event_only_mentions_enabled_under_development_features() {
     assert!(message.contains("child_agents_md"));
     assert!(!message.contains("personality"));
     assert!(message.contains("/tmp/config.toml"));
+}
+
+#[test]
+fn unstable_warning_event_mentions_enabled_structured_under_development_feature() {
+    let configured_features: Table = toml::from_str(
+        r#"
+multi_agent_v2 = { enabled = true, tool_namespace = "agents" }
+code_mode = true
+"#,
+    )
+    .expect("features table should deserialize");
+
+    let mut features = Features::with_defaults();
+    features.enable(Feature::MultiAgentV2);
+    features.enable(Feature::CodeMode);
+
+    let warning = unstable_features_warning_event(
+        Some(&configured_features),
+        /*suppress_unstable_features_warning*/ false,
+        &features,
+        "/tmp/config.toml",
+    )
+    .expect("warning event");
+
+    let EventMsg::Warning(WarningEvent { message }) = warning.msg else {
+        panic!("expected warning event");
+    };
+    assert_eq!(
+        "Under-development features enabled: code_mode, multi_agent_v2. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
+        message
+    );
 }
