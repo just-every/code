@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.115] - 2026-06-13
+
+- Core: backport compact turn-state parity for more consistent session behavior. (87f1809c)
+- Release: package Windows ARM64 artifacts on x64 release runners. (17586d80)
+- Release: stage npm packages and Windows archives, symbols, and compression in parallel. (1460b509, 51483bb5, eb46984a, 5c48e319)
+- Testing: add hermetic Wine support and exec-server coverage for Windows compatibility. (5c8136f4, 9d938a46)
+
 ## [0.6.114] - 2026-06-12
 
 - Dependencies: pin esbuild to address Dependabot alert 117. (d100b2f2)
