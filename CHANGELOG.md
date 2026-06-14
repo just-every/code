@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.116] - 2026-06-14
+
+- Core: honor remote environment cwd and shell settings in exec-server. (efbd00f2)
+- Core: pin bundled SQLite to the fixed WAL-reset build for steadier local storage. (73c58011)
+- Testing: add PowerShell coverage to the Wine harness for stronger Windows compatibility checks. (42dec90b)
+- Release: keep fork workflow and packaging choices aligned through the upstream refresh. (e93880ca)
+
 ## [0.6.115] - 2026-06-13
 
 - Core: backport compact turn-state parity for more consistent session behavior. (87f1809c)
