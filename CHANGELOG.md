@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.118] - 2026-06-15
+
+- Core: route Gemini Pro agents through Antigravity for the intended provider path. (ad45a6b2)
+- Docs: align Gemini Pro agent guidance with Antigravity routing. (ad45a6b2)
+
 ## [0.6.117] - 2026-06-15
 
 - Tools: support dynamic tool namespaces for generated tool schemas. (dd934723)
