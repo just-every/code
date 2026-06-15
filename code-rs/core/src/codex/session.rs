@@ -3,6 +3,7 @@ use crate::protocol::TaskOriginKind;
 use serde_json::Value;
 use crate::util::extract_shell_script;
 use code_protocol::dynamic_tools::DynamicToolResponse;
+use code_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use super::streaming::{
     AgentTask,
@@ -571,9 +572,15 @@ impl Session {
     }
 
     pub(crate) fn is_dynamic_tool(&self, namespace: Option<&str>, name: &str) -> bool {
-        self.dynamic_tools
-            .iter()
-            .any(|tool| tool.name == name && tool.namespace.as_deref() == namespace)
+        self.dynamic_tools.iter().any(|tool| match tool {
+            DynamicToolSpec::Function(tool) => namespace.is_none() && tool.name == name,
+            DynamicToolSpec::Namespace(group) => {
+                namespace == Some(group.name.as_str())
+                    && group.tools.iter().any(|tool| match tool {
+                        DynamicToolNamespaceTool::Function(tool) => tool.name == name,
+                    })
+            }
+        })
     }
 
     fn next_background_sequence(&self, sub_id: &str) -> u64 {

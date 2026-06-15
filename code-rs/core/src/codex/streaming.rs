@@ -5249,6 +5249,10 @@ async fn handle_dynamic_tool_call(
         EventMsg::DynamicToolCallRequest(code_protocol::dynamic_tools::DynamicToolCallRequest {
             call_id: ctx.call_id.clone(),
             turn_id: ctx.sub_id.clone(),
+            started_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
             namespace,
             tool: tool_name,
             arguments: args,

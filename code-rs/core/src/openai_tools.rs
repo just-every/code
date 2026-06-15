@@ -12,6 +12,9 @@ use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use code_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use code_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use code_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use code_protocol::openai_models::WebSearchToolType;
 use code_protocol::request_user_input::MAX_AUTO_RESOLUTION_MS;
@@ -1253,26 +1256,48 @@ pub(crate) fn mcp_tool_to_openai_tool(
     })
 }
 
-fn dynamic_tool_to_openai_tool(
-    tool: &DynamicToolSpec,
-) -> Result<OpenAiTool, serde_json::Error> {
+fn dynamic_function_to_responses_tool(
+    tool: &DynamicToolFunctionSpec,
+) -> Result<ResponsesApiTool, serde_json::Error> {
     let input_schema = parse_tool_input_schema(&tool.input_schema)?;
-
-    let output_tool = ResponsesApiTool {
+    Ok(ResponsesApiTool {
         name: tool.name.clone(),
         description: tool.description.clone(),
         strict: false,
         parameters: input_schema,
-    };
-
-    Ok(match tool.namespace.as_ref() {
-        Some(namespace) => OpenAiTool::Namespace(ResponsesApiNamespace {
-            name: namespace.clone(),
-            description: default_namespace_description(namespace),
-            tools: vec![ResponsesApiNamespaceTool::Function(output_tool)],
-        }),
-        None => OpenAiTool::Function(output_tool),
     })
+}
+
+fn dynamic_namespace_to_openai_tool(
+    namespace: &DynamicToolNamespaceSpec,
+) -> Result<OpenAiTool, serde_json::Error> {
+    let tools = namespace
+        .tools
+        .iter()
+        .map(|tool| match tool {
+            DynamicToolNamespaceTool::Function(tool) => dynamic_function_to_responses_tool(tool)
+                .map(ResponsesApiNamespaceTool::Function),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let description = if namespace.description.trim().is_empty() {
+        default_namespace_description(&namespace.name)
+    } else {
+        namespace.description.clone()
+    };
+    Ok(OpenAiTool::Namespace(ResponsesApiNamespace {
+        name: namespace.name.clone(),
+        description,
+        tools,
+    }))
+}
+
+fn dynamic_tool_to_openai_tool(tool: &DynamicToolSpec) -> Result<OpenAiTool, serde_json::Error> {
+    match tool {
+        DynamicToolSpec::Function(function) => {
+            dynamic_function_to_responses_tool(function).map(OpenAiTool::Function)
+        }
+        DynamicToolSpec::Namespace(namespace) => dynamic_namespace_to_openai_tool(namespace),
+    }
 }
 
 fn push_openai_tool_coalescing_namespaces(tools: &mut Vec<OpenAiTool>, tool: OpenAiTool) {
@@ -1546,7 +1571,7 @@ pub fn get_openai_tools(
                 Err(e) => {
                     tracing::error!(
                         "Failed to convert dynamic tool {:?} to OpenAI tool: {e:?}",
-                        tool.name
+                        tool
                     );
                 }
             }

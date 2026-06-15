@@ -55,6 +55,9 @@ export type { DeprecationNoticeNotification } from "./DeprecationNoticeNotificat
 export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
 export type { DynamicToolCallParams } from "./DynamicToolCallParams";
 export type { DynamicToolCallResponse } from "./DynamicToolCallResponse";
+export type { DynamicToolFunctionSpec } from "./DynamicToolFunctionSpec";
+export type { DynamicToolNamespaceSpec } from "./DynamicToolNamespaceSpec";
+export type { DynamicToolNamespaceTool } from "./DynamicToolNamespaceTool";
 export type { DynamicToolSpec } from "./DynamicToolSpec";
 export type { ErrorNotification } from "./ErrorNotification";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";

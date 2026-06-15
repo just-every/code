@@ -1663,10 +1663,16 @@
               "type": "string"
             },
             "namespace": {
+              "default": null,
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "startedAtMs": {
+              "default": 0,
+              "format": "int64",
+              "type": "integer"
             },
             "tool": {
               "type": "string"
@@ -6899,10 +6905,16 @@
           "type": "string"
         },
         "namespace": {
+          "default": null,
           "type": [
             "string",
             "null"
           ]
+        },
+        "startedAtMs": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
         },
         "tool": {
           "type": "string"

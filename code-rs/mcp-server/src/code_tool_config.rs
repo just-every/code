@@ -393,28 +393,92 @@ mod tests {
               "dynamic-tools": {
                 "description": "Dynamic tool specifications injected by the client.",
                 "items": {
-                  "properties": {
-                    "deferLoading": {
-                      "default": false,
-                      "type": "boolean"
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "deferLoading": {
+                          "type": "boolean"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "inputSchema": true,
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "enum": [
+                            "function"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "description",
+                        "inputSchema",
+                        "name",
+                        "type"
+                      ],
+                      "type": "object"
                     },
-                    "description": {
-                      "type": "string"
-                    },
-                    "inputSchema": true,
-                    "name": {
-                      "type": "string"
-                    },
-                    "namespace": {
-                      "type": "string"
+                    {
+                      "properties": {
+                        "description": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "oneOf": [
+                              {
+                                "properties": {
+                                  "deferLoading": {
+                                    "type": "boolean"
+                                  },
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "inputSchema": true,
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "enum": [
+                                      "function"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "description",
+                                  "inputSchema",
+                                  "name",
+                                  "type"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "type": {
+                          "enum": [
+                            "namespace"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "description",
+                        "name",
+                        "tools",
+                        "type"
+                      ],
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "description",
-                    "inputSchema",
-                    "name"
-                  ],
-                  "type": "object"
+                  ]
                 },
                 "type": "array"
               },
