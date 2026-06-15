@@ -23,8 +23,8 @@ const CLAUDE_OPUS_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS]
 const CLAUDE_OPUS_WRITE: &[&str] = &["--dangerously-skip-permissions"];
 const CLAUDE_HAIKU_READ_ONLY: &[&str] = &["--allowedTools", CLAUDE_ALLOWED_TOOLS];
 const CLAUDE_HAIKU_WRITE: &[&str] = &["--dangerously-skip-permissions"];
-const GEMINI_PRO_READ_ONLY: &[&str] = &[];
-const GEMINI_PRO_WRITE: &[&str] = &["-y"];
+const ANTIGRAVITY_PRO_READ_ONLY: &[&str] = &[];
+const ANTIGRAVITY_PRO_WRITE: &[&str] = &["--sandbox=false", "--dangerously-skip-permissions"];
 const ANTIGRAVITY_FLASH_READ_ONLY: &[&str] = &[];
 const ANTIGRAVITY_FLASH_WRITE: &[&str] = &["--sandbox=false", "--dangerously-skip-permissions"];
 const COPILOT_READ_ONLY: &[&str] = &["--autopilot", "--allow-all-tools", "--no-ask-user", "-s"];
@@ -227,12 +227,12 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
     },
     AgentModelSpec {
         slug: "gemini-3.1-pro",
-        family: "gemini",
-        cli: "gemini",
-        read_only_args: GEMINI_PRO_READ_ONLY,
-        write_args: GEMINI_PRO_WRITE,
-        model_args: &["--model", "gemini-3.1-pro-preview"],
-        description: "Higher-capacity Gemini CLI model for harder tasks; use when Gemini Flash misses details.",
+        family: "antigravity",
+        cli: "agy",
+        read_only_args: ANTIGRAVITY_PRO_READ_ONLY,
+        write_args: ANTIGRAVITY_PRO_WRITE,
+        model_args: &["--model", "Gemini 3.1 Pro (High)"],
+        description: "Higher-capacity Antigravity Gemini model for harder tasks; use when Gemini Flash misses details.",
         enabled_by_default: true,
         aliases: &[
             "gemini-3-pro",
@@ -791,7 +791,13 @@ mod tests {
 
         let pro = agent_model_spec("gemini-3-pro").expect("legacy gemini pro alias resolves");
         assert_eq!(pro.slug, "gemini-3.1-pro");
-        assert_eq!(pro.cli, "gemini");
+        assert_eq!(pro.family, "antigravity");
+        assert_eq!(pro.cli, "agy");
+        assert_eq!(pro.model_args, &["--model", "Gemini 3.1 Pro (High)"]);
+        assert_eq!(
+            default_params_for("gemini-3-pro", false),
+            vec!["--sandbox=false", "--dangerously-skip-permissions"]
+        );
     }
 
     #[test]

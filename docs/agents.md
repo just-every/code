@@ -21,7 +21,7 @@ Field recap: `name` (slug/alias), `command` (absolute paths ok), `args*` (RO/RW 
 ### Built-in defaults
 If no `[[agents]]` are configured, Code advertises built-ins (gated by env `CODE_ENABLE_CLOUD_AGENT_MODEL` for cloud variants): `code-gpt-5.5`, `code-gpt-5.4`, `code-gpt-5.4-mini`, `claude-opus-4.8`, `gemini-3.1-pro`, `claude-sonnet-4.6`, `gemini-3.5-flash`, `claude-haiku-4.5`, `qwen-3-coder`, `cloud-gpt-5.1-codex-max`. Built-ins strip any user `--model/-m` flags to avoid conflicts and inject their own.
 
-Tip: `gemini` resolves to `gemini-3.5-flash` through Antigravity CLI. Use `gemini-3.1-pro` when you want the higher-capacity Gemini CLI option.
+Tip: `gemini` resolves to `gemini-3.5-flash` through Antigravity CLI. Use `gemini-3.1-pro` when you want the higher-capacity Antigravity Gemini option.
 
 ## Subagents (`[[subagents.commands]]`)
 ```toml

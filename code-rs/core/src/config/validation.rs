@@ -205,7 +205,7 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
         return Some("claude-sonnet-4.6".to_string());
     }
 
-    // Upgrade Gemini Pro aliases to the current Gemini CLI preset.
+    // Upgrade Gemini Pro aliases to the current Antigravity CLI preset.
     if matches!(
         slug.to_ascii_lowercase().as_str(),
         "gemini-2.5-pro" | "gemini-3-pro" | "gemini-3-pro-preview"
