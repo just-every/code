@@ -1,19 +1,18 @@
-## @just-every/code v0.6.116
+## @just-every/code v0.6.117
 
-This release refreshes upstream parity while tightening exec-server behavior, storage stability, and Windows coverage.
+This release improves dynamic tool support and app-server plugin activation.
 
 ### Changes
 
-- Core: honor remote environment cwd and shell settings in exec-server.
-- Core: pin bundled SQLite to the fixed WAL-reset build for steadier local storage.
-- Testing: add PowerShell coverage to the Wine harness for stronger Windows compatibility checks.
-- Release: keep fork workflow and packaging choices aligned through the upstream refresh.
+- Tools: support dynamic tool namespaces for generated tool schemas.
+- App Server: activate selected executor plugin MCPs when starting sessions.
+- Docs: add path-type guidance for Rust path-bearing types.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.115...v0.6.116
+Compare: https://github.com/just-every/code/compare/v0.6.116...v0.6.117
