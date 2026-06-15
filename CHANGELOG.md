@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.117] - 2026-06-15
+
+- Tools: support dynamic tool namespaces for generated tool schemas. (dd934723)
+- App Server: activate selected executor plugin MCPs when starting sessions. (c8c78b63)
+- Docs: add path-type guidance for Rust path-bearing types. (71633f8b)
+
 ## [0.6.116] - 2026-06-14
 
 - Core: honor remote environment cwd and shell settings in exec-server. (efbd00f2)
