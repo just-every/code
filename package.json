@@ -16,12 +16,14 @@
     "typescript": "^5.9.2"
   },
   "resolutions": {
+    "@babel/core": "7.29.6",
     "@modelcontextprotocol/sdk": "1.26.0",
     "braces": "^3.0.3",
     "esbuild": "0.28.1",
     "flatted": "3.4.2",
     "glob@10.4.5": "10.5.0",
     "handlebars": "4.7.9",
+    "js-yaml": "4.2.0",
     "micromatch": "^4.0.8",
     "minimatch@3.1.2": "3.1.4",
     "minimatch@9.0.5": "9.0.7",
