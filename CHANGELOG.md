@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.119] - 2026-06-16
+
+- Core: add Noise relay transport support for exec-server remote connections. (428cd441)
+- App Server: expose rate-limit reset credits to clients. (bef99f86)
+- Testing: expand Bazel code-mode coverage and Wine-backed Windows executor support. (009a2bb9, 1fe89de5)
+- Docs: record Rust path migration invariants and clarify app path-type guidance. (33d50234, 322b83de)
+- Release: refresh upstream history and the codex-rs mirror for v0.6.119. (a027a40b, 6852f07b)
+
 ## [0.6.118] - 2026-06-15
 
 - Core: route Gemini Pro agents through Antigravity for the intended provider path. (ad45a6b2)
