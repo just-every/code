@@ -2759,9 +2759,21 @@ async fn process_sse<S>(
                         return;
                     }
                 }
-                let Ok(item) = serde_json::from_value::<ResponseItem>(item_val.clone()) else {
-                    debug!("failed to parse ResponseItem from output_item.done");
-                    continue;
+                let item = match serde_json::from_value::<ResponseItem>(item_val.clone()) {
+                    Ok(item) => item,
+                    Err(e) => {
+                        let error = CodexErr::Stream(
+                            format!("failed to parse response.output_item.done item: {e}"),
+                            None,
+                            Some(request_id.clone()),
+                        );
+                        debug!("failed to parse ResponseItem from output_item.done: {e}");
+                        if let Some(manager) = otel_event_manager.as_ref() {
+                            manager.see_event_completed_failed(&error);
+                        }
+                        let _ = tx_event.send(Err(error)).await;
+                        return;
+                    }
                 };
 
                 // Extract item_id if present
@@ -3507,6 +3519,75 @@ mod tests {
                 assert!(token_usage.is_none());
             }
             other => panic!("unexpected third event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_output_item_done_aborts_stream_before_later_tool_calls() {
+        let malformed = json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "name": "parallel_bad",
+                "arguments": {"tool_uses": []},
+                "call_id": "call_bad"
+            }
+        })
+        .to_string();
+
+        let later_tool_call = json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "name": "shell",
+                "arguments": "{\"cmd\":\"echo should-not-run\"}",
+                "call_id": "call_shell"
+            }
+        })
+        .to_string();
+
+        let completed = json!({
+            "type": "response.completed",
+            "response": { "id": "resp1" }
+        })
+        .to_string();
+
+        let sse1 = format!("event: response.output_item.done\ndata: {malformed}\n\n");
+        let sse2 = format!("event: response.output_item.done\ndata: {later_tool_call}\n\n");
+        let sse3 = format!("event: response.completed\ndata: {completed}\n\n");
+
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(
+            &[sse1.as_bytes(), sse2.as_bytes(), sse3.as_bytes()],
+            provider,
+        )
+        .await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::Stream(msg, _, _)) => {
+                assert!(msg.contains("failed to parse response.output_item.done item"));
+                assert!(msg.contains("invalid type: map"));
+            }
+            other => panic!("unexpected first event: {other:?}"),
         }
     }
 

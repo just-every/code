@@ -3709,6 +3709,83 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
 }
 
 #[cfg(test)]
+mod turn_validation_tests {
+    use super::should_handle_response_item_after_turn_validation;
+    use code_protocol::models::ContentItem;
+    use code_protocol::models::FunctionCallOutputPayload;
+    use code_protocol::models::LocalShellAction;
+    use code_protocol::models::LocalShellExecAction;
+    use code_protocol::models::LocalShellStatus;
+    use code_protocol::models::ResponseItem;
+
+    #[test]
+    fn execution_capable_items_wait_for_turn_validation() {
+        let function_call = ResponseItem::FunctionCall {
+            id: None,
+            name: "shell".to_string(),
+            namespace: None,
+            arguments: "{\"cmd\":\"echo ok\"}".to_string(),
+            call_id: "call_shell".to_string(),
+        };
+        let local_shell_call = ResponseItem::LocalShellCall {
+            id: None,
+            call_id: Some("call_local_shell".to_string()),
+            status: LocalShellStatus::Completed,
+            action: LocalShellAction::Exec(LocalShellExecAction {
+                command: vec!["echo".to_string(), "ok".to_string()],
+                timeout_ms: None,
+                working_directory: None,
+                env: None,
+                user: None,
+            }),
+        };
+        let tool_search_call = ResponseItem::ToolSearchCall {
+            id: None,
+            call_id: Some("call_search".to_string()),
+            status: None,
+            execution: "required".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let custom_tool_call = ResponseItem::CustomToolCall {
+            id: None,
+            status: None,
+            call_id: "call_custom".to_string(),
+            name: "custom".to_string(),
+            input: "{}".to_string(),
+        };
+
+        for item in [
+            function_call,
+            local_shell_call,
+            tool_search_call,
+            custom_tool_call,
+        ] {
+            assert!(should_handle_response_item_after_turn_validation(&item));
+        }
+    }
+
+    #[test]
+    fn non_execution_items_can_stream_before_turn_completion() {
+        let message = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "thinking".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        };
+        let tool_output = ResponseItem::FunctionCallOutput {
+            call_id: "call_shell".to_string(),
+            output: FunctionCallOutputPayload::from_text("ok".to_string()),
+        };
+
+        assert!(!should_handle_response_item_after_turn_validation(&message));
+        assert!(!should_handle_response_item_after_turn_validation(&tool_output));
+    }
+}
+
+#[cfg(test)]
 mod mcp_tool_selection_tests {
     use super::extract_mcp_tool_selection_from_history;
     use super::select_mcp_tools_for_turn;
@@ -4002,6 +4079,22 @@ struct ProcessedResponseItem {
     response: Option<ResponseInputItem>,
 }
 
+struct PendingResponseItem {
+    item: ResponseItem,
+    sequence_number: Option<u64>,
+    output_index: Option<u32>,
+}
+
+fn should_handle_response_item_after_turn_validation(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+    )
+}
+
 struct TurnLatencyGuard<'a> {
     sess: &'a Session,
     attempt_req: u64,
@@ -4145,6 +4238,7 @@ async fn try_run_turn(
     };
 
     let mut output = Vec::new();
+    let mut pending_turn_validated_items = Vec::new();
     loop {
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
         // cases so that transient stream failures (e.g., dropped SSE connection before
@@ -4231,6 +4325,14 @@ async fn try_run_turn(
                         crate::memories::note_memory_usage(&code_home, &rollout_ids).await;
                     });
                 }
+                if should_handle_response_item_after_turn_validation(&item) {
+                    pending_turn_validated_items.push(PendingResponseItem {
+                        item,
+                        sequence_number,
+                        output_index,
+                    });
+                    continue;
+                }
                 let response =
                     handle_response_item(
                         sess,
@@ -4286,6 +4388,30 @@ async fn try_run_turn(
                 response_id: _,
                 token_usage,
             } => {
+                for pending in pending_turn_validated_items.drain(..) {
+                    let response = handle_response_item(
+                        sess,
+                        turn_diff_tracker,
+                        sub_id,
+                        pending.item.clone(),
+                        pending.sequence_number,
+                        pending.output_index,
+                        attempt_req,
+                        &ImageGenerationTurnMetadata {
+                            requested_model: requested_model.clone(),
+                            latest_response_model: latest_response_model.clone(),
+                            response_headers: latest_response_headers.clone(),
+                        },
+                    )
+                    .await?;
+
+                    sess.scratchpad_push(&pending.item, &response, &sub_id);
+                    output.push(ProcessedResponseItem {
+                        item: pending.item,
+                        response,
+                    });
+                }
+
                 let (new_info, rate_limits, should_emit);
                 {
                     let mut state = sess.state.lock().unwrap();
