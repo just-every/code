@@ -1,11 +1,11 @@
-## @just-every/code v0.6.120
+## @just-every/code v0.6.121
 
-This release patches dependency alerts for bundled JavaScript tooling.
+This release tightens command approval handling and refreshes upstream release metadata.
 
 ### Changes
 
-- Dependencies: patch Babel core to resolve the related Dependabot alert.
-- Dependencies: patch js-yaml to resolve the related Dependabot alert.
+- Tools: scope command approvals by environment so decisions stay tied to the active session context.
+- Release: refresh upstream history and the codex-rs protocol mirror for v0.6.121.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.119...v0.6.120
+Compare: https://github.com/just-every/code/compare/v0.6.120...v0.6.121

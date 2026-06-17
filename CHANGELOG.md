@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.121] - 2026-06-17
+
+- Tools: scope command approvals by environment so decisions stay tied to the active session context. (f1cb4b62)
+- Release: refresh upstream history and the codex-rs protocol mirror for v0.6.121. (0fde67e1, 01d6b4e4)
+
 ## [0.6.120] - 2026-06-17
 
 - Dependencies: patch Babel core to resolve the related Dependabot alert. (dac7668c)
