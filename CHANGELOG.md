@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.120] - 2026-06-17
+
+- Dependencies: patch Babel core to resolve the related Dependabot alert. (dac7668c)
+- Dependencies: patch js-yaml to resolve the related Dependabot alert. (dac7668c)
+
 ## [0.6.119] - 2026-06-16
 
 - Core: add Noise relay transport support for exec-server remote connections. (428cd441)
