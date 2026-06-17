@@ -461,6 +461,7 @@ fn smoke_exec_approval_event_structure() {
         call_id: "call-1".into(),
         approval_id: None,
         turn_id: "turn-1".into(),
+        environment_id: None,
         command: vec!["echo".into(), "hi".into()],
         cwd: PathBuf::from("/tmp"),
         reason: Some("verify".into()),

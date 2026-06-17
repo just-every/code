@@ -302,6 +302,13 @@
         "null"
       ]
     },
+    "environmentId": {
+      "description": "Environment in which the command will run.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "itemId": {
       "type": "string"
     },

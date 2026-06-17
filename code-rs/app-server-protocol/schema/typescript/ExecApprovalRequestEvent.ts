@@ -23,6 +23,10 @@ approval_id?: string,
  */
 turn_id: string, 
 /**
+ * Environment in which the command will run.
+ */
+environmentId?: string, 
+/**
  * The command to be executed.
  */
 command: Array<string>, 

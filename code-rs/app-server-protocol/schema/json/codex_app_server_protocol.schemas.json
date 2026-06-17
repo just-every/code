@@ -2271,6 +2271,13 @@
             "null"
           ]
         },
+        "environmentId": {
+          "description": "Environment in which the command will run.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "itemId": {
           "type": "string"
         },
@@ -3733,6 +3740,13 @@
             "cwd": {
               "description": "The command's working directory.",
               "type": "string"
+            },
+            "environmentId": {
+              "description": "Environment in which the command will run.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "network_approval_context": {
               "anyOf": [

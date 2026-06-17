@@ -10735,6 +10735,7 @@ async fn handle_container_exec_with_params(
                     sub_id.clone(),
                     call_id.clone(),
                     None,
+                    None,
                     params.command.clone(),
                     params.cwd.clone(),
                     params.justification.clone(),
@@ -11188,6 +11189,7 @@ async fn handle_sandbox_error(
         .request_command_approval(
             sub_id.clone(),
             call_id.clone(),
+            None,
             None,
             params.command.clone(),
             cwd.clone(),

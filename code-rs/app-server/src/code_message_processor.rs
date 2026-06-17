@@ -1532,6 +1532,7 @@ async fn apply_bespoke_event_handling(
             call_id,
             approval_id,
             turn_id,
+            environment_id: _,
             command,
             cwd,
             reason,

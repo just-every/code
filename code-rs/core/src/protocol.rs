@@ -1401,6 +1401,14 @@ pub struct ExecApprovalRequestEvent {
     /// Uses `#[serde(default)]` for backwards compatibility.
     #[serde(default)]
     pub turn_id: String,
+    /// Environment in which the command will run.
+    #[serde(
+        default,
+        rename = "environmentId",
+        alias = "environment_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub environment_id: Option<String>,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory.
