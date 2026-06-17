@@ -40,20 +40,20 @@ importers:
         version: 3.6.2
     optionalDependencies:
       '@just-every/code-darwin-arm64':
-        specifier: 0.6.118
-        version: 0.6.118
+        specifier: 0.6.119
+        version: 0.6.119
       '@just-every/code-darwin-x64':
-        specifier: 0.6.118
-        version: 0.6.118
+        specifier: 0.6.119
+        version: 0.6.119
       '@just-every/code-linux-arm64-musl':
-        specifier: 0.6.118
-        version: 0.6.118
+        specifier: 0.6.119
+        version: 0.6.119
       '@just-every/code-linux-x64-musl':
-        specifier: 0.6.118
-        version: 0.6.118
+        specifier: 0.6.119
+        version: 0.6.119
       '@just-every/code-win32-x64':
-        specifier: 0.6.118
-        version: 0.6.118
+        specifier: 0.6.119
+        version: 0.6.119
 
   codex-rs/responses-api-proxy/npm: {}
 
@@ -633,28 +633,28 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
-  '@just-every/code-darwin-arm64@0.6.118':
-    resolution: {integrity: sha512-ivqVUeXM/ztOIcIC1CcujObCVxITZc4SvNCBfS/kOroOREDg9ulgTSXDQAmGBPBomsKZBKPs5NSZAcc/cISdMg==}
+  '@just-every/code-darwin-arm64@0.6.119':
+    resolution: {integrity: sha512-lpyvoAkZUFTb8nWRRjt/eX/z40N2Uj0n1vmlXFeD4nRiMk1kg0jwLBkIWGdBadS/g1VHROpjJwneGe2c1DcefA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@just-every/code-darwin-x64@0.6.118':
-    resolution: {integrity: sha512-dtrOgRS2MwuDfbKpPLIj8AtuOJYSoGxVvVjWZ2WwPIiprUvYDEyuCu/hfBnrUGtC477LV+vA9HIrfjqXI5ESEA==}
+  '@just-every/code-darwin-x64@0.6.119':
+    resolution: {integrity: sha512-OFAcVMNrMvDBHzzEJLFMPEpKjkGRAOKzMrkuYEnGCInBN0vauhs3z4QYWdYWt0cIFIwM/JYUL59BPil6hlzZpQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@just-every/code-linux-arm64-musl@0.6.118':
-    resolution: {integrity: sha512-zWlQSyUP8g2GcFAi4i7cc9oROx94BvrfutpV9HU5y2CsCeOatjzezO41ka9LPCJtbeI7iE4yL8HvvNf+1Q7pgw==}
+  '@just-every/code-linux-arm64-musl@0.6.119':
+    resolution: {integrity: sha512-KxOxrynpae7N5gYLIpZ3DAX0kUKAwu73ovMwEAyqZHWqF8mrP+6LzJLuHl79aLxeiwxrGZaHN0RhhJwEggs+Lw==}
     cpu: [arm64]
     os: [linux]
 
-  '@just-every/code-linux-x64-musl@0.6.118':
-    resolution: {integrity: sha512-QYX5CQCH+BsqnByat7FPv3azLlVvVF0Y4E/YfyG4zeYMJSBX6AAXJ2EmvT+uxf3hu8mhI30vuXQpNgEp8pMjPw==}
+  '@just-every/code-linux-x64-musl@0.6.119':
+    resolution: {integrity: sha512-Xvg1CCt6+juc+qoKrZWf6TSriGCXGaoN8EN3mjeGoJCY2/iyq+uYhCq7t5SQbQn+ZKTMZVhmb6MVvCzxkno07A==}
     cpu: [x64]
     os: [linux]
 
-  '@just-every/code-win32-x64@0.6.118':
-    resolution: {integrity: sha512-0BQLVpCXDSRUCPPHm52op3Vjera85Tm6ecu0RMVNY6AJlrlCI4cLQrZ+mKIyT/BM3VsI217YXco0JcbIh9vHCg==}
+  '@just-every/code-win32-x64@0.6.119':
+    resolution: {integrity: sha512-8ZtceRJeAl8s3OxqEEid/1bSeKLlaOlBN+OMYujQK0XSB4siICojSKikpXPiqnYh4k+hlWLA98lJkxL3lvZ/qg==}
     cpu: [x64]
     os: [win32]
 
@@ -2855,19 +2855,19 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@just-every/code-darwin-arm64@0.6.118':
+  '@just-every/code-darwin-arm64@0.6.119':
     optional: true
 
-  '@just-every/code-darwin-x64@0.6.118':
+  '@just-every/code-darwin-x64@0.6.119':
     optional: true
 
-  '@just-every/code-linux-arm64-musl@0.6.118':
+  '@just-every/code-linux-arm64-musl@0.6.119':
     optional: true
 
-  '@just-every/code-linux-x64-musl@0.6.118':
+  '@just-every/code-linux-x64-musl@0.6.119':
     optional: true
 
-  '@just-every/code-win32-x64@0.6.118':
+  '@just-every/code-win32-x64@0.6.119':
     optional: true
 
   '@nodelib/fs.scandir@2.1.5':

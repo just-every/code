@@ -1,11 +1,14 @@
-## @just-every/code v0.6.118
+## @just-every/code v0.6.119
 
-This release fixes Gemini Pro agent routing and keeps the related guidance aligned.
+This release adds exec-server relay transport support, exposes app-server rate-limit reset details, and refreshes testing and release metadata.
 
 ### Changes
 
-- Core: route Gemini Pro agents through Antigravity for the intended provider path.
-- Docs: align Gemini Pro agent guidance with Antigravity routing.
+- Core: add Noise relay transport support for exec-server remote connections.
+- App Server: expose rate-limit reset credits to clients.
+- Testing: expand Bazel code-mode coverage and Wine-backed Windows executor support.
+- Docs: record Rust path migration invariants and clarify app path-type guidance.
+- Release: refresh upstream history and the codex-rs mirror for v0.6.119.
 
 ### Install
 
@@ -14,4 +17,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.117...v0.6.118
+Compare: https://github.com/just-every/code/compare/v0.6.118...v0.6.119
