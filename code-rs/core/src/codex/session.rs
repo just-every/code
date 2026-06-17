@@ -1005,9 +1005,23 @@ impl Session {
         state.turn_scratchpad.take()
     }
 
+    pub(super) fn scratchpad_has_tool_responses(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state
+            .turn_scratchpad
+            .as_ref()
+            .is_some_and(TurnScratchpad::has_tool_responses)
+    }
+
     pub(super) fn clear_scratchpad(&self) {
         let mut state = self.state.lock().unwrap();
         state.turn_scratchpad = None;
+    }
+}
+
+impl TurnScratchpad {
+    pub(super) fn has_tool_responses(&self) -> bool {
+        !self.responses.is_empty()
     }
 }
 
@@ -1116,6 +1130,14 @@ impl Session {
                 state.current_task.take();
             }
         }
+    }
+
+    pub(super) fn is_current_task(&self, sub_id: &str) -> bool {
+        let state = self.state.lock().unwrap();
+        state
+            .current_task
+            .as_ref()
+            .is_some_and(|agent| agent.sub_id == sub_id)
     }
 
     pub fn enqueue_post_turn_item(&self, item: ResponseInputItem) -> bool {

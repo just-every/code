@@ -3557,6 +3557,20 @@ async fn run_turn(
                     }
                 };
 
+                let has_tool_responses = sess.scratchpad_has_tool_responses();
+                if has_tool_responses {
+                    let message = format!(
+                        "stream disconnected after tool output; not retrying to avoid duplicate tool state: {e}"
+                    );
+                    warn!(
+                        error = %e,
+                        request_id = req_id.as_deref(),
+                        "stream disconnected after tool output - not retrying"
+                    );
+                    sess.clear_scratchpad();
+                    return Err(CodexErr::Stream(message, None, req_id));
+                }
+
                 if is_connectivity && retries >= max_retries {
                     let probe = tc.client.get_provider().base_url_for_probe();
                     let wait_message = format!(
@@ -3569,7 +3583,7 @@ async fn run_turn(
                     continue;
                 }
 
-                if retries < max_retries {
+                if should_retry_stream_after_error(has_tool_responses, retries, max_retries) {
                     retries += 1;
                     let (delay, retry_eta) = match e {
                         CodexErr::Stream(_, Some(ref retry_after), _) => {
@@ -4085,6 +4099,26 @@ struct PendingResponseItem {
     output_index: Option<u32>,
 }
 
+fn should_process_stream_event(is_current_task: bool) -> bool {
+    is_current_task
+}
+
+fn ensure_turn_still_current(sess: &Session, sub_id: &str) -> CodexResult<()> {
+    if should_process_stream_event(sess.is_current_task(sub_id)) {
+        Ok(())
+    } else {
+        Err(CodexErr::Interrupted)
+    }
+}
+
+fn should_retry_stream_after_error(
+    has_tool_responses: bool,
+    retries: u64,
+    max_retries: u64,
+) -> bool {
+    !has_tool_responses && retries < max_retries
+}
+
 fn should_handle_response_item_after_turn_validation(item: &ResponseItem) -> bool {
     matches!(
         item,
@@ -4240,6 +4274,7 @@ async fn try_run_turn(
     let mut output = Vec::new();
     let mut pending_turn_validated_items = Vec::new();
     loop {
+        ensure_turn_still_current(sess, sub_id)?;
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
         // cases so that transient stream failures (e.g., dropped SSE connection before
         // `response.completed`) bubble up and trigger the caller's retry logic.
@@ -4265,6 +4300,8 @@ async fn try_run_turn(
                 return Err(e);
             }
         };
+
+        ensure_turn_still_current(sess, sub_id)?;
 
         match event {
             ResponseEvent::Created {
@@ -4350,6 +4387,8 @@ async fn try_run_turn(
                     )
                     .await?;
 
+                ensure_turn_still_current(sess, sub_id)?;
+
                 // Save into scratchpad so we can seed a retry if the stream drops later.
                 sess.scratchpad_push(&item, &response, &sub_id);
 
@@ -4389,6 +4428,7 @@ async fn try_run_turn(
                 token_usage,
             } => {
                 for pending in pending_turn_validated_items.drain(..) {
+                    ensure_turn_still_current(sess, sub_id)?;
                     let response = handle_response_item(
                         sess,
                         turn_diff_tracker,
@@ -4405,6 +4445,7 @@ async fn try_run_turn(
                     )
                     .await?;
 
+                    ensure_turn_still_current(sess, sub_id)?;
                     sess.scratchpad_push(&pending.item, &response, &sub_id);
                     output.push(ProcessedResponseItem {
                         item: pending.item,
@@ -14491,14 +14532,18 @@ mod tests {
         parse_apply_patch_input,
         save_image_generation_result,
         save_image_generation_sidecar,
+        should_process_stream_event,
+        should_retry_stream_after_error,
         ImageGenerationTurnMetadata,
         spark_fallback_model,
         TRUNCATION_MARKER,
     };
+    use super::super::session::TurnScratchpad;
     use crate::exec::{ExecToolCallOutput, StreamOutput};
     use crate::protocol::TokenUsage;
     use code_protocol::models::FunctionCallOutputContentItem;
     use code_protocol::models::FunctionCallOutputPayload;
+    use code_protocol::models::ResponseInputItem;
     use serde_json::Value;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -14512,6 +14557,54 @@ mod tests {
             duration: Duration::from_secs(1),
             timed_out: false,
         }
+    }
+
+    fn make_tool_output(call_id: &str) -> ResponseInputItem {
+        ResponseInputItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload::from_text("done".to_string()),
+        }
+    }
+
+    #[test]
+    fn cancelled_turn_does_not_process_late_stream_events() {
+        assert!(should_process_stream_event(true));
+        assert!(!should_process_stream_event(false));
+    }
+
+    #[test]
+    fn scratchpad_tool_response_blocks_stream_retry() {
+        let scratchpad = TurnScratchpad {
+            responses: vec![make_tool_output("call-1")],
+            ..TurnScratchpad::default()
+        };
+
+        assert!(scratchpad.has_tool_responses());
+        assert!(!should_retry_stream_after_error(
+            scratchpad.has_tool_responses(),
+            0,
+            10,
+        ));
+    }
+
+    #[test]
+    fn stream_retry_policy_still_allows_pre_tool_disconnects() {
+        let scratchpad = TurnScratchpad {
+            partial_assistant_text: "partial".to_string(),
+            ..TurnScratchpad::default()
+        };
+
+        assert!(!scratchpad.has_tool_responses());
+        assert!(should_retry_stream_after_error(
+            scratchpad.has_tool_responses(),
+            0,
+            1,
+        ));
+        assert!(!should_retry_stream_after_error(
+            scratchpad.has_tool_responses(),
+            1,
+            1,
+        ));
     }
 
     #[test]
