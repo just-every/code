@@ -1,17 +1,18 @@
-## @just-every/code v0.6.121
+## @just-every/code v0.6.122
 
-This release tightens command approval handling and refreshes upstream release metadata.
+This release tightens core tool-turn handling for more stable sessions.
 
 ### Changes
 
-- Tools: scope command approvals by environment so decisions stay tied to the active session context.
-- Release: refresh upstream history and the codex-rs protocol mirror for v0.6.121.
+- Core: bound repeated tool cycles so sessions recover instead of looping indefinitely.
+- Core: stop replaying cancelled tool turns after interruption.
+- Core: reject malformed tool batches to keep streaming state consistent.
 
 ### Install
 
-```
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.120...v0.6.121
+Compare: https://github.com/just-every/code/compare/v0.6.121...v0.6.122

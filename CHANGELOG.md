@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.122] - 2026-06-17
+
+- Core: bound repeated tool cycles so sessions recover instead of looping indefinitely. (da10a8e8)
+- Core: stop replaying cancelled tool turns after interruption. (7b2f8008)
+- Core: reject malformed tool batches to keep streaming state consistent. (046919c4)
+
 ## [0.6.121] - 2026-06-17
 
 - Tools: scope command approvals by environment so decisions stay tied to the active session context. (f1cb4b62)
