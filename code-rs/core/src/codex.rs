@@ -91,6 +91,7 @@ pub mod compact;
 pub mod compact_remote;
 mod events;
 mod exec;
+mod repeated_tool_cycle;
 mod session;
 mod streaming;
 

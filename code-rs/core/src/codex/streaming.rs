@@ -21,6 +21,7 @@ use super::session::{
     MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH,
     MAX_WAIT_TRACKED_BATCHES,
 };
+use super::repeated_tool_cycle::RepeatedToolCycleGuard;
 use crate::auth;
 use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
@@ -2578,6 +2579,7 @@ async fn run_agent(
     // the token limit, we shouldn't need more than one compaction per iteration.
     let mut did_proactive_compact_this_iteration = false;
     let mut auto_compact_pending = false;
+    let mut repeated_tool_cycle_guard = RepeatedToolCycleGuard::default();
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -2831,6 +2833,23 @@ async fn run_agent(
                     if let Some(response) = response {
                         responses.push(response);
                     }
+                }
+
+                if let Err(e) = repeated_tool_cycle_guard.check(
+                    &items_to_record_in_conversation_history,
+                    &responses,
+                ) {
+                    info!("Turn error: {e:#}");
+                    let event = sess.make_event(
+                        &sub_id,
+                        EventMsg::Error(ErrorEvent { message: e.to_string() }),
+                    );
+                    sess.tx_event.send(event).await.ok();
+                    if is_review_mode && !review_exit_emitted {
+                        exit_review_mode(sess.clone(), sub_id.clone(), None).await;
+                        review_exit_emitted = true;
+                    }
+                    break;
                 }
 
                 // Only attempt to take the lock if there is something to record.
