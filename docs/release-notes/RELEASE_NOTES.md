@@ -1,18 +1,17 @@
-## @just-every/code v0.6.122
+## @just-every/code v0.6.123
 
-This release tightens core tool-turn handling for more stable sessions.
+This release refreshes upstream parity, contributor guidance, and release build compatibility.
 
 ### Changes
 
-- Core: bound repeated tool cycles so sessions recover instead of looping indefinitely.
-- Core: stop replaying cancelled tool turns after interruption.
-- Core: reject malformed tool batches to keep streaming state consistent.
+- Release: refresh upstream history and the codex-rs mirror for v0.6.123.
+- Docs: expand Rust path migration guidance for Codex contributors.
+- Install: support checksum parsing on older awk implementations.
+- Build: refresh the Bazel macOS SDK pin for continued macOS builds.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
-
-Compare: https://github.com/just-every/code/compare/v0.6.121...v0.6.122

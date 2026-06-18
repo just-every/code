@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.123] - 2026-06-18
+
+- Release: refresh upstream history and the codex-rs mirror for v0.6.123. (eb559462, 830926fd)
+- Docs: expand Rust path migration guidance for Codex contributors. (285eff6c)
+- Install: support checksum parsing on older awk implementations. (f22d15b)
+- Build: refresh the Bazel macOS SDK pin for continued macOS builds. (243243ab)
+
 ## [0.6.122] - 2026-06-17
 
 - Core: bound repeated tool cycles so sessions recover instead of looping indefinitely. (da10a8e8)
