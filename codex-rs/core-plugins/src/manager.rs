@@ -466,9 +466,14 @@ impl PluginsManager {
     }
 
     #[instrument(
-        level = "trace",
+        name = "plugins_for_config",
+        level = "info",
         skip_all,
-        fields(force_reload, plugins_enabled = config.plugins_enabled)
+        fields(
+            otel.name = "plugins_for_config",
+            force_reload,
+            plugins_enabled = config.plugins_enabled
+        )
     )]
     pub(crate) async fn plugins_for_config_with_force_reload(
         &self,
@@ -942,6 +947,14 @@ impl PluginsManager {
         Ok(featured_plugin_ids)
     }
 
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            plugins_enabled = config.plugins_enabled,
+            remote_plugin_enabled = config.remote_plugin_enabled
+        )
+    )]
     pub async fn recommended_plugins_mode_for_config(
         &self,
         config: &PluginsConfigInput,
@@ -1014,6 +1027,7 @@ impl PluginsManager {
 
     /// Returns endpoint recommendations eligible for installation in the current client.
     /// `None` selects the legacy discovery workflow.
+    #[instrument(level = "trace", skip_all)]
     pub async fn recommended_plugin_candidates_for_config(
         &self,
         input: RecommendedPluginCandidatesInput<'_>,
@@ -1577,7 +1591,7 @@ impl PluginsManager {
         let resolved_skills = load_plugin_skills(
             &source_path,
             &plugin_id,
-            &manifest.paths,
+            &manifest,
             self.restriction_product,
             &codex_core_skills::config_rules::skill_config_rules_from_stack(
                 &config.config_layer_stack,
