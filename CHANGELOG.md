@@ -7,6 +7,10 @@
 
 - (none)
 
+## [0.6.124] - 2026-06-18
+
+- Release: refresh upstream history and the codex-rs mirror for v0.6.124. (738ee6f6, fe509857)
+
 ## [0.6.123] - 2026-06-18
 
 - Release: refresh upstream history and the codex-rs mirror for v0.6.123. (eb559462, 830926fd)
