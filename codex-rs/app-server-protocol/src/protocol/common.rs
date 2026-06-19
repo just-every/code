@@ -1702,7 +1702,6 @@ mod tests {
     use codex_protocol::account::PlanType;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::parse_command::ParsedCommand;
-    use codex_protocol::protocol::RealtimeConversationArchitecture;
     use codex_protocol::protocol::RealtimeConversationVersion;
     use codex_protocol::protocol::RealtimeOutputModality;
     use codex_protocol::protocol::RealtimeVoice;
@@ -2012,6 +2011,7 @@ mod tests {
             params: v2::EnvironmentAddParams {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
+                connect_timeout_ms: None,
             },
         };
         assert_eq!(
@@ -2573,12 +2573,17 @@ mod tests {
                 service_tier: None,
                 cwd,
                 runtime_workspace_roots: Vec::new(),
-                instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
+                instruction_sources: vec![
+                    codex_utils_path_uri::LegacyAppPathString::from_abs_path(&absolute_path(
+                        "/tmp/AGENTS.md",
+                    )),
+                ],
                 approval_policy: v2::AskForApproval::OnFailure,
                 approvals_reviewer: v2::ApprovalsReviewer::User,
                 sandbox: v2::SandboxPolicy::DangerFullAccess,
                 active_permission_profile: None,
                 reasoning_effort: None,
+                multi_agent_mode: None,
             },
         };
 
@@ -2626,7 +2631,8 @@ mod tests {
                         "type": "dangerFullAccess"
                     },
                     "activePermissionProfile": null,
-                    "reasoningEffort": null
+                    "reasoningEffort": null,
+                    "multiAgentMode": null
                 }
             }),
             serde_json::to_value(&response)?,
@@ -2955,6 +2961,7 @@ mod tests {
             params: v2::EnvironmentAddParams {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
+                connect_timeout_ms: Some(300_000),
             },
         };
         assert_eq!(
@@ -2963,7 +2970,8 @@ mod tests {
                 "id": 9,
                 "params": {
                     "environmentId": "remote-a",
-                    "execServerUrl": "ws://127.0.0.1:8765"
+                    "execServerUrl": "ws://127.0.0.1:8765",
+                    "connectTimeoutMs": 300000
                 }
             }),
             serde_json::to_value(&request)?,
@@ -3135,7 +3143,6 @@ mod tests {
         let request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
-                architecture: Some(RealtimeConversationArchitecture::Avas),
                 client_managed_handoffs: Some(true),
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3156,7 +3163,6 @@ mod tests {
                 "method": "thread/realtime/start",
                 "id": 9,
                 "params": {
-                    "architecture": "avas",
                     "threadId": "thr_123",
                     "clientManagedHandoffs": true,
                     "codexResponsesAsItems": null,
@@ -3182,7 +3188,6 @@ mod tests {
         let default_prompt_request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
-                architecture: None,
                 client_managed_handoffs: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3203,7 +3208,6 @@ mod tests {
                 "method": "thread/realtime/start",
                 "id": 9,
                 "params": {
-                    "architecture": null,
                     "threadId": "thr_123",
                     "clientManagedHandoffs": null,
                     "codexResponsesAsItems": null,
@@ -3224,7 +3228,6 @@ mod tests {
         let null_prompt_request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(9),
             params: v2::ThreadRealtimeStartParams {
-                architecture: None,
                 client_managed_handoffs: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3245,7 +3248,6 @@ mod tests {
                 "method": "thread/realtime/start",
                 "id": 9,
                 "params": {
-                    "architecture": null,
                     "threadId": "thr_123",
                     "clientManagedHandoffs": null,
                     "codexResponsesAsItems": null,
@@ -3395,6 +3397,7 @@ mod tests {
             params: v2::EnvironmentAddParams {
                 environment_id: "remote-a".to_string(),
                 exec_server_url: "ws://127.0.0.1:8765".to_string(),
+                connect_timeout_ms: None,
             },
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
@@ -3432,7 +3435,6 @@ mod tests {
         let request = ClientRequest::ThreadRealtimeStart {
             request_id: RequestId::Integer(1),
             params: v2::ThreadRealtimeStartParams {
-                architecture: None,
                 client_managed_handoffs: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
@@ -3545,6 +3547,7 @@ mod tests {
                             developer_instructions: None,
                         },
                     },
+                    multi_agent_mode: Default::default(),
                     personality: None,
                 },
             });
