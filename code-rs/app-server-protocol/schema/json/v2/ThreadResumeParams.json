@@ -407,8 +407,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "phase": {
               "anyOf": [
@@ -458,8 +457,10 @@
               ]
             },
             "id": {
-              "type": "string",
-              "writeOnly": true
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "summary": {
               "items": {
@@ -476,7 +477,6 @@
             }
           },
           "required": [
-            "id",
             "summary",
             "type"
           ],
@@ -500,8 +500,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "status": {
               "$ref": "#/definitions/LocalShellStatus"
@@ -534,8 +533,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "name": {
               "type": "string"
@@ -579,8 +577,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "status": {
               "type": [
@@ -637,8 +634,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "input": {
               "type": "string"
@@ -750,8 +746,7 @@
               "type": [
                 "string",
                 "null"
-              ],
-              "writeOnly": true
+              ]
             },
             "status": {
               "type": [

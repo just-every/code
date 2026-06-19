@@ -260,8 +260,8 @@ pub enum MessagePhase {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
     Message {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         role: String,
         content: Vec<ContentItem>,
@@ -277,9 +277,9 @@ pub enum ResponseItem {
         phase: Option<MessagePhase>,
     },
     Reasoning {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        id: Option<String>,
         summary: Vec<ReasoningItemReasoningSummary>,
         #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
         #[ts(optional)]
@@ -288,8 +288,8 @@ pub enum ResponseItem {
     },
     LocalShellCall {
         /// Legacy id field retained for compatibility with older payloads.
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         /// Set when using the Responses API.
         call_id: Option<String>,
@@ -297,8 +297,8 @@ pub enum ResponseItem {
         action: LocalShellAction,
     },
     FunctionCall {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,8 +311,8 @@ pub enum ResponseItem {
         call_id: String,
     },
     ToolSearchCall {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,8 +332,8 @@ pub enum ResponseItem {
         output: FunctionCallOutputPayload,
     },
     CustomToolCall {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -366,8 +366,8 @@ pub enum ResponseItem {
     //   "action": {"type":"search","query":"weather: San Francisco, CA"}
     // }
     WebSearchCall {
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1884,6 +1884,48 @@ mod tests {
     }
 
     #[test]
+    fn response_item_ids_serialize_for_provider_replay() -> Result<()> {
+        let message = ResponseItem::Message {
+            id: Some("msg_1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "done".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+        };
+        assert_eq!(
+            serde_json::to_value(message)?["id"],
+            serde_json::json!("msg_1")
+        );
+
+        let reasoning = ResponseItem::Reasoning {
+            id: Some("rs_1".to_string()),
+            summary: Vec::new(),
+            content: None,
+            encrypted_content: None,
+        };
+        assert_eq!(
+            serde_json::to_value(reasoning)?["id"],
+            serde_json::json!("rs_1")
+        );
+
+        let function_call = ResponseItem::FunctionCall {
+            id: Some("fc_1".to_string()),
+            name: "example".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: "call_1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(function_call)?["id"],
+            serde_json::json!("fc_1")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn tool_search_call_roundtrips() -> Result<()> {
         let parsed: ResponseItem = serde_json::from_str(
             r#"{
@@ -2111,7 +2153,7 @@ mod tests {
                 Some("ws_partial".into()),
                 None,
                 Some("in_progress".into()),
-                false,
+                true,
             ),
         ];
 

@@ -3367,7 +3367,7 @@ fn request_decision_with_model(
                             .any(|item| matches!(item, ResponseItem::Reasoning { .. }))
                     {
                         response_items.push(ResponseItem::Reasoning {
-                            id: String::new(),
+                            id: None,
                             summary: Vec::new(),
                             content: Some(vec![ReasoningItemContent::ReasoningText {
                                 text: reasoning_delta_accumulator.trim().to_string(),

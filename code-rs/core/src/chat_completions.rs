@@ -657,7 +657,7 @@ async fn process_chat_sse<S>(
 
         if !reasoning_text.is_empty() {
             let item = ResponseItem::Reasoning {
-                id: current_item_id.clone().unwrap_or_else(String::new),
+                id: current_item_id.clone(),
                 summary: Vec::new(),
                 content: Some(vec![ReasoningItemContent::ReasoningText {
                     text: std::mem::take(reasoning_text),
@@ -965,7 +965,7 @@ async fn process_chat_sse<S>(
                         // the reasoning stream before any exec/tool events begin.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone().unwrap_or_else(String::new),
+                                id: current_item_id.clone(),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
@@ -1001,7 +1001,7 @@ async fn process_chat_sse<S>(
                         // Also emit a terminal Reasoning item so UIs can finalize raw reasoning.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone().unwrap_or_else(String::new),
+                                id: current_item_id.clone(),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
@@ -1115,7 +1115,7 @@ where
 
                     // Also capture item_id from Reasoning items
                     if let ResponseItem::Reasoning { id, .. } = &item {
-                        if !id.is_empty() {
+                        if let Some(id) = id.as_ref().filter(|id| !id.is_empty()) {
                             this.cumulative_item_id = Some(id.clone());
                         }
                     }
@@ -1146,7 +1146,7 @@ where
                         && matches!(this.mode, AggregateMode::AggregatedOnly)
                     {
                         let aggregated_reasoning = ResponseItem::Reasoning {
-                            id: this.cumulative_item_id.clone().unwrap_or_else(String::new),
+                            id: this.cumulative_item_id.clone(),
                             summary: Vec::new(),
                             content: Some(vec![
                                 ReasoningItemContent::ReasoningText {
