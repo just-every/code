@@ -1,16 +1,16 @@
-## @just-every/code v0.6.124
+## @just-every/code v0.6.125
 
-This release refreshes Code with the latest upstream history and mirror metadata.
+This release improves response item compatibility and AGENTS.md handling across environments.
 
 ### Changes
 
-- Release: refresh upstream history and the codex-rs mirror for v0.6.124.
+- Core: backport Responses item id serialization for more compatible resumed response items.
+- App Server: document and preserve raw response item compatibility across protocol schemas.
+- Core: load and log AGENTS.md paths more consistently across foreign environments.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
-
-Compare: https://github.com/just-every/code/compare/v0.6.123...v0.6.124

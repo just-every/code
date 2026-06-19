@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.125] - 2026-06-19
+
+- Core: backport Responses item id serialization for more compatible resumed response items. (3b77f6e7)
+- App Server: document and preserve raw response item compatibility across protocol schemas. (3b77f6e7, 7951397e)
+- Core: load and log AGENTS.md paths more consistently across foreign environments. (dce67390, 195c936f)
+
 ## [0.6.124] - 2026-06-18
 
 - Release: refresh upstream history and the codex-rs mirror for v0.6.124. (738ee6f6, fe509857)
