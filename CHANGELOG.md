@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.126] - 2026-06-20
+
+- Release: refresh upstream history and the codex-rs mirror for v0.6.126. (7b4f0f4b, 558ab96e)
+- Docs: carry forward the v0.6.125 changelog metadata for publish continuity. (ee4d9e30)
+
 ## [0.6.125] - 2026-06-19
 
 - Core: backport Responses item id serialization for more compatible resumed response items. (3b77f6e7)
