@@ -212,6 +212,14 @@ fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
     status.is_client_error() && is_quota_exceeded_error(error)
 }
 
+fn should_store_responses(
+    prompt: &Prompt,
+    provider: &ModelProviderInfo,
+    request_family: &ModelFamily,
+) -> bool {
+    prompt.store || provider.is_azure_responses_endpoint() || request_family.use_responses_lite
+}
+
 fn is_server_overloaded_error(error: &Error) -> bool {
     matches!(
         error.code.as_deref(),
@@ -708,9 +716,6 @@ impl ModelClient {
             .as_ref()
             .map(|a| a.mode);
 
-        // Use non-stored turns on all paths for stability.
-        let store = false;
-
         let request_model = prompt
             .model_override
             .as_deref()
@@ -721,6 +726,7 @@ impl ModelClient {
             .clone()
             .or_else(|| find_family_for_model(request_model))
             .unwrap_or_else(|| self.config.model_family.clone());
+        let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
         let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
@@ -799,8 +805,7 @@ impl ModelClient {
                     && !request_family.use_responses_lite,
                 reasoning,
                 text: text_template.clone(),
-                store: self.provider.is_azure_responses_endpoint()
-                    || request_family.use_responses_lite,
+                store,
                 stream: true,
                 include,
                 service_tier: self
@@ -1169,8 +1174,6 @@ impl ModelClient {
             .as_ref()
             .map(|a| a.mode);
 
-        // Use non-stored turns on all paths for stability.
-        let store = false;
         let turn_state: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
 
         let request_model = prompt
@@ -1183,6 +1186,7 @@ impl ModelClient {
             .clone()
             .or_else(|| find_family_for_model(request_model))
             .unwrap_or_else(|| self.config.model_family.clone());
+        let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
         let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
@@ -1288,7 +1292,7 @@ impl ModelClient {
                     && !request_family.use_responses_lite,
                 reasoning,
                 text,
-                store: azure_workaround || request_family.use_responses_lite,
+                store,
                 stream: true,
                 include,
                 service_tier: self
@@ -3125,6 +3129,7 @@ async fn stream_from_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_family::derive_default_model_family;
     use crate::model_provider_info::{ModelProviderInfo, WireApi};
     use std::collections::HashMap;
     use serde_json::json;
@@ -3170,6 +3175,53 @@ mod tests {
     fn unauthorized_outcome_allows_retry_for_transient_refresh_error() {
         let err = RefreshTokenError::transient("server busy");
         assert!(map_unauthorized_outcome(true, Some(&err)).is_none());
+    }
+
+    fn responses_test_provider(name: &str, wire_api: WireApi) -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: name.to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            wire_api,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            openrouter: None,
+        }
+    }
+
+    #[test]
+    fn responses_storage_honors_explicit_prompt_store() {
+        let provider = responses_test_provider("openai", WireApi::Responses);
+        let family = derive_default_model_family("gpt-test");
+        let mut prompt = Prompt::default();
+
+        assert!(!should_store_responses(&prompt, &provider, &family));
+
+        prompt.store = true;
+        assert!(should_store_responses(&prompt, &provider, &family));
+    }
+
+    #[test]
+    fn responses_storage_forces_store_for_required_providers() {
+        let prompt = Prompt::default();
+        let mut family = derive_default_model_family("gpt-test");
+        let provider = responses_test_provider("openai", WireApi::Responses);
+
+        family.use_responses_lite = true;
+        assert!(should_store_responses(&prompt, &provider, &family));
+
+        family.use_responses_lite = false;
+        let azure_provider = responses_test_provider("azure", WireApi::Responses);
+        assert!(should_store_responses(&prompt, &azure_provider, &family));
     }
 
     #[tokio::test]
