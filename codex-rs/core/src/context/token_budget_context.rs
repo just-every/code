@@ -8,7 +8,7 @@ pub(crate) struct TokenBudgetContext {
     first_window_id: Uuid,
     previous_window_id: Option<Uuid>,
     window_id: Uuid,
-    tokens_left: i64,
+    mcp_result: Option<String>,
 }
 
 impl TokenBudgetContext {
@@ -17,14 +17,14 @@ impl TokenBudgetContext {
         first_window_id: Uuid,
         previous_window_id: Option<Uuid>,
         window_id: Uuid,
-        tokens_left: i64,
+        mcp_result: Option<String>,
     ) -> Self {
         Self {
             thread_id,
             first_window_id,
             previous_window_id,
             window_id,
-            tokens_left,
+            mcp_result,
         }
     }
 }
@@ -39,20 +39,25 @@ impl ContextualUserFragment for TokenBudgetContext {
     }
 
     fn type_markers() -> (&'static str, &'static str) {
-        ("<token_budget>\n", "\n</token_budget>")
+        ("", "")
     }
 
     fn body(&self) -> String {
         let thread_id = self.thread_id;
         let first_window_id = self.first_window_id;
-        let previous_window_id = self
-            .previous_window_id
-            .map_or_else(|| "none".to_string(), |window_id| window_id.to_string());
         let window_id = self.window_id;
-        let tokens_left = self.tokens_left;
-        format!(
-            "Thread id {thread_id}.\nFirst context window id {first_window_id}.\nPrevious context window id {previous_window_id}.\nCurrent context window id {window_id}.\nYou have {tokens_left} tokens left in this context window."
-        )
+        let mut lines = vec![
+            format!("Thread id {thread_id}."),
+            format!("First context window id: {first_window_id}"),
+            format!("Current context window id: {window_id}"),
+        ];
+        if let Some(previous_window_id) = self.previous_window_id {
+            lines.push(format!("Previous context window id: {previous_window_id}"));
+        }
+        if let Some(mcp_result) = &self.mcp_result {
+            lines.push(mcp_result.clone());
+        }
+        lines.join("\n")
     }
 }
 
@@ -83,7 +88,7 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
     }
 
     fn type_markers() -> (&'static str, &'static str) {
-        ("<token_budget>\n", "\n</token_budget>")
+        ("", "")
     }
 
     fn body(&self) -> String {
@@ -93,5 +98,36 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
             }
             None => "You have unknown tokens left in this context window.".to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenBudgetReminder {
+    message: String,
+}
+
+impl TokenBudgetReminder {
+    pub(crate) fn new(message_template: &str, n_remaining: i64) -> Self {
+        Self {
+            message: message_template.replace("{n_remaining}", &n_remaining.to_string()),
+        }
+    }
+}
+
+impl ContextualUserFragment for TokenBudgetReminder {
+    fn role(&self) -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("", "")
+    }
+
+    fn body(&self) -> String {
+        self.message.clone()
     }
 }
