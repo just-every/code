@@ -240,13 +240,33 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN=$(python -c "import pathlib; p=pathlib.Path('code-rs/rust-toolchain.toml').read_text();
+          try:
+              import tomllib as tl
+          except ModuleNotFoundError:
+              import tomli as tl
+          print(tl.loads(p)['toolchain']['channel'])")
+          echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+          echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+
       - name: Install release-note tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y ripgrep
-          npm install -g @just-every/code@latest
+          cd code-rs
+          cargo build --locked --profile dev-fast --bin code
 
       - name: Start local OpenAI proxy for release notes
         if: env.OPENAI_API_KEY != ''
@@ -373,7 +393,7 @@ jobs:
           cat docs/release-notes/context.md >> docs/release-notes/prompt.expanded.txt
 
           OPENAI_BASE_URL="http://127.0.0.1:5058/v1" \
-          coder -c project_doc_max_bytes=0 exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
+          "$GITHUB_WORKSPACE/code-rs/target/dev-fast/code" -c project_doc_max_bytes=0 exec --cd "$GITHUB_WORKSPACE" --full-auto --skip-git-repo-check < docs/release-notes/prompt.expanded.txt | tee .github/auto/RELEASE_AGENT_OUT.txt || {
             echo "Code exec returned non-zero; continuing to check for outputs..." >&2
           }
 
