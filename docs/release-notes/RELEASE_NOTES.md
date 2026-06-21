@@ -1,17 +1,17 @@
-## @just-every/code v0.6.126
+## @just-every/code v0.6.127
 
-This release refreshes upstream parity and release metadata for Code.
+This release fixes resumed Responses prompt handling and tightens release note generation.
 
 ### Changes
 
-- Release: refresh upstream history and the codex-rs mirror for v0.6.126.
-- Docs: carry forward the v0.6.125 changelog metadata for publish continuity.
+- Core: honor stored Responses prompts when continuing sessions.
+- Release: generate release notes from the checked-out code during publish.
 
 ### Install
 
-```sh
+```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.125...v0.6.126
+Compare: https://github.com/just-every/code/compare/v0.6.126...v0.6.127

@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.127] - 2026-06-21
+
+- Core: honor stored Responses prompts when continuing sessions. (d1620890)
+- Release: generate release notes from the checked-out code during publish. (793b8fee)
+
 ## [0.6.126] - 2026-06-20
 
 - Release: refresh upstream history and the codex-rs mirror for v0.6.126. (7b4f0f4b, 558ab96e)
