@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.128] - 2026-06-22
+
+- App Server: accept ChatGPT accounts without email to preserve account parity. (758385b8, 5a67d898)
+- Release: refresh upstream history and the codex-rs mirror for v0.6.128. (da7f2134, 8212d5ef)
+
 ## [0.6.127] - 2026-06-21
 
 - Core: honor stored Responses prompts when continuing sessions. (d1620890)
