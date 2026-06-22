@@ -344,12 +344,7 @@ pub(crate) async fn stream_chat_completions(
     }
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-    let mut payload = json!({
-        "model": model_slug,
-        "messages": messages,
-        "stream": true,
-        "tools": tools_json,
-    });
+    let mut payload = create_chat_completions_payload(model_slug, messages, tools_json);
 
     if let Some(openrouter_cfg) = provider.openrouter_config() {
         if let Some(obj) = payload.as_object_mut() {
@@ -590,6 +585,20 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
         obj.insert("reasoning".to_string(), json!(reasoning));
     }
     messages.push(msg);
+}
+
+fn create_chat_completions_payload(
+    model_slug: &str,
+    messages: Vec<Value>,
+    tools_json: Vec<Value>,
+) -> Value {
+    json!({
+        "model": model_slug,
+        "messages": messages,
+        "stream": true,
+        "store": false,
+        "tools": tools_json,
+    })
 }
 
 /// Lightweight SSE processor for the Chat Completions streaming format. The
@@ -1350,8 +1359,26 @@ fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Va
 
 #[cfg(test)]
 mod tests {
+    use super::create_chat_completions_payload;
     use super::sanitize_message_roles_for_strict_chat_providers;
     use serde_json::json;
+
+    #[test]
+    fn chat_completions_payload_disables_openai_storage() {
+        let payload = create_chat_completions_payload(
+            "gpt-4.1",
+            vec![json!({"role": "user", "content": "what is 2+2?"})],
+            Vec::new(),
+        );
+
+        assert_eq!(payload["store"], false);
+
+        let body = serde_json::to_string(&payload).unwrap();
+        assert!(
+            body.contains("\"store\":false"),
+            "serialized payload should explicitly disable storage: {body}"
+        );
+    }
 
     #[test]
     fn normalizes_developer_role_to_system_before_strict_provider_serialization() {
