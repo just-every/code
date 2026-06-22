@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.129] - 2026-06-22
+
+- Core: disable storage for chat completions to avoid retaining request data. (8d425d0a)
+- Release: allow more time for release notes generation during publish. (0bf658e1)
+
 ## [0.6.128] - 2026-06-22
 
 - App Server: accept ChatGPT accounts without email to preserve account parity. (758385b8, 5a67d898)

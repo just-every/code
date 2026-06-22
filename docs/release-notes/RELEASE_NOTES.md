@@ -1,11 +1,11 @@
-## @just-every/code v0.6.128
+## @just-every/code v0.6.129
 
-This release preserves ChatGPT account compatibility and refreshes upstream parity.
+This release improves chat completion privacy defaults and release publishing reliability.
 
 ### Changes
 
-- App Server: accept ChatGPT accounts without email to preserve account parity.
-- Release: refresh upstream history and the codex-rs mirror for v0.6.128.
+- Core: disable storage for chat completions to avoid retaining request data.
+- Release: allow more time for release notes generation during publish.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.127...v0.6.128
+Compare: https://github.com/just-every/code/compare/v0.6.128...v0.6.129
