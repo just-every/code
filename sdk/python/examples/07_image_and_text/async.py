@@ -18,7 +18,7 @@ import asyncio
 
 from codex_app_server import AsyncCodex, ImageInput, TextInput
 
-REMOTE_IMAGE_URL = "https://raw.githubusercontent.com/github/explore/main/topics/python/python.png"
+IMAGE_DATA_URL = generated_sample_image_data_url()
 
 
 async def main() -> None:
@@ -27,7 +27,7 @@ async def main() -> None:
         turn = await thread.turn(
             [
                 TextInput("What is in this image? Give 3 bullets."),
-                ImageInput(REMOTE_IMAGE_URL),
+                ImageInput(IMAGE_DATA_URL),
             ]
         )
         result = await turn.run()

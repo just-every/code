@@ -164,6 +164,17 @@ def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     assert "ruff-format" in source
 
 
+def test_generated_chatgpt_account_email_is_required_nullable() -> None:
+    from openai_codex.generated.v2_all import ChatgptAccount
+
+    account = ChatgptAccount.model_validate({"email": None, "planType": "pro", "type": "chatgpt"})
+    assert account.email is None
+    assert ChatgptAccount.model_fields["email"].is_required()
+
+    with pytest.raises(ValidationError):
+        ChatgptAccount.model_validate({"planType": "pro", "type": "chatgpt"})
+
+
 def test_runtime_package_template_has_no_checked_in_binaries() -> None:
     runtime_root = ROOT.parent / "python-runtime" / "src" / "codex_cli_bin"
     assert sorted(
