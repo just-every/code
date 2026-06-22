@@ -307,16 +307,7 @@ impl CodexMessageProcessor {
                     .and_then(|token_data| token_data.id_token.email);
                 let plan_type = parse_plan_type(auth.get_plan_type());
 
-                match email {
-                    Some(email) => Some(V2Account::Chatgpt { email, plan_type }),
-                    None => {
-                        return Err(JSONRPCErrorError {
-                            code: INVALID_REQUEST_ERROR_CODE,
-                            message: "email is required for chatgpt authentication".to_string(),
-                            data: None,
-                        });
-                    }
-                }
+                Some(V2Account::Chatgpt { email, plan_type })
             }
             _ => None,
         };

@@ -1068,7 +1068,17 @@ pub enum Account {
 
     #[serde(rename = "chatgpt", rename_all = "camelCase")]
     #[ts(rename = "chatgpt", rename_all = "camelCase")]
-    Chatgpt { email: String, plan_type: PlanType },
+    Chatgpt {
+        #[schemars(required, schema_with = "nullable_string_schema")]
+        email: Option<String>,
+        plan_type: PlanType,
+    },
+}
+
+fn nullable_string_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    generator.subschema_for::<Option<String>>()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
