@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.131] - 2026-06-23
+
+- Core: backport upstream Responses Lite parity for improved API compatibility. (f9fe914a)
+- Release: record upstream history and refresh the codex-rs mirror for v0.6.131. (ab76d43e, d8a72a29)
+
 ## [0.6.130] - 2026-06-23
 
 - Core: default Responses storage off when ZDR is enabled. (b101785c)
