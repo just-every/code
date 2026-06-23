@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.130] - 2026-06-23
+
+- Core: default Responses storage off when ZDR is enabled. (b101785c)
+- Docs: document the Responses storage default for ZDR configurations. (b101785c)
+
 ## [0.6.129] - 2026-06-22
 
 - Core: disable storage for chat completions to avoid retaining request data. (8d425d0a)

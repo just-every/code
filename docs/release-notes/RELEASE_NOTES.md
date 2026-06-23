@@ -1,12 +1,11 @@
-## @just-every/code v0.6.129
+## @just-every/code v0.6.130
 
-This release improves OpenAI request privacy defaults and release publishing reliability.
+This release tightens Responses storage behavior for ZDR configurations and documents the default.
 
 ### Changes
 
-- Core: disable storage for Chat Completions and default Responses requests so ZDR accounts do not receive `Store must be set to false` errors.
-- Core: strip server item IDs from non-stored Responses requests to keep multi-turn local runs compatible with `store: false`.
-- Release: allow more time for release notes generation during publish.
+- Core: default Responses storage off when ZDR is enabled.
+- Docs: document the Responses storage default for ZDR configurations.
 
 ### Install
 
@@ -15,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.128...v0.6.129
+Compare: https://github.com/just-every/code/compare/v0.6.129...v0.6.130
