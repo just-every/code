@@ -112,8 +112,9 @@ impl TurnItemEmitter for CoreTurnItemEmitter {
 async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
     let conversation_history =
         ConversationHistory::new(invocation.session.clone_history().await.into_raw_items());
-    let mut environments = Vec::with_capacity(invocation.turn.environments.turn_environments.len());
-    for environment in &invocation.turn.environments.turn_environments {
+    let mut environments =
+        Vec::with_capacity(invocation.step_context.environments.turn_environments.len());
+    for environment in &invocation.step_context.environments.turn_environments {
         // TODO(anp): Migrate extension ToolEnvironment and granted-permission lookup to PathUri
         // so extensions can receive foreign environment cwd values.
         let Ok(native_cwd) = environment.cwd().to_abs_path() else {
@@ -175,6 +176,7 @@ mod tests {
 
     use super::CoreTurnItemEmitter;
     use super::ExtensionToolAdapter;
+    use crate::session::step_context::StepContext;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
     use crate::tools::context::ToolPayload;
@@ -272,9 +274,11 @@ mod tests {
     async fn exposes_generic_hook_payloads() {
         let handler = ExtensionToolAdapter::new(Arc::new(StubExtensionExecutor));
         let (session, turn) = crate::session::tests::make_session_and_context().await;
+        let turn = Arc::new(turn);
         let invocation = ToolInvocation {
             session: session.into(),
-            turn: turn.into(),
+            step_context: StepContext::for_test(Arc::clone(&turn)),
+            turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "call-extension".to_string(),
@@ -334,13 +338,17 @@ mod tests {
         session
             .record_conversation_items(&turn, std::slice::from_ref(&history_item))
             .await;
+        let mut expected_history_item = history_item.clone();
+        expected_history_item.set_turn_id_if_missing(&turn_id);
         let raw_history_event = rx.recv().await.expect("history raw response item event");
         let EventMsg::RawResponseItem(raw_history_item) = raw_history_event.msg else {
             panic!("expected raw response item event");
         };
-        assert_eq!(raw_history_item.item, history_item);
+        assert_eq!(raw_history_item.item, expected_history_item);
+        let step_context = StepContext::for_test(Arc::clone(&turn));
         let invocation = ToolInvocation {
             session,
+            step_context,
             turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
@@ -377,7 +385,7 @@ mod tests {
         );
         assert_eq!(
             captured_call.conversation_history.items(),
-            std::slice::from_ref(&history_item)
+            std::slice::from_ref(&expected_history_item)
         );
         match captured_call.payload {
             ToolPayload::Function { arguments } => {
@@ -540,8 +548,10 @@ mod tests {
             &session.thread_id.to_string(),
             "call-image",
         );
+        let step_context = StepContext::for_test(Arc::clone(&turn));
         let invocation = ToolInvocation {
             session,
+            step_context,
             turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),

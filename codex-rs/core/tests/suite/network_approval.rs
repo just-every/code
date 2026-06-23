@@ -74,7 +74,7 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     ))
     .abs();
-    let remote_cwd_uri = PathUri::from_path(&remote_cwd)?;
+    let remote_cwd_uri = PathUri::from_host_native_path(&remote_cwd)?;
     test.fs()
         .create_directory(
             &remote_cwd_uri,
@@ -165,7 +165,7 @@ mode = "limited"
 allow_local_binding = true
 "#,
     )?;
-    let approval_policy = AskForApproval::OnFailure;
+    let approval_policy = AskForApproval::OnRequest;
     let permission_profile = PermissionProfile::workspace_write_with(
         &[],
         NetworkSandboxPolicy::Enabled,
@@ -263,7 +263,7 @@ async fn submit_managed_network_turn(
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 environments: Some(turn_environment_selections),
-                approval_policy: Some(AskForApproval::OnFailure),
+                approval_policy: Some(AskForApproval::OnRequest),
                 approvals_reviewer: Some(ApprovalsReviewer::User),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

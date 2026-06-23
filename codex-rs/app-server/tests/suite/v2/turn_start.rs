@@ -100,12 +100,14 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const TEST_ORIGINATOR: &str = "codex_vscode";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const TINY_PNG_BYTES: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
     0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0, 1,
     122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
+const TINY_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
 fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     String::from_utf8(req.body.clone())
@@ -888,7 +890,7 @@ async fn turn_start_tracks_turn_event_analytics() -> Result<()> {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Image {
-                url: "https://example.com/a.png".to_string(),
+                url: TINY_PNG_DATA_URL.to_string(),
                 detail: None,
             }],
             responsesapi_client_metadata: Some(HashMap::from([(
@@ -3649,7 +3651,12 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
         |req: &wiremock::Request| body_contains(req, PARENT_PROMPT),
         responses::sse(vec![
             responses::ev_response_created("resp-parent-1"),
-            responses::ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            responses::ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
             responses::ev_completed("resp-parent-1"),
         ]),
     )

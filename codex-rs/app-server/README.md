@@ -145,7 +145,7 @@ Example with notification opt-out:
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
 - `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
-- `thread/turns/items/list` — experimental; reserved for paging full items for one turn. The API shape is present, but app-server currently returns an unsupported-method JSON-RPC error.
+- `thread/items/list` — experimental; page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; currently supports updating persisted `gitInfo` fields and returns the refreshed `thread`.
 - `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; `multiAgentMode` selects `none`, `explicitRequestOnly`, or `proactive` for subsequent turns; `sandboxPolicy` and `permissions` cannot be combined. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
@@ -514,10 +514,10 @@ Every returned `Turn` includes `itemsView`, which tells clients whether the `ite
 } }
 ```
 
-`thread/turns/items/list` is the planned hydration API for fetching full items for one turn:
+`thread/items/list` pages full persisted items across a thread, optionally filtered to one turn:
 
 ```json
-{ "method": "thread/turns/items/list", "id": 25, "params": {
+{ "method": "thread/items/list", "id": 25, "params": {
     "threadId": "thr_123",
     "turnId": "turn_456",
     "limit": 100,
@@ -525,7 +525,7 @@ Every returned `Turn` includes `itemsView`, which tells clients whether the `ite
 } }
 ```
 
-This method currently returns JSON-RPC `-32601` with message `thread/turns/items/list is not supported yet`.
+Omit `turnId` or pass `null` to page items across the thread. Thread stores that do not implement item pagination return JSON-RPC `-32601` with message `thread/items/list is not supported yet`.
 
 ### Example: Update stored thread metadata
 
@@ -714,8 +714,10 @@ If the thread does not already have an active turn, the server starts a standalo
 Turns attach user input (text or images) to a thread and trigger Codex generation. The `input` field is a list of discriminated unions:
 
 - `{"type":"text","text":"Explain this diff"}`
-- `{"type":"image","url":"https://…png"}`
+- `{"type":"image","url":"data:image/png;base64,…"}`
 - `{"type":"localImage","path":"/tmp/screenshot.png"}`
+
+The `image` variant accepts inline data URLs. Remote HTTP(S) image URLs are rejected; use a data URL or `localImage` instead.
 
 You can optionally specify config overrides on the new turn. If specified, these settings become the default for subsequent turns on the same thread. `outputSchema` applies only to the current turn. Experimental `environments` is turn-scoped: omit it to inherit the thread's sticky environments, pass `[]` to run the turn with no environments, or pass explicit environment ids to override the sticky selection for this turn only.
 
@@ -828,7 +830,7 @@ Invoke a plugin by including a UI mention token such as `@sample` in the text in
 
 ### Example: Inject raw history items
 
-Use `thread/inject_items` to append prebuilt Responses API items to a loaded thread’s prompt history without starting a user turn. These items are persisted to the rollout and included in subsequent model requests.
+Use `thread/inject_items` to append prebuilt Responses API items to a loaded thread’s prompt history without starting a user turn. These items are persisted to the rollout and included in subsequent model requests. Any `input_image` items must use inline data URLs; remote HTTP(S) image URLs are rejected.
 
 ```json
 { "method": "thread/inject_items", "id": 36, "params": {
@@ -1353,7 +1355,7 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `turn/completed` — `{ turn }` where `turn.status` is `completed`, `interrupted`, or `failed`; failures carry `{ error: { message, codexErrorInfo?, additionalDetails? } }`.
 - `turn/diff/updated` — `{ threadId, turnId, diff }` represents the up-to-date snapshot of the turn-level unified diff, emitted after every FileChange item. `diff` is the latest aggregated unified diff across every file change in the turn. UIs can render this to show the full "what changed" view without stitching individual `fileChange` items.
 - `turn/plan/updated` — `{ turnId, explanation?, plan }` whenever the agent shares or changes its plan; each `plan` entry is `{ step, status }` with `status` in `pending`, `inProgress`, or `completed`.
-- `model/safetyBuffering/updated` — `{ threadId, turnId, model, useCases, reasons }` when a response enters safety buffering. This notification is transient and is not persisted in rollout history.
+- `model/safetyBuffering/updated` — `{ threadId, turnId, model, useCases, reasons, showBufferingUi, fasterModel }` when a response enters safety buffering. `fasterModel` is nullable. This notification is transient and is not persisted in rollout history.
 - `model/rerouted` — `{ threadId, turnId, fromModel, toModel, reason }` when the backend reroutes a request to a different model (for example, due to high-risk cyber safety checks).
 - `model/verification` — `{ threadId, turnId, verifications }` when the backend flags additional account verification, such as `trustedAccessForCyber`.
 - `turn/moderationMetadata` — experimental; `{ threadId, turnId, metadata }` when a first-party backend supplies turn-scoped moderation metadata for client-side presentation.
@@ -1585,7 +1587,7 @@ The server also emits item lifecycle notifications around the request:
 3. Client response.
 4. `item/completed` with `item.type = "dynamicToolCall"`, final `status`, and the returned `contentItems`/`success`.
 
-The client must respond with content items. Use `inputText` for text and `inputImage` for image URLs/data URLs:
+The client must respond with content items. Use `inputText` for text and `inputImage` for inline data URLs. Remote HTTP(S) image URLs make the dynamic tool response invalid.
 
 ```json
 {

@@ -990,7 +990,6 @@
         {
           "enum": [
             "untrusted",
-            "on-failure",
             "on-request",
             "never"
           ],
@@ -9046,6 +9045,12 @@
     "ModelSafetyBufferingUpdatedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "fasterModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "type": "string"
         },
@@ -9054,6 +9059,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "showBufferingUi": {
+          "type": "boolean"
         },
         "threadId": {
           "type": "string"
@@ -9071,6 +9079,7 @@
       "required": [
         "model",
         "reasons",
+        "showBufferingUi",
         "threadId",
         "turnId",
         "useCases"
@@ -9811,8 +9820,26 @@
           ],
           "description": "Local logo path, resolved from the installed plugin package."
         },
+        "logoDark": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Local dark-mode logo path, resolved from the installed plugin package."
+        },
         "logoUrl": {
           "description": "Remote logo URL from the plugin catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logoUrlDark": {
+          "description": "Remote dark-mode logo URL from the plugin catalog.",
           "type": [
             "string",
             "null"
@@ -11980,16 +12007,6 @@
         },
         {
           "properties": {
-            "internal_chat_message_metadata_passthrough": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
             "type": {
               "enum": [
                 "compaction_trigger"
@@ -14592,6 +14609,7 @@
           "description": "Optional Git metadata captured when the thread was created."
         },
         "id": {
+          "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
         },
         "modelProvider": {
@@ -14811,6 +14829,10 @@
         "threadId"
       ],
       "title": "ThreadDeletedNotification",
+      "type": "object"
+    },
+    "ThreadExtra": {
+      "description": "Extra app-server data for a thread.",
       "type": "object"
     },
     "ThreadForkParams": {
@@ -15795,7 +15817,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
               "enum": [
@@ -17460,6 +17482,7 @@
           "description": "Only populated when the Turn's status is failed."
         },
         "id": {
+          "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
           "type": "string"
         },
         "items": {

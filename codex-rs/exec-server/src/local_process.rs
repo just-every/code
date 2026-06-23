@@ -956,7 +956,8 @@ mod tests {
         ExecParams {
             process_id: ProcessId::from("env-test"),
             argv: vec!["true".to_string()],
-            cwd: PathUri::from_path(std::env::current_dir().expect("cwd")).expect("cwd URI"),
+            cwd: PathUri::from_host_native_path(std::env::current_dir().expect("cwd"))
+                .expect("cwd URI"),
             env_policy: None,
             env,
             tty: false,
@@ -964,6 +965,7 @@ mod tests {
             arg0: None,
             sandbox: None,
             enforce_managed_network: false,
+            managed_network: None,
         }
     }
 

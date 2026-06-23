@@ -207,10 +207,6 @@ impl TurnContext {
             && self.config.orchestrator_mcp_enabled
     }
 
-    pub(crate) fn tool_environment_mode(&self) -> ToolEnvironmentMode {
-        ToolEnvironmentMode::from_count(self.environments.turn_environments.len())
-    }
-
     pub(crate) async fn with_model(
         &self,
         model: String,
@@ -301,13 +297,6 @@ impl TurnContext {
                 self.model_verification_emitted.load(Ordering::Relaxed),
             ),
         }
-    }
-
-    #[deprecated(note = "resolve paths from the selected turn environment cwd instead")]
-    pub(crate) fn resolve_path(&self, path: Option<String>) -> AbsolutePathBuf {
-        #[allow(deprecated)]
-        path.as_ref()
-            .map_or_else(|| self.cwd.clone(), |path| self.cwd.join(path))
     }
 
     pub(crate) fn file_system_sandbox_context(
@@ -797,7 +786,7 @@ impl Session {
         turn_context
     }
 
-    pub(crate) async fn maybe_emit_unknown_model_warning_for_turn(&self, tc: &TurnContext) {
+    pub(crate) async fn maybe_emit_model_warnings_for_turn(&self, tc: &TurnContext) {
         if tc.model_info.used_fallback_model_metadata {
             self.send_event(
                 tc,
@@ -809,6 +798,13 @@ impl Session {
                 }),
             )
             .await;
+        }
+
+        if let Some(message) =
+            unsupported_code_mode_warning(&tc.model_info, tc.config.features.get())
+        {
+            self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
+                .await;
         }
     }
 
