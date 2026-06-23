@@ -1644,7 +1644,7 @@ impl Config {
                 .disable_response_storage
                 .or(cfg.disable_response_storage)
                 .or(disable_response_storage)
-                .unwrap_or(false),
+                .unwrap_or(true),
             auto_upgrade_enabled: cfg.auto_upgrade_enabled.unwrap_or(false),
             notify: cfg.notify,
             notices: cfg.notice.unwrap_or_default(),
@@ -1961,6 +1961,10 @@ persistence = "none"
         assert_eq!(
             default_config.tool_output_max_bytes,
             default_config.model_family.tool_output_max_bytes()
+        );
+        assert!(
+            default_config.disable_response_storage,
+            "default installs should send store=false for OpenAI Responses requests"
         );
 
         let cfg = toml::from_str::<ConfigToml>("tool_output_max_bytes = 65536")

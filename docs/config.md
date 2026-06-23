@@ -520,11 +520,13 @@ actionlint_path = "/usr/local/bin/actionlint"
 
 ## disable_response_storage
 
-Currently, customers whose accounts are set to use Zero Data Retention (ZDR) must set `disable_response_storage` to `true` so that Code uses an alternative to the Responses API that works with ZDR:
+By default, Code disables server-side Responses storage so Zero Data Retention (ZDR) accounts can run without an extra config change:
 
 ```toml
 disable_response_storage = true
 ```
+
+Set this to `false` only if you explicitly want Code to request stored Responses for providers that support them.
 
 ### Managing MCP servers from CLI (experimental)
 
@@ -1055,7 +1057,7 @@ Project commands appear in the TUI via `/cmd <name>` and run through the standar
 | `sandbox_workspace_write.network_access` | boolean | Allow network in workspace‑write (default: false). |
 | `sandbox_workspace_write.exclude_tmpdir_env_var` | boolean | Exclude `$TMPDIR` from writable roots (default: false). |
 | `sandbox_workspace_write.exclude_slash_tmp` | boolean | Exclude `/tmp` from writable roots (default: false). |
-| `disable_response_storage` | boolean | Required for ZDR orgs. |
+| `disable_response_storage` | boolean | Disable server-side Responses storage (default: true). |
 | `notify` | array<string> | External program for notifications. |
 | `instructions` | string | Currently ignored; use `experimental_instructions_file` or `AGENTS.md`. |
 | `mcp_servers.<id>.command` | string | MCP server launcher command. |

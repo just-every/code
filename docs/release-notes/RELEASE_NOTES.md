@@ -1,10 +1,11 @@
 ## @just-every/code v0.6.129
 
-This release improves chat completion privacy defaults and release publishing reliability.
+This release improves OpenAI request privacy defaults and release publishing reliability.
 
 ### Changes
 
-- Core: disable storage for chat completions to avoid retaining request data.
+- Core: disable storage for Chat Completions and default Responses requests so ZDR accounts do not receive `Store must be set to false` errors.
+- Core: strip server item IDs from non-stored Responses requests to keep multi-turn local runs compatible with `store: false`.
 - Release: allow more time for release notes generation during publish.
 
 ### Install

@@ -743,6 +743,7 @@ impl ModelClient {
             prompt.get_formatted_input_for_request(request_family.use_responses_lite);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
+        prepare_response_items_for_request(&mut input_with_instructions, store);
 
         let want_format = prompt.text_format.clone().or_else(|| {
             prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
@@ -1203,6 +1204,7 @@ impl ModelClient {
             prompt.get_formatted_input_for_request(request_family.use_responses_lite);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
+        prepare_response_items_for_request(&mut input_with_instructions, store);
 
         // Build `text` parameter with conditional verbosity and optional format.
         // - Omit entirely for ChatGPT auth unless a `text.format` or output schema is present.
@@ -2453,6 +2455,34 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
     }
 }
 
+fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
+    if store {
+        return;
+    }
+
+    for item in input {
+        match item {
+            ResponseItem::Reasoning { id, .. }
+            | ResponseItem::Message { id, .. }
+            | ResponseItem::WebSearchCall { id, .. }
+            | ResponseItem::FunctionCall { id, .. }
+            | ResponseItem::LocalShellCall { id, .. }
+            | ResponseItem::ToolSearchCall { id, .. }
+            | ResponseItem::CustomToolCall { id, .. } => {
+                *id = None;
+            }
+            ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::CompactionSummary { .. }
+            | ResponseItem::ContextCompaction { .. }
+            | ResponseItem::GhostSnapshot { .. }
+            | ResponseItem::Other => {}
+        }
+    }
+}
+
 fn parse_rate_limit_snapshot(headers: &HeaderMap) -> Option<RateLimitSnapshotEvent> {
     let primary_used_percent = parse_header_f64(headers, "x-codex-primary-used-percent")?;
     let secondary_used_percent = parse_header_f64(headers, "x-codex-secondary-used-percent")?;
@@ -3222,6 +3252,42 @@ mod tests {
         family.use_responses_lite = false;
         let azure_provider = responses_test_provider("azure", WireApi::Responses);
         assert!(should_store_responses(&prompt, &azure_provider, &family));
+    }
+
+    #[test]
+    fn non_stored_responses_strip_server_item_ids() {
+        let mut input = vec![
+            ResponseItem::Message {
+                id: Some("msg_123".to_string()),
+                role: "assistant".to_string(),
+                content: vec![code_protocol::models::ContentItem::OutputText {
+                    text: "done".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Reasoning {
+                id: Some("rs_123".to_string()),
+                summary: Vec::new(),
+                content: None,
+                encrypted_content: Some("encrypted".to_string()),
+            },
+            ResponseItem::FunctionCall {
+                id: Some("fc_123".to_string()),
+                name: "test".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call_123".to_string(),
+            },
+        ];
+
+        prepare_response_items_for_request(&mut input, false);
+
+        let serialized = serde_json::to_value(&input).expect("serialize input");
+        assert!(
+            !serialized.to_string().contains("\"id\""),
+            "non-stored Responses requests must not replay server item IDs: {serialized}"
+        );
     }
 
     #[tokio::test]
