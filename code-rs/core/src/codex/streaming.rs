@@ -4622,6 +4622,7 @@ async fn handle_response_item(
 ) -> CodexResult<Option<ResponseInputItem>> {
     debug!(?item, "Output item");
     let output = match item {
+        ResponseItem::AdditionalTools { .. } => None,
         ResponseItem::Message { content, id, .. } => {
             // Use the item_id if present, otherwise fall back to sub_id
             let event_id = id.unwrap_or_else(|| sub_id.to_string());

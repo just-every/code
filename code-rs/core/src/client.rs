@@ -12,6 +12,7 @@ use crate::auth;
 use crate::auth_accounts;
 use bytes::Bytes;
 use code_app_server_protocol::AuthMode;
+use code_protocol::models::ContentItem;
 use code_protocol::models::ResponseItem;
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
@@ -744,6 +745,28 @@ impl ModelClient {
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
         prepare_response_items_for_request(&mut input_with_instructions, store);
+        let (instructions, tools) = if request_family.use_responses_lite {
+            let mut prefix = vec![ResponseItem::AdditionalTools {
+                id: None,
+                role: "developer".to_string(),
+                tools: tools_json.clone(),
+            }];
+            if !full_instructions.is_empty() {
+                prefix.push(ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: full_instructions.to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                });
+            }
+            input_with_instructions.splice(0..0, prefix);
+            ("", None)
+        } else {
+            (full_instructions.as_ref(), Some(tools_json.as_slice()))
+        };
 
         let want_format = prompt.text_format.clone().or_else(|| {
             prompt.output_schema.as_ref().map(|schema| crate::client_common::TextFormat {
@@ -798,9 +821,9 @@ impl ModelClient {
 
             let payload = ResponsesApiRequest {
                 model: model_slug,
-                instructions: &full_instructions,
+                instructions,
                 input: &input_with_instructions,
-                tools: &tools_json,
+                tools,
                 tool_choice: "auto",
                 parallel_tool_calls: request_family.supports_parallel_tool_calls
                     && !request_family.use_responses_lite,
@@ -1205,6 +1228,28 @@ impl ModelClient {
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
         prepare_response_items_for_request(&mut input_with_instructions, store);
+        let (instructions, tools) = if request_family.use_responses_lite {
+            let mut prefix = vec![ResponseItem::AdditionalTools {
+                id: None,
+                role: "developer".to_string(),
+                tools: tools_json.clone(),
+            }];
+            if !full_instructions.is_empty() {
+                prefix.push(ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: full_instructions.to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                });
+            }
+            input_with_instructions.splice(0..0, prefix);
+            ("", None)
+        } else {
+            (full_instructions.as_ref(), Some(tools_json.as_slice()))
+        };
 
         // Build `text` parameter with conditional verbosity and optional format.
         // - Omit entirely for ChatGPT auth unless a `text.format` or output schema is present.
@@ -1286,9 +1331,9 @@ impl ModelClient {
 
             let payload = ResponsesApiRequest {
                 model: model_slug,
-                instructions: &full_instructions,
+                instructions,
                 input: &input_with_instructions,
-                tools: &tools_json,
+                tools,
                 tool_choice: "auto",
                 parallel_tool_calls: request_family.supports_parallel_tool_calls
                     && !request_family.use_responses_lite,
@@ -2438,7 +2483,8 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
 
     for (value, item) in items.iter_mut().zip(original_items.iter()) {
         let id = match item {
-            ResponseItem::Reasoning { id, .. }
+            ResponseItem::AdditionalTools { id, .. }
+            | ResponseItem::Reasoning { id, .. }
             | ResponseItem::Message { id, .. }
             | ResponseItem::WebSearchCall { id, .. }
             | ResponseItem::FunctionCall { id, .. }
@@ -2462,7 +2508,8 @@ fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
 
     for item in input {
         match item {
-            ResponseItem::Reasoning { id, .. }
+            ResponseItem::AdditionalTools { id, .. }
+            | ResponseItem::Reasoning { id, .. }
             | ResponseItem::Message { id, .. }
             | ResponseItem::WebSearchCall { id, .. }
             | ResponseItem::FunctionCall { id, .. }

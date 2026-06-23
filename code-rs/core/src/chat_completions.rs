@@ -92,7 +92,9 @@ pub(crate) async fn stream_chat_completions(
             ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
                 last_emitted_role = Some("assistant")
             }
-            ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::Reasoning { .. }
+            | ResponseItem::Other => {}
             ResponseItem::CustomToolCall { .. } => {}
             ResponseItem::CustomToolCallOutput { .. } => {}
             ResponseItem::WebSearchCall { .. } => {}
@@ -332,7 +334,8 @@ pub(crate) async fn stream_chat_completions(
                     "content": output,
                 }));
             }
-            ResponseItem::Reasoning { .. }
+            ResponseItem::AdditionalTools { .. }
+            | ResponseItem::Reasoning { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }

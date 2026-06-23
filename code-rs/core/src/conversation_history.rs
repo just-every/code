@@ -66,6 +66,7 @@ impl ConversationHistory {
 /// an API message.
 fn is_api_message(message: &ResponseItem) -> bool {
     match message {
+        ResponseItem::AdditionalTools { .. } => false,
         ResponseItem::Message { role, .. } => role.as_str() != "system",
         ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::FunctionCall { .. }

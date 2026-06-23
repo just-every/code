@@ -23,6 +23,7 @@ pub(crate) fn should_persist_rollout_item(item: &RolloutItem) -> bool {
 #[inline]
 pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
     match item {
+        ResponseItem::AdditionalTools { .. } => false,
         ResponseItem::Message { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }

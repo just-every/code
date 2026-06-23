@@ -28,6 +28,7 @@ pub(crate) fn map_response_item_to_event_messages(
     show_raw_agent_reasoning: bool,
 ) -> Vec<EventMsg> {
     match item {
+        ResponseItem::AdditionalTools { .. } => Vec::new(),
         ResponseItem::Message { role, content, .. } => {
             // Do not surface system messages as user events.
             if role == "system" {
