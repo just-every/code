@@ -9,8 +9,8 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use codex_app_server_protocol::ConfigLayerSource;
 use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
 use codex_config::ConfigRequirements;
 use codex_config::ConfigRequirementsToml;
 use codex_exec_server::EnvironmentManager;
@@ -733,6 +733,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         forked_from_thread_id: None,
         parent_thread_id: None,
         thread_source: None,
+        originator: "test_originator".to_string(),
         agent_control: AgentControl::default(),
         dynamic_tools: Vec::new(),
         metrics_service_name: None,

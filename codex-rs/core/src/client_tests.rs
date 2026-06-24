@@ -16,7 +16,6 @@ use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
-use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
@@ -28,6 +27,7 @@ use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
@@ -75,6 +75,7 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         thread_id,
         provider,
         session_source,
+        "test_originator".to_string(),
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
@@ -298,6 +299,10 @@ fn build_subagent_headers_sets_internal_memory_consolidation_label() {
         .get(X_OPENAI_SUBAGENT_HEADER)
         .and_then(|value| value.to_str().ok());
     assert_eq!(value, Some("memory_consolidation"));
+    assert_eq!(
+        headers.get("originator"),
+        Some(&http::HeaderValue::from_static("test_originator"))
+    );
 }
 
 #[test]
@@ -606,6 +611,7 @@ fn model_client_with_counting_attestation(
         ThreadId::new(),
         provider,
         SessionSource::Exec,
+        "test_originator".to_string(),
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,

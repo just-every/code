@@ -293,8 +293,11 @@ pub(crate) async fn run_turn(
                 let (has_pending_input, token_status, estimated_token_count) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
-                    let token_status =
-                        auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+                    let token_status = super::context_window::context_window_token_status(
+                        sess.as_ref(),
+                        turn_context.as_ref(),
+                    )
+                    .await;
                     let estimated_token_count =
                         sess.get_estimated_token_count(turn_context.as_ref()).await;
                     (has_pending_input, token_status, estimated_token_count)
@@ -309,7 +312,7 @@ pub(crate) async fn run_turn(
                     total_usage_tokens = token_status.active_context_tokens,
                     auto_compact_scope_tokens = token_status.auto_compact_scope_tokens,
                     estimated_token_count = ?estimated_token_count,
-                    auto_compact_scope_limit = token_status.auto_compact_scope_limit,
+                    auto_compact_scope_limit = ?token_status.auto_compact_scope_limit,
                     auto_compact_limit_scope = ?turn_context.config.model_auto_compact_token_limit_scope,
                     auto_compact_window_prefill_tokens = ?token_status.auto_compact_window_prefill_tokens,
                     full_context_window_limit = ?token_status.full_context_window_limit,
@@ -321,40 +324,16 @@ pub(crate) async fn run_turn(
                     "post sampling token usage"
                 );
 
-                let tokens_after_sampling = token_status.active_context_tokens;
-                let full_context_remaining = token_status
-                    .full_context_window_limit
-                    .map_or(i64::MAX, |limit| {
-                        limit.saturating_sub(tokens_after_sampling)
-                    });
-                let tokens_until_compaction = token_status
-                    .auto_compact_scope_limit
-                    .saturating_sub(token_status.auto_compact_scope_tokens)
-                    .min(full_context_remaining)
-                    .max(0);
                 super::token_budget::maybe_record(
                     sess.as_ref(),
                     turn_context.as_ref(),
-                    tokens_until_compaction,
+                    token_status.tokens_until_compaction,
                 )
                 .await;
 
-                let started_new_context_window = sess
-                    .maybe_start_new_context_window(turn_context.as_ref(), Arc::clone(&world_state))
-                    .await
-                    .is_some();
-                if started_new_context_window && needs_follow_up {
-                    can_drain_pending_input = !model_needs_follow_up;
-                    continue;
-                }
-
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
-                if turn_context
-                    .config
-                    .features
-                    .enabled(Feature::AutoCompaction)
-                    && token_limit_reached
-                    && needs_follow_up
+                if needs_follow_up
+                    && (sess.take_new_context_window_request().await || token_limit_reached)
                 {
                     if let Err(err) = run_auto_compact(
                         &sess,
@@ -542,6 +521,7 @@ async fn build_skills_and_plugins(
         turn_context.model_info.slug.clone(),
         sess.thread_id.to_string(),
         turn_context.sub_id.clone(),
+        turn_context.originator.clone(),
     );
     let loaded_plugins = sess
         .services
@@ -801,84 +781,16 @@ async fn track_turn_resolved_config_analytics(
         });
 }
 
-#[derive(Debug)]
-struct AutoCompactTokenStatus {
-    // Full active context usage, independent of the configured auto-compact scope.
-    active_context_tokens: i64,
-    // Usage counted against `model_auto_compact_token_limit` for the current scope.
-    auto_compact_scope_tokens: i64,
-    auto_compact_scope_limit: i64,
-    full_context_window_limit: Option<i64>,
-    auto_compact_window_prefill_tokens: Option<i64>,
-    full_context_window_limit_reached: bool,
-    token_limit_reached: bool,
-}
-
-async fn auto_compact_token_status(
-    sess: &Session,
-    turn_context: &TurnContext,
-) -> AutoCompactTokenStatus {
-    let active_context_tokens = sess.get_total_token_usage().await;
-    let mut auto_compact_window_prefill_tokens = None;
-    let (auto_compact_scope_tokens, auto_compact_scope_limit, full_context_window_limit) =
-        match turn_context.config.model_auto_compact_token_limit_scope {
-            AutoCompactTokenLimitScope::Total => (
-                active_context_tokens,
-                turn_context
-                    .model_info
-                    .auto_compact_token_limit()
-                    .unwrap_or(i64::MAX),
-                None,
-            ),
-            AutoCompactTokenLimitScope::BodyAfterPrefix => {
-                let window = sess.auto_compact_window_snapshot().await;
-                auto_compact_window_prefill_tokens = window.prefill_input_tokens;
-                let baseline = window.prefill_input_tokens.unwrap_or(active_context_tokens);
-                (
-                    active_context_tokens.saturating_sub(baseline),
-                    turn_context
-                        .config
-                        .model_auto_compact_token_limit
-                        .or_else(|| turn_context.model_info.auto_compact_token_limit())
-                        .unwrap_or(i64::MAX),
-                    turn_context.model_context_window(),
-                )
-            }
-        };
-    let full_context_window_limit_reached =
-        full_context_window_limit.is_some_and(|full_context_window_limit| {
-            active_context_tokens >= full_context_window_limit
-        });
-    let token_limit_reached =
-        auto_compact_scope_tokens >= auto_compact_scope_limit || full_context_window_limit_reached;
-
-    AutoCompactTokenStatus {
-        active_context_tokens,
-        auto_compact_scope_tokens,
-        auto_compact_scope_limit,
-        full_context_window_limit,
-        auto_compact_window_prefill_tokens,
-        full_context_window_limit_reached,
-        token_limit_reached,
-    }
-}
-
 #[instrument(level = "trace", skip_all)]
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
 ) -> CodexResult<()> {
-    if !turn_context
-        .config
-        .features
-        .enabled(Feature::AutoCompaction)
-    {
-        return Ok(());
-    }
-
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
-    let token_status = auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+    let token_status =
+        super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
+            .await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
     if token_status.token_limit_reached {
         let step_context = sess.capture_step_context(Arc::clone(turn_context)).await;
@@ -996,6 +908,18 @@ async fn run_auto_compact(
     phase: CompactionPhase,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
+    if turn_context.config.features.enabled(Feature::TokenBudget) {
+        // Compaction is the reset request, so force a new context window
+        // instead of consuming a pending `new_context` tool request.
+        crate::compact_token_budget::run_inline_auto_compact_task(
+            Arc::clone(sess),
+            Arc::clone(turn_context),
+            initial_context_injection,
+        )
+        .await?;
+        return Ok(());
+    }
+
     if should_use_remote_compact_task(turn_context.provider.info()) {
         if turn_context
             .config

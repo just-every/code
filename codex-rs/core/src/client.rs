@@ -61,7 +61,6 @@ use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
-use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -69,6 +68,7 @@ use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::build_reqwest_client;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
+use codex_protocol::auth::AuthMode;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -186,6 +186,7 @@ struct ModelClientState {
     provider: SharedModelProvider,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
+    originator: String,
     model_verbosity: Option<VerbosityConfig>,
     enable_request_compression: bool,
     include_timing_metrics: bool,
@@ -387,6 +388,7 @@ impl ModelClient {
         thread_id: ThreadId,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
+        originator: String,
         model_verbosity: Option<VerbosityConfig>,
         enable_request_compression: bool,
         include_timing_metrics: bool,
@@ -408,6 +410,7 @@ impl ModelClient {
                 provider: model_provider,
                 auth_env_telemetry,
                 session_source,
+                originator,
                 model_verbosity,
                 enable_request_compression,
                 include_timing_metrics,
@@ -565,6 +568,7 @@ impl ModelClient {
             self.state.beta_features_header.as_deref(),
             turn_state.as_ref(),
         ));
+        add_originator_header(&mut extra_headers, self.state.originator.as_str());
         extra_headers.extend(self.build_responses_compatibility_headers(responses_metadata));
         extra_headers.extend(build_session_headers(
             Some(responses_metadata.session_id.to_string()),
@@ -676,6 +680,7 @@ impl ModelClient {
 
     fn build_subagent_headers(&self) -> ApiHeaderMap {
         let mut extra_headers = ApiHeaderMap::new();
+        add_originator_header(&mut extra_headers, self.state.originator.as_str());
         if let Some(subagent) = subagent_header_value(&self.state.session_source)
             && let Ok(val) = HeaderValue::from_str(&subagent)
         {
@@ -997,6 +1002,7 @@ impl ModelClient {
             self.state.beta_features_header.as_deref(),
             /*turn_state*/ None,
         );
+        add_originator_header(&mut headers, self.state.originator.as_str());
         if let Ok(header_value) = HeaderValue::from_str(&responses_metadata.thread_id) {
             headers.insert("x-client-request-id", header_value);
         }
@@ -1064,6 +1070,7 @@ impl ModelClientSession {
                     self.client.state.beta_features_header.as_deref(),
                     Some(&self.turn_state),
                 );
+                add_originator_header(&mut headers, self.client.state.originator.as_str());
                 headers.extend(
                     self.client
                         .build_responses_compatibility_headers(responses_metadata),
@@ -1789,6 +1796,22 @@ fn build_responses_headers(
         headers.insert(X_CODEX_TURN_STATE_HEADER, header_value);
     }
     headers
+}
+
+pub(crate) fn add_originator_header(headers: &mut ApiHeaderMap, originator: &str) {
+    let default_originator = codex_login::default_client::originator();
+    if originator == default_originator.value.as_str() {
+        return;
+    }
+
+    match HeaderValue::from_str(originator) {
+        Ok(header_value) => {
+            headers.insert("originator", header_value);
+        }
+        Err(err) => {
+            warn!("ignoring invalid thread originator header value: {err}");
+        }
+    }
 }
 
 fn add_responses_lite_header(headers: &mut ApiHeaderMap, use_responses_lite: bool) {

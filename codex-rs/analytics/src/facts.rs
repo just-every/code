@@ -41,17 +41,20 @@ pub struct TrackEventsContext {
     pub model_slug: String,
     pub thread_id: String,
     pub turn_id: String,
+    pub product_client_id: String,
 }
 
 pub fn build_track_events_context(
     model_slug: String,
     thread_id: String,
     turn_id: String,
+    product_client_id: String,
 ) -> TrackEventsContext {
     TrackEventsContext {
         model_slug,
         thread_id,
         turn_id,
+        product_client_id,
     }
 }
 
@@ -139,6 +142,7 @@ impl TurnCodexErrorFact {
 #[serde(rename_all = "snake_case")]
 pub enum CodexErrKind {
     TurnAborted,
+    SessionBudgetExceeded,
     Stream,
     ContextWindowExceeded,
     ThreadNotFound,
@@ -195,6 +199,7 @@ impl From<&CodexErr> for CodexErrKind {
     fn from(error: &CodexErr) -> Self {
         match error {
             CodexErr::TurnAborted => CodexErrKind::TurnAborted,
+            CodexErr::SessionBudgetExceeded => CodexErrKind::SessionBudgetExceeded,
             CodexErr::Stream(..) => CodexErrKind::Stream,
             CodexErr::ContextWindowExceeded => CodexErrKind::ContextWindowExceeded,
             CodexErr::ThreadNotFound(_) => CodexErrKind::ThreadNotFound,
