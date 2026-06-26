@@ -1,17 +1,19 @@
-## @just-every/code v0.6.131
+## @just-every/code v0.6.132
 
-This release backports upstream Responses Lite parity and refreshes upstream metadata.
+This release refreshes upstream history and tightens CI, testing, and remote executor documentation.
 
 ### Changes
 
-- Core: backport upstream Responses Lite parity for improved API compatibility.
-- Release: record upstream history and refresh the codex-rs mirror for v0.6.131.
+- CI: fail jobs when generated changes dirty the worktree.
+- Docs: expand remote executor integration testing guidance.
+- Testing: improve cross-platform app-server coverage with Wine and target-OS branching.
+- Release: refresh upstream history while preserving JustEvery workflows.
 
 ### Install
 
-```bash
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.130...v0.6.131
+Compare: https://github.com/just-every/code/compare/v0.6.131...v0.6.132

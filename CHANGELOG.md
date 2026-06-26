@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.132] - 2026-06-24
+
+- CI: fail jobs when generated changes dirty the worktree. (93c79046)
+- Docs: expand remote executor integration testing guidance. (31e428a1)
+- Testing: improve cross-platform app-server coverage with Wine and target-OS branching. (b17f30eb, 9a79536e)
+- Release: refresh upstream history while preserving JustEvery workflows. (a43f633e, 5ec23059)
+
 ## [0.6.131] - 2026-06-23
 
 - Core: backport upstream Responses Lite parity for improved API compatibility. (f9fe914a)
