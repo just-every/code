@@ -1,19 +1,19 @@
-## @just-every/code v0.6.132
+## @just-every/code v0.6.133
 
-This release refreshes upstream history and tightens CI, testing, and remote executor documentation.
+This release improves upstream compatibility, tool call handling, configuration compatibility, and dependency security.
 
 ### Changes
 
-- CI: fail jobs when generated changes dirty the worktree.
-- Docs: expand remote executor integration testing guidance.
-- Testing: improve cross-platform app-server coverage with Wine and target-OS branching.
-- Release: refresh upstream history while preserving JustEvery workflows.
+- Core: backport upstream model metadata parity for improved model selection.
+- Core: accept legacy default service tier values in configuration.
+- Tools: preserve custom tool namespaces across streamed responses.
+- Dependencies: update OpenTelemetry SDK to resolve alert 120.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.131...v0.6.132
+Compare: https://github.com/just-every/code/compare/v0.6.132...v0.6.133

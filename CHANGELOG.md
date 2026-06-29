@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.133] - 2026-06-29
+
+- Core: backport upstream model metadata parity for improved model selection. (cfc7b53f)
+- Core: accept legacy default service tier values in configuration. (a709ae97)
+- Tools: preserve custom tool namespaces across streamed responses. (291b2c3c)
+- Dependencies: update OpenTelemetry SDK to resolve alert 120. (f0875be1)
+
 ## [0.6.132] - 2026-06-24
 
 - CI: fail jobs when generated changes dirty the worktree. (93c79046)
