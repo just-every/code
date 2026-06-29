@@ -3499,6 +3499,23 @@ mod agent_merge_tests {
     }
 
     #[test]
+    fn service_tier_default_is_legacy_standard_alias() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let cfg = toml::from_str::<ConfigToml>(r#"service_tier = "default""#)?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(code_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.service_tier, None);
+        Ok(())
+    }
+
+    #[test]
     fn context_mode_one_m_expands_gpt_5_4_context() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let cfg = toml::from_str::<ConfigToml>(

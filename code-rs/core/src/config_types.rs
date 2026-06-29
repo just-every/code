@@ -1498,6 +1498,7 @@ pub enum ReasoningSummary {
 #[strum(serialize_all = "lowercase")]
 pub enum ServiceTier {
     /// Legacy compatibility value for older local config files.
+    #[serde(alias = "default")]
     Standard,
     Fast,
     Flex,
