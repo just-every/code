@@ -45,6 +45,7 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
+    Max,
     /// A model-defined effort value that this client does not know yet.
     Custom(String),
 }
@@ -59,6 +60,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
             Self::Custom(effort) => effort,
         }
     }
@@ -123,6 +125,7 @@ impl FromStr for ReasoningEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
             "" => Err("reasoning_effort must not be empty".to_string()),
             effort => Ok(Self::Custom(effort.to_string())),
         }
@@ -369,6 +372,8 @@ pub struct ModelInfo {
     pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
+    #[serde(default)]
+    pub include_skills_usage_instructions: bool,
     pub supports_reasoning_summaries: bool,
     #[serde(default)]
     pub default_reasoning_summary: ReasoningSummary,
@@ -660,6 +665,7 @@ fn canonical_reasoning_efforts() -> impl Iterator<Item = ReasoningEffort> {
         ReasoningEffort::Medium,
         ReasoningEffort::High,
         ReasoningEffort::XHigh,
+        ReasoningEffort::Max,
     ]
     .into_iter()
 }
@@ -672,6 +678,7 @@ fn effort_rank(effort: &ReasoningEffort) -> i32 {
         ReasoningEffort::Medium => 3,
         ReasoningEffort::High => 4,
         ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Max => 5,
         ReasoningEffort::Custom(_) => 3,
     }
 }
@@ -708,6 +715,7 @@ mod tests {
             upgrade: None,
             base_instructions: "base".to_string(),
             model_messages: spec,
+            include_skills_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
@@ -940,6 +948,7 @@ mod tests {
         .expect("deserialize model info");
 
         assert_eq!(model.availability_nux, None);
+        assert!(!model.include_skills_usage_instructions);
         assert!(!model.supports_image_detail_original);
         assert!(!model.supports_search_tool);
         assert!(!model.use_responses_lite);
@@ -1089,6 +1098,11 @@ mod tests {
     fn reasoning_effort_from_str_accepts_known_values() {
         assert_eq!("high".parse(), Ok(ReasoningEffort::High));
         assert_eq!("minimal".parse(), Ok(ReasoningEffort::Minimal));
+        assert_eq!("max".parse(), Ok(ReasoningEffort::Max));
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Max).unwrap(),
+            "\"max\""
+        );
     }
 
     #[test]

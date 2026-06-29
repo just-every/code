@@ -467,6 +467,7 @@ mod tests {
             upgrade: None,
             base_instructions: String::new(),
             model_messages: None,
+            include_skills_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
@@ -576,7 +577,7 @@ fn map_reasoning_effort(effort: &ProtocolReasoningEffort) -> crate::config_types
         ProtocolReasoningEffort::Low => LocalEffort::Low,
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
-        ProtocolReasoningEffort::XHigh => LocalEffort::XHigh,
+        ProtocolReasoningEffort::XHigh | ProtocolReasoningEffort::Max => LocalEffort::XHigh,
         ProtocolReasoningEffort::Custom(_) => LocalEffort::Medium,
     }
 }

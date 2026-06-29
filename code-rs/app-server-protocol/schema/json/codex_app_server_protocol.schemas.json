@@ -7646,6 +7646,12 @@
             "name": {
               "type": "string"
             },
+            "namespace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "type": [
                 "string",
@@ -14540,6 +14546,12 @@
               },
               "name": {
                 "type": "string"
+              },
+              "namespace": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "status": {
                 "type": [

@@ -1717,7 +1717,8 @@ impl From<code_protocol::config_types::ReasoningEffort> for ReasoningEffort {
             code_protocol::config_types::ReasoningEffort::Low => ReasoningEffort::Low,
             code_protocol::config_types::ReasoningEffort::Medium => ReasoningEffort::Medium,
             code_protocol::config_types::ReasoningEffort::High => ReasoningEffort::High,
-            code_protocol::config_types::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
+            code_protocol::config_types::ReasoningEffort::XHigh
+            | code_protocol::config_types::ReasoningEffort::Max => ReasoningEffort::XHigh,
             code_protocol::config_types::ReasoningEffort::Custom(_) => ReasoningEffort::Medium,
         }
     }
