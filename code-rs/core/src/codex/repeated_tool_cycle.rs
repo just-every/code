@@ -90,10 +90,16 @@ fn tool_call_fingerprint(item: &ResponseItem) -> Option<String> {
             })
             .to_string(),
         ),
-        ResponseItem::CustomToolCall { name, input, .. } => Some(
+        ResponseItem::CustomToolCall {
+            name,
+            namespace,
+            input,
+            ..
+        } => Some(
             serde_json::json!({
                 "type": "custom_tool_call",
                 "name": name,
+                "namespace": namespace,
                 "input": input,
             })
             .to_string(),

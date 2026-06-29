@@ -3784,6 +3784,7 @@ mod turn_validation_tests {
             status: None,
             call_id: "call_custom".to_string(),
             name: "custom".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         };
 
@@ -4760,12 +4761,23 @@ async fn handle_response_item(
             .await,
             )
         }
-        ResponseItem::CustomToolCall { call_id, name, .. } => {
+        ResponseItem::CustomToolCall {
+            call_id,
+            name,
+            namespace,
+            ..
+        } => {
             // Minimal placeholder: custom tools are not handled here.
+            let display_name = namespace
+                .as_deref()
+                .map(|namespace| format!("{namespace}.{name}"))
+                .unwrap_or_else(|| name.clone());
             Some(ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Custom tool '{name}' is not supported in this build")),
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "Custom tool '{display_name}' is not supported in this build"
+                    )),
                     success: Some(false)},
             })
         }

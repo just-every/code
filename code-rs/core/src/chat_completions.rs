@@ -309,6 +309,7 @@ pub(crate) async fn stream_chat_completions(
                 id,
                 call_id: _,
                 name,
+                namespace: _,
                 input,
                 status: _,
             } => {

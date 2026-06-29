@@ -349,6 +349,9 @@ pub enum ResponseItem {
 
         call_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        namespace: Option<String>,
         input: String,
     },
     CustomToolCallOutput {
@@ -1887,6 +1890,30 @@ mod tests {
                 namespace: Some("mcp__codex_apps__gmail".to_string()),
                 arguments: "{\"top_k\":5}".to_string(),
                 call_id: "call-1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn custom_tool_call_deserializes_optional_namespace() {
+        let item: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "custom_tool_call",
+            "call_id": "call-1",
+            "name": "gmail_get_recent_emails",
+            "namespace": "mcp__codex_apps__gmail",
+            "input": "{\"top_k\":5}",
+        }))
+        .expect("custom_tool_call should deserialize");
+
+        assert_eq!(
+            item,
+            ResponseItem::CustomToolCall {
+                id: None,
+                status: None,
+                call_id: "call-1".to_string(),
+                name: "gmail_get_recent_emails".to_string(),
+                namespace: Some("mcp__codex_apps__gmail".to_string()),
+                input: "{\"top_k\":5}".to_string(),
             }
         );
     }

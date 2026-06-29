@@ -718,6 +718,7 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                 status,
                 call_id,
                 name,
+                namespace,
                 input,
             } => {
                 let input = truncate_for_compact(input, COMPACT_TOOL_ARGS_MAX_BYTES);
@@ -726,6 +727,7 @@ pub fn sanitize_items_for_compact(items: Vec<ResponseItem>) -> Vec<ResponseItem>
                     status,
                     call_id,
                     name,
+                    namespace,
                     input,
                 })
             }
