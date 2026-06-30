@@ -90,7 +90,7 @@ npm install -g @just-every/code
 code // or `coder` if you're using VS Code
 ```
 
-Note: If another tool already provides a `code` command (e.g. VS Code), our CLI is also installed as `coder`. Use `coder` to avoid conflicts.
+Note: If another tool already provides a `code` command (e.g., VS Code), our CLI is also installed as `coder`. Use `coder` to avoid conflicts.
 
 **Authenticate** (one of the following):
 - **Sign in with ChatGPT** (Plus/Pro/Team; uses models available to your plan)
@@ -100,7 +100,7 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 
 ### Install Claude, Antigravity & Gemini (optional)
 
-Every Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
+Every Code supports orchestrating other AI CLI tools. Install these and configure to use alongside Code.
 
 ```bash
 # Ensure Node.js 20+ is available locally (installs into ~/.n)
