@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.134] - 2026-06-30
+
+- Docs: fix README grammar for clearer command guidance. (073762b7, 1b312434)
+- Release: refresh upstream history for v0.6.134. (6505a30b)
+
 ## [0.6.133] - 2026-06-29
 
 - Core: backport upstream model metadata parity for improved model selection. (cfc7b53f)
