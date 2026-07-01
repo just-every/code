@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.135] - 2026-07-01
+
+- Release: refresh upstream history for v0.6.135. (52c4e51a)
+- Release: refresh the codex-rs mirror to upstream/main. (29be5a1f)
+
 ## [0.6.134] - 2026-06-30
 
 - Docs: fix README grammar for clearer command guidance. (073762b7, 1b312434)
