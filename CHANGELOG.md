@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.136] - 2026-07-02
+
+- Core: address quick-xml security advisories through the upstream refresh. (958b8f3a, 0ccb676d)
+- Release: refresh upstream history for v0.6.136. (958b8f3a)
+
 ## [0.6.135] - 2026-07-01
 
 - Release: refresh upstream history for v0.6.135. (52c4e51a)
