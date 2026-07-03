@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.137] - 2026-07-03
+
+- Release: include release metadata for v0.6.137. (d434463d)
+- Release: refresh upstream history and the codex-rs mirror. (4ab36e8d, a5d1b113)
+
 ## [0.6.136] - 2026-07-02
 
 - Core: address quick-xml security advisories through the upstream refresh. (958b8f3a, 0ccb676d)
