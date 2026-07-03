@@ -1,17 +1,17 @@
-## @just-every/code v0.6.135
+## @just-every/code v0.6.136
 
-This release refreshes Code with the latest upstream history and mirror updates.
+This release refreshes upstream history and includes a dependency security fix.
 
 ### Changes
 
-- Release: refresh upstream history for v0.6.135.
-- Release: refresh the codex-rs mirror to upstream/main.
+- Core: address quick-xml security advisories through the upstream refresh.
+- Release: refresh upstream history for v0.6.136.
 
 ### Install
 
-```bash
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.134...v0.6.135
+Compare: https://github.com/just-every/code/compare/v0.6.135...v0.6.136
