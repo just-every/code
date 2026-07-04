@@ -69,11 +69,10 @@ function Normalize-Version {
 function Get-ReleaseAssetMetadata {
     param(
         [string]$AssetName,
-        [string]$ResolvedVersion
+        [object]$ReleaseMetadata
     )
 
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openai/codex/releases/tags/rust-v$ResolvedVersion"
-    $asset = $release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+    $asset = $ReleaseMetadata.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
     if ($null -eq $asset) {
         throw "Could not find release asset $AssetName for Codex $ResolvedVersion."
     }
@@ -175,22 +174,38 @@ function Remove-StaleInstallArtifacts {
     }
 }
 
-function Resolve-Version {
+function Resolve-Release {
     $normalizedVersion = Normalize-Version -RawVersion $Release
     Assert-ValidReleaseVersion -Version $normalizedVersion
-    if ($normalizedVersion -ne "latest") {
-        return $normalizedVersion
+
+    if ($normalizedVersion -eq "latest") {
+        $requestedRelease = "latest"
+        $metadataUri = "https://api.github.com/repos/openai/codex/releases/latest"
+    } else {
+        $resolvedVersion = $normalizedVersion
+        $requestedRelease = $resolvedVersion
+        $metadataUri = "https://api.github.com/repos/openai/codex/releases/tags/rust-v$resolvedVersion"
     }
 
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/openai/codex/releases/latest"
-    if (-not $release.tag_name) {
-        Write-Error "Failed to resolve the latest Codex release version."
-        exit 1
+    try {
+        $releaseMetadata = Invoke-RestMethod -Uri $metadataUri
+    } catch {
+        throw "Could not fetch GitHub release metadata for Codex $requestedRelease. GitHub API may be unavailable or rate limited. $($_.Exception.Message)"
     }
 
-    $resolvedVersion = Normalize-Version -RawVersion $release.tag_name
-    Assert-ValidReleaseVersion -Version $resolvedVersion
-    return $resolvedVersion
+    if ($normalizedVersion -eq "latest") {
+        if (-not $releaseMetadata.tag_name) {
+            throw "Failed to resolve the latest Codex release version."
+        }
+
+        $resolvedVersion = Normalize-Version -RawVersion $releaseMetadata.tag_name
+        Assert-ValidReleaseVersion -Version $resolvedVersion
+    }
+
+    return [PSCustomObject]@{
+        Version = $resolvedVersion
+        Metadata = $releaseMetadata
+    }
 }
 
 function Get-VersionFromBinary {
@@ -650,7 +665,9 @@ if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
 }
 
 $currentVersion = Get-CurrentInstalledVersion -StandaloneCurrentDir $currentDir
-$resolvedVersion = Resolve-Version
+$resolvedRelease = Resolve-Release
+$resolvedVersion = $resolvedRelease.Version
+$releaseMetadata = $resolvedRelease.Metadata
 $releaseName = "$resolvedVersion-$target"
 $releaseDir = Join-Path $releasesDir $releaseName
 

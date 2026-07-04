@@ -140,8 +140,6 @@ release_metadata_url() {
 
 release_asset_digest() {
   asset="$1"
-  resolved_version="$2"
-  release_json="$(download_text "$(release_metadata_url "$resolved_version")")"
 
   digest="$(printf '%s\n' "$release_json" | awk -v asset="$asset" '
     {
@@ -223,27 +221,6 @@ require_command() {
     echo "$1 is required to install Codex." >&2
     exit 1
   fi
-}
-
-resolve_version() {
-  normalized_version="$(normalize_version "$RELEASE")"
-  validate_version "$normalized_version"
-
-  if [ "$normalized_version" != "latest" ]; then
-    printf '%s\n' "$normalized_version"
-    return
-  fi
-
-  release_json="$(download_text "https://api.github.com/repos/openai/codex/releases/latest")"
-  resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
-
-  if [ -z "$resolved" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
-    exit 1
-  fi
-
-  validate_version "$resolved"
-  printf '%s\n' "$resolved"
 }
 
 pick_profile() {
