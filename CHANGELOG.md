@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.138] - 2026-07-04
+
+- Install: reuse GitHub release metadata when resolving release assets. (319d0305)
+- Release: remove unused git-cliff configuration from the release metadata path. (98d28aab)
+- Release: refresh upstream history and the codex-rs mirror. (e632d40a, 0ec6b820)
+
 ## [0.6.137] - 2026-07-03
 
 - Release: include release metadata for v0.6.137. (d434463d)
