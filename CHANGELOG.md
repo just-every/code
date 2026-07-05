@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.139] - 2026-07-05
+
+- Release: refresh upstream history from upstream/main. (19d73e6c)
+- Release: refresh the codex-rs mirror to upstream/main. (1b24a00b)
+
 ## [0.6.138] - 2026-07-04
 
 - Install: reuse GitHub release metadata when resolving release assets. (319d0305)
