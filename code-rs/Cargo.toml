@@ -39,6 +39,7 @@ members = [
     "utils/image",
     "utils/json-to-toml",
     "utils/readiness",
+    "utils/rustls-provider",
 ]
 resolver = "2"
 
@@ -90,6 +91,7 @@ code-otel = { path = "otel" }
 code-tui = { path = "tui" }
 code-utils-json-to-toml = { path = "utils/json-to-toml" }
 code-utils-readiness = { path = "utils/readiness" }
+code-utils-rustls-provider = { path = "utils/rustls-provider", package = "codex-utils-rustls-provider" }
 code-auto-drive-core = { path = "code-auto-drive-core" }
 mcp-types = { path = "mcp-types", package = "code-mcp-types" }
 upstream-mcp-types = { git = "https://github.com/openai/codex.git", package = "mcp-types", rev = "6c384eb9c610f9a83037d9cad120fb792e782c7c" }
@@ -167,6 +169,10 @@ ratatui = "0.29.0"
 regex = "1"
 regex-lite = "0.1.7"
 reqwest = "0.12"
+rustls = { version = "0.23.34", default-features = false, features = [
+    "aws_lc_rs",
+    "std",
+] }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 schemars = "0.8.22"
 seccompiler = "0.5.0"

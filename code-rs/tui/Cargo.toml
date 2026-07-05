@@ -42,6 +42,7 @@ code-git-tooling = { path = "../git-tooling" }
 code-login = { path = "../login" }
 code-ollama = { path = "../ollama" }
 code-protocol = { path = "../protocol" }
+code-utils-rustls-provider = { workspace = true }
 code-version = { path = "../code-version" }
 code-cloud-tasks-client = { path = "../cloud-tasks-client", features = ["mock"] }
 code-auto-drive-diagnostics = { path = "../code-auto-drive-diagnostics" }

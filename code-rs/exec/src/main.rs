@@ -25,6 +25,8 @@ struct TopCli {
 }
 
 fn main() -> anyhow::Result<()> {
+    code_utils_rustls_provider::ensure_rustls_crypto_provider();
+
     arg0_dispatch_or_else(|code_linux_sandbox_exe| async move {
         let top_cli = TopCli::parse();
         // Merge root-level overrides into inner CLI struct so downstream logic remains unchanged.

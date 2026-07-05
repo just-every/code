@@ -26,6 +26,7 @@ code-app-server-protocol = { workspace = true }
 code-protocol = { workspace = true }
 code-utils-absolute-path = { workspace = true }
 code-utils-json-to-toml = { workspace = true }
+code-utils-rustls-provider = { workspace = true }
 futures = { workspace = true }
 # We should only be using mcp-types for JSON-RPC types: it would be nice to
 # split this out into a separate crate at some point.

@@ -33,6 +33,7 @@ code-app-server-protocol = { workspace = true }
 code-protocol-ts = { workspace = true }
 code-responses-api-proxy = { workspace = true }
 code-tui = { workspace = true }
+code-utils-rustls-provider = { workspace = true }
 code-version = { path = "../code-version" }
 code-cloud-tasks = { workspace = true }
 ctor = { workspace = true }

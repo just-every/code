@@ -940,6 +940,7 @@ dependencies = [
  "code-protocol",
  "code-utils-json-to-toml",
  "codex-utils-absolute-path",
+ "codex-utils-rustls-provider",
  "futures",
  "owo-colors",
  "serde",
@@ -1132,6 +1133,7 @@ dependencies = [
  "code-responses-api-proxy",
  "code-tui",
  "code-version",
+ "codex-utils-rustls-provider",
  "ctor 0.5.0",
  "filetime",
  "flate2",
@@ -1311,6 +1313,7 @@ dependencies = [
  "code-git-tooling",
  "code-ollama",
  "code-protocol",
+ "codex-utils-rustls-provider",
  "filetime",
  "libc",
  "once_cell",
@@ -1445,6 +1448,7 @@ dependencies = [
  "code-mcp-types",
  "code-protocol",
  "code-utils-json-to-toml",
+ "codex-utils-rustls-provider",
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",
@@ -1556,6 +1560,7 @@ dependencies = [
  "anyhow",
  "clap",
  "code-process-hardening",
+ "codex-utils-rustls-provider",
  "ctor 0.5.0",
  "libc",
  "reqwest 0.12.24",
@@ -1607,6 +1612,7 @@ dependencies = [
  "code-protocol",
  "code-tui",
  "code-version",
+ "codex-utils-rustls-provider",
  "color-eyre",
  "crossterm",
  "diffy",
@@ -1737,6 +1743,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+]
+
+[[package]]
+name = "codex-utils-rustls-provider"
+version = "0.0.0"
+dependencies = [
+ "rustls",
 ]
 
 [[package]]
