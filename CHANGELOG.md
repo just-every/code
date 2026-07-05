@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.140] - 2026-07-05
+
+- Core: install the rustls crypto provider across Code binaries for reliable TLS startup. (f991d88a)
+- CLI: initialize TLS consistently from a shared rustls provider utility. (f991d88a)
+
 ## [0.6.138] - 2026-07-04
 
 - Install: reuse GitHub release metadata when resolving release assets. (319d0305)
