@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.141] - 2026-07-06
+
+- Core: backport the rate-limit reset credit schema for account limit responses. (9c0c72a3)
+- App Server: expose reset credit details in rate limit protocol types. (9c0c72a3)
+
 ## [0.6.140] - 2026-07-05
 
 - Core: install the rustls crypto provider across Code binaries for reliable TLS startup. (f991d88a)
