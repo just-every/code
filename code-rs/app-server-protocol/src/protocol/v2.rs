@@ -1208,6 +1208,60 @@ pub struct GetAccountRateLimitsResponse {
     /// Multi-bucket view keyed by metered `limit_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limits_by_limit_id: Option<HashMap<String, RateLimitSnapshot>>,
+    pub rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RateLimitResetCreditsSummary {
+    pub available_count: i64,
+    /// Detail rows for available reset credits, when the backend provides them.
+    ///
+    /// `null` means only `availableCount` is known, while an empty array means details were fetched
+    /// and no available credits were returned. The backend may cap this list, so its length can be
+    /// less than `availableCount`.
+    pub credits: Option<Vec<RateLimitResetCredit>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RateLimitResetCredit {
+    /// Opaque backend identifier for this reset credit.
+    pub id: String,
+    pub reset_type: RateLimitResetType,
+    pub status: RateLimitResetCreditStatus,
+    /// Unix timestamp in seconds when the credit was granted.
+    #[ts(type = "number")]
+    pub granted_at: i64,
+    /// Unix timestamp in seconds when the credit expires, or `null` if it does not expire.
+    #[ts(type = "number | null")]
+    pub expires_at: Option<i64>,
+    /// Backend-provided display title for this credit, or `null` when unavailable.
+    pub title: Option<String>,
+    /// Backend-provided display description for this credit, or `null` when unavailable.
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum RateLimitResetType {
+    CodexRateLimits,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum RateLimitResetCreditStatus {
+    Available,
+    Redeeming,
+    Redeemed,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -531,6 +531,7 @@ impl CodexMessageProcessor {
         Ok(GetAccountRateLimitsResponse {
             rate_limits: rate_limits.into(),
             rate_limits_by_limit_id: Some(rate_limits_by_limit_id),
+            rate_limit_reset_credits: None,
         })
     }
 
