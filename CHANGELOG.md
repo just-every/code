@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.142] - 2026-07-07
+
+- Core: backport upstream protocol parity updates for app-server and model metadata compatibility. (f38d5f24)
+- App Server: add login account brand schema support across v2 protocol types. (f38d5f24)
+
 ## [0.6.141] - 2026-07-06
 
 - Core: backport the rate-limit reset credit schema for account limit responses. (9c0c72a3)
