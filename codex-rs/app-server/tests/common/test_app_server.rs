@@ -111,6 +111,7 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::WindowsSandboxSetupStartParams;
 use codex_exec_server::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
@@ -216,15 +217,21 @@ impl TestAppServer {
         Ok(app_server)
     }
 
+    /// Returns the automatically selected test environment retained by this server.
+    ///
+    /// Tests can use the environment to arrange target-native filesystem fixtures before starting
+    /// a thread. Returns an error unless this server was created with [`Self::new_with_auto_env`].
+    pub fn auto_env(&self) -> anyhow::Result<&TestEnv> {
+        self.auto_env
+            .as_ref()
+            .context("auto environment is unavailable; use TestAppServer::new_with_auto_env")
+    }
+
     /// Returns app-server protocol parameters for the automatically selected
     /// test environment. Returns an error unless this server was created with
     /// [`Self::new_with_auto_env`].
     pub fn auto_env_params(&self) -> anyhow::Result<TurnEnvironmentParams> {
-        let selection = self
-            .auto_env
-            .as_ref()
-            .context("auto environment is unavailable; use TestAppServer::new_with_auto_env")?
-            .selection();
+        let selection = self.auto_env()?.selection();
         Ok(TurnEnvironmentParams {
             environment_id: selection.environment_id.clone(),
             cwd: selection.cwd.clone().into(),
@@ -546,8 +553,8 @@ impl TestAppServer {
             chatgpt_account_id,
             chatgpt_plan_type,
         };
-        let params = Some(serde_json::to_value(params)?);
-        self.send_request("account/login/start", params).await
+        self.send_login_account_request(serde_json::to_value(params)?)
+            .await
     }
 
     /// Send a `feedback/upload` JSON-RPC request.
@@ -1052,6 +1059,39 @@ impl TestAppServer {
         self.send_request("turn/start", params).await
     }
 
+    /// Start a turn and return its matching typed completion notification.
+    pub async fn start_turn_and_wait_for_completion(
+        &mut self,
+        params: TurnStartParams,
+    ) -> anyhow::Result<TurnCompletedNotification> {
+        let thread_id = params.thread_id.clone();
+        let request_id = self.send_turn_start_request(params).await?;
+        let response = self
+            .read_stream_until_response_message(RequestId::Integer(request_id))
+            .await?;
+        let TurnStartResponse { turn } = crate::to_response(response)?;
+        let notification = self
+            .read_stream_until_matching_notification(
+                "turn/completed for started turn",
+                |notification| {
+                    notification.method == "turn/completed"
+                        && notification.params.as_ref().is_some_and(|params| {
+                            serde_json::from_value::<TurnCompletedNotification>(params.clone())
+                                .is_ok_and(|completed| {
+                                    completed.thread_id == thread_id && completed.turn.id == turn.id
+                                })
+                        })
+                },
+            )
+            .await?;
+        let params = notification
+            .params
+            .context("turn/completed notification must include params")?;
+        let completed = serde_json::from_value(params)
+            .context("failed to deserialize turn/completed notification")?;
+        Ok(completed)
+    }
+
     /// Send a `thread/inject_items` JSON-RPC request (v2).
     pub async fn send_thread_inject_items_request(
         &mut self,
@@ -1380,6 +1420,14 @@ impl TestAppServer {
         self.send_request("account/logout", /*params*/ None).await
     }
 
+    /// Send an `account/login/start` JSON-RPC request.
+    pub async fn send_login_account_request(
+        &mut self,
+        params: serde_json::Value,
+    ) -> anyhow::Result<i64> {
+        self.send_request("account/login/start", Some(params)).await
+    }
+
     /// Send an `account/login/start` JSON-RPC request for API key login.
     pub async fn send_login_account_api_key_request(
         &mut self,
@@ -1389,7 +1437,7 @@ impl TestAppServer {
             "type": "apiKey",
             "apiKey": api_key,
         });
-        self.send_request("account/login/start", Some(params)).await
+        self.send_login_account_request(params).await
     }
 
     /// Send an `account/login/start` JSON-RPC request for ChatGPT login.
@@ -1397,7 +1445,7 @@ impl TestAppServer {
         let params = serde_json::json!({
             "type": "chatgpt"
         });
-        self.send_request("account/login/start", Some(params)).await
+        self.send_login_account_request(params).await
     }
 
     /// Send an `account/login/start` JSON-RPC request for ChatGPT device code login.
@@ -1405,7 +1453,7 @@ impl TestAppServer {
         let params = serde_json::json!({
             "type": "chatgptDeviceCode"
         });
-        self.send_request("account/login/start", Some(params)).await
+        self.send_login_account_request(params).await
     }
 
     /// Send an `account/login/cancel` JSON-RPC request.
