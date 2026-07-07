@@ -361,7 +361,7 @@ impl CodexMessageProcessor {
                 self.auth_manager.reload();
                 Ok(LoginAccountResponse::ApiKey {})
             }
-            LoginAccountParams::Chatgpt => self.start_chatgpt_login_v2().await,
+            LoginAccountParams::Chatgpt { .. } => self.start_chatgpt_login_v2().await,
             LoginAccountParams::ChatgptAuthTokens {
                 access_token,
                 chatgpt_account_id,
