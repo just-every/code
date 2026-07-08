@@ -60,6 +60,7 @@ fn account_has_credentials(account: &auth_accounts::StoredAccount) -> bool {
     match account.mode {
         AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => account.tokens.is_some(),
         AuthMode::ApiKey => account.openai_api_key.is_some(),
+        AuthMode::Headers => false,
     }
 }
 

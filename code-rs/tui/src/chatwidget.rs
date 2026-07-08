@@ -9341,7 +9341,9 @@ impl ChatWidget<'_> {
 
         let account_type = account
             .map(|acc| match acc.mode {
-                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => "ChatGPT account",
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers => {
+                    "ChatGPT account"
+                }
                 AuthMode::ApiKey => "API key",
             })
             .unwrap_or("Unknown account");

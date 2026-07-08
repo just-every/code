@@ -78,6 +78,7 @@ impl KeyboardHandler for AuthModeWidget {
                 SignInState::PickMode => match self.highlighted_mode {
                     AuthMode::ChatGPT => self.start_chatgpt_login(),
                     AuthMode::ChatgptAuthTokens => self.start_chatgpt_login(),
+                    AuthMode::Headers => self.start_chatgpt_login(),
                     AuthMode::ApiKey => self.verify_api_key(),
                 },
                 SignInState::EnvVarMissing => self.sign_in_state = SignInState::PickMode,
@@ -132,12 +133,17 @@ impl AuthModeWidget {
         // preferred auth method, show a brief explanation.
         if let LoginStatus::AuthMode(current) = self.login_status {
             let is_chatgpt = |mode: AuthMode| {
-                matches!(mode, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+                matches!(
+                    mode,
+                    AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers
+                )
             };
             if is_chatgpt(current) != is_chatgpt(self.preferred_auth_method) {
                 let to_label = |mode: AuthMode| match mode {
                     AuthMode::ApiKey => "API key",
-                    AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => "ChatGPT",
+                    AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers => {
+                        "ChatGPT"
+                    }
                 };
                 let msg = format!(
                     "  You’re currently using {} while your preferred method is {}.",
@@ -185,7 +191,9 @@ impl AuthModeWidget {
         };
         let chatgpt_label = if matches!(
             self.login_status,
-            LoginStatus::AuthMode(AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+            LoginStatus::AuthMode(
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers
+            )
         ) {
             "Continue using ChatGPT"
         } else {
@@ -337,7 +345,9 @@ impl AuthModeWidget {
         // just proceed to the success message flow.
         if matches!(
             self.login_status,
-            LoginStatus::AuthMode(AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+            LoginStatus::AuthMode(
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers
+            )
         ) {
             self.apply_chatgpt_login_side_effects();
             self.sign_in_state = SignInState::ChatGptSuccess;

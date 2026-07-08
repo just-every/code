@@ -582,7 +582,13 @@ impl MessageProcessor {
             forced_chatgpt_workspace_id: None,
             forced_login_method: None,
             web_search: Some(if config.tools_web_search_request {
-                WebSearchMode::Cached
+                if config.tools_web_search_indexed {
+                    WebSearchMode::Indexed
+                } else if config.tools_web_search_external {
+                    WebSearchMode::Live
+                } else {
+                    WebSearchMode::Cached
+                }
             } else {
                 WebSearchMode::Disabled
             }),

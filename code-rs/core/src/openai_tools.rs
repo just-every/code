@@ -100,6 +100,8 @@ pub struct WebSearchTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_web_access: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_web_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub search_content_types: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<WebSearchFilters>,
@@ -160,6 +162,7 @@ pub struct ToolsConfig {
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
     pub web_search_external: bool,
+    pub web_search_indexed: bool,
     pub web_search_tool_type: WebSearchToolType,
     pub image_gen_tool: bool,
     pub search_tool: bool,
@@ -223,6 +226,7 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             web_search_external: true,
+            web_search_indexed: false,
             web_search_tool_type: model_family.web_search_tool_type,
             image_gen_tool: false,
             search_tool: false,
@@ -1511,6 +1515,8 @@ pub fn get_openai_tools(
     tools.push(create_bridge_tool());
 
     if config.web_search_request {
+        let external_web_access = Some(config.web_search_external || config.web_search_indexed);
+        let indexed_web_access = config.web_search_indexed.then_some(true);
         let search_content_types = match config.web_search_tool_type {
             WebSearchToolType::Text => None,
             WebSearchToolType::TextAndImage => Some(
@@ -1522,7 +1528,8 @@ pub fn get_openai_tools(
         };
         let tool = match &config.web_search_allowed_domains {
             Some(domains) if !domains.is_empty() => OpenAiTool::WebSearch(WebSearchTool {
-                external_web_access: Some(config.web_search_external),
+                external_web_access,
+                indexed_web_access,
                 search_content_types,
                 filters: Some(WebSearchFilters {
                     allowed_domains: Some(domains.clone()),
@@ -1531,7 +1538,8 @@ pub fn get_openai_tools(
                 search_context_size: None,
             }),
             _ => OpenAiTool::WebSearch(WebSearchTool {
-                external_web_access: Some(config.web_search_external),
+                external_web_access,
+                indexed_web_access,
                 search_content_types,
                 ..WebSearchTool::default()
             }),
@@ -1952,6 +1960,7 @@ mod tests {
             .expect("web_search tool should be present");
 
         assert_eq!(web_search_tool.external_web_access, Some(false));
+        assert_eq!(web_search_tool.indexed_web_access, None);
         assert_eq!(
             web_search_tool
                 .filters
@@ -1960,6 +1969,36 @@ mod tests {
                 .cloned(),
             Some(vec!["openai.com".to_string()])
         );
+    }
+
+    #[test]
+    fn test_web_search_indexed_access_sets_canonical_field() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let mut config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false,
+            false,
+            true,
+            /*use_experimental_streamable_shell_tool*/ false,
+            false,
+        );
+        config.web_search_external = false;
+        config.web_search_indexed = true;
+        apply_default_agent_models(&mut config);
+
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
+        let web_search_tool = tools
+            .iter()
+            .find_map(|tool| match tool {
+                OpenAiTool::WebSearch(web_search_tool) => Some(web_search_tool),
+                _ => None,
+            })
+            .expect("web_search tool should be present");
+
+        assert_eq!(web_search_tool.external_web_access, Some(true));
+        assert_eq!(web_search_tool.indexed_web_access, Some(true));
     }
 
     #[test]

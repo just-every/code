@@ -39,6 +39,11 @@ pub enum AuthMode {
     #[ts(rename = "chatgptAuthTokens")]
     #[strum(serialize = "chatgptAuthTokens")]
     ChatgptAuthTokens,
+    /// Request headers supplied by an external auth provider.
+    #[serde(rename = "headers")]
+    #[ts(rename = "headers")]
+    #[strum(serialize = "headers")]
+    Headers,
 }
 
 impl AuthMode {
@@ -46,7 +51,7 @@ impl AuthMode {
     pub const ChatGPT: Self = Self::Chatgpt;
 
     pub fn is_chatgpt(self) -> bool {
-        matches!(self, Self::Chatgpt | Self::ChatgptAuthTokens)
+        matches!(self, Self::Chatgpt | Self::ChatgptAuthTokens | Self::Headers)
     }
 }
 

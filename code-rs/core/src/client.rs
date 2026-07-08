@@ -500,6 +500,7 @@ impl ModelClient {
         );
         tools_config.web_search_allowed_domains = self.config.tools_web_search_allowed_domains.clone();
         tools_config.web_search_external = self.config.tools_web_search_external;
+        tools_config.web_search_indexed = self.config.tools_web_search_indexed;
         tools_config.search_tool = self.config.tools_search_tool;
 
         let auth_mode = self

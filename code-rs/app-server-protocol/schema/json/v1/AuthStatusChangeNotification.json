@@ -24,6 +24,13 @@
             "chatgptAuthTokens"
           ],
           "type": "string"
+        },
+        {
+          "description": "Request headers supplied by an external auth provider.",
+          "enum": [
+            "headers"
+          ],
+          "type": "string"
         }
       ]
     }

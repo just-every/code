@@ -195,6 +195,7 @@ fn upsert_account(mut data: AccountsFile, mut new_account: StoredAccount) -> (Ac
             .openai_api_key
             .as_ref()
             .and_then(|api_key| data.accounts.iter().position(|acc| match_api_key_account(acc, api_key))),
+        AuthMode::Headers => None,
     };
 
     if let Some(idx) = existing_idx {

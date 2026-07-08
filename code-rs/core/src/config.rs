@@ -471,6 +471,8 @@ pub struct Config {
     pub tools_web_search_request: bool,
     /// Controls `external_web_access` for the web_search tool payload.
     pub tools_web_search_external: bool,
+    /// Requests indexed-only web access for the web_search tool payload.
+    pub tools_web_search_indexed: bool,
     /// Enable MCP tool discovery helper (`search_tool_bm25`).
     pub tools_search_tool: bool,
     /// Optional allow-list of domains for web_search filters.allowed_domains
@@ -910,6 +912,10 @@ pub struct ToolsToml {
     #[serde(default)]
     pub web_search_external: Option<bool>,
 
+    /// Requests indexed-only web access for the web_search tool payload.
+    #[serde(default)]
+    pub web_search_indexed: Option<bool>,
+
     /// Enable MCP tool discovery helper (`search_tool_bm25`).
     #[serde(default)]
     pub search_tool: Option<bool>,
@@ -1262,6 +1268,11 @@ impl Config {
             .as_ref()
             .and_then(|t| t.web_search_external)
             .unwrap_or(true);
+        let tools_web_search_indexed = cfg
+            .tools
+            .as_ref()
+            .and_then(|t| t.web_search_indexed)
+            .unwrap_or(false);
         let tools_search_tool = cfg
             .tools
             .as_ref()
@@ -1709,6 +1720,7 @@ impl Config {
             include_apply_patch_tool: include_apply_patch_tool.unwrap_or(cfg!(target_os = "windows")),
             tools_web_search_request,
             tools_web_search_external,
+            tools_web_search_indexed,
             tools_search_tool,
             tools_web_search_allowed_domains,
             // Honor upstream opt-in switch name for our experimental streamable shell tool.

@@ -1908,6 +1908,9 @@ impl IntoWireAuthMode for code_app_server_protocol::AuthMode {
             code_app_server_protocol::AuthMode::ChatgptAuthTokens => {
                 code_protocol::mcp_protocol::AuthMode::ChatgptAuthTokens
             }
+            code_app_server_protocol::AuthMode::Headers => {
+                code_protocol::mcp_protocol::AuthMode::Headers
+            }
         }
     }
 }

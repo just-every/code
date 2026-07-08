@@ -91,9 +91,9 @@ impl PartialEq for CodexAuth {
 
 impl CodexAuth {
     pub async fn refresh_token(&self) -> Result<String, RefreshTokenError> {
-        if self.mode == AuthMode::ChatgptAuthTokens {
+        if matches!(self.mode, AuthMode::ChatgptAuthTokens | AuthMode::Headers) {
             return Err(RefreshTokenError::permanent(
-                "ChatGPT auth tokens are managed externally and cannot be refreshed.",
+                "externally managed auth cannot be refreshed from stored credentials.",
             ));
         }
         let token_data = self
@@ -234,6 +234,9 @@ impl CodexAuth {
                 let id_token = self.get_token_data().await?.access_token;
                 Ok(id_token)
             }
+            AuthMode::Headers => Err(std::io::Error::other(
+                "header auth does not expose a bearer token",
+            )),
         }
     }
 
@@ -253,7 +256,7 @@ impl CodexAuth {
     }
 
     pub fn uses_codex_backend(&self) -> bool {
-        matches!(self.mode, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+        self.mode.is_chatgpt()
     }
 
     pub fn supports_pro_only_models(&self) -> bool {
@@ -561,6 +564,9 @@ pub async fn auth_for_stored_account(
                 account.mode,
             ))
         }
+        AuthMode::Headers => Err(std::io::Error::other(
+            "externally provided auth cannot be loaded from stored accounts",
+        )),
     }
 }
 
@@ -599,6 +605,11 @@ pub fn activate_account(code_home: &Path, account_id: &str) -> std::io::Result<(
                 last_refresh: account.last_refresh,
             };
             write_auth_json(&auth_file, &auth)?;
+        }
+        AuthMode::Headers => {
+            return Err(std::io::Error::other(
+                "externally provided auth cannot be selected as a stored account",
+            ));
         }
     }
 
@@ -674,6 +685,11 @@ fn load_auth(
             }
             AuthMode::ChatGPT => {
                 effective_preference = AuthMode::ChatGPT;
+            }
+            AuthMode::Headers => {
+                return Err(std::io::Error::other(
+                    "externally provided auth cannot be loaded from auth storage",
+                ));
             }
         }
     }
@@ -1735,6 +1751,7 @@ impl AuthManager {
                 | (AuthMode::ChatgptAuthTokens, AuthMode::ChatgptAuthTokens) => {
                     a.get_current_auth_json() == b.get_current_auth_json()
                 }
+                (AuthMode::Headers, AuthMode::Headers) => true,
                 _ => false,
             },
             _ => false,

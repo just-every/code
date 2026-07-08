@@ -105,11 +105,18 @@ pub enum AuthMode {
     #[ts(rename = "chatgptAuthTokens")]
     #[strum(serialize = "chatgptAuthTokens")]
     ChatgptAuthTokens,
+    #[serde(rename = "headers")]
+    #[ts(rename = "headers")]
+    #[strum(serialize = "headers")]
+    Headers,
 }
 
 impl AuthMode {
     pub fn is_chatgpt(self) -> bool {
-        matches!(self, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
+        matches!(
+            self,
+            AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens | AuthMode::Headers
+        )
     }
 }
 
