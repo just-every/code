@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
+const codexPackageRoot = realpathSync(path.join(__dirname, ".."));
 
 const PLATFORM_PACKAGE_BY_TARGET = {
   "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
@@ -108,7 +109,9 @@ if (!vendorRoot) {
   const updateCommand =
     packageManager === "bun"
       ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      : packageManager === "pnpm"
+        ? "pnpm add -g @openai/codex@latest"
+        : "npm install -g @openai/codex@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
   );
