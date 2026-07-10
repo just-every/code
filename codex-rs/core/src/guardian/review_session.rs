@@ -720,14 +720,10 @@ async fn run_review_on_session(
             &params.spawn_config.to_models_manager_config(),
         )
         .await;
-    let guardian_reasoning_effort = if model_info.supports_reasoning_summaries {
-        params
-            .reasoning_effort
-            .clone()
-            .or_else(|| model_info.default_reasoning_level.clone())
-    } else {
-        None
-    };
+    let guardian_reasoning_effort = params
+        .reasoning_effort
+        .clone()
+        .or_else(|| model_info.default_reasoning_level.clone());
     let mut analytics_result =
         GuardianReviewAnalyticsResult::from_session(GuardianReviewSessionAnalyticsParams {
             guardian_thread_id: review_session.codex.session.thread_id.to_string(),
@@ -1181,6 +1177,7 @@ mod tests {
             id: turn_id.to_string(),
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 last_agent_message: last_agent_message.map(str::to_string),
                 completed_at: None,
                 duration_ms: None,
@@ -1194,6 +1191,7 @@ mod tests {
             id: turn_id.to_string(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id.to_string()),
+                started_at: None,
                 reason: TurnAbortReason::Interrupted,
                 completed_at: None,
                 duration_ms: None,

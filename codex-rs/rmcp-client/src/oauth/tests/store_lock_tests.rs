@@ -31,15 +31,20 @@ use crate::oauth::WrappedOAuthTokenResponse;
 use crate::oauth::fallback_file_path;
 use crate::oauth::load_oauth_tokens_from_file;
 use crate::oauth::load_oauth_tokens_from_keyring;
-use crate::oauth::load_oauth_tokens_from_keyring_with_fallback_to_file;
+use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth::save_oauth_tokens_to_file;
 use crate::oauth::save_oauth_tokens_to_file_with_lock_held;
 use crate::oauth::save_oauth_tokens_to_secrets_keyring_with_lock_held;
 use crate::oauth::save_oauth_tokens_with_keyring;
 use crate::oauth::save_oauth_tokens_with_keyring_with_fallback_to_file;
 use crate::oauth::test_support::TempCodexHome;
+use codex_config::types::OAuthCredentialsStoreMode;
 
 const STORE_LOCK_CONTENTION_EVENT_TARGET: &str = "codex_rmcp_client::oauth::store_lock::contention";
+// Contention is proven by the tracing event emitted after a real WouldBlock. Keep the timeout
+// generous because it only bounds a failed test; it must not turn worker scheduling latency into
+// a false failure on loaded CI hosts.
+const STORE_LOCK_CONTENTION_EVENT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 
 fn assert_tokens_match_without_expiry(actual: &StoredOAuthTokens, expected: &StoredOAuthTokens) {
     assert_eq!(actual.server_name, expected.server_name);
@@ -136,10 +141,7 @@ fn store_lock_is_released_when_holder_process_exits() -> Result<()> {
             }
             Err(error) => error,
         };
-        assert!(matches!(
-            error.downcast_ref::<OAuthStoreLockFailure>(),
-            Some(OAuthStoreLockFailure::Timeout { .. })
-        ));
+        assert!(matches!(error, OAuthStoreLockFailure::Timeout { .. }));
 
         child
             .kill()
@@ -216,11 +218,12 @@ fn auto_load_secrets_lock_failure_does_not_fall_back_to_file() -> Result<()> {
 
     let lock_dir = env.path().join("mcp-oauth-locks");
     std::fs::create_dir(lock_dir.join("secrets-store.lock"))?;
-    let error = load_oauth_tokens_from_keyring_with_fallback_to_file(
+    let error = resolve_oauth_tokens_from_store_policy(
         &keyring_store,
-        AuthKeyringBackendKind::Secrets,
         &tokens.server_name,
         &tokens.url,
+        OAuthCredentialsStoreMode::Auto,
+        AuthKeyringBackendKind::Secrets,
     )
     .expect_err("aggregate-store lock failure must abort Auto resolution");
 
@@ -295,7 +298,9 @@ where
 
     // This event is emitted only after `try_lock()` returns WouldBlock, so the test fails if the
     // operation stops acquiring the aggregate-store lock.
-    contended_rx.recv_timeout(Duration::from_secs(/*secs*/ 1))?;
+    contended_rx
+        .recv_timeout(STORE_LOCK_CONTENTION_EVENT_TIMEOUT)
+        .context("timed out waiting for actual OAuth store lock contention")?;
     drop(held_lock);
     let result = result_rx.recv_timeout(Duration::from_secs(/*secs*/ 10))??;
     worker
@@ -328,7 +333,9 @@ fn file_store_lock_preserves_updates_for_different_servers() -> Result<()> {
         });
     });
 
-    contended_rx.recv_timeout(Duration::from_secs(/*secs*/ 1))?;
+    contended_rx
+        .recv_timeout(STORE_LOCK_CONTENTION_EVENT_TIMEOUT)
+        .context("timed out waiting for actual OAuth store lock contention")?;
     save_oauth_tokens_to_file_with_lock_held(&first)?;
     drop(held_lock);
     result_rx.recv_timeout(Duration::from_secs(/*secs*/ 10))??;
@@ -397,7 +404,9 @@ fn secrets_store_lock_preserves_updates_for_different_servers() -> Result<()> {
         });
     });
 
-    contended_rx.recv_timeout(Duration::from_secs(/*secs*/ 1))?;
+    contended_rx
+        .recv_timeout(STORE_LOCK_CONTENTION_EVENT_TIMEOUT)
+        .context("timed out waiting for actual OAuth store lock contention")?;
     let first_serialized = serde_json::to_string(&first)?;
     save_oauth_tokens_to_secrets_keyring_with_lock_held(
         &keyring_store,
@@ -445,12 +454,12 @@ fn secrets_store_load_and_delete_observe_aggregate_lock() -> Result<()> {
     let url = tokens.url.clone();
     let loaded =
         complete_after_store_lock_contention(env.path(), OAuthStore::Secrets, move || {
-            load_oauth_tokens_from_keyring(
+            Ok(load_oauth_tokens_from_keyring(
                 &store_for_load,
                 AuthKeyringBackendKind::Secrets,
                 &server_name,
                 &url,
-            )
+            )?)
         })?
         .expect("encrypted credentials should remain readable after contention");
     assert_tokens_match_without_expiry(&loaded, &tokens);
