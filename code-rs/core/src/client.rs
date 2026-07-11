@@ -2503,10 +2503,6 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
 }
 
 fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
-    if store {
-        return;
-    }
-
     for item in input {
         match item {
             ResponseItem::AdditionalTools { id, .. }
@@ -2517,7 +2513,9 @@ fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
             | ResponseItem::LocalShellCall { id, .. }
             | ResponseItem::ToolSearchCall { id, .. }
             | ResponseItem::CustomToolCall { id, .. } => {
-                *id = None;
+                if !store || id.as_deref().is_some_and(|id| !is_prefixed_response_item_id(id)) {
+                    *id = None;
+                }
             }
             ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::FunctionCallOutput { .. }
@@ -2529,6 +2527,11 @@ fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
             | ResponseItem::Other => {}
         }
     }
+}
+
+fn is_prefixed_response_item_id(id: &str) -> bool {
+    id.split_once('_')
+        .is_some_and(|(prefix, suffix)| !prefix.is_empty() && !suffix.is_empty())
 }
 
 fn parse_rate_limit_snapshot(headers: &HeaderMap) -> Option<RateLimitSnapshotEvent> {
@@ -3336,6 +3339,36 @@ mod tests {
             !serialized.to_string().contains("\"id\""),
             "non-stored Responses requests must not replay server item IDs: {serialized}"
         );
+    }
+
+    #[test]
+    fn stored_responses_strip_unprefixed_item_ids() {
+        let mut input = vec![
+            ResponseItem::Message {
+                id: Some("legacy-id".to_string()),
+                role: "assistant".to_string(),
+                content: vec![code_protocol::models::ContentItem::OutputText {
+                    text: "legacy".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: Some("msg_123".to_string()),
+                role: "assistant".to_string(),
+                content: vec![code_protocol::models::ContentItem::OutputText {
+                    text: "current".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        prepare_response_items_for_request(&mut input, true);
+
+        let serialized = serde_json::to_value(&input).expect("serialize input");
+        assert_eq!(serialized[0].get("id"), None);
+        assert_eq!(serialized[1]["id"], "msg_123");
     }
 
     #[tokio::test]
