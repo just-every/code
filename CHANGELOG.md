@@ -7,6 +7,10 @@
 
 - (none)
 
+## [0.6.145] - 2026-07-13
+
+- Core: migrate legacy theme strings in configuration to the current theme format. (ab3ec88a)
+
 ## [0.6.143] - 2026-07-08
 
 - Core: backport upstream auth and web search parity across config, protocol, and streaming flows. (0260d05f)
