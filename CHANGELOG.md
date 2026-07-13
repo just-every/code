@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.144] - 2026-07-13
+
+- Core: accept upstream reasoning summary metadata for improved protocol compatibility. (65b8b3a3)
+- Core: strip invalid stored response item IDs before reusing stored responses. (04a198bf)
+- CLI: fix code-mode installation on Darwin systems. (22781d40)
+- CLI: parse compact release metadata in the installer. (dc23c7bc)
+
 ## [0.6.143] - 2026-07-08
 
 - Core: backport upstream auth and web search parity across config, protocol, and streaming flows. (0260d05f)

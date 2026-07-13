@@ -1,13 +1,13 @@
-## @just-every/code v0.6.143
+## @just-every/code v0.6.144
 
-This release brings upstream auth and web search parity updates, hosted mode defaults, and pnpm install detection improvements.
+This release improves protocol compatibility, stored response handling, and installer reliability.
 
 ### Changes
 
-- Core: backport upstream auth and web search parity across config, protocol, and streaming flows.
-- CLI: default code-mode to hosted mode for new sessions.
-- CLI: detect installs managed by pnpm when checking managed upgrade paths.
-- TUI: update onboarding and account labels for refreshed auth modes.
+- Core: accept upstream reasoning summary metadata for improved protocol compatibility.
+- Core: strip invalid stored response item IDs before reusing stored responses.
+- CLI: fix code-mode installation on Darwin systems.
+- CLI: parse compact release metadata in the installer.
 
 ### Install
 
@@ -16,4 +16,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.142...v0.6.143
+Compare: https://github.com/just-every/code/compare/v0.6.143...v0.6.144
