@@ -348,6 +348,10 @@ const fn default_effective_context_window_percent() -> i64 {
     95
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 /// Model metadata returned by the Codex backend `/models` endpoint.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelInfo {
@@ -374,6 +378,14 @@ pub struct ModelInfo {
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
     pub include_skills_usage_instructions: bool,
+    /// Whether the model accepts the Responses API `reasoning.summary` parameter.
+    ///
+    /// Upstream renamed this manifest field from `supports_reasoning_summaries`.
+    /// Keep the local field name so downstream callers retain their established API.
+    #[serde(
+        default = "default_true",
+        alias = "supports_reasoning_summary_parameter"
+    )]
     pub supports_reasoning_summaries: bool,
     #[serde(default)]
     pub default_reasoning_summary: ReasoningSummary,
