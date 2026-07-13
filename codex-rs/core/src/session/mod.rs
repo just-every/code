@@ -55,6 +55,7 @@ use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_connectors::connector_runtime_context_key;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionDataInit;
@@ -73,7 +74,6 @@ use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpConnectionManager;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntimeContext;
-use codex_mcp::codex_apps_tools_cache_key;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_network_proxy::NetworkProxy;
@@ -332,7 +332,6 @@ use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::McpConfig;
-use codex_mcp::compute_auth_statuses;
 use codex_mcp::effective_mcp_servers;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
@@ -1132,6 +1131,10 @@ impl Session {
                 spec
             }
         };
+        if cfg!(target_os = "windows") && !spec.enabled() {
+            self.services.network_proxy.store(None);
+            return;
+        }
         if let Some(started_proxy) = self.services.network_proxy.load_full() {
             if let Err(err) = spec.apply_to_started_proxy(started_proxy.as_ref()).await {
                 warn!("failed to refresh managed network proxy for sandbox change: {err}");

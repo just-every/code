@@ -650,6 +650,9 @@
             "skill_mcp_dependency_install": {
               "type": "boolean"
             },
+            "skill_search": {
+              "type": "boolean"
+            },
             "sqlite": {
               "type": "boolean"
             },
@@ -1732,6 +1735,10 @@
           "type": "integer"
         },
         "enabled": {
+          "type": "boolean"
+        },
+        "expose_spawn_agent_model_overrides": {
+          "description": "Exposes `model` and `reasoning_effort` on the multi-agent v2 spawn tool and adds corresponding guidance to root and subagent usage hints.",
           "type": "boolean"
         },
         "hide_spawn_agent_metadata": {
@@ -5020,6 +5027,9 @@
           "type": "boolean"
         },
         "skill_mcp_dependency_install": {
+          "type": "boolean"
+        },
+        "skill_search": {
           "type": "boolean"
         },
         "sqlite": {

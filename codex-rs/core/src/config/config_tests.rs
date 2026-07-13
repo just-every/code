@@ -99,6 +99,92 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use super::*;
+
+async fn load_config_with_elevated_only_windows_sandbox_requirement(
+    cfg: ConfigToml,
+    overrides: ConfigOverrides,
+    codex_home: AbsolutePathBuf,
+) -> std::io::Result<Config> {
+    let requirements_toml = ConfigRequirementsToml {
+        windows: Some(codex_config::WindowsRequirementsToml {
+            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
+        }),
+        ..Default::default()
+    };
+    let mut requirements_with_sources = codex_config::ConfigRequirementsWithSources::default();
+    requirements_with_sources.merge_unset_fields(
+        codex_config::RequirementSource::Unknown,
+        requirements_toml.clone(),
+    );
+    let requirements = ConfigRequirements::try_from(requirements_with_sources)?;
+    let config_layer_stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)?;
+    Config::load_config_with_layer_stack(
+        codex_exec_server::LOCAL_FS.as_ref(),
+        cfg,
+        overrides,
+        codex_home,
+        config_layer_stack,
+    )
+    .await
+}
+
+#[test]
+fn windows_network_proxy_validation() {
+    let elevated_only = ConfigRequirementsToml {
+        windows: Some(codex_config::WindowsRequirementsToml {
+            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
+        }),
+        ..Default::default()
+    };
+    for (is_windows, requirements, network_proxy_enabled, allowed) in [
+        (true, ConfigRequirementsToml::default(), true, false),
+        (true, ConfigRequirementsToml::default(), false, true),
+        (true, elevated_only, true, true),
+        (
+            true,
+            ConfigRequirementsToml {
+                windows: Some(codex_config::WindowsRequirementsToml {
+                    allowed_sandbox_implementations: Some(vec![
+                        WindowsSandboxModeToml::Elevated,
+                        WindowsSandboxModeToml::Unelevated,
+                    ]),
+                }),
+                ..Default::default()
+            },
+            true,
+            false,
+        ),
+        (false, ConfigRequirementsToml::default(), true, true),
+    ] {
+        assert_eq!(
+            validate_windows_network_proxy_requirements_for_platform(
+                is_windows,
+                &requirements,
+                network_proxy_enabled,
+            )
+            .is_ok(),
+            allowed
+        );
+    }
+
+    for (is_windows, sandbox_level, network_proxy_enabled, allowed) in [
+        (true, WindowsSandboxLevel::Disabled, true, false),
+        (true, WindowsSandboxLevel::RestrictedToken, true, false),
+        (true, WindowsSandboxLevel::Elevated, true, true),
+        (true, WindowsSandboxLevel::RestrictedToken, false, true),
+        (false, WindowsSandboxLevel::RestrictedToken, true, true),
+    ] {
+        assert_eq!(
+            validate_windows_sandbox_network_proxy_compatibility_for_platform(
+                is_windows,
+                sandbox_level,
+                network_proxy_enabled,
+            )
+            .is_ok(),
+            allowed
+        );
+    }
+}
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
@@ -1493,7 +1579,7 @@ async fn network_proxy_feature_matrix_preserves_sandbox_network_semantics() -> s
                 ..Default::default()
             },
         };
-        let config = Config::load_from_base_config_with_overrides(
+        let config = load_config_with_elevated_only_windows_sandbox_requirement(
             base_config,
             ConfigOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
@@ -1538,6 +1624,13 @@ sandbox = "elevated"
     )?;
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
+        .cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                r#"[windows]
+allowed_sandbox_implementations = ["elevated"]
+"#,
+            ),
+        )
         .cli_overrides(vec![
             (
                 "features.network_proxy.enabled".to_string(),
@@ -1670,6 +1763,9 @@ async fn experimental_network_requirements_enable_proxy_without_feature() -> std
                 r#"
 [experimental_network]
 enabled = true
+
+[windows]
+allowed_sandbox_implementations = ["elevated"]
 "#,
             ),
         )
@@ -1693,7 +1789,7 @@ enabled = true
 async fn network_proxy_feature_uses_profile_network_proxy_settings() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
-    let config = Config::load_from_base_config_with_overrides(
+    let config = load_config_with_elevated_only_windows_sandbox_requirement(
         ConfigToml {
             features: Some(toml::from_str("network_proxy = true").expect("valid features")),
             default_permissions: Some("dev".to_string()),
@@ -10314,6 +10410,7 @@ subagent_usage_hint_text = "Subagent guidance."
 multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
+expose_spawn_agent_model_overrides = false
 non_code_mode_only = true
 "#,
     )?;
@@ -10357,6 +10454,7 @@ non_code_mode_only = true
         Some("agents")
     );
     assert!(config.multi_agent_v2.hide_spawn_agent_metadata);
+    assert!(!config.multi_agent_v2.expose_spawn_agent_model_overrides);
     assert!(config.multi_agent_v2.non_code_mode_only);
 
     Ok(())
@@ -10378,7 +10476,10 @@ enabled = true
         .build()
         .await?;
 
-    assert_eq!(config.multi_agent_v2, MultiAgentV2Config::default());
+    assert_eq!(
+        config.multi_agent_v2,
+        resolve_multi_agent_v2_config(&ConfigToml::default())
+    );
     assert_eq!(
         (
             config.agent_max_threads,
@@ -10410,7 +10511,50 @@ max_concurrent_threads_per_session = 17
             config.subagent_usage_hint_text,
         ]
         .into_iter()
-        .all(|hint| hint.is_some_and(|hint| hint.ends_with(expected_suffix.as_str())))
+        .all(|hint| hint.is_some_and(|hint| hint.contains(expected_suffix.as_str())))
+    );
+}
+
+#[test]
+fn multi_agent_v2_model_override_exposure_preserves_configured_usage_hints() {
+    let config_toml = toml::from_str(
+        r#"[features.multi_agent_v2]
+enabled = true
+root_agent_usage_hint_text = "Root guidance."
+subagent_usage_hint_text = "Subagent guidance."
+expose_spawn_agent_model_overrides = true
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    assert!(config.expose_spawn_agent_model_overrides);
+    assert_eq!(
+        config.root_agent_usage_hint_text.as_deref(),
+        Some("Root guidance.")
+    );
+    assert_eq!(
+        config.subagent_usage_hint_text.as_deref(),
+        Some("Subagent guidance.")
+    );
+}
+
+#[test]
+fn multi_agent_v2_exposes_model_overrides_by_default() {
+    let config_toml =
+        toml::from_str(r#"[features.multi_agent_v2]"#).expect("multi-agent v2 config should parse");
+
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    assert!(config.expose_spawn_agent_model_overrides);
+    assert!(
+        [
+            config.root_agent_usage_hint_text,
+            config.subagent_usage_hint_text,
+        ]
+        .into_iter()
+        .all(|hint| hint.is_some_and(|hint| {
+            hint.ends_with(DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT)
+        }))
     );
 }
 
@@ -10425,7 +10569,7 @@ multi_agent_mode_hint_text = ""
 
     let expected = MultiAgentV2Config {
         multi_agent_mode_hint_text: Some(String::new()),
-        ..Default::default()
+        ..resolve_multi_agent_v2_config(&ConfigToml::default())
     };
     assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
 }

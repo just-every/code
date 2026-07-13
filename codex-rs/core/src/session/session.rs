@@ -681,7 +681,6 @@ impl Session {
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let mcp_runtime_context =
             McpRuntimeContext::new(Arc::clone(&environment_manager), mcp_runtime_cwd);
-        let mcp_runtime_context_for_auth = mcp_runtime_context.clone();
         let auth_and_mcp_fut = async move {
             let auth = auth_manager_clone.auth().await;
             let mcp_projection = mcp_manager_for_mcp
@@ -696,21 +695,7 @@ impl Session {
             let mcp_config = &mcp_projection.config;
             let mcp_servers = codex_mcp::effective_mcp_servers(mcp_config, auth.as_ref());
             let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(mcp_config);
-            let auth_statuses = compute_auth_statuses(
-                mcp_servers.iter(),
-                config_for_mcp.mcp_oauth_credentials_store_mode,
-                config_for_mcp.auth_keyring_backend_kind(),
-                auth.as_ref(),
-                &mcp_runtime_context_for_auth,
-            )
-            .await;
-            (
-                auth,
-                mcp_projection,
-                mcp_servers,
-                auth_statuses,
-                tool_plugin_provenance,
-            )
+            (auth, mcp_projection, mcp_servers, tool_plugin_provenance)
         }
         .instrument(info_span!(
             "session_init.auth_mcp",
@@ -721,7 +706,7 @@ impl Session {
         let (
             thread_persistence_result,
             state_db_ctx,
-            (auth, mcp_projection, mcp_servers, auth_statuses, tool_plugin_provenance),
+            (auth, mcp_projection, mcp_servers, tool_plugin_provenance),
         ) = tokio::join!(thread_persistence_fut, state_db_fut, auth_and_mcp_fut);
 
         let mut live_thread_init =
@@ -978,7 +963,12 @@ impl Session {
                         )
                     });
             let (network_proxy, session_network_proxy) =
-                if let Some(spec) = config.permissions.network.as_ref() {
+                if let Some(spec) = config
+                    .permissions
+                    .network
+                    .as_ref()
+                    .filter(|spec| !cfg!(target_os = "windows") || spec.enabled())
+                {
                     let current_exec_policy = exec_policy.current();
                     let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
                         spec,
@@ -1212,7 +1202,6 @@ impl Session {
                 &mcp_servers,
                 config.mcp_oauth_credentials_store_mode,
                 config.auth_keyring_backend_kind(),
-                auth_statuses,
                 &session_configuration.approval_policy,
                 INITIAL_SUBMIT_ID.to_owned(),
                 tx_event.clone(),
@@ -1221,7 +1210,7 @@ impl Session {
                 mcp_runtime_context.clone(),
                 config.codex_home.to_path_buf(),
                 sess.services.mcp_manager.codex_apps_tools_cache(),
-                codex_apps_tools_cache_key(auth),
+                connector_runtime_context_key(auth),
                 config.prefix_mcp_tool_names(),
                 mcp_projection
                     .config
