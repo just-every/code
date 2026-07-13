@@ -397,6 +397,12 @@ pub fn set_tui_theme_name(code_home: &Path, theme: ThemeName) -> anyhow::Result<
         ThemeName::Custom => "custom",
     };
 
+    // Migrate the legacy `tui.theme = "..."` syntax-theme setting into the
+    // current table before persisting the application theme selection.
+    if !doc["tui"]["theme"].is_table() {
+        doc["tui"]["theme"] = TomlItem::Table(TomlTable::new());
+    }
+
     // Write `[tui.theme].name = "…"`
     doc["tui"]["theme"]["name"] = toml_edit::value(theme_str);
     // When switching away from the Custom theme, clear any lingering custom

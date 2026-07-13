@@ -1876,6 +1876,8 @@ mod tests {
     use crate::config_types::HistoryPersistence;
     use crate::config_types::McpServerTransportConfig;
     use crate::config_types::Notifications;
+    use crate::config_types::ThemeConfig;
+    use crate::config_types::ThemeName;
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -1941,6 +1943,56 @@ persistence = "none"
             }),
             history_no_persistence_cfg.history
         );
+    }
+
+    #[test]
+    fn legacy_string_tui_theme_loads_with_default_appearance() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[tui]
+theme = "catppuccin-mocha"
+"#,
+        )
+        .expect("legacy syntax theme should not prevent Code from starting");
+
+        assert_eq!(
+            config
+                .tui
+                .expect("tui configuration should deserialize")
+                .theme,
+            ThemeConfig::default(),
+            "legacy syntax theme settings should use the default app appearance"
+        );
+    }
+
+    #[test]
+    fn persist_theme_migrates_legacy_string_setting() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let config_path = code_home.path().join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_path,
+            r#"
+[tui]
+theme = "catppuccin-mocha"
+"#,
+        )?;
+
+        set_tui_theme_name(code_home.path(), ThemeName::DarkCarbonNight)?;
+
+        let serialized = std::fs::read_to_string(config_path)?;
+        let config: ConfigToml = toml::from_str(&serialized)?;
+        assert_eq!(
+            config
+                .tui
+                .expect("tui configuration should deserialize")
+                .theme
+                .name,
+            ThemeName::DarkCarbonNight
+        );
+        assert!(!serialized.contains("catppuccin-mocha"));
+        assert!(serialized.contains("name = \"dark-carbon-night\""));
+
+        Ok(())
     }
 
     #[test]
