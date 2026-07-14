@@ -1,10 +1,11 @@
-## @just-every/code v0.6.145
+## @just-every/code v0.6.146
 
-This release improves configuration compatibility for users with older theme settings.
+This release refreshes upstream history and release workflow metadata.
 
 ### Changes
 
-- Core: migrate legacy theme strings in configuration to the current theme format.
+- Release: refresh upstream history for v0.6.146.
+- Release: adopt remote workflow updates while preserving release metadata changes.
 
 ### Install
 
@@ -13,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.144...v0.6.145
+Compare: https://github.com/just-every/code/compare/v0.6.145...v0.6.146

@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.146] - 2026-07-14
+
+- Release: refresh upstream history for v0.6.146. (2efa1741)
+- Release: adopt remote workflow updates while preserving release metadata changes. (6ef3bfec)
+
 ## [0.6.145] - 2026-07-13
 
 - Core: migrate legacy theme strings in configuration to the current theme format. (ab3ec88a)
