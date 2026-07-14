@@ -776,66 +776,6 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
 }
 
 #[tokio::test]
-async fn encrypted_inter_agent_communication_clears_existing_last_task_message() {
-    let harness = AgentControlHarness::new().await;
-    let (parent_thread_id, _) = harness.start_thread().await;
-    let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
-    let spawned_agent = harness
-        .control
-        .spawn_agent_with_metadata(
-            harness.config.clone(),
-            text_input("old plaintext task"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_path: Some(agent_path.clone()),
-                agent_nickname: None,
-                agent_role: None,
-            })),
-            SpawnAgentOptions {
-                parent_thread_id: Some(parent_thread_id),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("spawn_agent should succeed");
-    assert_eq!(
-        harness
-            .control
-            .state
-            .agent_metadata_for_thread(spawned_agent.thread_id)
-            .and_then(|metadata| metadata.last_task_message),
-        Some("old plaintext task".to_string())
-    );
-
-    let communication = InterAgentCommunication::new_encrypted(
-        AgentPath::root(),
-        agent_path,
-        Vec::new(),
-        "encrypted-task".to_string(),
-        /*trigger_turn*/ true,
-    );
-    harness
-        .control
-        .send_inter_agent_communication(
-            spawned_agent.thread_id,
-            communication,
-            AgentCommunicationContext::new(AgentCommunicationKind::Followup, ThreadId::new()),
-        )
-        .await
-        .expect("send_inter_agent_communication should succeed");
-
-    assert_eq!(
-        harness
-            .control
-            .state
-            .agent_metadata_for_thread(spawned_agent.thread_id)
-            .and_then(|metadata| metadata.last_task_message),
-        None
-    );
-}
-
-#[tokio::test]
 async fn spawn_agent_creates_thread_and_sends_prompt() {
     let harness = AgentControlHarness::new().await;
     let thread_id = harness
@@ -2393,9 +2333,12 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
 async fn resume_thread_subagent_restores_stored_metadata() {
     let (home, config) = test_config().await;
     let thread_store = Arc::new(InMemoryThreadStore::default());
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
     let manager = ThreadManager::new(
         &config,
-        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+        auth_manager.clone(),
+        crate::thread_manager::build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),

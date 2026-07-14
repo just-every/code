@@ -135,6 +135,7 @@ pub fn strip_user_message_prefix(text: &str) -> &str {
 pub struct TurnEnvironmentSelection {
     pub environment_id: String,
     pub cwd: PathUri,
+    pub workspace_roots: Vec<PathUri>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,10 +454,6 @@ pub struct ConversationSpeechParams {
 pub struct ThreadSettingsOverrides {
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentSelections>,
-
-    /// Updated runtime workspace roots used to materialize symbolic
-    /// `:workspace_roots` filesystem permissions.
-    pub workspace_roots: Option<Vec<AbsolutePathBuf>>,
 
     /// Updated profile-defined workspace roots for status summaries and
     /// per-turn config reconstruction.
@@ -1443,6 +1440,7 @@ pub enum EventMsg {
     ExitedReviewMode(ExitedReviewModeEvent),
 
     RawResponseItem(RawResponseItemEvent),
+    RawResponseCompleted(RawResponseCompletedEvent),
 
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
@@ -1797,6 +1795,15 @@ impl CodexErrorInfo {
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseItemEvent {
     pub item: ResponseItem,
+}
+
+/// Exact usage reported by one upstream Responses API completion.
+///
+/// Unlike TokenCountEvent, this is not accumulated, estimated, or replayed.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct RawResponseCompletedEvent {
+    pub response_id: String,
+    pub token_usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -2462,6 +2469,10 @@ pub struct WebSearchEndEvent {
     pub call_id: String,
     pub query: String,
     pub action: WebSearchAction,
+    /// Structured search results returned out-of-band by standalone web search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub results: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -5102,6 +5113,7 @@ mod tests {
                     query: Some("find docs".into()),
                     queries: None,
                 },
+                results: None,
             }),
             started_at_ms: 0,
         };

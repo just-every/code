@@ -1867,6 +1867,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-agent-extension"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-core",
+ "codex-protocol",
+ "core_test_support",
+ "pretty_assertions",
+ "tokio",
+]
+
+[[package]]
 name = "codex-agent-graph-store"
 version = "0.0.0"
 dependencies = [
@@ -1975,6 +1987,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "codex-agent-extension",
  "codex-analytics",
  "codex-app-server-protocol",
  "codex-app-server-transport",
@@ -1989,7 +2002,6 @@ dependencies = [
  "codex-exec-server",
  "codex-extension-api",
  "codex-external-agent-migration",
- "codex-external-agent-sessions",
  "codex-features",
  "codex-feedback",
  "codex-file-search",
@@ -2016,6 +2028,7 @@ dependencies = [
  "codex-rollout",
  "codex-sandboxing",
  "codex-shell-command",
+ "codex-skills",
  "codex-skills-extension",
  "codex-state",
  "codex-thread-store",
@@ -3024,26 +3037,18 @@ dependencies = [
 name = "codex-external-agent-migration"
 version = "0.0.0"
 dependencies = [
- "codex-hooks",
- "pretty_assertions",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "toml 0.9.11+spec-1.1.0",
-]
-
-[[package]]
-name = "codex-external-agent-sessions"
-version = "0.0.0"
-dependencies = [
  "chrono",
  "codex-app-server-protocol",
+ "codex-hooks",
  "codex-protocol",
  "codex-utils-output-truncation",
+ "pretty_assertions",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "tempfile",
+ "toml 0.9.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -4063,6 +4068,7 @@ name = "codex-thread-store"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "codex-app-server-protocol",
  "codex-git-utils",
  "codex-install-context",
  "codex-otel",
@@ -4073,6 +4079,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

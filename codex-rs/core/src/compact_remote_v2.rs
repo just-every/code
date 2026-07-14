@@ -9,6 +9,7 @@ use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
 use crate::compact::compaction_status_from_result;
 use crate::compact_model_fallback::record_model_fallback;
+use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -92,7 +93,7 @@ pub(crate) async fn run_remote_compact_task(
         trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
-        collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        collaboration_mode_kind: turn_context.mode,
     });
     sess.send_event(&turn_context, start_event).await;
 
@@ -230,7 +231,7 @@ async fn run_remote_compact_task_inner_impl(
             let Some(fallback_step_context) = fallback_step_context else {
                 return Err(error);
             };
-            if !matches!(&error, CodexErr::InvalidRequest(_)) {
+            if !should_retry_with_current_model(&error) {
                 return Err(error);
             }
             let fallback_turn_context = &fallback_step_context.turn;
@@ -324,6 +325,7 @@ async fn run_remote_compact_task_inner_impl(
 
 struct RemoteCompactionV2Output {
     compaction_output: ResponseItem,
+    response_id: String,
     token_usage: Option<TokenUsage>,
 }
 
@@ -384,6 +386,7 @@ async fn collect_compaction_output(
     let mut compaction_count = 0usize;
     let mut compaction_output = None;
     let mut saw_completed = false;
+    let mut completed_response_id = None;
     let mut completed_token_usage = None;
     while let Some(event) = stream.next().await {
         match event? {
@@ -396,8 +399,13 @@ async fn collect_compaction_output(
                     }
                 }
             }
-            ResponseEvent::Completed { token_usage, .. } => {
+            ResponseEvent::Completed {
+                response_id,
+                token_usage,
+                ..
+            } => {
                 saw_completed = true;
+                completed_response_id = Some(response_id);
                 completed_token_usage = token_usage;
                 break;
             }
@@ -421,8 +429,12 @@ async fn collect_compaction_output(
     let Some(compaction_output) = compaction_output else {
         unreachable!("compaction output must exist when count is exactly one");
     };
+    let Some(response_id) = completed_response_id else {
+        unreachable!("response id must exist after response.completed");
+    };
     Ok(RemoteCompactionV2Output {
         compaction_output,
+        response_id,
         token_usage: completed_token_usage,
     })
 }
@@ -836,6 +848,7 @@ mod tests {
             .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);
+        assert_eq!(output.response_id, "resp-compact");
         assert_eq!(
             output.token_usage,
             Some(TokenUsage {

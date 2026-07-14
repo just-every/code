@@ -1356,8 +1356,17 @@ pub struct ThreadItemsListParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadItemEntry {
+    /// Turn containing this item.
+    pub turn_id: String,
+    pub item: ThreadItem,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadItemsListResponse {
-    pub data: Vec<ThreadItem>,
+    pub data: Vec<ThreadItemEntry>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
@@ -1373,6 +1382,18 @@ pub struct ThreadTokenUsageUpdatedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub token_usage: ThreadTokenUsage,
+}
+
+/// Internal-only notification containing the exact usage from one upstream
+/// Responses API completion.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RawResponseCompletedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub response_id: String,
+    pub usage: Option<TokenUsageBreakdown>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

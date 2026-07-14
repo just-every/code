@@ -64,6 +64,9 @@ use codex_app_server_protocol::EnvironmentAddResponse;
 use codex_app_server_protocol::EnvironmentInfoParams;
 use codex_app_server_protocol::EnvironmentInfoResponse;
 use codex_app_server_protocol::EnvironmentShellInfo;
+use codex_app_server_protocol::EnvironmentStatusKind;
+use codex_app_server_protocol::EnvironmentStatusParams;
+use codex_app_server_protocol::EnvironmentStatusResponse;
 use codex_app_server_protocol::ExperimentalFeature as ApiExperimentalFeature;
 use codex_app_server_protocol::ExperimentalFeatureListParams;
 use codex_app_server_protocol::ExperimentalFeatureListResponse;
@@ -219,6 +222,7 @@ use codex_app_server_protocol::ThreadIncrementElicitationResponse;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemEntry;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadListCwdFilter;
@@ -368,6 +372,7 @@ use codex_core_plugins::remote::RemotePluginShareContext as RemoteCatalogPluginS
 use codex_core_plugins::remote::RemotePluginShareSummary as RemoteCatalogPluginShareSummary;
 use codex_core_plugins::remote::RemotePluginSummary as RemoteCatalogPluginSummary;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::EnvironmentObservedStatus;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::LOCAL_FS;
 use codex_features::FEATURES;
@@ -453,12 +458,16 @@ use codex_thread_store::DeleteThreadParams as StoreDeleteThreadParams;
 use codex_thread_store::GitInfoPatch as StoreGitInfoPatch;
 use codex_thread_store::ListItemsParams as StoreListItemsParams;
 use codex_thread_store::ListThreadsParams as StoreListThreadsParams;
+use codex_thread_store::ListTurnsParams as StoreListTurnsParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ReadThreadByRolloutPathParams as StoreReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams as StoreReadThreadParams;
 use codex_thread_store::SearchThreadsParams as StoreSearchThreadsParams;
 use codex_thread_store::SortDirection as StoreSortDirection;
 use codex_thread_store::StoredThread;
+use codex_thread_store::StoredTurn;
+use codex_thread_store::StoredTurnItemsView;
+use codex_thread_store::StoredTurnStatus;
 use codex_thread_store::ThreadMetadataPatch as StoreThreadMetadataPatch;
 use codex_thread_store::ThreadRelationFilter as StoreThreadRelationFilter;
 use codex_thread_store::ThreadSortKey as StoreThreadSortKey;
@@ -501,8 +510,6 @@ mod catalog_processor;
 mod command_exec_processor;
 mod config_processor;
 mod environment_processor;
-mod external_agent_config_processor;
-mod external_agent_session_import;
 mod feedback_doctor_report;
 mod feedback_processor;
 mod fs_processor;
@@ -525,8 +532,6 @@ pub(crate) use catalog_processor::CatalogRequestProcessor;
 pub(crate) use command_exec_processor::CommandExecRequestProcessor;
 pub(crate) use config_processor::ConfigRequestProcessor;
 pub(crate) use environment_processor::EnvironmentRequestProcessor;
-pub(crate) use external_agent_config_processor::ExternalAgentConfigRequestProcessor;
-pub(crate) use external_agent_config_processor::ExternalAgentConfigRequestProcessorArgs;
 pub(crate) use feedback_processor::FeedbackRequestProcessor;
 pub(crate) use fs_processor::FsRequestProcessor;
 pub(crate) use git_processor::GitRequestProcessor;
@@ -580,9 +585,28 @@ fn resolve_turn_environment_selections(
                     environment.cwd
                 ))
             })?;
+        let workspace_roots = environment
+            .runtime_workspace_roots
+            .map(|roots| {
+                let mut resolved_roots = Vec::new();
+                for root in roots {
+                    let root = root.to_inferred_path_uri().ok_or_else(|| {
+                        invalid_request(format!(
+                            "invalid runtime workspace root for environment `{environment_id}`: path `{root}` does not use absolute POSIX or Windows path syntax"
+                        ))
+                    })?;
+                    if !resolved_roots.contains(&root) {
+                        resolved_roots.push(root);
+                    }
+                }
+                Ok::<_, JSONRPCErrorError>(resolved_roots)
+            })
+            .transpose()?
+            .unwrap_or_else(|| vec![cwd.clone()]);
         selections.push(TurnEnvironmentSelection {
             environment_id,
             cwd,
+            workspace_roots,
         });
     }
     thread_manager

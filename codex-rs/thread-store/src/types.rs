@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use chrono::DateTime;
 use chrono::Utc;
+use codex_app_server_protocol::CodexErrorInfo;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -159,6 +160,19 @@ pub struct StoredThreadHistory {
     pub items: Vec<RolloutItem>,
 }
 
+/// Persisted rollout items needed to reconstruct the latest model-visible context.
+///
+/// Local stores may return only a resumable suffix while stores without targeted reads may return
+/// the full persisted history. In either case, `items` remain in replay order and are suitable for
+/// the existing rollout reconstruction path.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredModelContext {
+    /// Thread id represented by the model context.
+    pub thread_id: ThreadId,
+    /// Persisted rollout items in replay order.
+    pub items: Vec<RolloutItem>,
+}
+
 /// Parameters for reading a thread summary and optionally its replay history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadThreadParams {
@@ -292,8 +306,6 @@ pub enum StoredTurnItemsView {
     /// Return display summary items for each turn.
     #[default]
     Summary,
-    /// Return every persisted item available for each turn.
-    Full,
 }
 
 /// Store-owned status for a persisted turn.
@@ -311,9 +323,12 @@ pub enum StoredTurnStatus {
 
 /// Store-owned error details for a failed persisted turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoredTurnError {
     /// User-visible error message.
     pub message: String,
+    /// Structured Codex error classification, when available.
+    pub codex_error_info: Option<CodexErrorInfo>,
     /// Optional additional detail for clients that expose expanded error context.
     pub additional_details: Option<String>,
 }
@@ -340,13 +355,8 @@ pub struct ListTurnsParams {
 pub struct StoredTurn {
     /// Turn id.
     pub turn_id: String,
-    /// Persisted rollout items associated with this turn, according to `items_view`.
-    pub items: Vec<RolloutItem>,
-    /// Opaque serialized turn metadata supplied by a projected durable store.
-    pub metadata_json: Option<Vec<u8>>,
-    /// Semantic turn creation timestamp in milliseconds, when supplied by a projected durable
-    /// store.
-    pub turn_created_at_ms: Option<i64>,
+    /// Projected app-server item snapshots associated with this turn, according to `items_view`.
+    pub items: Vec<StoredThreadItem>,
     /// Amount of item detail included in `items`.
     pub items_view: StoredTurnItemsView,
     /// Store-owned status for API layer projection.
@@ -392,11 +402,14 @@ pub struct ListItemsParams {
 /// A projected app-server `ThreadItem` snapshot within a turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredThreadItem {
-    pub turn_id: Option<String>,
-    pub item_key: String,
-    pub item_ordinal: u64,
-    pub item_created_at_ms: i64,
-    pub materialized_thread_item_json: Vec<u8>,
+    /// Turn containing this item.
+    pub turn_id: String,
+    /// Stable item identifier within the turn.
+    pub item_id: String,
+    /// Unix timestamp (milliseconds) when this logical item was first projected.
+    pub created_at_ms: i64,
+    /// Serialized app-server ThreadItem snapshot.
+    pub item_json: Vec<u8>,
 }
 
 /// A page of persisted items within a thread, optionally filtered to a turn.

@@ -343,6 +343,7 @@ export type { RateLimitResetCreditsSummary } from "./RateLimitResetCreditsSummar
 export type { RateLimitResetType } from "./RateLimitResetType";
 export type { RateLimitSnapshot } from "./RateLimitSnapshot";
 export type { RateLimitWindow } from "./RateLimitWindow";
+export type { RawResponseCompletedNotification } from "./RawResponseCompletedNotification";
 export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";
 export type { ReasoningEffortOption } from "./ReasoningEffortOption";
 export type { ReasoningSummaryPartAddedNotification } from "./ReasoningSummaryPartAddedNotification";
@@ -424,6 +425,7 @@ export type { ThreadHistoryMode } from "./ThreadHistoryMode";
 export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
 export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
 export type { ThreadItem } from "./ThreadItem";
+export type { ThreadItemEntry } from "./ThreadItemEntry";
 export type { ThreadListParams } from "./ThreadListParams";
 export type { ThreadListResponse } from "./ThreadListResponse";
 export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";

@@ -1482,9 +1482,13 @@
               "type": "string"
             },
             "subpath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
               ]
             }
           },
@@ -1536,9 +1540,13 @@
               "type": "string"
             },
             "subpath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
               ]
             }
           },
@@ -4511,6 +4519,15 @@
             "query": {
               "type": "string"
             },
+            "results": {
+              "default": null,
+              "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new result fields and result types can pass through without a Codex release.",
+              "items": true,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "webSearch"
@@ -7108,5 +7125,12 @@
       "type": "object"
     }
   ],
+  "properties": {
+    "emittedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when app-server emitted this notification.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
   "title": "ServerNotification"
 }

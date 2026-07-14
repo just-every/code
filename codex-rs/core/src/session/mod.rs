@@ -658,7 +658,6 @@ impl Codex {
                 config.cwd.clone(),
                 environment_selections,
             ),
-            workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
             original_config_do_not_use: Arc::clone(&config),
@@ -3234,6 +3233,11 @@ impl Session {
                             .model_messages
                             .as_ref()
                             .and_then(|messages| messages.approvals.as_ref()),
+                        turn_context
+                            .model_info
+                            .model_messages
+                            .as_ref()
+                            .and_then(|messages| messages.permissions.as_ref()),
                     ),
                     self.services.exec_policy.current().as_ref(),
                     #[allow(deprecated)]

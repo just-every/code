@@ -46,6 +46,10 @@ fn build_permissions_update_item(
                     .model_messages
                     .as_ref()
                     .and_then(|messages| messages.approvals.as_ref()),
+                next.model_info
+                    .model_messages
+                    .as_ref()
+                    .and_then(|messages| messages.permissions.as_ref()),
             ),
             exec_policy,
             #[allow(deprecated)]
@@ -70,13 +74,11 @@ fn build_collaboration_mode_update_item(
     }
 
     let prev = previous?;
-    if prev.collaboration_mode.as_ref() != Some(&next.collaboration_mode) {
+    let collaboration_mode = next.collaboration_mode();
+    if prev.collaboration_mode.as_ref() != Some(&collaboration_mode) {
         // If the next mode has empty developer instructions, this returns None and we emit no
         // update, so prior collaboration instructions remain in the prompt history.
-        Some(
-            CollaborationModeInstructions::from_collaboration_mode(&next.collaboration_mode)?
-                .render(),
-        )
+        Some(CollaborationModeInstructions::from_collaboration_mode(&collaboration_mode)?.render())
     } else {
         None
     }

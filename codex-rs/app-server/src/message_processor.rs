@@ -13,6 +13,8 @@ use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::guardian_agent_spawner;
 use crate::extensions::thread_extensions;
+use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
+use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
@@ -24,8 +26,6 @@ use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
 use crate::request_processors::EnvironmentRequestProcessor;
-use crate::request_processors::ExternalAgentConfigRequestProcessor;
-use crate::request_processors::ExternalAgentConfigRequestProcessorArgs;
 use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
 use crate::request_processors::GitRequestProcessor;
@@ -262,6 +262,8 @@ impl MessageProcessor {
             ThreadManager::new(
                 config.as_ref(),
                 auth_manager.clone(),
+                codex_core::build_models_manager(config.as_ref(), auth_manager.clone()),
+                codex_core::CodexAppsToolsCache::default(),
                 session_source,
                 environment_manager,
                 thread_extensions(
@@ -964,6 +966,9 @@ impl MessageProcessor {
             }
             ClientRequest::EnvironmentInfo { params, .. } => {
                 self.environment_processor.environment_info(params).await
+            }
+            ClientRequest::EnvironmentStatus { params, .. } => {
+                self.environment_processor.environment_status(params).await
             }
             ClientRequest::FsReadFile { params, .. } => self
                 .fs_processor

@@ -48,6 +48,7 @@ members = [
     "exec-server-protocol",
     "exec-server",
     "execpolicy",
+    "ext/agent",
     "ext/connectors",
     "ext/extension-api",
     "ext/goal",
@@ -59,7 +60,6 @@ members = [
     "ext/skills",
     "ext/web-search",
     "external-agent-migration",
-    "external-agent-sessions",
     "keyring-store",
     "file-search",
     "file-watcher",
@@ -170,6 +170,7 @@ codex-http-client = { path = "http-client" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
+codex-agent-extension = { path = "ext/agent" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
@@ -187,7 +188,6 @@ codex-goal-extension = { path = "ext/goal" }
 codex-guardian = { path = "ext/guardian" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
-codex-external-agent-sessions = { path = "external-agent-sessions" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-features = { path = "features" }
 codex-feedback = { path = "feedback" }

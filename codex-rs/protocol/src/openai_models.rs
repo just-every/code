@@ -505,12 +505,26 @@ pub struct ModelMessages {
     pub instructions_template: Option<String>,
     pub instructions_variables: Option<ModelInstructionsVariables>,
     pub approvals: Option<ApprovalMessages>,
+    pub auto_review: Option<AutoReviewMessages>,
+    pub permissions: Option<PermissionMessages>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ApprovalMessages {
     pub on_request: Option<String>,
     pub on_request_auto_review: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct AutoReviewMessages {
+    pub policy: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct PermissionMessages {
+    pub danger_full_access: Option<String>,
+    pub workspace_write: Option<String>,
+    pub read_only: Option<String>,
 }
 
 impl ModelMessages {
@@ -738,6 +752,7 @@ mod tests {
                 .expect("model messages should deserialize");
 
         assert_eq!(messages.approvals, None);
+        assert_eq!(messages.permissions, None);
     }
 
     #[test]
@@ -758,6 +773,29 @@ mod tests {
             Some(ApprovalMessages {
                 on_request: Some(String::new()),
                 on_request_auto_review: None,
+            })
+        );
+    }
+
+    #[test]
+    fn permission_messages_preserve_missing_and_empty_values() {
+        let messages: ModelMessages = from_str(
+            r#"{
+                "instructions_template": null,
+                "instructions_variables": null,
+                "permissions": {
+                    "workspace_write": ""
+                }
+            }"#,
+        )
+        .expect("permission messages should deserialize");
+
+        assert_eq!(
+            messages.permissions,
+            Some(PermissionMessages {
+                danger_full_access: None,
+                workspace_write: Some(String::new()),
+                read_only: None,
             })
         );
     }
@@ -834,6 +872,8 @@ mod tests {
             instructions_template: Some("Hello {{ personality }}".to_string()),
             instructions_variables: Some(personality_variables()),
             approvals: None,
+            auto_review: None,
+            permissions: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -851,6 +891,8 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
+            permissions: None,
         }));
         assert_eq!(
             model.get_model_instructions(Some(Personality::Friendly)),
@@ -877,6 +919,8 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
+            permissions: None,
         }));
         assert_eq!(
             model_no_personality.get_model_instructions(Some(Personality::Friendly)),
@@ -906,6 +950,8 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
+            permissions: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));

@@ -8,6 +8,7 @@ use crate::compact::build_compaction_initial_context;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact_model_fallback::record_model_fallback;
+use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -81,7 +82,7 @@ pub(crate) async fn run_remote_compact_task(
         trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
-        collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        collaboration_mode_kind: turn_context.mode,
     });
     sess.send_event(&turn_context, start_event).await;
 
@@ -218,7 +219,7 @@ async fn run_remote_compact_task_inner_impl(
             let Some(fallback_step_context) = fallback_step_context else {
                 return Err(error);
             };
-            if !matches!(&error, CodexErr::InvalidRequest(_)) {
+            if !should_retry_with_current_model(&error) {
                 return Err(error);
             }
             let fallback_turn_context = &fallback_step_context.turn;
