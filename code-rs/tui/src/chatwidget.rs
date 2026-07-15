@@ -23090,8 +23090,8 @@ Have we met every part of this goal and is there no further work to do?"#
     fn curated_model_presets(presets: Vec<ModelPreset>) -> Vec<ModelPreset> {
         const MODEL_PICKER_ORDER: [&str; 5] = [
             "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.3-codex",
             "gpt-5.3-codex-spark",
         ];
@@ -31364,20 +31364,20 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn curated_model_presets_includes_gpt_5_4_mini_when_present() {
+    fn curated_model_presets_includes_gpt_5_6_variants_when_present() {
         let presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
             .into_iter()
             .filter(|preset| {
                 matches!(
                     preset.id.as_str(),
-                    "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex"
+                    "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-5.3-codex"
                 )
             })
             .collect();
 
         let curated = ChatWidget::curated_model_presets(presets);
         let ids: Vec<&str> = curated.iter().map(|preset| preset.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]);
+        assert_eq!(ids, vec!["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex"]);
     }
 
     #[test]
@@ -31390,8 +31390,8 @@ use code_core::protocol::OrderMeta;
     fn curated_model_presets_appends_new_remote_models() {
         let mut gpt_5_5 = builtin_model_presets(Some(AuthMode::ChatGPT), true)
             .into_iter()
-            .find(|preset| preset.id == "gpt-5.4")
-            .expect("expected gpt-5.4 builtin preset");
+            .find(|preset| preset.id == "gpt-5.6-terra")
+            .expect("expected gpt-5.6-terra builtin preset");
         gpt_5_5.id = "gpt-5.5".to_string();
         gpt_5_5.model = "gpt-5.5".to_string();
         gpt_5_5.display_name = "GPT-5.5".to_string();
@@ -31399,9 +31399,9 @@ use code_core::protocol::OrderMeta;
         let presets = vec![
             gpt_5_5,
             ModelPreset {
-                id: "gpt-5.4".to_string(),
-                model: "gpt-5.4".to_string(),
-                display_name: "gpt-5.4".to_string(),
+                id: "gpt-5.6-terra".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+                display_name: "GPT-5.6 Terra".to_string(),
                 description: "Frontier flagship model.".to_string(),
                 default_reasoning_effort: ReasoningEffort::Medium.into(),
                 supported_reasoning_efforts: vec![ReasoningEffortPreset {
@@ -31418,7 +31418,7 @@ use code_core::protocol::OrderMeta;
 
         let curated = ChatWidget::curated_model_presets(presets);
         let ids: Vec<&str> = curated.iter().map(|preset| preset.id.as_str()).collect();
-        assert_eq!(ids, vec!["gpt-5.5", "gpt-5.4"]);
+        assert_eq!(ids, vec!["gpt-5.5", "gpt-5.6-terra"]);
     }
 
     #[test]
@@ -31470,14 +31470,14 @@ use code_core::protocol::OrderMeta;
 
         let remote_presets: Vec<ModelPreset> = builtin_model_presets(Some(AuthMode::ChatGPT), true)
             .into_iter()
-            .filter(|preset| preset.id == "gpt-5.4" || preset.id == "gpt-5.2")
+            .filter(|preset| preset.id == "gpt-5.6-terra" || preset.id == "gpt-5.6-luna")
             .collect();
         assert_eq!(remote_presets.len(), 2, "expected remote test presets");
 
         chat.update_model_presets(remote_presets, None);
-        chat.handle_model_command("gpt-5.2".to_string());
+        chat.handle_model_command("gpt-5.6-luna".to_string());
 
-        assert_eq!(chat.config.model, "gpt-5.2");
+        assert_eq!(chat.config.model, "gpt-5.6-luna");
         assert_eq!(chat.config.model_reasoning_effort, ReasoningEffort::Medium);
     }
 
@@ -32977,7 +32977,7 @@ use code_core::protocol::OrderMeta;
 
         let code = rows
             .iter()
-            .find(|row| row.name == "code-gpt-5.4")
+            .find(|row| row.name == "code-gpt-5.6-terra")
             .expect("code row present");
         assert!(code.installed);
         assert!(code.enabled);

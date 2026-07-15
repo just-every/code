@@ -359,7 +359,7 @@ fn dynamic_code_agent_spec(model: ManifestModel) -> Option<AgentModelSpec> {
 
     let candidate_version = parse_model_version_components(&model.slug)?;
     let highest_static_version = highest_static_code_track_version(track)?;
-    if candidate_version <= highest_static_version {
+    if candidate_version <= highest_static_version && model.slug != "gpt-5.5" {
         return None;
     }
 

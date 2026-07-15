@@ -3100,7 +3100,7 @@ model_verbosity = "high"
     }
 
     #[test]
-    fn upgrade_legacy_model_slugs_does_not_rewrite_gpt_5_4() {
+    fn upgrade_legacy_model_slugs_migrates_gpt_5_4_to_terra() {
         let mut cfg = ConfigToml {
             model: Some("gpt-5.4".to_string()),
             review_model: Some("test-gpt-5.4".to_string()),
@@ -3109,8 +3109,8 @@ model_verbosity = "high"
 
         upgrade_legacy_model_slugs(&mut cfg);
 
-        assert_eq!(cfg.model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.4"));
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.6-terra"));
     }
 
     #[test]
@@ -3123,8 +3123,8 @@ model_verbosity = "high"
 
         upgrade_legacy_model_slugs(&mut cfg);
 
-        assert_eq!(cfg.model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.4"));
+        assert_eq!(cfg.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(cfg.review_model.as_deref(), Some("test-gpt-5.6-terra"));
     }
 
     #[test]
@@ -3236,7 +3236,7 @@ model_verbosity = "high"
 
         assert!(enabled_names.contains("code-gpt-5.5"));
         assert!(enabled_names.contains("code-gpt-5.3-codex"));
-        assert!(enabled_names.contains("code-gpt-5.4"));
+        assert!(enabled_names.contains("code-gpt-5.6-terra"));
         assert!(enabled_names.contains("claude-sonnet-4.6"));
         assert!(enabled_names.contains("gemini-3.1-pro"));
         assert!(enabled_names.contains("gemini-3.5-flash"));
@@ -3364,14 +3364,14 @@ mod agent_merge_tests {
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for alias");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
                 .count(),
             1,
             "should dedupe alias/canonical"
@@ -3385,14 +3385,14 @@ mod agent_merge_tests {
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
             .expect("mini present");
 
         assert!(!mini.enabled, "disabled state should persist for canonical slug");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
                 .count(),
             1,
             "should dedupe canonical entry"
@@ -3409,14 +3409,14 @@ mod agent_merge_tests {
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
             .expect("mini present");
 
         assert!(!mini.enabled, "later canonical disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
                 .count(),
             1,
             "should dedupe alias and canonical"
@@ -3433,14 +3433,14 @@ mod agent_merge_tests {
 
         let mini = merged
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+            .find(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
             .expect("mini present");
 
         assert!(!mini.enabled, "later alias disable should win");
         assert_eq!(
             merged
                 .iter()
-                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.4-mini"))
+                .filter(|a| a.name.eq_ignore_ascii_case("code-gpt-5.6-luna"))
                 .count(),
             1,
             "should dedupe alias and canonical"
@@ -3580,7 +3580,7 @@ mod agent_merge_tests {
     }
 
     #[test]
-    fn context_mode_one_m_expands_gpt_5_4_context() -> anyhow::Result<()> {
+    fn context_mode_one_m_uses_terra_standard_context() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let cfg = toml::from_str::<ConfigToml>(
             r#"
@@ -3598,8 +3598,8 @@ context_mode = "1m"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::OneM));
-        assert_eq!(config.model_context_window, Some(1_047_576));
-        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        assert_eq!(config.model_context_window, Some(372_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
         Ok(())
     }
 
@@ -3652,7 +3652,7 @@ context_mode = "1m"
     }
 
     #[test]
-    fn context_mode_auto_expands_gpt_5_4_context() -> anyhow::Result<()> {
+    fn context_mode_auto_uses_terra_standard_context() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let cfg = toml::from_str::<ConfigToml>(
             r#"
@@ -3670,8 +3670,8 @@ context_mode = "auto"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Auto));
-        assert_eq!(config.model_context_window, Some(1_047_576));
-        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        assert_eq!(config.model_context_window, Some(372_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
         Ok(())
     }
 
@@ -3693,8 +3693,8 @@ model = "gpt-5.4"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Auto));
-        assert_eq!(config.model_context_window, Some(1_047_576));
-        assert_eq!(config.model_auto_compact_token_limit, Some(942_818));
+        assert_eq!(config.model_context_window, Some(372_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
         Ok(())
     }
 
@@ -3717,8 +3717,8 @@ context_mode = "disabled"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Disabled));
-        assert_eq!(config.model_context_window, Some(272_000));
-        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
+        assert_eq!(config.model_context_window, Some(372_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
         Ok(())
     }
 
