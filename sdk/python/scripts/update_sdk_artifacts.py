@@ -526,6 +526,8 @@ def generate_v2_all() -> None:
             cwd=sdk_root(),
         )
     _require_nullable_chatgpt_account_email(out_path)
+    _preserve_reasoning_effort_enum(out_path)
+    _preserve_thread_source_enum(out_path)
     _normalize_generated_timestamps(out_path)
 
 
