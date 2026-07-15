@@ -81,10 +81,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.4".to_string(),
-            model: "gpt-5.4".to_string(),
-            display_name: "gpt-5.4".to_string(),
-            description: "Frontier flagship model.".to_string(),
+            id: "gpt-5.6-terra".to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            display_name: "GPT-5.6 Terra".to_string(),
+            description: "Frontier flagship model for complex coding and reasoning.".to_string(),
             default_reasoning_effort: ReasoningEffort::XHigh,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -111,10 +111,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
         },
         ModelPreset {
-            id: "gpt-5.4-mini".to_string(),
-            model: "gpt-5.4-mini".to_string(),
-            display_name: "gpt-5.4-mini".to_string(),
-            description: "Smaller GPT-5.4 variant tuned for faster coding loops.".to_string(),
+            id: "gpt-5.6-luna".to_string(),
+            model: "gpt-5.6-luna".to_string(),
+            display_name: "GPT-5.6 Luna".to_string(),
+            description: "Fast GPT-5.6 variant tuned for responsive coding loops.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -700,10 +700,10 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_4_available_for_api_key_auth() {
+    fn gpt_5_6_variants_available_for_api_key_auth() {
         let presets = builtin_model_presets(Some(AuthMode::ApiKey), false);
-        assert!(presets.iter().any(|preset| preset.id == "gpt-5.4"));
-        assert!(presets.iter().any(|preset| preset.id == "gpt-5.4-mini"));
+        assert!(presets.iter().any(|preset| preset.id == "gpt-5.6-terra"));
+        assert!(presets.iter().any(|preset| preset.id == "gpt-5.6-luna"));
     }
 
     #[test]

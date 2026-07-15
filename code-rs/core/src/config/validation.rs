@@ -149,8 +149,8 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
 
 fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
     match slug {
-        "gpt-5.2.4" => return Some("gpt-5.4".to_string()),
-        "test-gpt-5.2.4" => return Some("test-gpt-5.4".to_string()),
+        "gpt-5.2.4" | "gpt-5.4" => return Some("gpt-5.6-terra".to_string()),
+        "test-gpt-5.2.4" | "test-gpt-5.4" => return Some("test-gpt-5.6-terra".to_string()),
         _ => {}
     }
 

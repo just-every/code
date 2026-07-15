@@ -41,8 +41,8 @@ const MODELS_MANIFEST: &str = include_str!("../../../codex-rs/models-manager/mod
 pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     // Frontline for moderate/challenging tasks
     "code-gpt-5.5",
-    "code-gpt-5.4",
-    "code-gpt-5.4-mini",
+    "code-gpt-5.6-terra",
+    "code-gpt-5.6-luna",
     "claude-opus-4.8",
     "gemini-3.1-pro",
     // Straightforward / cost-aware
@@ -95,16 +95,17 @@ impl AgentModelSpec {
 
 const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
     AgentModelSpec {
-        slug: "code-gpt-5.4",
+        slug: "code-gpt-5.6-terra",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_READ_ONLY,
         write_args: CODE_GPT5_WRITE,
-        model_args: &["--model", "gpt-5.4"],
+        model_args: &["--model", "gpt-5.6-terra"],
         description: "Highest-capacity GPT option for tricky reasoning; use when correctness matters most.",
         enabled_by_default: true,
         aliases: &[
             "code-gpt-5.2",
+            "code-gpt-5.4",
             "gpt-5.4",
             "gpt-5.2",
             "code-gpt-5.1",
@@ -118,16 +119,17 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "code-gpt-5.4-mini",
+        slug: "code-gpt-5.6-luna",
         family: "code",
         cli: "coder",
         read_only_args: CODE_GPT5_CODEX_READ_ONLY,
         write_args: CODE_GPT5_CODEX_WRITE,
-        model_args: &["--model", "gpt-5.4-mini"],
+        model_args: &["--model", "gpt-5.6-luna"],
         description: "Budget coding agent for small changes and quick refactors; use when speed and cost matter.",
         enabled_by_default: true,
         aliases: &[
             "gpt-5.4-mini",
+            "code-gpt-5.4-mini",
             "code-gpt-5.1-codex-mini",
             "code-gpt-5-codex-mini",
             "gpt-5.1-codex-mini",
@@ -747,16 +749,16 @@ mod tests {
         assert_eq!(spark.slug, "code-gpt-5.3-codex-spark");
 
         let mini = agent_model_spec("gpt-5.1-codex-mini").expect("mini alias present");
-        assert_eq!(mini.slug, "code-gpt-5.4-mini");
+        assert_eq!(mini.slug, "code-gpt-5.6-luna");
 
         let mini_direct = agent_model_spec("gpt-5.4-mini").expect("mini direct alias present");
-        assert_eq!(mini_direct.slug, "code-gpt-5.4-mini");
+        assert_eq!(mini_direct.slug, "code-gpt-5.6-luna");
 
         let mid = agent_model_spec("gpt-5.1").expect("mid alias present");
-        assert_eq!(mid.slug, "code-gpt-5.4");
+        assert_eq!(mid.slug, "code-gpt-5.6-terra");
 
         let mid_upgrade = agent_model_spec("code-gpt-5.2").expect("mid upgrade alias present");
-        assert_eq!(mid_upgrade.slug, "code-gpt-5.4");
+        assert_eq!(mid_upgrade.slug, "code-gpt-5.6-terra");
     }
 
     #[test]
@@ -876,7 +878,7 @@ mod tests {
     #[test]
     fn dynamic_agent_specs_skip_older_manifest_models() {
         let gpt_5_2 = agent_model_spec("gpt-5.2").expect("gpt-5.2 should resolve via upgrade alias");
-        assert_eq!(gpt_5_2.slug, "code-gpt-5.4");
+        assert_eq!(gpt_5_2.slug, "code-gpt-5.6-terra");
         assert!(
             enabled_agent_model_specs()
                 .iter()

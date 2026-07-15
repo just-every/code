@@ -67,7 +67,7 @@ const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
 const AUTO_DRIVE_CLI_MODEL_PRIMARY: &str = "gpt-5.5";
-const AUTO_DRIVE_CLI_MODEL_FAST: &str = "gpt-5.4-mini";
+const AUTO_DRIVE_CLI_MODEL_FAST: &str = "gpt-5.6-luna";
 const AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION: &str =
     "Hard planning and complex problem solving";
 const AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION: &str =
@@ -1166,7 +1166,7 @@ mod tests {
             "status_title": "Fixing tests",
             "status_sent_to_user": "Running clear failing-test loops.",
             "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
-            "cli_model": "gpt-5.4-mini",
+            "cli_model": "gpt-5.6-luna",
             "cli_reasoning_effort": "high"
         }"#;
 
@@ -1180,7 +1180,7 @@ mod tests {
         .expect("routing-enabled decision should parse");
 
         let cli = decision.cli.expect("cli action expected");
-        assert_eq!(cli.model_override.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(cli.model_override.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(cli.reasoning_effort_override, Some(ReasoningEffort::High));
     }
 
@@ -1191,7 +1191,7 @@ mod tests {
             "status_title": "Fixing tests",
             "status_sent_to_user": "Running clear failing-test loops.",
             "cli_milestone_instruction": "Take the failing test from red to green and report the passing evidence.",
-            "cli_model": "gpt-5.4-mini",
+            "cli_model": "gpt-5.6-luna",
             "cli_reasoning_effort": "high"
         }"#;
 
