@@ -1183,6 +1183,7 @@ impl Session {
             for event in events {
                 sess.send_event_raw(event).await;
             }
+            turn_environments.start_connection_event_forwarding(tx_event.clone());
 
             let mcp_startup_cancellation_token = {
                 let mut cancel_guard = sess.services.mcp_startup_cancellation_token.lock().await;
@@ -1206,6 +1207,7 @@ impl Session {
                 mcp_runtime_context.clone(),
                 config.codex_home.to_path_buf(),
                 sess.services.mcp_manager.codex_apps_tools_cache(),
+                sess.services.mcp_manager.tool_catalog_cache(),
                 connector_runtime_context_key(auth),
                 config.prefix_mcp_tool_names(),
                 mcp_projection

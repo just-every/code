@@ -12,6 +12,7 @@ pub use resource_client::McpResourceReadResult;
 pub use rmcp_client::MCP_SANDBOX_STATE_META_CAPABILITY;
 pub use runtime::McpRuntimeContext;
 pub use runtime::SandboxState;
+pub use tool_catalog_cache::McpToolCatalogCache;
 pub use tools::ToolInfo;
 
 /// Backward-compatible name for the shared Codex Apps tools runtime.
@@ -85,9 +86,11 @@ pub(crate) mod codex_apps;
 pub(crate) mod connection_manager;
 pub(crate) mod elicitation;
 pub(crate) mod mcp;
+mod openai_docs_source_attribution;
 mod plugin_config;
 mod resource_client;
 pub(crate) mod rmcp_client;
 pub(crate) mod runtime;
 pub(crate) mod server;
+mod tool_catalog_cache;
 pub(crate) mod tools;

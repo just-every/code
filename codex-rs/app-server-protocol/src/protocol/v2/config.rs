@@ -715,6 +715,7 @@ pub struct ExternalAgentConfigImportResponse {
 pub struct ExternalAgentConfigImportItemTypeFailure {
     pub item_type: ExternalAgentConfigMigrationItemType,
     pub error_type: Option<String>,
+    pub sub_error_type: Option<String>,
     pub failure_stage: String,
     pub message: String,
     pub cwd: Option<PathBuf>,
@@ -755,6 +756,23 @@ pub struct ExternalAgentConfigImportHistory {
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportHistoriesReadResponse {
     pub data: Vec<ExternalAgentConfigImportHistory>,
+    pub connectors: Vec<ExternalAgentImportedConnectorCandidate>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ExternalAgentImportedConnectorSource {
+    RemoteMcpServersConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalAgentImportedConnectorCandidate {
+    pub name: String,
+    pub session_count: u32,
+    pub source: ExternalAgentImportedConnectorSource,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

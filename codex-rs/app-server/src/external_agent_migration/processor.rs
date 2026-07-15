@@ -22,6 +22,8 @@ use codex_app_server_protocol::ExternalAgentConfigImportResponse;
 use codex_app_server_protocol::ExternalAgentConfigImportTypeResult as ProtocolImportTypeResult;
 use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
+use codex_app_server_protocol::ExternalAgentImportedConnectorCandidate;
+use codex_app_server_protocol::ExternalAgentImportedConnectorSource;
 use codex_app_server_protocol::HookMigration;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerMigration;
@@ -32,6 +34,7 @@ use codex_app_server_protocol::SkillMigration;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::ThreadManager;
 use codex_external_agent_migration::sessions::ExternalAgentSessionMigration as CoreSessionMigration;
+use codex_external_agent_migration::sessions::read_imported_connector_candidates;
 use codex_rollout::StateDbHandle;
 use codex_state::ExternalAgentConfigImportFailureRecord;
 use codex_state::ExternalAgentConfigImportSuccessRecord;
@@ -89,15 +92,16 @@ impl ExternalAgentConfigRequestProcessor {
             arg0_paths,
             codex_home,
         } = args;
+        let migration_service =
+            ExternalAgentConfigService::new(codex_home.clone(), analytics_events_client.clone());
         let session_importer = ExternalAgentSessionImporter::new(
-            codex_home.clone(),
+            codex_home,
+            migration_service.connector_metadata_roots.clone(),
             Arc::clone(&thread_manager),
             thread_store,
             config_manager,
             arg0_paths,
         );
-        let migration_service =
-            ExternalAgentConfigService::new(codex_home, analytics_events_client.clone());
         Self {
             outgoing,
             migration_service,
@@ -369,8 +373,21 @@ impl ExternalAgentConfigRequestProcessor {
             .into_iter()
             .map(protocol_import_history)
             .collect::<Result<Vec<_>, _>>()?;
+        let connectors = read_imported_connector_candidates(&self.migration_service.codex_home)
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to read imported connector candidates: {err}"
+                ))
+            })?
+            .into_iter()
+            .map(|candidate| ExternalAgentImportedConnectorCandidate {
+                name: candidate.name,
+                session_count: candidate.session_count,
+                source: ExternalAgentImportedConnectorSource::RemoteMcpServersConfig,
+            })
+            .collect();
 
-        Ok(ExternalAgentConfigImportHistoriesReadResponse { data })
+        Ok(ExternalAgentConfigImportHistoriesReadResponse { data, connectors })
     }
 
     fn validate_pending_session_imports(
@@ -640,6 +657,7 @@ fn track_completed_import_notification(
                     item_type: item_type.clone(),
                     failure_stage: failure.failure_stage.clone(),
                     error_type: import_failure_error_type(failure),
+                    sub_error_type: failure.sub_error_type.clone(),
                 },
             );
         }
@@ -692,6 +710,7 @@ async fn record_completed_import_notification(
             Ok(ExternalAgentConfigImportFailureRecord {
                 item_type: serde_json::from_value(serde_json::to_value(failure.item_type)?)?,
                 error_type: failure.error_type.clone(),
+                sub_error_type: failure.sub_error_type.clone(),
                 failure_stage: failure.failure_stage.clone(),
                 message: failure.message.clone(),
                 cwd: failure.cwd.clone(),
@@ -747,6 +766,7 @@ fn protocol_import_failure_record(
     Ok(ProtocolImportFailure {
         item_type: protocol_import_record_item_type(record.item_type)?,
         error_type: record.error_type,
+        sub_error_type: record.sub_error_type,
         failure_stage: record.failure_stage,
         message: record.message,
         cwd: record.cwd,
@@ -844,6 +864,7 @@ fn protocol_import_raw_error(raw_error: &CoreImportRawError) -> ProtocolImportFa
     ProtocolImportFailure {
         item_type: protocol_migration_item_type(raw_error.item_type),
         error_type: raw_error.error_type.clone(),
+        sub_error_type: raw_error.sub_error_type.clone(),
         failure_stage: raw_error.failure_stage.clone(),
         message: raw_error.message.clone(),
         cwd: raw_error.cwd.clone(),

@@ -401,7 +401,7 @@ async fn queued_slash_menu_cancel_drains_next_input() {
 async fn queued_settings_selection_applies_before_next_input() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
-    let mut preset = get_available_model(&chat, "gpt-5.4");
+    let mut preset = get_available_model(&chat, "gpt-5.6-terra");
     preset.supported_reasoning_efforts.truncate(1);
     let selected_effort = preset.supported_reasoning_efforts[0].effort.clone();
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
@@ -439,7 +439,7 @@ async fn queued_settings_selection_applies_before_next_input() {
     match next_submit_op(&mut op_rx) {
         Op::UserTurn { model, effort, .. } => assert_eq!(
             (model, effort),
-            ("gpt-5.4".to_string(), Some(selected_effort))
+            ("gpt-5.6-terra".to_string(), Some(selected_effort))
         ),
         other => panic!("expected queued message with updated model, got {other:?}"),
     }
@@ -539,9 +539,19 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
     );
     let input_state = chat.capture_thread_input_state().unwrap();
     assert!(input_state.user_turn_pending_start);
-    chat.restore_thread_input_state(/*input_state*/ None);
+    chat.restore_thread_input_state(
+        /*input_state*/ None,
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
     assert!(!chat.input_queue.user_turn_pending_start);
-    chat.restore_thread_input_state(Some(input_state));
+    chat.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
     assert!(chat.input_queue.user_turn_pending_start);
     assert_eq!(
         chat.queued_user_message_texts(),
@@ -987,7 +997,12 @@ async fn restored_queued_goal_slash_command_emits_set_goal_event() {
     let (mut restored_chat, mut restored_rx, mut restored_op_rx) =
         make_chatwidget_manual(/*model_override*/ None).await;
     restored_chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
-    restored_chat.restore_thread_input_state(Some(input_state));
+    restored_chat.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
     let thread_id = ThreadId::new();
     restored_chat.thread_id = Some(thread_id);
     restored_chat.maybe_send_next_queued_input();
@@ -2054,62 +2069,6 @@ async fn queued_menu_slash_keeps_agent_turn_complete_notification() {
     );
     assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Select Model"));
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-}
-
-#[tokio::test]
-async fn slash_copy_uses_latest_surviving_response_after_rollback() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    replay_user_message_text(&mut chat, "user-1", "foo", ReplayKind::ThreadSnapshot);
-    replay_agent_message(
-        &mut chat,
-        "agent-1",
-        "foo response",
-        ReplayKind::ThreadSnapshot,
-    );
-    replay_user_message_text(&mut chat, "user-2", "bar", ReplayKind::ThreadSnapshot);
-    replay_agent_message(
-        &mut chat,
-        "agent-2",
-        "bar response",
-        ReplayKind::ThreadSnapshot,
-    );
-    let _ = drain_insert_history(&mut rx);
-    assert_eq!(chat.last_agent_markdown_text(), Some("bar response"));
-
-    chat.truncate_agent_copy_history_to_user_turn_count(/*user_turn_count*/ 1);
-
-    assert_eq!(chat.last_agent_markdown_text(), Some("foo response"));
-    chat.copy_last_agent_markdown_with(|markdown| {
-        assert_eq!(markdown, "foo response");
-        Ok(None)
-    });
-}
-
-#[tokio::test]
-async fn slash_copy_reports_when_rewind_exceeds_retained_copy_history() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    replay_user_message_text(&mut chat, "user-1", "foo", ReplayKind::ThreadSnapshot);
-    replay_agent_message(
-        &mut chat,
-        "agent-1",
-        "foo response",
-        ReplayKind::ThreadSnapshot,
-    );
-    let _ = drain_insert_history(&mut rx);
-
-    chat.truncate_agent_copy_history_to_user_turn_count(/*user_turn_count*/ 0);
-    chat.dispatch_command(SlashCommand::Copy);
-
-    let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains(
-            "Cannot copy that response after rewinding. Only the most recent 32 responses are available to /copy."
-        ),
-        "expected evicted-history message, got {rendered:?}"
-    );
 }
 
 #[tokio::test]

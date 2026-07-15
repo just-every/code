@@ -4,20 +4,14 @@
 //! channels, submits thread-scoped operations through the app server, and replays buffered events
 //! when the visible thread changes.
 
+use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::session_resume::read_session_model;
-
-#[derive(Clone, Copy)]
-pub(super) enum ThreadRollbackOrigin {
-    Backtrack,
-    SafetyBufferingRetry,
-}
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
         if let Some(thread_id) = self.chat_widget.thread_id() {
-            // Clear any in-flight rollback guard when switching threads.
-            self.backtrack.pending_rollback = None;
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
             }
@@ -521,7 +515,7 @@ impl App {
         op: &AppCommand,
     ) -> Result<bool> {
         match op {
-            AppCommand::Interrupt { .. } => {
+            AppCommand::Interrupt => {
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     let mut interrupt_turn_id = turn_id;
                     for retried_after_turn_mismatch in [false, true] {
@@ -696,18 +690,6 @@ impl App {
                 app_server
                     .thread_set_name(thread_id, name.to_string())
                     .await?;
-                Ok(true)
-            }
-            AppCommand::ThreadRollback { num_turns } => {
-                let response = match app_server.thread_rollback(thread_id, *num_turns).await {
-                    Ok(response) => response,
-                    Err(err) => {
-                        self.handle_backtrack_rollback_failed();
-                        return Err(err);
-                    }
-                };
-                self.handle_thread_rollback_response(thread_id, *num_turns, &response)
-                    .await;
                 Ok(true)
             }
             AppCommand::Review { target } => {
@@ -1111,6 +1093,20 @@ impl App {
         session: ThreadSessionState,
         turns: Vec<Turn>,
     ) -> Result<()> {
+        self.enqueue_primary_thread_session_with_presentation(
+            session,
+            turns,
+            ThreadAttachPresentation::SessionLineage,
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_primary_thread_session_with_presentation(
+        &mut self,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+        presentation: ThreadAttachPresentation,
+    ) -> Result<()> {
         let thread_id = session.thread_id;
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
@@ -1126,7 +1122,14 @@ impl App {
         self.activate_thread_channel(thread_id).await;
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ true);
-        self.chat_widget.handle_thread_session(session);
+        match presentation {
+            ThreadAttachPresentation::SessionLineage => {
+                self.chat_widget.handle_thread_session(session);
+            }
+            ThreadAttachPresentation::PromptEdit => {
+                self.chat_widget.handle_prompt_edit_thread_session(session);
+            }
+        }
         let should_buffer_initial_replay = !turns.is_empty();
         if should_buffer_initial_replay {
             self.app_event_tx
@@ -1137,6 +1140,9 @@ impl App {
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
+        }
+        if matches!(presentation, ThreadAttachPresentation::PromptEdit) {
+            self.chat_widget.emit_prompt_edit_thread_event();
         }
         let pending = std::mem::take(&mut self.pending_primary_events);
         for pending_event in pending {
@@ -1339,8 +1345,12 @@ impl App {
         }
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ true);
-        self.chat_widget
-            .restore_thread_input_state(snapshot.input_state);
+        self.chat_widget.restore_thread_input_state(
+            snapshot.input_state,
+            ThreadInputStateRestoreMode {
+                preserve_in_flight_turn: true,
+            },
+        );
         if !snapshot.turns.is_empty() {
             self.chat_widget
                 .replay_thread_turns(snapshot.turns, ReplayKind::ThreadSnapshot);
@@ -1404,61 +1414,6 @@ impl App {
         let errors = self.skill_load_warnings.newly_active_errors(&errors);
         emit_skill_load_warnings(&self.app_event_tx, &errors);
         self.chat_widget.handle_skills_list_response(response);
-    }
-
-    pub(super) async fn handle_thread_rollback_response(
-        &mut self,
-        thread_id: ThreadId,
-        num_turns: u32,
-        response: &ThreadRollbackResponse,
-    ) {
-        self.handle_thread_rollback_response_with_origin(
-            thread_id,
-            num_turns,
-            response,
-            ThreadRollbackOrigin::Backtrack,
-        )
-        .await;
-    }
-
-    pub(super) async fn handle_thread_rollback_response_with_origin(
-        &mut self,
-        thread_id: ThreadId,
-        num_turns: u32,
-        response: &ThreadRollbackResponse,
-        origin: ThreadRollbackOrigin,
-    ) {
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-            let mut store = channel.store.lock().await;
-            store.apply_thread_rollback(response);
-        }
-        if self.active_thread_id == Some(thread_id)
-            && let Some(mut rx) = self.active_thread_rx.take()
-        {
-            let mut disconnected = false;
-            loop {
-                match rx.try_recv() {
-                    Ok(_) => {}
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        disconnected = true;
-                        break;
-                    }
-                }
-            }
-
-            if !disconnected {
-                self.active_thread_rx = Some(rx);
-            } else {
-                self.clear_active_thread().await;
-            }
-        }
-        match origin {
-            ThreadRollbackOrigin::Backtrack => self.handle_backtrack_rollback_succeeded(num_turns),
-            ThreadRollbackOrigin::SafetyBufferingRetry => {
-                self.apply_non_pending_thread_rollback(num_turns);
-            }
-        }
     }
 
     pub(super) fn handle_thread_event_now(&mut self, event: ThreadBufferedEvent) {

@@ -70,6 +70,7 @@ use codex_core_skills::PluginSkillSnapshots;
 use codex_core_skills::SkillMetadata;
 use codex_core_skills::config_rules::SkillConfigRules;
 use codex_core_skills::config_rules::skill_config_rules_from_stack;
+use codex_core_skills::loader::MAX_CONCURRENT_ROOT_SCANS;
 use codex_hooks::plugin_hook_declarations;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -376,6 +377,7 @@ pub struct PluginsManager {
     // Keep the cache auth-independent so auth changes only need to resolve capabilities again.
     loaded_plugins_cache: RwLock<LoadedPluginsCache>,
     loaded_plugins_load_semaphore: Semaphore,
+    skill_root_scan_slots: Arc<Semaphore>,
     tool_suggest_metadata_cache: ToolSuggestMetadataCache,
     remote_installed_plugins_cache: RwLock<Option<Vec<RemoteInstalledPlugin>>>,
     remote_installed_plugins_cache_refresh_state: RwLock<RemoteInstalledPluginsCacheRefreshState>,
@@ -452,6 +454,7 @@ impl PluginsManager {
             non_curated_cache_refresh_state: RwLock::new(NonCuratedCacheRefreshState::default()),
             loaded_plugins_cache: RwLock::new(LoadedPluginsCache::default()),
             loaded_plugins_load_semaphore: Semaphore::new(/*permits*/ 1),
+            skill_root_scan_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
             tool_suggest_metadata_cache: ToolSuggestMetadataCache::new(),
             remote_installed_plugins_cache: RwLock::new(None),
             remote_installed_plugins_cache_refresh_state: RwLock::new(
@@ -585,6 +588,7 @@ impl PluginsManager {
             Some(&plugin_skill_snapshots),
             self.restriction_product,
             remote_global_catalog_active,
+            Arc::clone(&self.skill_root_scan_slots),
         )
         .await;
         log_plugin_load_errors(&plugins);
@@ -670,6 +674,7 @@ impl PluginsManager {
             /*plugin_skill_snapshots*/ None,
             self.restriction_product,
             self.remote_global_catalog_active(config),
+            Arc::clone(&self.skill_root_scan_slots),
         )
         .await;
         self.resolve_loaded_plugins_for_auth(plugins)
@@ -1312,7 +1317,7 @@ impl PluginsManager {
                 self.track_plugin_install_failed(
                     &plugin_id,
                     plugin_install_error_type(&err),
-                    plugin_install_sub_error_type(&err),
+                    err.sub_error_type(),
                     err.to_string(),
                 );
                 Err(err)
@@ -1375,7 +1380,7 @@ impl PluginsManager {
             self.track_plugin_install_failed(
                 &resolved.plugin_id,
                 plugin_install_error_type(&err),
-                plugin_install_sub_error_type(&err),
+                err.sub_error_type(),
                 err.to_string(),
             );
             return Err(err);
@@ -1387,7 +1392,7 @@ impl PluginsManager {
                 self.track_plugin_install_failed(
                     &plugin_id,
                     plugin_install_error_type(&err),
-                    plugin_install_sub_error_type(&err),
+                    err.sub_error_type(),
                     err.to_string(),
                 );
                 Err(err)
@@ -1450,6 +1455,7 @@ impl PluginsManager {
                 self.telemetry_metadata_for_plugin_id(plugin_id),
                 self.plugin_install_source,
                 error_type.to_string(),
+                sub_error_type,
             );
         }
     }
@@ -1707,7 +1713,12 @@ impl PluginsManager {
     ) -> Result<PluginCapabilitySummary, MarketplaceError> {
         let fragment = self
             .tool_suggest_metadata_cache
-            .metadata_for_plugin(marketplace_name, plugin, self.restriction_product)
+            .metadata_for_plugin(
+                marketplace_name,
+                plugin,
+                self.restriction_product,
+                Arc::clone(&self.skill_root_scan_slots),
+            )
             .await?;
         Ok(fragment.project(skill_config_rules, self.auth_mode()))
     }
@@ -1889,6 +1900,7 @@ impl PluginsManager {
                 &config.config_layer_stack,
             ),
             /*plugin_skill_snapshots*/ None,
+            Arc::clone(&self.skill_root_scan_slots),
         )
         .await;
         let plugin_data_root = self.store.plugin_data_root(&plugin_id);
@@ -2728,6 +2740,13 @@ impl PluginInstallError {
             ) | Self::Store(PluginStoreError::Invalid(_))
         )
     }
+
+    pub fn sub_error_type(&self) -> Option<String> {
+        match self {
+            Self::Store(err) => err.sub_error_type(),
+            Self::Marketplace(_) | Self::Remote(_) | Self::Config(_) | Self::Join(_) => None,
+        }
+    }
 }
 
 fn plugin_install_error_type(err: &PluginInstallError) -> &'static str {
@@ -2737,16 +2756,6 @@ fn plugin_install_error_type(err: &PluginInstallError) -> &'static str {
         PluginInstallError::Store(err) => plugin_store_error_type(err),
         PluginInstallError::Config(_) => "config",
         PluginInstallError::Join(_) => "join",
-    }
-}
-
-fn plugin_install_sub_error_type(err: &PluginInstallError) -> Option<String> {
-    match err {
-        PluginInstallError::Store(err) => err.sub_error_type(),
-        PluginInstallError::Marketplace(_)
-        | PluginInstallError::Remote(_)
-        | PluginInstallError::Config(_)
-        | PluginInstallError::Join(_) => None,
     }
 }
 

@@ -29,6 +29,7 @@ use crate::remote::NoiseRendezvousEnvironmentConfig;
 use crate::remote_file_system::RemoteFileSystem;
 use crate::remote_process::RemoteProcess;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_util::task::AbortOnDropHandle;
 
 pub const CODEX_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_EXEC_SERVER_URL";
@@ -39,6 +40,15 @@ pub const CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR: &str =
 pub const CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN";
 pub const CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR: &str =
     "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID";
+
+/// The current connection state for one concrete environment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvironmentConnectionState {
+    /// An initialized exec-server connection is available.
+    Connected,
+    /// No initialized exec-server connection is currently available.
+    Disconnected,
+}
 
 /// Owns the execution/filesystem environments available to the Codex runtime.
 ///
@@ -62,9 +72,9 @@ pub struct EnvironmentManager {
     local_runtime_paths: Option<ExecServerRuntimePaths>,
 }
 
-/// The one-shot capability to complete a pending environment registration.
-#[must_use = "the pending environment cannot connect until registration is completed"]
-pub struct PendingEnvironmentRegistration(oneshot::Sender<Result<String, String>>);
+/// The one-shot capability to complete a deferred environment registration.
+#[must_use = "the deferred environment cannot connect until registration is completed"]
+pub struct DeferredEnvironmentRegistration(oneshot::Sender<Result<(), String>>);
 
 pub const LOCAL_ENVIRONMENT_ID: &str = "local";
 pub const REMOTE_ENVIRONMENT_ID: &str = "remote";
@@ -344,31 +354,28 @@ impl EnvironmentManager {
             ),
             self.local_runtime_paths.clone(),
         ));
-        environment.start_connecting();
-        self.environments
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(environment_id, environment);
+        self.insert_environment(environment_id, environment);
         Ok(())
     }
 
-    /// Adds or replaces a remote environment whose stable URL will be supplied later.
-    pub fn register_pending_environment(
+    /// Adds or replaces a Noise rendezvous environment that will become ready later.
+    pub fn register_deferred_noise_environment(
         &self,
         environment_id: String,
-    ) -> Result<PendingEnvironmentRegistration, ExecServerError> {
+        provider: Arc<dyn NoiseRendezvousConnectProvider>,
+    ) -> Result<DeferredEnvironmentRegistration, ExecServerError> {
         validate_environment_id(&environment_id)?;
-        let (completion, websocket_url) = oneshot::channel();
+        let identity = noise_channel_identity()?;
+        let (completion, readiness) = oneshot::channel();
         let environment = Arc::new(Environment::remote_with_transport(
-            ExecServerTransportParams::PendingWebSocketUrl(websocket_url.shared()),
+            ExecServerTransportParams::Deferred(Box::new(crate::client_api::Deferred {
+                readiness: readiness.shared(),
+                transport: ExecServerTransportParams::NoiseRendezvous { provider, identity },
+            })),
             self.local_runtime_paths.clone(),
         ));
-        environment.start_connecting();
-        self.environments
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(environment_id, environment);
-        Ok(PendingEnvironmentRegistration(completion))
+        self.insert_environment(environment_id, environment);
+        Ok(DeferredEnvironmentRegistration(completion))
     }
 
     /// Adds or replaces a named remote environment that connects through an
@@ -382,41 +389,39 @@ impl EnvironmentManager {
         provider: Arc<dyn NoiseRendezvousConnectProvider>,
     ) -> Result<(), ExecServerError> {
         validate_environment_id(&environment_id)?;
-        let identity = NoiseChannelIdentity::generate().map_err(|error| {
-            ExecServerError::Protocol(format!(
-                "failed to generate Noise harness identity: {error}"
-            ))
-        })?;
+        let identity = noise_channel_identity()?;
         let environment = Arc::new(Environment::remote_with_transport(
             ExecServerTransportParams::NoiseRendezvous { provider, identity },
             self.local_runtime_paths.clone(),
         ));
-        environment.start_connecting();
+        self.insert_environment(environment_id, environment);
+        Ok(())
+    }
+
+    fn insert_environment(&self, environment_id: String, environment: Arc<Environment>) {
         self.environments
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(environment_id, environment);
-        Ok(())
+            .insert(environment_id, Arc::clone(&environment));
+        environment.start_connecting();
     }
 }
 
-impl PendingEnvironmentRegistration {
-    /// Completes provisioning with the stable URL or a terminal error message.
-    pub fn complete(self, result: Result<String, String>) -> Result<(), ExecServerError> {
-        let result = match result {
-            Ok(exec_server_url) => match validate_remote_exec_server_url(exec_server_url) {
-                Ok(exec_server_url) => Ok(exec_server_url),
-                Err(error) => {
-                    let _ = self.0.send(Err(error.to_string()));
-                    return Err(error);
-                }
-            },
-            Err(message) => Err(message),
-        };
+impl DeferredEnvironmentRegistration {
+    /// Completes provisioning with readiness or a terminal error message.
+    pub fn complete(self, result: Result<(), String>) -> Result<(), ExecServerError> {
         self.0.send(result).map_err(|_| {
-            ExecServerError::Disconnected("pending environment registration is inactive".into())
+            ExecServerError::Disconnected("deferred environment registration is inactive".into())
         })
     }
+}
+
+fn noise_channel_identity() -> Result<NoiseChannelIdentity, ExecServerError> {
+    NoiseChannelIdentity::generate().map_err(|error| {
+        ExecServerError::Protocol(format!(
+            "failed to generate Noise harness identity: {error}"
+        ))
+    })
 }
 
 fn validate_environment_id(environment_id: &str) -> Result<(), ExecServerError> {
@@ -607,6 +612,15 @@ impl Environment {
 
     pub fn is_remote(&self) -> bool {
         self.remote_client.is_some()
+    }
+
+    /// Subscribes to the current connection state for this remote environment.
+    pub fn subscribe_connection_state(
+        &self,
+    ) -> Option<watch::Receiver<EnvironmentConnectionState>> {
+        self.remote_client
+            .as_ref()
+            .map(LazyRemoteExecServerClient::subscribe_connection_state)
     }
 
     pub fn local_runtime_paths(&self) -> Option<&ExecServerRuntimePaths> {

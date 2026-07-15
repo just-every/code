@@ -4,7 +4,9 @@
 //! actions are delegated to focused app submodules so the central match remains the routing layer.
 
 use super::resize_reflow::trailing_run_start;
+use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::app_server_session::ForkGoalContinuation;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]
@@ -182,7 +184,11 @@ impl App {
                             self.shutdown_current_thread(app_server).await;
                             match self
                                 .replace_chat_widget_with_app_server_thread(
-                                    tui, app_server, forked, /*initial_user_message*/ None,
+                                    tui,
+                                    app_server,
+                                    forked,
+                                    ThreadAttachPresentation::SessionLineage,
+                                    /*initial_user_message*/ None,
                                 )
                                 .await
                             {
@@ -222,6 +228,78 @@ impl App {
                     );
                 }
 
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::ForkSessionForPromptEdit {
+                thread_id,
+                nth_user_message,
+                mut prompt,
+            } => {
+                if self.chat_widget.thread_id() != Some(thread_id) {
+                    return Ok(AppRunControl::Continue);
+                }
+                self.session_telemetry.counter(
+                    "codex.thread.fork",
+                    /*inc*/ 1,
+                    &[("source", "transcript")],
+                );
+                self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
+                    .await;
+                let config = self.fresh_session_config();
+                let started = match app_server
+                    .thread_read(thread_id, /*include_turns*/ true)
+                    .await
+                {
+                    Ok(thread) => match crate::app_backtrack::backtrack_fork_before_turn_id(
+                        &thread.turns,
+                        nth_user_message,
+                        &mut prompt,
+                    ) {
+                        Ok(Some(before_turn_id)) => {
+                            app_server
+                                .fork_thread_at(
+                                    config.clone(),
+                                    thread_id,
+                                    /*last_turn_id*/ None,
+                                    /*before_turn_id*/ Some(before_turn_id),
+                                    ForkGoalContinuation::StartIfIdle,
+                                )
+                                .await
+                        }
+                        Ok(None) => {
+                            app_server
+                                .start_thread_with_session_start_source(
+                                    &config, /*session_start_source*/ None,
+                                )
+                                .await
+                        }
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(err),
+                };
+                match started {
+                    Ok(forked) => {
+                        self.shutdown_current_thread(app_server).await;
+                        match self
+                            .replace_chat_widget_with_app_server_thread(
+                                tui,
+                                app_server,
+                                forked,
+                                ThreadAttachPresentation::PromptEdit,
+                                /*initial_user_message*/ None,
+                            )
+                            .await
+                        {
+                            Ok(()) => self.chat_widget.restore_user_message_to_composer(prompt),
+                            Err(err) => {
+                                self.restore_backtrack_prompt_after_branch_error(prompt, err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.restore_backtrack_prompt_after_branch_error(prompt, err);
+                    }
+                }
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::BeginInitialHistoryReplayBuffer => {
@@ -288,11 +366,6 @@ impl App {
                 self.chat_widget.note_stream_consolidation_completed();
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
-            AppEvent::ApplyThreadRollback { num_turns } => {
-                if self.apply_non_pending_thread_rollback(num_turns) {
-                    tui.frame_requester().schedule_frame();
-                }
-            }
             AppEvent::StartCommitAnimation => {
                 if self
                     .commit_anim_running
@@ -338,6 +411,15 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
+                if matches!(&op, AppCommand::UserTurn { .. }) {
+                    self.handle_draw_pre_render(tui)?;
+                    if self.transcript_reflow.has_pending_reflow() {
+                        self.transcript_reflow.schedule_immediate();
+                        self.maybe_run_resize_reflow(tui)?;
+                    }
+                    self.chat_widget.pre_draw_tick();
+                    self.render_chat_widget_frame(tui)?;
+                }
                 self.chat_widget.prepare_local_op_submission(&op);
                 self.submit_active_thread_op(app_server, op).await?;
             }
@@ -345,77 +427,21 @@ impl App {
                 thread_id,
                 turn_id,
                 model,
-                mut turn,
+                turn,
+                prompt,
             } => {
-                if self.active_thread_id != Some(thread_id)
-                    || self.chat_widget.thread_id() != Some(thread_id)
-                {
-                    return Ok(AppRunControl::Continue);
-                }
-                if !self.chat_widget.can_retry_safety_buffered_turn(&turn_id) {
-                    self.app_event_tx.send(AppEvent::UpdateModel(model));
-                    self.app_event_tx.send(AppEvent::UpdateReasoningEffort(Some(
-                        ReasoningEffortConfig::Low,
-                    )));
-                    return Ok(AppRunControl::Continue);
-                }
-
-                let AppCommand::UserTurn {
-                    model: turn_model,
-                    effort,
-                    collaboration_mode,
-                    ..
-                } = &mut turn
-                else {
-                    self.chat_widget.add_error_message(
-                        "Failed to retry with a faster model: original turn is unavailable."
-                            .to_string(),
-                    );
-                    return Ok(AppRunControl::Continue);
-                };
-                *turn_model = model.clone();
-                *effort = Some(ReasoningEffortConfig::Low);
-                *collaboration_mode = collaboration_mode.as_ref().map(|mode| {
-                    mode.with_updates(
-                        Some(model),
-                        Some(Some(ReasoningEffortConfig::Low)),
-                        /*developer_instructions*/ None,
-                    )
-                });
-
-                if let Err(err) = app_server.turn_interrupt(thread_id, turn_id).await {
-                    self.chat_widget
-                        .add_error_message(format!("Failed to retry with a faster model: {err}"));
-                    return Ok(AppRunControl::Continue);
-                }
-                let rollback_response =
-                    match app_server.thread_rollback(thread_id, /*num_turns*/ 1).await {
-                        Ok(response) => response,
-                        Err(err) => {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to retry with a faster model: {err}"
-                            ));
-                            return Ok(AppRunControl::Continue);
-                        }
-                    };
-
-                self.chat_widget.prepare_safety_buffering_retry();
-                self.handle_thread_rollback_response_with_origin(
-                    thread_id,
-                    /*num_turns*/ 1,
-                    &rollback_response,
-                    super::thread_routing::ThreadRollbackOrigin::SafetyBufferingRetry,
+                self.retry_safety_buffered_turn(
+                    tui,
+                    app_server,
+                    super::safety_buffering::SafetyBufferedRetry {
+                        thread_id,
+                        turn_id,
+                        model,
+                        turn,
+                        prompt,
+                    },
                 )
                 .await;
-
-                if let Err(err) = self.submit_thread_op(app_server, thread_id, turn).await {
-                    self.chat_widget.fail_safety_buffering_retry();
-                    self.chat_widget
-                        .add_error_message(format!("Failed to retry with a faster model: {err}"));
-                }
-            }
-            AppEvent::RestoreCancelledTurn(prompt) => {
-                self.apply_cancelled_turn_edit(prompt);
             }
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
@@ -832,10 +858,19 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
-            AppEvent::RateLimitsLoaded { origin, result } => match result {
+            AppEvent::RateLimitsLoaded {
+                origin,
+                hard_stop_generation,
+                result,
+            } => match result {
                 Ok(response) => {
                     let rate_limit_reset_credits = response.rate_limit_reset_credits.clone();
-                    let snapshots = app_server_rate_limit_snapshots(response);
+                    let snapshots = if hard_stop_generation == self.rate_limit_hard_stop_generation
+                    {
+                        app_server_rate_limit_snapshots(response)
+                    } else {
+                        Vec::new()
+                    };
                     match origin {
                         RateLimitRefreshOrigin::StartupPrefetch {
                             reset_hint_request_id,

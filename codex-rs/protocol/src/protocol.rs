@@ -211,9 +211,9 @@ pub struct ConversationStartParams {
     pub codex_responses_as_items: bool,
     /// Optional prefix added to automatic Codex response items when `codex_responses_as_items` is set.
     pub codex_response_item_prefix: Option<String>,
-    /// Optional prefix added to automatic V1 Codex commentary sent with
-    /// `conversation.handoff.append` when `codex_responses_as_items` is not set. Final answers are
-    /// sent without the prefix.
+    /// Optional prefix added to automatic V1 or V3 Codex commentary sent through the selected
+    /// Bidi handoff wire event when `codex_responses_as_items` is not set. Final answers are sent
+    /// without the prefix.
     pub codex_response_handoff_prefix: Option<String>,
     /// Overrides the configured realtime model for this session only.
     pub model: Option<String>,
@@ -1268,6 +1268,11 @@ pub struct Event {
     pub msg: EventMsg,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct EnvironmentConnectionEvent {
+    pub environment_id: String,
+}
+
 /// Response event from the agent
 /// NOTE: Make sure none of these values have optional types, as it will mess up the extension code-gen.
 #[derive(Debug, Clone, Deserialize, Serialize, Display, JsonSchema, TS)]
@@ -1350,6 +1355,12 @@ pub enum EventMsg {
 
     /// Ack the client's configure message.
     SessionConfigured(SessionConfiguredEvent),
+
+    /// A selected environment completed its connection handshake.
+    EnvironmentConnected(EnvironmentConnectionEvent),
+
+    /// A selected environment lost its established connection.
+    EnvironmentDisconnected(EnvironmentConnectionEvent),
 
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
@@ -1610,6 +1621,7 @@ pub enum RealtimeConversationVersion {
     V1,
     #[default]
     V2,
+    V3,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -2124,6 +2136,8 @@ pub struct RateLimitSnapshot {
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
     pub individual_limit: Option<SpendControlLimitSnapshot>,
+    /// Backend-reported spend-control state. `None` is unavailable, not a sparse-update recovery.
+    pub spend_control_reached: Option<bool>,
     pub plan_type: Option<crate::account::PlanType>,
     pub rate_limit_reached_type: Option<RateLimitReachedType>,
 }

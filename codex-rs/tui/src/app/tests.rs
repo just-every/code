@@ -4,6 +4,8 @@
 mod advanced_reasoning_tests;
 mod model_catalog;
 mod plugin_catalog;
+mod rate_limits;
+mod safety_buffering;
 mod session_summary;
 mod startup;
 
@@ -44,7 +46,6 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
-use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -63,7 +64,6 @@ use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
-use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
@@ -97,7 +97,12 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -362,12 +367,14 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
     .await?;
 
     let mut saw_replayed_answer = false;
+    let mut saw_optimistic_prompt = false;
     let mut submitted_items = None;
     while let Ok(event) = app_event_rx.try_recv() {
         match event {
             AppEvent::InsertHistoryCell(cell) => {
                 let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
                 saw_replayed_answer |= transcript.contains("earlier prompt");
+                saw_optimistic_prompt |= transcript.contains(&initial_prompt);
             }
             AppEvent::SubmitThreadOp {
                 thread_id: op_thread_id,
@@ -377,6 +384,10 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
                 submitted_items = Some(items);
             }
             AppEvent::CodexOp(Op::UserTurn { items, .. }) => {
+                assert!(
+                    saw_optimistic_prompt,
+                    "expected optimistic prompt before turn submission"
+                );
                 submitted_items = Some(items);
             }
             _ => {}
@@ -558,6 +569,61 @@ async fn replay_thread_snapshot_restores_draft_and_queued_input() {
             "draft-only replay should not auto-submit queued input"
         );
     }
+}
+
+#[tokio::test]
+async fn replay_thread_snapshot_restores_the_matching_safety_buffer_prompt() {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            session.clone(),
+            Vec::new(),
+        ),
+    );
+    app.activate_thread_channel(thread_id).await;
+    app.chat_widget.handle_thread_session(session);
+    let default_mode = CollaborationModeMask {
+        name: "Default".to_string(),
+        mode: None,
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: None,
+    };
+    app.chat_widget
+        .submit_user_message_with_mode("buffered prompt A".to_string(), default_mode.clone());
+    let expected_input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected thread input state");
+
+    app.store_active_thread_receiver().await;
+    let snapshot = {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel should exist");
+        let store = channel.store.lock().await;
+        assert_eq!(store.input_state, Some(expected_input_state.clone()));
+        store.snapshot()
+    };
+
+    let (mut chat_widget, _app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+    chat_widget.handle_thread_session(test_thread_session(
+        ThreadId::new(),
+        test_path_buf("/tmp/other-project"),
+    ));
+    chat_widget.submit_user_message_with_mode("buffered prompt B".to_string(), default_mode);
+    app.chat_widget = chat_widget;
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    assert_eq!(
+        app.chat_widget.capture_thread_input_state(),
+        Some(expected_input_state)
+    );
 }
 
 #[tokio::test]
@@ -4104,6 +4170,7 @@ async fn make_test_app() -> App {
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
+        rate_limit_hard_stop_generation: 0,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
     }
@@ -4169,6 +4236,7 @@ async fn make_test_app_with_channels() -> (
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
+            rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         },
@@ -5102,8 +5170,8 @@ async fn fresh_session_config_uses_current_service_tier() {
 }
 
 #[tokio::test]
-async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
 
     let user_cell = |text: &str,
                      text_elements: Vec<TextElement>,
@@ -5188,6 +5256,11 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
     ];
 
     assert_eq!(user_count(&app.transcript_cells), 2);
+    let transcript_before: Vec<String> = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+        .collect();
 
     let base_id = ThreadId::new();
     app.chat_widget
@@ -5221,186 +5294,290 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
     let selection = app
         .confirm_backtrack_from_main()
         .expect("backtrack selection");
-    assert_eq!(selection.nth_user_message, 1);
-    assert_eq!(selection.prefill, edited_text);
-    assert_eq!(selection.text_elements, edited_text_elements);
-    assert_eq!(selection.local_image_paths, edited_local_image_paths);
-    assert_eq!(
-        selection.remote_image_urls,
-        vec!["https://example.com/backtrack.png".to_string()]
-    );
-
-    app.apply_backtrack_rollback(selection);
-    assert_eq!(
-        app.chat_widget.remote_image_urls(),
-        vec!["https://example.com/backtrack.png".to_string()]
-    );
-
-    let mut rollback_turns = None;
-    while let Ok(op) = op_rx.try_recv() {
-        if let Op::ThreadRollback { num_turns } = op {
-            rollback_turns = Some(num_turns);
-        }
-    }
-
-    assert_eq!(rollback_turns, Some(1));
-}
-
-#[tokio::test]
-async fn backtrack_remote_image_only_selection_clears_existing_composer_draft() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
-
-    app.transcript_cells = vec![Arc::new(UserHistoryCell {
-        message: "original".to_string(),
-        text_elements: Vec::new(),
-        local_image_paths: Vec::new(),
-        remote_image_urls: Vec::new(),
-    }) as Arc<dyn HistoryCell>];
-    app.chat_widget
-        .set_composer_text("stale draft".to_string(), Vec::new(), Vec::new());
-
-    let remote_image_url = "https://example.com/remote-only.png".to_string();
-    app.apply_backtrack_rollback(BacktrackSelection {
-        nth_user_message: 0,
-        prefill: String::new(),
-        text_elements: Vec::new(),
-        local_image_paths: Vec::new(),
-        remote_image_urls: vec![remote_image_url.clone()],
-    });
-
-    assert_eq!(app.chat_widget.composer_text_with_pending(), "");
-    assert_eq!(app.chat_widget.remote_image_urls(), vec![remote_image_url]);
-
-    let mut rollback_turns = None;
-    while let Ok(op) = op_rx.try_recv() {
-        if let Op::ThreadRollback { num_turns } = op {
-            rollback_turns = Some(num_turns);
-        }
-    }
-    assert_eq!(rollback_turns, Some(1));
-}
-
-#[tokio::test]
-async fn cancelled_turn_edit_restores_prompt_and_rolls_back_latest_turn() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
-    app.transcript_cells = vec![Arc::new(UserHistoryCell {
-        message: "original".to_string(),
-        text_elements: Vec::new(),
-        local_image_paths: Vec::new(),
-        remote_image_urls: Vec::new(),
-    }) as Arc<dyn HistoryCell>];
-    let prompt = crate::chatwidget::UserMessage {
-        text: "edit me".to_string(),
-        local_images: Vec::new(),
-        remote_image_urls: vec!["https://example.com/edit.png".to_string()],
-        text_elements: Vec::new(),
-        mention_bindings: Vec::new(),
+    let expected = BacktrackSelection {
+        thread_id: base_id,
+        nth_user_message: 1,
+        prompt: crate::chatwidget::UserMessage {
+            text: edited_text,
+            local_images: vec![crate::bottom_pane::LocalImageAttachment {
+                placeholder: placeholder.to_string(),
+                path: edited_local_image_paths[0].clone(),
+            }],
+            remote_image_urls: vec!["https://example.com/backtrack.png".to_string()],
+            text_elements: edited_text_elements,
+            mention_bindings: Vec::new(),
+        },
     };
+    assert_eq!(selection, expected);
 
-    app.apply_cancelled_turn_edit(prompt);
+    app.apply_backtrack_selection(selection);
+    let event = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find(|event| matches!(event, AppEvent::ForkSessionForPromptEdit { .. }))
+        .expect("prompt edit fork should be requested");
+    assert_matches!(
+        event,
+        AppEvent::ForkSessionForPromptEdit {
+            thread_id,
+            nth_user_message,
+            prompt,
+        } if thread_id == expected.thread_id
+            && nth_user_message == expected.nth_user_message
+            && prompt == expected.prompt
+    );
 
-    assert_eq!(app.chat_widget.composer_text_with_pending(), "edit me");
-    assert_snapshot!(
-        "cancelled_turn_edit_restores_composer",
-        app.chat_widget.composer_text_with_pending()
-    );
-    assert_eq!(
-        app.chat_widget.remote_image_urls(),
-        vec!["https://example.com/edit.png".to_string()]
-    );
-    assert_matches!(op_rx.try_recv(), Ok(Op::ThreadRollback { num_turns: 1 }));
+    let transcript_after: Vec<String> = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+        .collect();
+    assert_eq!(transcript_after, transcript_before);
 }
 
 #[tokio::test]
-async fn first_cancelled_turn_edit_restores_prompt_without_local_history() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
-    let prompt = crate::chatwidget::UserMessage {
-        text: "edit first prompt".to_string(),
-        local_images: Vec::new(),
-        remote_image_urls: vec!["https://example.com/edit.png".to_string()],
-        text_elements: Vec::new(),
-        mention_bindings: Vec::new(),
-    };
+async fn backtrack_branch_failure_restores_selected_prompt_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
 
-    app.apply_cancelled_turn_edit(prompt);
+    app.restore_backtrack_prompt_after_branch_error(
+        crate::chatwidget::UserMessage::from("edit this prompt"),
+        "branch unavailable",
+    );
 
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
-        "edit first prompt"
+        "edit this prompt"
     );
-    assert_eq!(
-        app.chat_widget.remote_image_urls(),
-        vec!["https://example.com/edit.png".to_string()]
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+    assert_app_snapshot!(
+        "backtrack_branch_failure_restores_selected_prompt",
+        rendered
     );
-    assert_matches!(op_rx.try_recv(), Ok(Op::ThreadRollback { num_turns: 1 }));
 }
 
 #[tokio::test]
-async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
-
-    let thread_id = ThreadId::new();
-    app.chat_widget
-        .handle_thread_session(crate::session_state::ThreadSessionState {
-            thread_id,
-            forked_from_id: None,
-            fork_parent_title: None,
-            thread_name: None,
-            model: "gpt-test".to_string(),
-            model_provider_id: "test-provider".to_string(),
-            service_tier: None,
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: ApprovalsReviewer::User,
-            permission_profile: PermissionProfile::read_only(),
-            active_permission_profile: None,
-            cwd: test_path_buf("/home/user/project").abs(),
-            runtime_workspace_roots: Vec::new(),
-            instruction_source_paths: Vec::new(),
-            reasoning_effort: None,
-            collaboration_mode: None,
-            personality: None,
-            message_history: None,
-            network_proxy: None,
-            rollout_path: Some(PathBuf::new()),
-        });
-
-    let data_image_url = "data:image/png;base64,abc123".to_string();
-    app.transcript_cells = vec![Arc::new(UserHistoryCell {
-        message: "please inspect this".to_string(),
-        text_elements: Vec::new(),
-        local_image_paths: Vec::new(),
-        remote_image_urls: vec![data_image_url.clone()],
-    }) as Arc<dyn HistoryCell>];
-
-    app.apply_backtrack_rollback(BacktrackSelection {
-        nth_user_message: 0,
-        prefill: "please inspect this".to_string(),
-        text_elements: Vec::new(),
-        local_image_paths: Vec::new(),
-        remote_image_urls: vec![data_image_url.clone()],
-    });
-
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let mut saw_rollback = false;
-    let mut submitted_items: Option<Vec<UserInput>> = None;
-    while let Ok(op) = op_rx.try_recv() {
-        match op {
-            Op::ThreadRollback { .. } => saw_rollback = true,
-            Op::UserTurn { items, .. } => submitted_items = Some(items),
-            _ => {}
+async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.chat_widget.config_ref().clone();
+    let filename_ts = "2025-01-05T12-00-00";
+    let source_thread_id = app_test_support::create_fake_rollout(
+        config.codex_home.as_path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "unused preview",
+        Some("test-provider"),
+        /*git_info*/ None,
+    )
+    .expect("materialized rollout should be created");
+    let source_path =
+        app_test_support::rollout_path(config.codex_home.as_path(), filename_ts, &source_thread_id);
+    let session_meta = std::fs::read_to_string(&source_path)?
+        .lines()
+        .next()
+        .expect("fake rollout should have session metadata")
+        .to_string();
+    std::fs::write(&source_path, format!("{session_meta}\n"))?;
+    for (turn_id, message, images, local_images) in [
+        ("turn-1", "retained prompt", None, Vec::new()),
+        (
+            "turn-2",
+            "selected prompt [Image #1]",
+            Some(vec!["https://example.com/backtrack.png".to_string()]),
+            vec![PathBuf::from("/tmp/fake-image.png")],
+        ),
+    ] {
+        for item in [
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                message: message.to_string(),
+                images,
+                local_images,
+                ..Default::default()
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ] {
+            codex_rollout::append_rollout_item_to_path(&source_path, &item).await?;
         }
     }
 
-    assert!(saw_rollback);
-    let items = submitted_items.expect("expected user turn after backtrack resubmit");
-    assert!(items.iter().any(|item| {
-        matches!(
-            item,
-            UserInput::Image { url, .. } if url == &data_image_url
+    let source_thread_id = ThreadId::from_string(&source_thread_id)?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    let started = app_server
+        .resume_thread(
+            config.clone(),
+            source_thread_id,
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
         )
-    }));
+        .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    let source_before = std::fs::read_to_string(&source_path)?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let prompt = crate::chatwidget::UserMessage {
+        text: "selected prompt [Image #1]".to_string(),
+        local_images: vec![crate::bottom_pane::LocalImageAttachment {
+            placeholder: "[Image #1]".to_string(),
+            path: PathBuf::from("/tmp/fake-image.png"),
+        }],
+        remote_image_urls: vec!["https://example.com/backtrack.png".to_string()],
+        text_elements: Vec::new(),
+        mention_bindings: Vec::new(),
+    };
+
+    let control = Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ForkSessionForPromptEdit {
+            thread_id: source_thread_id,
+            nth_user_message: 1,
+            prompt: prompt.clone(),
+        },
+    ))
+    .await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    let forked_thread_id = app
+        .chat_widget
+        .thread_id()
+        .expect("prompt edit should switch to a forked thread");
+    assert_ne!(forked_thread_id, source_thread_id);
+    assert_eq!(app.chat_widget.composer_text_with_pending(), prompt.text);
+    assert_eq!(
+        app.chat_widget.remote_image_urls(),
+        prompt.remote_image_urls
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, source_before);
+    assert_eq!(
+        app_server
+            .thread_read(source_thread_id, /*include_turns*/ true)
+            .await?
+            .turns
+            .iter()
+            .map(|turn| turn.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["turn-1", "turn-2"]
+    );
+    assert_eq!(
+        app_server
+            .thread_read(forked_thread_id, /*include_turns*/ true)
+            .await?
+            .turns
+            .iter()
+            .map(|turn| turn.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["turn-1"]
+    );
+
+    let history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let retained_index = history
+        .iter()
+        .position(|line| line.contains("retained prompt"))
+        .expect("forked history should replay the retained prompt");
+    let notice_index = history
+        .iter()
+        .position(|line| line == "• You’re continuing from this point in a new conversation")
+        .expect("prompt edit should emit the branch notice");
+    assert!(retained_index < notice_index);
+    assert!(
+        !history
+            .iter()
+            .any(|line| line.contains("Thread forked from"))
+    );
+    app_server.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.chat_widget.config_ref().clone();
+    let source_thread_id = app_test_support::create_fake_rollout(
+        config.codex_home.as_path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "first prompt",
+        Some("test-provider"),
+        /*git_info*/ None,
+    )
+    .expect("materialized rollout should be created");
+    let source_thread_id = ThreadId::from_string(&source_thread_id)?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    let started = app_server
+        .resume_thread(
+            config.clone(),
+            source_thread_id,
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
+        )
+        .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    let control = Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ForkSessionForPromptEdit {
+            thread_id: source_thread_id,
+            nth_user_message: 0,
+            prompt: crate::chatwidget::UserMessage::from("first prompt"),
+        },
+    ))
+    .await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    let fresh_thread_id = app
+        .chat_widget
+        .thread_id()
+        .expect("first prompt edit should start a fresh thread");
+    assert_ne!(fresh_thread_id, source_thread_id);
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "first prompt");
+    let history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        history.iter().any(|line| {
+            line == "• You’re continuing from this point in a new conversation"
+        })
+    );
+    assert!(
+        !history
+            .iter()
+            .any(|line| line.contains("Thread forked from"))
+    );
+    app_server.shutdown().await?;
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -5632,84 +5809,6 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
 }
 
 #[tokio::test]
-async fn queued_rollback_syncs_overlay_and_clears_deferred_history() {
-    let mut app = make_test_app().await;
-    app.transcript_cells = vec![
-        Arc::new(UserHistoryCell {
-            message: "first".to_string(),
-            text_elements: Vec::new(),
-            local_image_paths: Vec::new(),
-            remote_image_urls: Vec::new(),
-        }) as Arc<dyn HistoryCell>,
-        Arc::new(AgentMessageCell::new(
-            vec![Line::from("after first")],
-            /*is_first_line*/ false,
-        )) as Arc<dyn HistoryCell>,
-        Arc::new(UserHistoryCell {
-            message: "second".to_string(),
-            text_elements: Vec::new(),
-            local_image_paths: Vec::new(),
-            remote_image_urls: Vec::new(),
-        }) as Arc<dyn HistoryCell>,
-        Arc::new(AgentMessageCell::new(
-            vec![Line::from("after second")],
-            /*is_first_line*/ false,
-        )) as Arc<dyn HistoryCell>,
-    ];
-    app.overlay = Some(Overlay::new_transcript(
-        app.transcript_cells.clone(),
-        app.keymap.pager.clone(),
-    ));
-    app.deferred_history_lines = vec![Line::from("stale buffered line").into()];
-    app.backtrack.overlay_preview_active = true;
-    app.backtrack.nth_user_message = 1;
-    app.chat_widget.update_account_state(
-        /*status_account_display*/ None, /*plan_type*/ None,
-        /*has_chatgpt_account*/ false, /*has_codex_backend_auth*/ true,
-    );
-    app.chat_widget
-        .set_composer_text("/usage daily".to_string(), Vec::new(), Vec::new());
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let pending_usage = app
-        .chat_widget
-        .active_cell_transcript_lines(/*width*/ 80)
-        .expect("pending usage transcript");
-    assert!(lines_to_single_string(&pending_usage).contains("Token activity\n   Loading..."));
-
-    let changed = app.apply_non_pending_thread_rollback(/*num_turns*/ 1);
-
-    assert!(changed);
-    assert!(app.backtrack_render_pending);
-    assert!(app.deferred_history_lines.is_empty());
-    assert!(
-        app.chat_widget
-            .active_cell_transcript_lines(/*width*/ 80)
-            .is_none_or(|lines| !lines_to_single_string(&lines).contains("Token activity"))
-    );
-    assert_eq!(app.backtrack.nth_user_message, 0);
-    let user_messages: Vec<String> = app
-        .transcript_cells
-        .iter()
-        .filter_map(|cell| {
-            cell.as_any()
-                .downcast_ref::<UserHistoryCell>()
-                .map(|cell| cell.message.clone())
-        })
-        .collect();
-    assert_eq!(user_messages, vec!["first".to_string()]);
-    let overlay_cell_count = match app.overlay.as_ref() {
-        Some(Overlay::Transcript(t)) => t.committed_cell_count(),
-        _ => panic!("expected transcript overlay"),
-    };
-    assert_eq!(overlay_cell_count, app.transcript_cells.len());
-}
-
-#[tokio::test]
 async fn late_usage_result_can_follow_finalized_plan() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.chat_widget
@@ -5739,64 +5838,6 @@ async fn late_usage_result_can_follow_finalized_plan() {
             .take_completed_token_activity_output()
             .is_some()
     );
-}
-
-#[tokio::test]
-async fn thread_rollback_response_discards_queued_active_thread_events() {
-    let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
-    let (tx, rx) = mpsc::channel(8);
-    app.active_thread_id = Some(thread_id);
-    app.active_thread_rx = Some(rx);
-    tx.send(ThreadBufferedEvent::Notification(
-        ServerNotification::ConfigWarning(ConfigWarningNotification {
-            summary: "stale warning".to_string(),
-            details: None,
-            path: None,
-            range: None,
-        }),
-    ))
-    .await
-    .expect("event should queue");
-
-    app.handle_thread_rollback_response(
-        thread_id,
-        /*num_turns*/ 1,
-        &ThreadRollbackResponse {
-            thread: Thread {
-                id: thread_id.to_string(),
-                extra: None,
-                session_id: thread_id.to_string(),
-                forked_from_id: None,
-                parent_thread_id: None,
-                preview: String::new(),
-                ephemeral: false,
-                history_mode: Default::default(),
-                model_provider: "openai".to_string(),
-                created_at: 0,
-                updated_at: 0,
-                recency_at: Some(0),
-                status: codex_app_server_protocol::ThreadStatus::Idle,
-                path: None,
-                cwd: test_path_buf("/tmp/project").abs(),
-                cli_version: "0.0.0".to_string(),
-                source: SessionSource::Cli,
-                thread_source: None,
-                agent_nickname: None,
-                agent_role: None,
-                git_info: None,
-                name: None,
-                turns: Vec::new(),
-            },
-        },
-    )
-    .await;
-
-    let rx = app
-        .active_thread_rx
-        .as_mut()
-        .expect("active receiver should remain attached");
-    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
 #[tokio::test]
@@ -6268,7 +6309,6 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     assert!(!app.has_emitted_history_lines);
     assert!(!app.backtrack.primed);
     assert!(!app.backtrack.overlay_preview_active);
-    assert!(app.backtrack.pending_rollback.is_none());
     assert!(!app.backtrack_render_pending);
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");

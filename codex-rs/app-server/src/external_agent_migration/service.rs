@@ -170,6 +170,7 @@ pub(crate) struct ExternalAgentConfigImportSuccess {
 pub(crate) struct ExternalAgentConfigImportRawError {
     pub item_type: ExternalAgentConfigMigrationItemType,
     pub error_type: Option<String>,
+    pub sub_error_type: Option<String>,
     pub failure_stage: String,
     pub message: String,
     pub cwd: Option<PathBuf>,
@@ -186,7 +187,8 @@ pub(crate) struct ExternalAgentConfigMigrationItem {
 
 #[derive(Clone)]
 pub(crate) struct ExternalAgentConfigService {
-    codex_home: PathBuf,
+    pub(super) codex_home: PathBuf,
+    pub(super) connector_metadata_roots: Vec<PathBuf>,
     external_agent_home: PathBuf,
     analytics_events_client: Option<AnalyticsEventsClient>,
     source: ExternalAgentSource,
@@ -196,8 +198,10 @@ impl ExternalAgentConfigService {
     pub(crate) fn new(codex_home: PathBuf, analytics_events_client: AnalyticsEventsClient) -> Self {
         let source = ExternalAgentSource::default();
         let external_agent_home = default_external_agent_home(source);
+        let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
         Self {
             codex_home,
+            connector_metadata_roots,
             external_agent_home,
             analytics_events_client: Some(analytics_events_client),
             source,
@@ -206,11 +210,14 @@ impl ExternalAgentConfigService {
 
     #[cfg(test)]
     fn new_for_test(codex_home: PathBuf, external_agent_home: PathBuf) -> Self {
+        let source = ExternalAgentSource::default();
+        let connector_metadata_roots = source.connector_metadata_roots(&external_agent_home);
         Self {
             codex_home,
+            connector_metadata_roots,
             external_agent_home,
             analytics_events_client: None,
-            source: ExternalAgentSource::default(),
+            source,
         }
     }
 
@@ -448,6 +455,7 @@ impl ExternalAgentConfigService {
                 item_result.record_error(ExternalAgentConfigImportRawError {
                     item_type,
                     error_type: Some(error_type.to_string()),
+                    sub_error_type: None,
                     failure_stage: "import_request_failed".to_string(),
                     message,
                     cwd: item_result.cwd.clone(),
@@ -1068,12 +1076,14 @@ impl ExternalAgentConfigService {
                     Err(err) => {
                         let plugin_id = format!("{plugin_name}@{marketplace_name}");
                         outcome.failed_plugin_ids.push(plugin_id.clone());
+                        let sub_error_type = err.sub_error_type();
                         let mut raw_error = plugin_import_raw_error(
                             cwd,
                             "plugin_import",
                             err.to_string(),
                             Some(plugin_id),
                         );
+                        raw_error.sub_error_type = sub_error_type;
                         if matches!(
                             err,
                             PluginInstallError::Marketplace(
@@ -1660,6 +1670,7 @@ pub(crate) fn record_import_error(
     result.record_error(ExternalAgentConfigImportRawError {
         item_type: result.item_type,
         error_type: None,
+        sub_error_type: None,
         failure_stage: failure_stage.to_string(),
         message: message.into(),
         cwd: result.cwd.clone(),
@@ -1691,6 +1702,7 @@ fn plugin_import_raw_error(
     ExternalAgentConfigImportRawError {
         item_type: ExternalAgentConfigMigrationItemType::Plugins,
         error_type: None,
+        sub_error_type: None,
         failure_stage: failure_stage.to_string(),
         message,
         cwd: cwd.map(Path::to_path_buf),

@@ -410,7 +410,7 @@ impl TurnToolCounts {
             | ThreadItem::Plan { .. }
             | ThreadItem::Reasoning { .. }
             | ThreadItem::ImageView { .. }
-            | ThreadItem::Sleep { .. }
+            | ThreadItem::Sleep(_)
             | ThreadItem::EnteredReviewMode { .. }
             | ThreadItem::ExitedReviewMode { .. }
             | ThreadItem::ContextCompaction { .. } => return,
@@ -841,6 +841,7 @@ impl AnalyticsReducer {
             plugin,
             source,
             error_type,
+            sub_error_type,
         } = input;
         out.push(TrackEventRequest::PluginInstallFailed(
             CodexPluginInstallFailedEventRequest {
@@ -849,6 +850,7 @@ impl AnalyticsReducer {
                     plugin: codex_plugin_metadata(plugin),
                     source,
                     error_type,
+                    sub_error_type,
                 },
             },
         ));
@@ -888,6 +890,7 @@ impl AnalyticsReducer {
                     item_type: input.item_type,
                     failure_stage: input.failure_stage,
                     error_type: input.error_type,
+                    sub_error_type: input.sub_error_type,
                     product_client_id: Some(originator().value),
                 },
             },
@@ -1747,7 +1750,7 @@ fn tracked_tool_item_id(item: &ThreadItem) -> Option<&str> {
         | ThreadItem::Reasoning { .. }
         | ThreadItem::SubAgentActivity { .. }
         | ThreadItem::ImageView { .. }
-        | ThreadItem::Sleep { .. }
+        | ThreadItem::Sleep(_)
         | ThreadItem::EnteredReviewMode { .. }
         | ThreadItem::ExitedReviewMode { .. }
         | ThreadItem::ContextCompaction { .. } => None,

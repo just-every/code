@@ -1630,6 +1630,10 @@ server_notification_definitions! {
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
+    #[experimental("thread/environment/connected")]
+    EnvironmentConnected => "thread/environment/connected" (v2::EnvironmentConnectionNotification),
+    #[experimental("thread/environment/disconnected")]
+    EnvironmentDisconnected => "thread/environment/disconnected" (v2::EnvironmentConnectionNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
@@ -3300,7 +3304,7 @@ mod tests {
                 prompt: Some(Some("You are on a call".to_string())),
                 realtime_session_id: Some("sess_456".to_string()),
                 transport: None,
-                version: Some(RealtimeConversationVersion::V1),
+                version: Some(RealtimeConversationVersion::V3),
                 voice: Some(RealtimeVoice::Marin),
             },
         };
@@ -3321,7 +3325,7 @@ mod tests {
                     "prompt": "You are on a call",
                     "realtimeSessionId": "sess_456",
                     "transport": null,
-                    "version": "v1",
+                    "version": "v3",
                     "voice": "marin"
                 }
             }),

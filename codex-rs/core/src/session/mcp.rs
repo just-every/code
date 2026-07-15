@@ -109,6 +109,7 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "MCP runtime comparison and publication must remain serialized"
     )]
+    #[tracing::instrument(name = "mcp.runtime.resolve_for_step", skip_all)]
     pub(crate) async fn mcp_runtime_for_step(
         self: &Arc<Self>,
         turn_context: &TurnContext,
@@ -319,6 +320,7 @@ impl Session {
             .await
     }
 
+    #[tracing::instrument(name = "mcp.runtime.refresh", skip_all)]
     async fn refresh_mcp_servers_inner(
         &self,
         turn_context: &TurnContext,
@@ -371,6 +373,7 @@ impl Session {
             mcp_runtime_context.clone(),
             mcp_config.codex_home.clone(),
             self.services.mcp_manager.codex_apps_tools_cache(),
+            self.services.mcp_manager.tool_catalog_cache(),
             connector_runtime_context_key(auth.as_ref()),
             mcp_config.prefix_mcp_tool_names,
             mcp_config.client_elicitation_capability.clone(),

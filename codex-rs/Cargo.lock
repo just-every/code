@@ -2628,6 +2628,7 @@ dependencies = [
  "codex-utils-path-uri",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -2820,6 +2821,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -3386,6 +3388,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-plugins",
  "futures",
+ "lru 0.16.3",
  "pretty_assertions",
  "regex-lite",
  "rmcp",
@@ -3848,6 +3851,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "codex-extension-items",
  "codex-file-search",
  "codex-git-utils",
  "codex-otel",
