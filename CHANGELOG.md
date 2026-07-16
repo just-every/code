@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.147] - 2026-07-15
+
+- Core: migrate GPT-5.4 defaults to GPT-5.6 across presets, config validation, and agent defaults. (e6fa8394)
+- TUI: surface GPT-5.6 defaults in chat model labels and slash-command flows. (e6fa8394)
+- SDK: integrate upstream protocol updates and Python SDK release artifacts. (471b7e93, 3f74f002)
+
 ## [0.6.146] - 2026-07-14
 
 - Release: refresh upstream history for v0.6.146. (2efa1741)
