@@ -3121,6 +3121,7 @@ mod tests {
         let token_usage = TokenUsage {
             input_tokens: 13_290,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 13_290,
@@ -3158,6 +3159,7 @@ mod tests {
         let token_usage = TokenUsage {
             input_tokens: 13_290,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 13_290,
@@ -3194,6 +3196,7 @@ mod tests {
         let token_usage = TokenUsage {
             input_tokens: 13_290,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 13_290,
@@ -3231,6 +3234,7 @@ mod tests {
         let token_usage = TokenUsage {
             input_tokens: 13_290,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 13_290,

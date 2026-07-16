@@ -1033,6 +1033,8 @@ pub struct AutoContextCheckEvent {
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    #[serde(default)]
+    pub cache_write_input_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
@@ -1083,6 +1085,7 @@ impl TokenUsage {
     pub fn add_assign(&mut self, other: &TokenUsage) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_write_input_tokens += other.cache_write_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;

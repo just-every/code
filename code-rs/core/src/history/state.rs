@@ -2930,6 +2930,7 @@ mod tests {
             token_usage: Some(TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
+                cache_write_input_tokens: 0,
                 output_tokens: 5,
                 reasoning_output_tokens: 1,
                 total_tokens: 16,

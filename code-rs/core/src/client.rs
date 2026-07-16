@@ -2448,12 +2448,11 @@ struct ResponseCompletedUsage {
 
 impl From<ResponseCompletedUsage> for TokenUsage {
     fn from(val: ResponseCompletedUsage) -> Self {
+        let input_tokens_details = val.input_tokens_details.unwrap_or_default();
         TokenUsage {
             input_tokens: val.input_tokens,
-            cached_input_tokens: val
-                .input_tokens_details
-                .map(|d| d.cached_tokens)
-                .unwrap_or(0),
+            cached_input_tokens: input_tokens_details.cached_tokens,
+            cache_write_input_tokens: input_tokens_details.cache_write_tokens,
             output_tokens: val.output_tokens,
             reasoning_output_tokens: val
                 .output_tokens_details
@@ -2464,9 +2463,11 @@ impl From<ResponseCompletedUsage> for TokenUsage {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ResponseCompletedInputTokensDetails {
     cached_tokens: u64,
+    #[serde(default)]
+    cache_write_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]

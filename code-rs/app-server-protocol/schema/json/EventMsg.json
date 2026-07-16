@@ -5163,6 +5163,11 @@
     },
     "TokenUsage": {
       "properties": {
+        "cache_write_input_tokens": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "cached_input_tokens": {
           "format": "int64",
           "type": "integer"

@@ -14301,6 +14301,7 @@ mod cleanup_tests {
         let usage = TokenUsage {
             input_tokens: 40_000,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 260_000,
             reasoning_output_tokens: 250_000,
             total_tokens: 300_000,
@@ -14839,6 +14840,7 @@ mod tests {
             Some(&TokenUsage {
                 input_tokens: 20_000,
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
                 output_tokens: 80_000,
                 reasoning_output_tokens: 10_000,
                 total_tokens: 110_000,
