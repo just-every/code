@@ -222,6 +222,20 @@ enum FilePopupOrigin {
     Manual { token: String },
 }
 
+impl Drop for ChatComposer {
+    fn drop(&mut self) {
+        // Make sure the spinner ticker thread (if any) is told to stop even
+        // if `set_task_running(false)` was never called, e.g. when this
+        // composer is torn down (view switch, session end, app exit) while
+        // a task was still marked running. Otherwise the thread keeps
+        // waking up and requesting redraws against a channel nobody reads
+        // from anymore indefinitely.
+        if let Some(animation_flag) = self.animation_running.take() {
+            animation_flag.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
 impl ChatComposer {
     pub fn new(
         has_input_focus: bool,
@@ -359,7 +373,12 @@ impl ChatComposer {
                             thread::sleep(sleep_dur);
                         } else {
                             // If we're late (system busy), request a redraw immediately.
-                            app_event_tx_clone.send(crate::app_event::AppEvent::RequestRedraw);
+                            // If the app event channel is gone (receiver dropped), there is
+                            // no one left to redraw for: stop the ticker instead of spinning
+                            // forever re-sending into a closed channel.
+                            if !app_event_tx_clone.send_with_result(crate::app_event::AppEvent::RequestRedraw) {
+                                break;
+                            }
                             // Step the schedule forward by whole periods to avoid
                             // bursty catch‑up redraws.
                             let mut target = next;
