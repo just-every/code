@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.148] - 2026-07-16
+
+- TUI: stop the composer animation ticker when the app event channel closes. (6a2b15b4, 30f287c6)
+- Protocol: track prompt cache write token usage across protocol events and SDK types. (774ffaab, 2edad72d)
+- Dependencies: update serde_with to 3.21.0. (c469efc0)
+
 ## [0.6.147] - 2026-07-15
 
 - Core: migrate GPT-5.4 defaults to GPT-5.6 across presets, config validation, and agent defaults. (e6fa8394)

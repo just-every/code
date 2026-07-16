@@ -1,18 +1,18 @@
-## @just-every/code v0.6.147
+## @just-every/code v0.6.148
 
-This release updates model defaults and refreshes SDK protocol compatibility.
+This release improves protocol token usage reporting and fixes a TUI composer animation lifecycle issue.
 
 ### Changes
 
-- Core: migrate GPT-5.4 defaults to GPT-5.6 across presets, config validation, and agent defaults.
-- TUI: surface GPT-5.6 defaults in chat model labels and slash-command flows.
-- SDK: integrate upstream protocol updates and Python SDK release artifacts.
+- TUI: stop the composer animation ticker when the app event channel closes.
+- Protocol: track prompt cache write token usage across protocol events and SDK types.
+- Dependencies: update serde_with to 3.21.0.
 
 ### Install
 
-```sh
+```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.146...v0.6.147
+Compare: https://github.com/just-every/code/compare/v0.6.147...v0.6.148
