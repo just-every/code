@@ -259,15 +259,9 @@ pub(crate) async fn run_turn(
             )
             .await?;
 
-            if turn_context
-                .config
-                .features
-                .enabled(Feature::DeferredExecutor)
-            {
-                world_state = sess
-                    .record_step_world_state_if_changed(&world_state, step_context.as_ref())
-                    .await;
-            }
+            world_state = sess
+                .record_step_world_state_if_changed(&world_state, step_context.as_ref())
+                .await;
 
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
@@ -480,7 +474,7 @@ pub(crate) async fn run_turn(
 #[instrument(level = "trace", skip_all)]
 async fn turn_diff_display_roots(turn_context: &TurnContext) -> Vec<(String, PathBuf)> {
     let mut display_roots = Vec::new();
-    for turn_environment in &turn_context.environments.turn_environments {
+    for turn_environment in turn_context.environments.turn_environments() {
         // TODO(anp): Migrate git-root discovery and diff display roots to PathUri so foreign
         // environment roots can participate without host-native conversion.
         let Ok(cwd) = turn_environment.cwd().to_abs_path() else {
@@ -711,8 +705,7 @@ async fn build_extension_turn_input_items(
 
     let environments = turn_context
         .environments
-        .turn_environments
-        .iter()
+        .turn_environments()
         .enumerate()
         .filter_map(|(index, environment)| {
             // TODO(anp): Migrate extension turn-input environments to PathUri so foreign cwd
@@ -2025,6 +2018,7 @@ async fn try_run_sampling_request(
             codex.request.reasoning_effort = %reasoning_effort,
             gen_ai.usage.input_tokens = field::Empty,
             gen_ai.usage.cache_read.input_tokens = field::Empty,
+            gen_ai.usage.cache_write.input_tokens = field::Empty,
             gen_ai.usage.output_tokens = field::Empty,
             codex.usage.reasoning_output_tokens = field::Empty,
             codex.usage.total_tokens = field::Empty,

@@ -1216,7 +1216,6 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
                     link_id: Some("link_calendar".to_string()),
                     resource_uri: Some("ui://widget/lookup.html".to_string()),
                     app_name: Some("Calendar".to_string()),
-                    template_id: Some("calendar_template".to_string()),
                     action_name: Some("lookup".to_string()),
                 })
             );
@@ -1269,7 +1268,6 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
             link_id: Some("link_calendar".to_string()),
             resource_uri: Some("ui://widget/lookup.html".to_string()),
             app_name: Some("Calendar".to_string()),
-            template_id: Some("calendar_template".to_string()),
             action_name: Some("lookup".to_string()),
         })
     );
@@ -1378,7 +1376,6 @@ fn append_resume_redaction_history(
             mcp_app_resource_uri: Some("ui://widget/lookup.html".to_string()),
             link_id: Some("link_calendar".to_string()),
             app_name: Some("Calendar".to_string()),
-            template_id: Some("calendar_template".to_string()),
             action_name: Some("lookup".to_string()),
             plugin_id: None,
             duration: Duration::from_millis(8),
@@ -2401,6 +2398,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                     total_token_usage: TokenUsage {
                         input_tokens: 180,
                         cached_input_tokens: 40,
+                        cache_write_input_tokens: 0,
                         output_tokens: 50,
                         reasoning_output_tokens: 15,
                         total_tokens: 230,
@@ -2408,6 +2406,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                     last_token_usage: TokenUsage {
                         input_tokens: 90,
                         cached_input_tokens: 30,
+                        cache_write_input_tokens: 0,
                         output_tokens: 40,
                         reasoning_output_tokens: 12,
                         total_tokens: 130,
@@ -2589,6 +2588,7 @@ stream_max_retries = 0
         selected_capability_roots: Vec::new(),
         memory_mode: None,
         history_mode: Default::default(),
+        subagent_history_start_ordinal: None,
         multi_agent_version: None,
         context_window: None,
     };

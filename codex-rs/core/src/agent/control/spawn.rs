@@ -1,5 +1,7 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::agent::role::apply_role_to_config;
+use crate::config::PermissionProfileSnapshot;
 use codex_extension_api::ExtensionDataInit;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
@@ -92,6 +94,33 @@ fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &
     usage_hint_texts
         .iter()
         .any(|usage_hint_text| usage_hint_text == text)
+}
+
+async fn load_agent_model_context(
+    state: &ThreadManagerState,
+    thread_id: ThreadId,
+    history_mode: ThreadHistoryMode,
+) -> CodexResult<Option<Vec<RolloutItem>>> {
+    match history_mode {
+        ThreadHistoryMode::Legacy => Ok(state
+            .read_stored_thread(ReadThreadParams {
+                thread_id,
+                include_archived: true,
+                include_history: true,
+            })
+            .await?
+            .history
+            .map(|history| history.items)),
+        ThreadHistoryMode::Paginated => Ok(Some(
+            state
+                .load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id,
+                    include_archived: true,
+                })
+                .await?
+                .items,
+        )),
+    }
 }
 
 impl AgentControl {
@@ -220,7 +249,7 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
@@ -236,15 +265,14 @@ impl AgentControl {
             .read_stored_thread(ReadThreadParams {
                 thread_id,
                 include_archived: true,
-                include_history: true,
+                include_history: false,
             })
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
-        let history = stored_thread
-            .history
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?
-            .items;
+        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+            .await?
+            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
@@ -253,13 +281,49 @@ impl AgentControl {
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
+        let (session_source, _) = initial_history
+            .get_resumed_session_sources()
+            .unwrap_or((stored_source, None));
+        if let Some(role_name) = session_source.get_agent_role() {
+            let runtime_approval_policy = config.permissions.approval_policy.value();
+            let runtime_approvals_reviewer = config.approvals_reviewer;
+            let runtime_cwd = config.cwd.clone();
+            let runtime_permission_profile = match config.permissions.active_permission_profile() {
+                Some(active_permission_profile) => {
+                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                        config.permissions.permission_profile().clone(),
+                        active_permission_profile,
+                        config.permissions.profile_workspace_roots().to_vec(),
+                    )
+                }
+                None => PermissionProfileSnapshot::legacy(
+                    config.permissions.permission_profile().clone(),
+                ),
+            };
+
+            apply_role_to_config(&mut config, Some(&role_name))
+                .await
+                .map_err(CodexErr::InvalidRequest)?;
+            config
+                .permissions
+                .approval_policy
+                .set(runtime_approval_policy)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
+                })?;
+            config.approvals_reviewer = runtime_approvals_reviewer;
+            config.cwd = runtime_cwd;
+            config
+                .permissions
+                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
+                })?;
+        }
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
             .await?;
 
-        let (session_source, _) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or((stored_source, None));
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);
@@ -382,10 +446,22 @@ impl AgentControl {
                 .await?
             }
             (Some(session_source), None, inheritance) => {
+                let history_mode = if let Some(parent_thread_id) = options.parent_thread_id
+                    && let Ok(parent_thread) = state.get_thread(parent_thread_id).await
+                {
+                    matches!(
+                        parent_thread.config_snapshot().await.history_mode,
+                        ThreadHistoryMode::Paginated
+                    )
+                    .then_some(ThreadHistoryMode::Paginated)
+                } else {
+                    None
+                };
                 Box::pin(state.spawn_new_thread_with_source(
                     config.clone(),
                     self.clone(),
                     session_source,
+                    history_mode,
                     options.parent_thread_id,
                     /*forked_from_thread_id*/ None,
                     /*thread_source*/ Some(ThreadSource::Subagent),
@@ -525,23 +601,27 @@ impl AgentControl {
             parent_thread.ensure_rollout_materialized().await;
             parent_thread.flush_rollout().await?;
         }
-
-        let parent_history = state
+        let parent_metadata = state
             .read_stored_thread(ReadThreadParams {
                 thread_id: parent_thread_id,
                 include_archived: true,
-                include_history: true,
+                include_history: false,
             })
-            .await?
-            .history
-            .ok_or_else(|| {
-                CodexErr::Fatal(format!(
-                    "parent thread history unavailable for fork: {parent_thread_id}"
-                ))
-            })?;
+            .await?;
 
-        let selected_capability_roots = parent_history
-            .items
+        let destination_history_mode =
+            matches!(parent_metadata.history_mode, ThreadHistoryMode::Paginated)
+                .then_some(ThreadHistoryMode::Paginated);
+        let mut forked_rollout_items =
+            load_agent_model_context(state, parent_thread_id, parent_metadata.history_mode)
+                .await?
+                .ok_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "parent thread history unavailable for fork: {parent_thread_id}"
+                    ))
+                })?;
+
+        let selected_capability_roots = forked_rollout_items
             .iter()
             .find_map(|item| {
                 let RolloutItem::SessionMeta(meta_line) = item else {
@@ -550,7 +630,6 @@ impl AgentControl {
                 Some(meta_line.meta.selected_capability_roots.clone())
             })
             .unwrap_or_default();
-        let mut forked_rollout_items = parent_history.items;
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
             forked_rollout_items =
                 truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
@@ -598,6 +677,19 @@ impl AgentControl {
                         )
                 )
         });
+        if destination_history_mode == Some(ThreadHistoryMode::Paginated) {
+            forked_rollout_items.retain(|item| {
+                !matches!(
+                    item,
+                    RolloutItem::EventMsg(
+                        EventMsg::ItemCompleted(_)
+                            | EventMsg::TokenCount(_)
+                            | EventMsg::ThreadGoalUpdated(_)
+                            | EventMsg::ThreadSettingsApplied(_),
+                    )
+                )
+            });
+        }
         for item in &mut forked_rollout_items {
             if let RolloutItem::Compacted(compacted) = item
                 && let Some(replacement_history) = compacted.replacement_history.as_mut()
@@ -628,6 +720,7 @@ impl AgentControl {
             .fork_thread_with_source(
                 config.clone(),
                 InitialHistory::Forked(forked_rollout_items),
+                destination_history_mode,
                 self.clone(),
                 session_source,
                 /*thread_source*/ Some(ThreadSource::Subagent),
@@ -728,7 +821,7 @@ impl AgentControl {
             .read_stored_thread(ReadThreadParams {
                 thread_id,
                 include_archived: true,
-                include_history: true,
+                include_history: false,
             })
             .await?;
         let resumed_agent_path = stored_thread
@@ -739,10 +832,9 @@ impl AgentControl {
             .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent path: {err}")))?;
         let resumed_agent_nickname = stored_thread.agent_nickname.clone();
         let resumed_agent_role = stored_thread.agent_role.clone();
-        let history = stored_thread
-            .history
-            .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))?
-            .items;
+        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+            .await?
+            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),

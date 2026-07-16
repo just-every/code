@@ -629,7 +629,7 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {
-    ToolEnvironmentMode::from_count(step_context.environments.turn_environments.len())
+    ToolEnvironmentMode::from_count(step_context.environments.turn_environments().count())
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -685,8 +685,7 @@ fn unified_exec_should_include_shell_parameter(
         UnifiedExecShellMode::ZshFork(_)
     ) || step_context
         .environments
-        .turn_environments
-        .iter()
+        .turn_environments()
         .any(|environment| environment.environment.is_remote())
 }
 
@@ -798,15 +797,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 .flatten();
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
+            let hide_spawn_agent_metadata =
+                turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
                         available_models: turn_context.available_models.clone(),
                         agent_type_description,
-                        hide_agent_type_model_reasoning: turn_context
-                            .config
-                            .multi_agent_v2
-                            .hide_spawn_agent_metadata,
+                        expose_agent_type: !turn_context.config.agent_roles.is_empty(),
+                        hide_agent_type_model_reasoning: hide_spawn_agent_metadata,
                         expose_spawn_agent_model_overrides: turn_context
                             .config
                             .multi_agent_v2
@@ -853,6 +852,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
+                    expose_agent_type: !turn_context.config.agent_roles.is_empty(),
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,

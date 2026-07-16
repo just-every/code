@@ -241,8 +241,8 @@ Example with notification opt-out:
 - `windowsSandbox/setupStart` — start Windows sandbox setup for the selected mode (`elevated` or `unelevated`); accepts an optional absolute `cwd` to target setup for a specific workspace, returns `{ started: true }` immediately, and later emits `windowsSandbox/setupCompleted`.
 - `feedback/upload` — submit a feedback report (classification + optional reason/logs, conversation_id, and optional `extraLogFiles` attachments array); returns the tracking thread id.
 - `config/read` — fetch the effective config on disk after resolving config layering, including opaque `desktop` values stored in `config.toml`.
-- `externalAgentConfig/detect` — detect migratable external-agent artifacts with `includeHome`, optional `cwds`, and an optional `source` identifier reserved for adapter selection; omitted, `null`, or unrecognized values retain the default behavior. Each detected item includes `cwd` (`null` for home), and multi-item migrations may additionally include structured `details` with plugin ids, skill names, session metadata, or other artifact names.
-- `externalAgentConfig/import` — apply selected external-agent migration items by passing explicit `migrationItems` with `cwd` (`null` for home) and any `details` returned by detect. Callers may pass `source` to identify the product that initiated the import; omitted or `null` means unspecified. The response acknowledges the synchronous import phase with an `importId`. Expected migration failures are reported as per-item failures rather than JSON-RPC errors, so the server still returns that `importId` and emits `externalAgentConfig/import/completed` with the same ID once all synchronous and background work finishes. The completion notification contains type-level `itemTypeResults` with successes and failures, including raw failure messages for the client to report separately.
+- `externalAgentConfig/detect` — detect migratable external-agent artifacts with `includeHome`, optional `cwds`, and an optional `migrationSource` selector. Omitted, `null`, or unrecognized migration-source values retain the default behavior. The deprecated optional `source` field remains accepted for compatibility but does not select the migration source. Each detected item includes `cwd` (`null` for home), and multi-item migrations may additionally include structured `details` with plugin ids, skill names, memory, session metadata, or other artifact names.
+- `externalAgentConfig/import` — apply selected external-agent migration items by passing explicit `migrationItems` with `cwd` (`null` for home) and any `details` returned by detect. Pass the same optional `migrationSource` used for detection so the server reads from the matching source; omitted, `null`, or unrecognized values retain the default behavior. The optional `source` continues to identify the product that initiated the import. The response acknowledges the synchronous import phase with an `importId`. Expected migration failures are reported as per-item failures rather than JSON-RPC errors, so the server still returns that `importId` and emits `externalAgentConfig/import/completed` with the same ID once all synchronous and background work finishes. The completion notification contains type-level `itemTypeResults` with successes and failures, including raw failure messages for the client to report separately.
 - `externalAgentConfig/import/readHistories` — read completed import histories and connector candidates detected from successfully imported session histories. Connector candidates include a normalized display `name`, the number of imported sessions that used the connector, and the source metadata field used for detection.
 - `config/value/write` — write a single config key/value to the user's config.toml on disk; dotted paths such as `desktop.someKey` use the same generic write surface.
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk, with optional `reloadUserConfig: true` to hot-reload loaded threads, including multiple `desktop.*` edits.
@@ -1392,7 +1392,7 @@ Today both notifications carry an empty `items` array even when item events were
 - `reasoning` — `{id, summary, content}` where `summary` holds streamed reasoning summaries (applicable for most OpenAI models) and `content` holds raw reasoning blocks (applicable for e.g. open source models).
 - `commandExecution` — `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}` for sandboxed commands; `status` is `inProgress`, `completed`, `failed`, or `declined`.
 - `fileChange` — `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}` and `status` is `inProgress`, `completed`, `failed`, or `declined`.
-- `mcpToolCall` — `{id, server, tool, status, arguments, appContext, mcpAppResourceUri?, pluginId, result?, error?}` describing MCP calls; `appContext` is `{connectorId, linkId, resourceUri, appName, templateId, actionName}` for calls through a trusted MCP app, where `connectorId` identifies the connector that owns the tool, `linkId` identifies the app link, `resourceUri` points to the widget template, `appName` is the connector's display name, `templateId` identifies the app template, and `actionName` is the stable connector `Action.name`. `appName`, `templateId`, and `actionName` may be null for older rollout entries. The top-level `mcpAppResourceUri` is deprecated and temporarily duplicated for client migration. `tool` identifies the raw MCP tool. `status` is `inProgress`, `completed`, or `failed`.
+- `mcpToolCall` — `{id, server, tool, status, arguments, appContext, mcpAppResourceUri?, pluginId, result?, error?}` describing MCP calls; `appContext` is `{connectorId, linkId, resourceUri, appName, actionName}` for calls through a trusted MCP app, where `connectorId` identifies the connector that owns the tool, `linkId` identifies the app link, `resourceUri` points to the widget template, `appName` is the connector's display name, and `actionName` is the stable connector `Action.name`. `appName` and `actionName` may be null for older rollout entries. The top-level `mcpAppResourceUri` is deprecated and temporarily duplicated for client migration. `tool` identifies the raw MCP tool. `status` is `inProgress`, `completed`, or `failed`.
 - `collabToolCall` — `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}` describing collab tool calls (`spawn_agent`, `send_input`, `resume_agent`, `wait`, `close_agent`); `status` is `inProgress`, `completed`, or `failed`.
 - `webSearch` — `{id, query, action?, results?}` for a web search request issued by the agent; `action` mirrors the Responses API web_search action payload (`search`, `open_page`, `find_in_page`) and may be omitted until completion. For standalone web search, `results` contains the out-of-band structured result DTOs returned by `/v1/alpha/search`; clients should ignore result types and fields they do not understand.
 - `imageView` — `{id, path}` emitted when the agent invokes the image viewer tool.
@@ -1845,7 +1845,7 @@ When `threadId` is provided, app feature gating (`Feature::Apps`) is evaluated u
 
 `app/list` returns after both accessible apps and directory apps are loaded. Set `forceRefetch: true` to bypass app caches and fetch fresh data from sources. Cache entries are only replaced when those refetches succeed.
 
-The server also emits `app/list/updated` notifications whenever either source (accessible apps or directory apps) finishes loading. Each notification includes the latest merged app list.
+The server also emits `app/list/updated` notifications when newly loaded accessible or directory apps change the merged app list. Each notification includes the latest merged app list. An initial cached `app/list` still emits one final notification so other initialized clients can refresh their app list, while reading an unchanged cached continuation page does not emit a duplicate notification; `forceRefetch: true` preserves the existing progressive notifications while fresh data loads.
 
 ```json
 {
@@ -1874,6 +1874,44 @@ The server also emits `app/list/updated` notifications whenever either source (a
   }
 }
 ```
+
+Use `app/read` when a client already has app ids and only needs metadata. The request accepts at
+most 100 `appIds`; repeated ids are deduplicated while preserving first-request order. Both `apps`
+and `missingAppIds` follow that order. Unknown or unauthorized ids are returned as partial misses
+instead of failing the whole request.
+
+```json
+{ "method": "app/read", "id": 51, "params": {
+    "appIds": ["demo-app", "missing-app"],
+    "includeTools": true
+} }
+{ "id": 51, "result": {
+    "apps": [
+        {
+            "id": "demo-app",
+            "name": "Demo App",
+            "description": "Example app for documentation.",
+            "iconUrl": "https://files.openai.com/content?id=demo-app",
+            "toolSummaries": [
+                {
+                    "name": "search",
+                    "title": "Search",
+                    "description": "Search the app."
+                }
+            ]
+        }
+    ],
+    "missingAppIds": ["missing-app"]
+} }
+```
+
+`app/read` reads fresh metadata records from a cache partitioned by backend URL and ChatGPT
+account/workspace identity, then makes at most one `POST /ps/apps/batch` for missing or
+expired ids. `includeTools` defaults to false and is forwarded as `include_tools`; a fresh
+metadata-only cache entry is refetched when tool summaries are requested. Backend or transport
+failures return an RPC error without replacing existing cache records. Its metadata shape can
+include display-only public tool summaries and intentionally excludes runtime state, MCP tool
+state, full actions, and model descriptions.
 
 Connected apps may override the thread's approval reviewer in `config.toml`.
 Use `apps._default.approvals_reviewer` to set the reviewer for all apps, and a

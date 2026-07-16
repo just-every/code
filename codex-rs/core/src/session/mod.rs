@@ -56,6 +56,7 @@ use codex_analytics::TurnCodexErrorFact;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::connector_runtime_context_key;
+use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionDataInit;
@@ -598,14 +599,12 @@ impl Session {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
-        let multi_agent_version =
-            resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);
+        let multi_agent_version = config.multi_agent_version_override().or_else(|| {
+            resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
+        });
         let history_mode = conversation_history.get_history_mode(
             requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
         );
-        config
-            .validate_multi_agent_v2_config()
-            .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
         let base_instructions = config
             .base_instructions
             .clone()
@@ -1043,10 +1042,6 @@ impl Session {
                 spec
             }
         };
-        if cfg!(target_os = "windows") && !spec.enabled() {
-            self.services.network_proxy.store(None);
-            return;
-        }
         if let Some(started_proxy) = self.services.network_proxy.load_full() {
             if let Err(err) = spec.apply_to_started_proxy(started_proxy.as_ref()).await {
                 warn!("failed to refresh managed network proxy for sandbox change: {err}");
@@ -1241,12 +1236,19 @@ impl Session {
     }
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
-        let is_subagent = {
+        let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
-            state
-                .session_configuration
-                .session_source
-                .is_non_root_agent()
+            let session_configuration = &state.session_configuration;
+            (
+                session_configuration.session_source.is_non_root_agent(),
+                matches!(
+                    session_configuration.history_mode,
+                    ThreadHistoryMode::Paginated
+                ) && matches!(
+                    session_configuration.thread_source.as_ref(),
+                    Some(ThreadSource::Subagent)
+                ),
+            )
         };
         let has_prior_user_turns = initial_history_has_prior_user_turns(&conversation_history);
         {
@@ -1303,11 +1305,7 @@ impl Session {
             InitialHistory::Forked(mut rollout_items) => {
                 let turn_context = self.new_default_turn().await;
                 if turn_context.item_ids_enabled() {
-                    for rollout_item in &mut rollout_items {
-                        if let RolloutItem::ResponseItem(response_item) = rollout_item {
-                            Self::assign_missing_response_item_id(response_item);
-                        }
-                    }
+                    Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
                 }
                 self.apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
@@ -1319,8 +1317,9 @@ impl Session {
                     state.set_token_info(Some(info));
                 }
 
-                // If persisting, persist all rollout items as-is (the store filters).
-                if !rollout_items.is_empty() {
+                // Paginated subagents persist inherited model context while creating the live
+                // thread so the copied prefix is not observed as child-owned metadata.
+                if !rollout_items.is_empty() && !is_paginated_subagent {
                     self.persist_rollout_items(&rollout_items).await;
                 }
 
@@ -2431,8 +2430,7 @@ impl Session {
         let turn_environment = match args.environment_id.as_deref() {
             Some(environment_id) => turn_context
                 .environments
-                .turn_environments
-                .iter()
+                .turn_environments()
                 .find(|environment| environment.environment_id == environment_id),
             None => turn_context.environments.primary(),
         };
@@ -2771,6 +2769,14 @@ impl Session {
         item.set_id(Some(ResponseItemId::new(prefix)));
     }
 
+    fn assign_missing_rollout_response_item_ids(items: &mut [RolloutItem]) {
+        for item in items {
+            if let RolloutItem::ResponseItem(response_item) = item {
+                Self::assign_missing_response_item_id(response_item);
+            }
+        }
+    }
+
     pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
         ResponseItem::from(ResponseInputItem::from_user_input(
             input,
@@ -2843,22 +2849,12 @@ impl Session {
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
     ) -> Arc<StepContext> {
-        let deferred_executor_enabled = turn_context
-            .config
-            .features
-            .enabled(Feature::DeferredExecutor);
-        // Keep the old turn-frozen environment view unless deferred executors are enabled.
-        let environments = if deferred_executor_enabled {
-            self.services.turn_environments.snapshot().await
-        } else {
-            turn_context.environments.clone()
-        };
-        if deferred_executor_enabled {
-            self.services
-                .agents_md_manager
-                .refresh(&turn_context.config, &environments)
-                .await;
-        }
+        // Keep selections fixed for the turn while allowing their startup work to finish.
+        let environments = turn_context.environments.refresh_readiness();
+        self.services
+            .agents_md_manager
+            .refresh(&turn_context.config, &environments)
+            .await;
         let loaded_agents_md = self.services.agents_md_manager.get_loaded().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
@@ -3065,12 +3061,10 @@ impl Session {
         config: &Config,
     ) -> MultiAgentVersion {
         if let Some(multi_agent_version) = self.multi_agent_version() {
-            return multi_agent_version;
+            return config.multi_agent_version_for_model(Some(multi_agent_version));
         }
 
-        let selected = model_info
-            .multi_agent_version
-            .unwrap_or_else(|| config.multi_agent_version_from_features());
+        let selected = config.multi_agent_version_for_model(model_info.multi_agent_version);
 
         self.set_multi_agent_version_if_unset(selected)
     }
@@ -3257,6 +3251,10 @@ impl Session {
             }
         }
         if turn_context.config.include_skill_instructions {
+            let host_catalog_in_world_state = turn_context
+                .extension_data
+                .get::<HostSkillsCatalogInWorldState>()
+                .is_some();
             let available_skills = build_available_skills(
                 turn_context.turn_skills.snapshot.outcome(),
                 default_skill_metadata_budget(turn_context.model_info.context_window),
@@ -3279,7 +3277,9 @@ impl Session {
                     })
                     .await;
                 }
-                developer_sections.push(skills_instructions.render());
+                if !host_catalog_in_world_state {
+                    developer_sections.push(skills_instructions.render());
+                }
             }
         }
         let loaded_plugins = self
@@ -3698,6 +3698,7 @@ impl Session {
             info.last_token_usage = TokenUsage {
                 input_tokens: 0,
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
                 total_tokens: estimated_total_tokens.max(0),

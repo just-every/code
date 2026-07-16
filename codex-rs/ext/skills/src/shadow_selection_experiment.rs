@@ -11,8 +11,11 @@ use codex_protocol::user_input::UserInput;
 
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillSourceKind;
+use crate::dynamic_skill_selector::CharacterNgramSkillSelector;
 use crate::dynamic_skill_selector::CheapSkillSelection;
 use crate::dynamic_skill_selector::CheapSkillSelector;
+use crate::dynamic_skill_selector::FieldedBm25SkillSelector;
+use crate::dynamic_skill_selector::MultiQueryLexicalSkillSelector;
 use crate::dynamic_skill_selector::SkillSelectionDocument;
 use crate::dynamic_skill_selector::WeightedLexicalSkillSelector;
 
@@ -35,7 +38,12 @@ pub(crate) struct ShadowSelectionExperiment {
 impl ShadowSelectionExperiment {
     pub(crate) fn new(metrics_client: Option<MetricsClient>) -> Self {
         Self {
-            selectors: vec![Box::new(WeightedLexicalSkillSelector)],
+            selectors: vec![
+                Box::new(WeightedLexicalSkillSelector),
+                Box::new(FieldedBm25SkillSelector),
+                Box::new(CharacterNgramSkillSelector),
+                Box::new(MultiQueryLexicalSkillSelector),
+            ],
             metrics_client,
         }
     }

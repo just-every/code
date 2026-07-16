@@ -103,6 +103,8 @@ pub const USER_INSTRUCTIONS_OPEN_TAG: &str = "<user_instructions>";
 pub const USER_INSTRUCTIONS_CLOSE_TAG: &str = "</user_instructions>";
 pub const ENVIRONMENT_CONTEXT_OPEN_TAG: &str = "<environment_context>";
 pub const ENVIRONMENT_CONTEXT_CLOSE_TAG: &str = "</environment_context>";
+pub const ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG: &str = "<environments_instructions>";
+pub const ENVIRONMENTS_INSTRUCTIONS_CLOSE_TAG: &str = "</environments_instructions>";
 pub const APPS_INSTRUCTIONS_OPEN_TAG: &str = "<apps_instructions>";
 pub const APPS_INSTRUCTIONS_CLOSE_TAG: &str = "</apps_instructions>";
 pub const SKILLS_INSTRUCTIONS_OPEN_TAG: &str = "<skills_instructions>";
@@ -2047,6 +2049,9 @@ pub struct TokenUsage {
     pub input_tokens: i64,
     #[ts(type = "number")]
     pub cached_input_tokens: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_write_input_tokens: i64,
     #[ts(type = "number")]
     pub output_tokens: i64,
     #[ts(type = "number")]
@@ -2247,6 +2252,7 @@ impl TokenUsage {
     pub fn add_assign(&mut self, other: &TokenUsage) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_write_input_tokens += other.cache_write_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
@@ -2397,9 +2403,6 @@ pub struct McpToolCallBeginEvent {
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub template_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub action_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2423,9 +2426,6 @@ pub struct McpToolCallEndEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub app_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub template_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub action_name: Option<String>,
@@ -3088,6 +3088,12 @@ pub struct SessionMeta {
     pub memory_mode: Option<String>,
     #[serde(default)]
     pub history_mode: ThreadHistoryMode,
+    /// First rollout ordinal that belongs to this subagent's own projected history.
+    ///
+    /// Earlier rollout records are inherited model context and stay out of child
+    /// turn/item projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_history_start_ordinal: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
     /// Initial context-window identity for consumers that tail rollout JSONL before compaction.
@@ -3118,6 +3124,7 @@ impl Default for SessionMeta {
             selected_capability_roots: Vec::new(),
             memory_mode: None,
             history_mode: ThreadHistoryMode::default(),
+            subagent_history_start_ordinal: None,
             multi_agent_version: None,
             context_window: None,
         }
@@ -5230,7 +5237,6 @@ mod tests {
                 mcp_app_resource_uri: Some("app://connector".into()),
                 link_id: Some("link_123".into()),
                 app_name: Some("Calendar".into()),
-                template_id: Some("calendar_template".into()),
                 action_name: Some("create_event".into()),
                 plugin_id: Some("sample@test".into()),
                 status: McpToolCallStatus::InProgress,
@@ -5346,7 +5352,6 @@ mod tests {
                 mcp_app_resource_uri: Some("app://connector".into()),
                 link_id: Some("link_123".into()),
                 app_name: Some("Calendar".into()),
-                template_id: Some("calendar_template".into()),
                 action_name: Some("create_event".into()),
                 plugin_id: Some("sample@test".into()),
                 status: McpToolCallStatus::Completed,
@@ -6207,6 +6212,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
@@ -6228,6 +6234,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,

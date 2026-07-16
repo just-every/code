@@ -323,8 +323,7 @@ enum EnvironmentStatus {
 
 fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, EnvironmentState> {
     let mut environments = snapshot
-        .turn_environments
-        .iter()
+        .turn_environments()
         .map(|environment| {
             (
                 environment.environment_id.clone(),
@@ -339,7 +338,7 @@ fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, En
             )
         })
         .collect::<BTreeMap<_, _>>();
-    for environment in &snapshot.starting {
+    for environment in snapshot.starting() {
         environments
             .entry(environment.selection.environment_id.clone())
             .or_insert_with(|| EnvironmentState {
@@ -374,7 +373,6 @@ fn network_from_turn_context(turn_context: &TurnContext) -> Option<NetworkContex
         .as_ref()?;
 
     Some(NetworkContext::new(
-        turn_context.network.is_some(),
         network
             .domains
             .as_ref()

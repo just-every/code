@@ -575,6 +575,9 @@ pub enum ExternalAgentConfigMigrationItemType {
     #[serde(rename = "COMMANDS")]
     #[ts(rename = "COMMANDS")]
     Commands,
+    #[serde(rename = "MEMORY")]
+    #[ts(rename = "MEMORY")]
+    Memory,
     #[serde(rename = "SESSIONS")]
     #[ts(rename = "SESSIONS")]
     Sessions,
@@ -654,6 +657,8 @@ pub struct MigrationDetails {
     pub subagents: Vec<SubagentMigration>,
     #[serde(default)]
     pub commands: Vec<CommandMigration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -684,10 +689,13 @@ pub struct ExternalAgentConfigDetectParams {
     /// Zero or more working directories to include for repo-scoped detection.
     #[ts(optional = nullable)]
     pub cwds: Option<Vec<PathBuf>>,
-    /// Optional import-source selector. Missing or unrecognized values use the default source for
-    /// backwards compatibility.
+    /// Deprecated field retained for compatibility. This field is ignored; use `migrationSource`
+    /// to select the migration source.
     #[ts(optional = nullable)]
     pub source: Option<String>,
+    /// Optional migration-source selector. Missing or unrecognized values use the default source.
+    #[ts(optional = nullable)]
+    pub migration_source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -695,11 +703,13 @@ pub struct ExternalAgentConfigDetectParams {
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportParams {
     pub migration_items: Vec<ExternalAgentConfigMigrationItem>,
-    /// Import-source selector used to produce the migration items. Pass the same value to detection
-    /// and import; missing or unrecognized values use the default source for backwards
-    /// compatibility.
+    /// Optional identifier for the product that initiated the import.
     #[ts(optional = nullable)]
     pub source: Option<String>,
+    /// Migration-source selector used to produce the migration items. Pass the same value to
+    /// detection and import; missing or unrecognized values use the default source.
+    #[ts(optional = nullable)]
+    pub migration_source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

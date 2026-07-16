@@ -1,3 +1,4 @@
+use crate::agent::role::apply_role_to_config;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -201,14 +202,12 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     Ok(config)
 }
 
-pub(crate) fn reject_full_fork_spawn_overrides(
+pub(crate) fn reject_full_fork_agent_type_override(
     agent_type: Option<&str>,
-    model: Option<&str>,
-    reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
-    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() {
+    if agent_type.is_some() {
         return Err(FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string(),
         ));
     }
     Ok(())
@@ -249,6 +248,9 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
+    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
+    let requested_reasoning_effort = requested_reasoning_effort
+        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
         return Ok(());
     }
@@ -350,6 +352,46 @@ pub(crate) async fn apply_spawn_agent_service_tier(
                 model_info.supports_service_tier(candidate_service_tier.as_str())
             });
     Ok(())
+}
+
+pub(crate) async fn apply_spawn_agent_role(
+    session: &Session,
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let previous_model = config.model.clone();
+    let previous_reasoning_effort = config.model_reasoning_effort.clone();
+    apply_role_to_config(config, role_name)
+        .await
+        .map_err(FunctionCallError::RespondToModel)?;
+    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    {
+        return Ok(());
+    }
+
+    let Some(reasoning_effort) = config.model_reasoning_effort.clone() else {
+        return Ok(());
+    };
+    let model = config.model.clone().ok_or_else(|| {
+        FunctionCallError::RespondToModel(
+            "spawn_agent could not resolve the child model for reasoning effort validation"
+                .to_string(),
+        )
+    })?;
+    let model_info = session
+        .services
+        .models_manager
+        .get_model_info(&model, &config.to_models_manager_config())
+        .await;
+    if model_info.used_fallback_model_metadata {
+        return Ok(());
+    }
+
+    validate_spawn_agent_reasoning_effort(
+        &model,
+        &model_info.supported_reasoning_levels,
+        &reasoning_effort,
+    )
 }
 
 fn find_spawn_agent_model_name(

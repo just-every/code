@@ -2183,6 +2183,7 @@ mod tests {
                 selected_capability_roots: Vec::new(),
                 memory_mode: Some("polluted".to_string()),
                 history_mode: Default::default(),
+                subagent_history_start_ordinal: None,
                 multi_agent_version: None,
                 context_window: None,
             },
@@ -2248,6 +2249,7 @@ mod tests {
                 selected_capability_roots: Vec::new(),
                 memory_mode: None,
                 history_mode: Default::default(),
+                subagent_history_start_ordinal: None,
                 multi_agent_version: None,
                 context_window: None,
             },
@@ -2892,6 +2894,7 @@ mod tests {
                     total_token_usage: codex_protocol::protocol::TokenUsage {
                         input_tokens: 0,
                         cached_input_tokens: 0,
+                        cache_write_input_tokens: 0,
                         output_tokens: 0,
                         reasoning_output_tokens: 0,
                         total_tokens: 321,
