@@ -19,7 +19,7 @@ pub type PluginManifestMcpServers =
     codex_plugin::manifest::PluginManifestMcpServers<AbsolutePathBuf>;
 pub type PluginManifestPaths = codex_plugin::manifest::PluginManifestPaths<AbsolutePathBuf>;
 
-pub(crate) type UriPluginManifest = codex_plugin::manifest::PluginManifest<PathUri>;
+pub type UriPluginManifest = codex_plugin::manifest::PluginManifest<PathUri>;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +126,7 @@ enum RawPluginManifestMcpServers {
 enum RawPluginManifestHooks {
     Path(String),
     Paths(Vec<String>),
-    Inline(HooksFile),
+    Inline(Box<HooksFile>),
     InlineList(Vec<HooksFile>),
     Invalid(JsonValue),
 }
@@ -178,7 +178,7 @@ pub(crate) fn parse_plugin_manifest(
         .try_map_resources(|path| path.to_abs_path().map_err(serde_json::Error::io))
 }
 
-pub(crate) fn parse_plugin_manifest_uri(
+pub fn parse_plugin_manifest_uri(
     plugin_root: &PathUri,
     manifest_path: &PathUri,
     contents: &str,
@@ -311,7 +311,7 @@ fn resolve_manifest_hooks(
         }
         RawPluginManifestHooks::Inline(hooks) => {
             Some(codex_plugin::manifest::PluginManifestHooks::Inline(vec![
-                hooks,
+                *hooks,
             ]))
         }
         RawPluginManifestHooks::InlineList(hooks) => (!hooks.is_empty())

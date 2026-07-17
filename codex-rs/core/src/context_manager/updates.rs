@@ -1,13 +1,9 @@
 use crate::context::ApprovalPromptContext;
-use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
-use crate::context::RealtimeEndInstructions;
-use crate::context::RealtimeStartInstructions;
-use crate::context::RealtimeStartWithInstructions;
 use crate::session::PreviousTurnSettings;
 use crate::session::turn_context::TurnContext;
 use codex_execpolicy::Policy;
@@ -65,25 +61,6 @@ fn build_permissions_update_item(
     )
 }
 
-fn build_collaboration_mode_update_item(
-    previous: Option<&TurnContextItem>,
-    next: &TurnContext,
-) -> Option<String> {
-    if !next.config.include_collaboration_mode_instructions {
-        return None;
-    }
-
-    let prev = previous?;
-    let collaboration_mode = next.collaboration_mode();
-    if prev.collaboration_mode.as_ref() != Some(&collaboration_mode) {
-        // If the next mode has empty developer instructions, this returns None and we emit no
-        // update, so prior collaboration instructions remain in the prompt history.
-        Some(CollaborationModeInstructions::from_collaboration_mode(&collaboration_mode)?.render())
-    } else {
-        None
-    }
-}
-
 fn build_multi_agent_mode_update_item(
     previous: Option<&TurnContextItem>,
     next: &TurnContext,
@@ -95,49 +72,14 @@ fn build_multi_agent_mode_update_item(
     }
 
     match effective_multi_agent_mode {
-        Some(multi_agent_mode) => Some(MultiAgentModeInstructions::new(multi_agent_mode).render()),
+        Some(multi_agent_mode) => MultiAgentModeInstructions::from_mode(multi_agent_mode)
+            .map(|instructions| instructions.render()),
         None if previous.multi_agent_mode == Some(MultiAgentMode::Proactive) => {
-            Some(MultiAgentModeInstructions::new(MultiAgentMode::ExplicitRequestOnly).render())
+            MultiAgentModeInstructions::from_mode(MultiAgentMode::ExplicitRequestOnly)
+                .map(|instructions| instructions.render())
         }
         None => None,
     }
-}
-
-pub(crate) fn build_realtime_update_item(
-    previous: Option<&TurnContextItem>,
-    previous_turn_settings: Option<&PreviousTurnSettings>,
-    next: &TurnContext,
-) -> Option<String> {
-    match (
-        previous.and_then(|item| item.realtime_active),
-        next.realtime_active,
-    ) {
-        (Some(true), false) => Some(RealtimeEndInstructions::new("inactive").render()),
-        (Some(false), true) | (None, true) => Some(
-            if let Some(instructions) = next
-                .config
-                .experimental_realtime_start_instructions
-                .as_deref()
-            {
-                RealtimeStartWithInstructions::new(instructions).render()
-            } else {
-                RealtimeStartInstructions.render()
-            },
-        ),
-        (Some(true), true) | (Some(false), false) => None,
-        (None, false) => previous_turn_settings
-            .and_then(|settings| settings.realtime_active)
-            .filter(|realtime_active| *realtime_active)
-            .map(|_| RealtimeEndInstructions::new("inactive").render()),
-    }
-}
-
-pub(crate) fn build_initial_realtime_item(
-    previous: Option<&TurnContextItem>,
-    previous_turn_settings: Option<&PreviousTurnSettings>,
-    next: &TurnContext,
-) -> Option<String> {
-    build_realtime_update_item(previous, previous_turn_settings, next)
 }
 
 fn build_personality_update_item(
@@ -255,9 +197,7 @@ pub(crate) fn build_settings_update_items(
         // any other context diffs on this turn.
         build_model_instructions_update_item(previous_turn_settings, next),
         build_permissions_update_item(previous, next, exec_policy),
-        build_collaboration_mode_update_item(previous, next),
         build_multi_agent_mode_update_item(previous, next),
-        build_realtime_update_item(previous, previous_turn_settings, next),
         build_personality_update_item(previous, next, personality_feature_enabled),
     ]
     .into_iter()

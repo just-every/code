@@ -518,6 +518,9 @@
             "exec_permission_approvals": {
               "type": "boolean"
             },
+            "executor_capability_discovery": {
+              "type": "boolean"
+            },
             "experimental_use_unified_exec_tool": {
               "type": "boolean"
             },
@@ -1301,6 +1304,13 @@
           "type": "array"
         },
         "PreToolUse": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/MatcherGroup"
+          },
+          "type": "array"
+        },
+        "SessionEnd": {
           "default": [],
           "items": {
             "$ref": "#/definitions/MatcherGroup"
@@ -4910,6 +4920,9 @@
           "type": "boolean"
         },
         "exec_permission_approvals": {
+          "type": "boolean"
+        },
+        "executor_capability_discovery": {
           "type": "boolean"
         },
         "experimental_use_unified_exec_tool": {

@@ -388,9 +388,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app_test_support"
@@ -1952,6 +1952,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "app_test_support",
+ "async-channel",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -2984,6 +2985,7 @@ version = "0.0.0"
 dependencies = [
  "codex-config",
  "codex-context-fragments",
+ "codex-exec-server-protocol",
  "codex-protocol",
  "codex-tools",
  "codex-utils-absolute-path",
@@ -3387,6 +3389,7 @@ name = "codex-mcp-extension"
 version = "0.0.0"
 dependencies = [
  "codex-config",
+ "codex-connectors",
  "codex-connectors-extension",
  "codex-core",
  "codex-core-plugins",
@@ -4348,6 +4351,7 @@ name = "codex-utils-plugins"
 version = "0.0.0"
 dependencies = [
  "codex-exec-server",
+ "codex-exec-server-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "serde",
@@ -4453,6 +4457,7 @@ dependencies = [
  "codex-login",
  "codex-model-provider",
  "codex-model-provider-info",
+ "codex-otel",
  "codex-protocol",
  "codex-tools",
  "http 1.4.0",

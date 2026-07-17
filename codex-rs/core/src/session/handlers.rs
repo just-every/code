@@ -607,12 +607,10 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
     if let Err(err) = sess.services.code_mode_service.shutdown().await {
         warn!("failed to shutdown code mode session: {err}");
     }
-    sess.services
-        .latest_mcp_runtime()
-        .manager_arc()
-        .shutdown()
-        .await;
+    sess.services.mcp_runtime.shutdown().await;
     sess.guardian_review_session.shutdown().await;
+
+    crate::hook_runtime::run_session_end_hooks(sess).await;
 }
 
 async fn emit_thread_stop_lifecycle(sess: &Session) {

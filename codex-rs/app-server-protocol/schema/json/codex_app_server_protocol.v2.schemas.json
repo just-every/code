@@ -52,20 +52,16 @@
         },
         {
           "properties": {
-            "credentialSource": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/AmazonBedrockCredentialSource"
-                }
-              ],
-              "default": "awsManaged"
-            },
             "type": {
               "enum": [
                 "amazonBedrock"
               ],
               "title": "AmazonBedrockAccountType",
               "type": "string"
+            },
+            "usesCodexManagedCredentials": {
+              "default": false,
+              "type": "boolean"
             }
           },
           "required": [
@@ -377,13 +373,6 @@
       ]
     },
     "AgentPath": {
-      "type": "string"
-    },
-    "AmazonBedrockCredentialSource": {
-      "enum": [
-        "codexManaged",
-        "awsManaged"
-      ],
       "type": "string"
     },
     "AnalyticsConfig": {
@@ -965,6 +954,42 @@
           "type": "boolean"
         }
       },
+      "type": "object"
+    },
+    "AppsInstalledParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Read the committed installed connector runtime snapshot.",
+      "properties": {
+        "forceRefresh": {
+          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool snapshot first.",
+          "type": "boolean"
+        },
+        "threadId": {
+          "description": "Optional loaded thread id used to evaluate effective app configuration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "AppsInstalledParams",
+      "type": "object"
+    },
+    "AppsInstalledResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The installed connectors in one committed runtime snapshot.",
+      "properties": {
+        "apps": {
+          "items": {
+            "$ref": "#/definitions/InstalledApp"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "apps"
+      ],
+      "title": "AppsInstalledResponse",
       "type": "object"
     },
     "AppsListParams": {
@@ -2221,6 +2246,30 @@
             "params"
           ],
           "title": "App/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "app/installed"
+              ],
+              "title": "App/installedRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AppsInstalledParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "App/installedRequest",
           "type": "object"
         },
         {
@@ -7373,6 +7422,7 @@
         "preCompact",
         "postCompact",
         "sessionStart",
+        "sessionEnd",
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
@@ -7811,6 +7861,35 @@
           "type": "string"
         }
       ]
+    },
+    "InstalledApp": {
+      "description": "Installed connector runtime state.",
+      "properties": {
+        "callable": {
+          "description": "Whether the connector is enabled and has a non-synthetic, model-visible tool allowed by effective MCP and app/tool policy in the committed runtime snapshot.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Effective enabled state after applying global, workspace, local, and managed configuration at read time.",
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "runtimeName": {
+          "description": "Best-effort name carried by the runtime tool catalog. Canonical app metadata remains owned by `app/read`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "callable",
+        "enabled",
+        "id"
+      ],
+      "type": "object"
     },
     "InternalChatMessageMetadataPassthrough": {
       "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
@@ -8388,6 +8467,13 @@
           "type": "array"
         },
         "PreToolUse": {
+          "items": {
+            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
+        "SessionEnd": {
+          "default": [],
           "items": {
             "$ref": "#/definitions/ConfiguredHookMatcherGroup"
           },
@@ -11047,6 +11133,13 @@
           "description": "Version of the locally materialized plugin package when available.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "mustShowInstallationInterstitial": {
+          "default": null,
+          "type": [
+            "boolean",
             "null"
           ]
         },
