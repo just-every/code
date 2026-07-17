@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.149] - 2026-07-17
+
+- Core: confirm usage-limit resets before redeeming limit credits. (a50e8223)
+- Release: add an npm publication recovery workflow for failed release publishes. (3b12db1c, 6151c7ae)
+
 ## [0.6.148] - 2026-07-16
 
 - TUI: stop the composer animation ticker when the app event channel closes. (6a2b15b4, 30f287c6)

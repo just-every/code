@@ -1,18 +1,17 @@
-## @just-every/code v0.6.148
+## @just-every/code v0.6.149
 
-This release improves protocol token usage reporting and fixes a TUI composer animation lifecycle issue.
+This release improves usage-limit redemption checks and adds release publication recovery support.
 
 ### Changes
 
-- TUI: stop the composer animation ticker when the app event channel closes.
-- Protocol: track prompt cache write token usage across protocol events and SDK types.
-- Dependencies: update serde_with to 3.21.0.
+- Core: confirm usage-limit resets before redeeming limit credits.
+- Release: add an npm publication recovery workflow for failed release publishes.
 
 ### Install
 
-```bash
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.147...v0.6.148
+Compare: https://github.com/just-every/code/compare/v0.6.148...v0.6.149
