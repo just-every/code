@@ -1,0 +1,303 @@
+name: Recover npm publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact npm version to resume (without a leading v)
+        required: true
+        type: string
+      source_run_id:
+        description: Release workflow run ID that produced the binary artifacts
+        required: true
+        type: string
+
+concurrency:
+  group: npm-publication-recovery-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  publish:
+    name: Recover npm packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    steps:
+      - name: Validate recovery inputs and source run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$VERSION" =~ $semver_pattern ]]; then
+            echo "::error::version must be a valid npm semantic version without a leading v" >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::source_run_id must be a positive GitHub Actions run ID" >&2
+            exit 1
+          fi
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GITHUB_TOKEN is required to inspect and download source-run artifacts" >&2
+            exit 1
+          fi
+
+          run_json="$(mktemp)"
+          trap 'rm -f "$run_json"' EXIT
+          curl --fail-with-body --retry 3 --retry-all-errors \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" \
+            --output "$run_json"
+
+          jq -e \
+            --argjson id "$SOURCE_RUN_ID" \
+            '.id == $id
+             and .name == "Release"
+             and .path == ".github/workflows/release.yml"
+             and .event == "push"
+             and .head_branch == "main"
+             and .status == "completed"' \
+            "$run_json" >/dev/null || {
+              echo "::error::source_run_id must identify a completed Release workflow run from main in this repository" >&2
+              exit 1
+            }
+
+          # The run may be marked failed solely because the release action was unavailable.
+          # Required binary artifacts are validated before anything is published.
+          conclusion="$(jq -r '.conclusion // empty' "$run_json")"
+          if [ "$conclusion" != "success" ] && [ "$conclusion" != "failure" ]; then
+            echo "::error::source Release run did not finish with a usable conclusion: ${conclusion:-null}" >&2
+            exit 1
+          fi
+
+      - name: Checkout recovery workflow revision
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate npm authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is missing" >&2
+            exit 1
+          fi
+          config_path="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          mkdir -p "$(dirname "$config_path")"
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > "$config_path"
+          npm whoami >/dev/null 2>&1 || {
+            echo "::error::npm auth failed (npm whoami)" >&2
+            exit 1
+          }
+
+      - name: Download binary artifacts from the source Release run
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: binaries-*
+          path: artifacts
+
+      - name: Install zstd for package assembly
+        shell: bash
+        run: sudo apt-get update -qq && sudo apt-get install -y zstd
+
+      - name: Assemble and preflight all npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stage_root="npm-binaries"
+          rm -rf "$stage_root"
+          mkdir -p "$stage_root"
+
+          map_target() {
+            case "$1" in
+              aarch64-apple-darwin) echo "os=darwin cpu=arm64 pkg=@just-every/code-darwin-arm64" ;;
+              x86_64-apple-darwin) echo "os=darwin cpu=x64 pkg=@just-every/code-darwin-x64" ;;
+              x86_64-unknown-linux-musl) echo "os=linux cpu=x64 pkg=@just-every/code-linux-x64-musl" ;;
+              aarch64-unknown-linux-musl) echo "os=linux cpu=arm64 pkg=@just-every/code-linux-arm64-musl" ;;
+              x86_64-pc-windows-msvc.exe) echo "os=win32 cpu=x64 pkg=@just-every/code-win32-x64" ;;
+              *) return 1 ;;
+            esac
+          }
+
+          assemble_target() {
+            local target="$1" artifact_dir archive meta os cpu pkg workdir binary
+            meta="$(map_target "$target")"
+            eval "$meta"
+            artifact_dir="artifacts/binaries-${target%.exe}"
+            binary="code-$target"
+            case "$target" in
+              *.exe) archive="$artifact_dir/${binary}.zip" ;;
+              *) archive="$artifact_dir/${binary}.zst" ;;
+            esac
+
+            test -s "$archive" || {
+              echo "::error::required source artifact is missing or empty: $archive" >&2
+              exit 1
+            }
+
+            workdir="$stage_root/${pkg##*/}"
+            mkdir -p "$workdir/bin"
+            case "$archive" in
+              *.zst) zstd -d -q --force "$archive" -o "$workdir/bin/$binary" ;;
+              *.zip) unzip -q -o "$archive" -d "$workdir/bin" ;;
+              *) echo "::error::unexpected artifact type: $archive" >&2; exit 1 ;;
+            esac
+            test -s "$workdir/bin/$binary" || {
+              echo "::error::assembled binary is missing or empty: $workdir/bin/$binary" >&2
+              exit 1
+            }
+            chmod +x "$workdir/bin/$binary"
+            printf '{\n  "name": "%s",\n  "version": "%s",\n  "license": "Apache-2.0",\n  "description": "Platform binary for @just-every/code (%s)",\n  "os": ["%s"],\n  "cpu": ["%s"],\n  "files": ["bin/"],\n  "private": false\n}\n' \
+              "$pkg" "$VERSION" "$target" "$os" "$cpu" > "$workdir/package.json"
+          }
+
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            x86_64-pc-windows-msvc.exe; do
+            assemble_target "$target"
+          done
+
+          preflight_platform_package() {
+            local dir="$1" expected_name="$2" expected_binary="$3" pack_json tarball
+            node - "$dir/package.json" "$expected_name" "$VERSION" <<'NODE'
+          const fs = require('fs');
+          const [packagePath, expectedName, expectedVersion] = process.argv.slice(2);
+          const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+          if (pkg.name !== expectedName || pkg.version !== expectedVersion) {
+            throw new Error(`unexpected package identity: ${pkg.name}@${pkg.version}`);
+          }
+          if (pkg.private !== false || !Array.isArray(pkg.files) || !pkg.files.includes('bin/')) {
+            throw new Error('platform package does not expose only its bin directory');
+          }
+          NODE
+            test -s "$dir/bin/$expected_binary"
+            pack_json="$(cd "$dir" && npm pack --json)"
+            tarball="$(jq -er 'if length == 1 and (.[0].filename | type == "string" and length > 0) then .[0].filename else error("expected exactly one packed tarball") end' <<<"$pack_json")"
+            tar -tzf "$dir/$tarball" | grep -Fx "package/bin/$expected_binary" >/dev/null
+            rm -f "$dir/$tarball"
+          }
+
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            x86_64-pc-windows-msvc.exe; do
+            meta="$(map_target "$target")"
+            eval "$meta"
+            preflight_platform_package "$stage_root/${pkg##*/}" "$pkg" "code-$target"
+          done
+
+          node - codex-cli/package.json "$VERSION" <<'NODE'
+          const fs = require('fs');
+          const [packagePath, expectedVersion] = process.argv.slice(2);
+          const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+          const expectedPlatforms = [
+            '@just-every/code-darwin-arm64',
+            '@just-every/code-darwin-x64',
+            '@just-every/code-linux-x64-musl',
+            '@just-every/code-linux-arm64-musl',
+            '@just-every/code-win32-x64',
+          ];
+          if (pkg.name !== '@just-every/code' || pkg.version !== expectedVersion) {
+            throw new Error(`unexpected main package identity: ${pkg.name}@${pkg.version}`);
+          }
+          for (const name of expectedPlatforms) {
+            if (pkg.optionalDependencies?.[name] !== expectedVersion) {
+              throw new Error(`missing or mismatched optional dependency: ${name}`);
+            }
+          }
+          NODE
+          main_pack_json="$(cd codex-cli && npm pack --json)"
+          main_tarball="$(jq -er 'if length == 1 and (.[0].filename | type == "string" and length > 0) then .[0].filename else error("expected exactly one packed tarball") end' <<<"$main_pack_json")"
+          tar -tzf "codex-cli/$main_tarball" | grep -Fx 'package/bin/coder.js' >/dev/null
+          rm -f "codex-cli/$main_tarball"
+
+      - name: Publish platform packages when their version is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_is_absent() {
+            local package="$1" view_error
+            view_error="$(mktemp)"
+            if npm view "$package@$VERSION" version >/dev/null 2>"$view_error"; then
+              rm -f "$view_error"
+              return 1
+            fi
+            if grep -Eq 'E404|404 Not Found' "$view_error"; then
+              rm -f "$view_error"
+              return 0
+            fi
+            cat "$view_error" >&2
+            rm -f "$view_error"
+            echo "::error::could not determine whether $package@$VERSION exists" >&2
+            exit 1
+          }
+
+          for dir in npm-binaries/*; do
+            name="$(jq -er '.name | strings | select(length > 0)' "$dir/package.json")"
+            package_version="$(jq -er '.version | strings | select(length > 0)' "$dir/package.json")"
+            [ "$package_version" = "$VERSION" ] || {
+              echo "::error::unexpected package version in $dir: $package_version" >&2
+              exit 1
+            }
+            if version_is_absent "$name"; then
+              echo "Publishing $name@$VERSION"
+              (cd "$dir" && npm publish --access public)
+            else
+              echo "Skip: $name@$VERSION already published"
+            fi
+          done
+
+      - name: Publish main package when its version is absent
+        working-directory: codex-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$(jq -er '.name | strings | select(length > 0)' package.json)"
+          package_version="$(jq -er '.version | strings | select(length > 0)' package.json)"
+          [ "$name" = '@just-every/code' ]
+          [ "$package_version" = "$VERSION" ]
+
+          view_error="$(mktemp)"
+          if npm view "$name@$VERSION" version >/dev/null 2>"$view_error"; then
+            rm -f "$view_error"
+            echo "Skip: $name@$VERSION already published"
+            exit 0
+          fi
+          if ! grep -Eq 'E404|404 Not Found' "$view_error"; then
+            cat "$view_error" >&2
+            rm -f "$view_error"
+            echo "::error::could not determine whether $name@$VERSION exists" >&2
+            exit 1
+          fi
+          rm -f "$view_error"
+          echo "Publishing $name@$VERSION"
+          npm publish --access public
