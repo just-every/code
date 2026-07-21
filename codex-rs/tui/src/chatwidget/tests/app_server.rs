@@ -539,6 +539,43 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
 }
 
 #[tokio::test]
+async fn live_app_server_user_message_omits_unsupported_media() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::UserMessage {
+                id: "user-1".to_string(),
+                client_id: None,
+                content: vec![
+                    AppServerUserInput::Text {
+                        text: "Please inspect the attachments.".to_string(),
+                        text_elements: Vec::new(),
+                    },
+                    AppServerUserInput::Audio {
+                        url: "https://example.com/one.wav".to_string(),
+                    },
+                    AppServerUserInput::LocalAudio {
+                        path: test_path_buf("/tmp/two.wav"),
+                    },
+                ],
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let inserted = drain_insert_history(&mut rx);
+    assert_eq!(inserted.len(), 1);
+    assert_chatwidget_snapshot!(
+        "live_app_server_user_message_omits_unsupported_media",
+        lines_to_single_string(&inserted[0]),
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_turn_completed_clears_working_status_after_answer_item() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -810,6 +847,57 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
     assert_chatwidget_snapshot!(
         "live_app_server_command_execution_strips_shell_wrapper",
         blob
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_command_output_delta_transcript_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    begin_exec(&mut chat, "cmd-1", "printf 'stdout\\nstderr\\n'");
+
+    for delta in ["stdout\n", "stderr\n"] {
+        chat.handle_server_notification(
+            ServerNotification::CommandExecutionOutputDelta(
+                codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "cmd-1".to_string(),
+                    delta: delta.to_string(),
+                },
+            ),
+            /*replay_kind*/ None,
+        );
+    }
+
+    let active = active_blob(&chat);
+    assert_chatwidget_snapshot!("live_app_server_command_output_delta_active", active);
+
+    let transcript = chat
+        .active_cell_transcript_lines(/*width*/ 80)
+        .expect("active exec transcript lines");
+    assert_chatwidget_snapshot!(
+        "live_app_server_command_output_delta_transcript",
+        lines_to_single_string(&transcript)
+    );
+
+    handle_turn_interrupted(&mut chat, "turn-1");
+    let mut completed = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
+            if transcript.contains("printf 'stdout\\nstderr\\n'") {
+                completed = Some(transcript);
+            }
+        }
+    }
+    let completed = completed.expect("expected the interrupted command in history");
+    let completed = regex_lite::Regex::new(r"(?m) • (?:\d+ms|\d+\.\d+s|\d+m \d+s)$")
+        .expect("valid duration regex")
+        .replace(&completed, " • <duration>");
+    assert_chatwidget_snapshot!(
+        "live_app_server_command_output_delta_interrupted",
+        completed
     );
 }
 

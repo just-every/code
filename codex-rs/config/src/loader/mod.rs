@@ -23,10 +23,12 @@ use crate::merge::merge_toml_values;
 use crate::overrides::build_cli_overrides_layer;
 use crate::project_root_markers::default_project_root_markers;
 use crate::project_root_markers::project_root_markers_from_config;
+use crate::shell_environment_policy::ShellEnvironmentPolicyFilterConfigToml;
 use crate::state::ConfigLayerEntry;
 use crate::state::ConfigLayerStack;
 use crate::state::ConfigLoadOptions;
 use crate::state::LoaderOverrides;
+use crate::state::validate_enabled_config_layers;
 use crate::strict_config::config_error_from_ignored_toml_value_fields;
 use crate::strict_config::ignored_toml_value_field;
 use crate::strict_config::unknown_feature_toml_value_field;
@@ -155,12 +157,14 @@ pub async fn load_config_layers_state(
 
         #[cfg(target_os = "macos")]
         {
+            let managed_preferences_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
             managed_preferences_requirements_layer = macos::load_managed_admin_requirements_layer(
                 overrides
                     .macos_managed_config_requirements_base64
                     .as_deref(),
             )
-            .await?;
+            .await?
+            .map(|layer| layer.with_base_dir(managed_preferences_base_dir));
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -406,6 +410,21 @@ pub async fn load_config_layers_state(
             config.raw_toml,
             raw_toml_base_dir,
         ));
+    }
+
+    if let Err(err) = validate_enabled_config_layers(&layers) {
+        if let Some(config_error) = typed_first_layer_config_error_from_entries::<
+            ShellEnvironmentPolicyFilterConfigToml,
+        >(&layers, CONFIG_TOML_FILE)
+        .await
+        {
+            return Err(io_error_from_config_error(
+                io::ErrorKind::InvalidData,
+                config_error,
+                /*source*/ None,
+            ));
+        }
+        return Err(err);
     }
 
     let config_layer_stack = ConfigLayerStack::new(

@@ -10,8 +10,12 @@ use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::models::is_audio_close_tag_text;
+use codex_protocol::models::is_audio_open_tag_text;
 use codex_protocol::models::is_image_close_tag_text;
 use codex_protocol::models::is_image_open_tag_text;
+use codex_protocol::models::is_local_audio_close_tag_text;
+use codex_protocol::models::is_local_audio_open_tag_text;
 use codex_protocol::models::is_local_image_close_tag_text;
 use codex_protocol::models::is_local_image_open_tag_text;
 use codex_protocol::protocol::APPS_INSTRUCTIONS_OPEN_TAG;
@@ -93,12 +97,19 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
     for (idx, content_item) in message.iter().enumerate() {
         match content_item {
             ContentItem::InputText { text } => {
-                if (is_local_image_open_tag_text(text) || is_image_open_tag_text(text))
-                    && (matches!(message.get(idx + 1), Some(ContentItem::InputImage { .. })))
+                let is_image_label = ((is_local_image_open_tag_text(text)
+                    || is_image_open_tag_text(text))
+                    && matches!(message.get(idx + 1), Some(ContentItem::InputImage { .. })))
                     || (idx > 0
                         && (is_local_image_close_tag_text(text) || is_image_close_tag_text(text))
-                        && matches!(message.get(idx - 1), Some(ContentItem::InputImage { .. })))
-                {
+                        && matches!(message.get(idx - 1), Some(ContentItem::InputImage { .. })));
+                let is_audio_label = ((is_local_audio_open_tag_text(text)
+                    || is_audio_open_tag_text(text))
+                    && matches!(message.get(idx + 1), Some(ContentItem::InputAudio { .. })))
+                    || (idx > 0
+                        && (is_local_audio_close_tag_text(text) || is_audio_close_tag_text(text))
+                        && matches!(message.get(idx - 1), Some(ContentItem::InputAudio { .. })));
+                if is_image_label || is_audio_label {
                     continue;
                 }
                 content.push(UserInput::Text {
@@ -111,6 +122,11 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
                 content.push(UserInput::Image {
                     image_url: image_url.clone(),
                     detail: *detail,
+                });
+            }
+            ContentItem::InputAudio { audio_url } => {
+                content.push(UserInput::Audio {
+                    audio_url: audio_url.clone(),
                 });
             }
             ContentItem::OutputText { text } => {

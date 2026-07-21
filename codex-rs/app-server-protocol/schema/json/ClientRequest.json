@@ -288,6 +288,14 @@
       ],
       "type": "object"
     },
+    "CodexResponseHandoffMode": {
+      "enum": [
+        "thinking",
+        "commentary",
+        "bemTags"
+      ],
+      "type": "string"
+    },
     "CollaborationMode": {
       "description": "Collaboration mode for a Codex session.",
       "properties": {
@@ -664,6 +672,26 @@
         },
         {
           "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_audio"
+              ],
+              "title": "InputAudioContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "audio_url",
+            "type"
+          ],
+          "title": "InputAudioContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "text": {
               "type": "string"
             },
@@ -848,6 +876,24 @@
           "description": "If true, include detection under the user's home directory.",
           "type": "boolean"
         },
+        "maxSessionAgeDays": {
+          "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxSessions": {
+          "description": "Maximum number of sessions to detect. Missing values use the default limit.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "migrationSource": {
           "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
           "type": [
@@ -875,6 +921,13 @@
         },
         "migrationSource": {
           "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providerId": {
+          "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not select the migration source.",
           "type": [
             "string",
             "null"
@@ -1241,6 +1294,26 @@
             "type"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "input_audio"
+              ],
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "audio_url",
+            "type"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
         },
         {
@@ -2045,6 +2118,10 @@
             "null"
           ]
         },
+        "forceRefetch": {
+          "description": "Whether the client requests a fresh remote plugin catalog fetch.",
+          "type": "boolean"
+        },
         "marketplaceKinds": {
           "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus the default remote catalog when enabled by feature flag.",
           "items": {
@@ -2191,7 +2268,8 @@
     "PluginShareUpdateDiscoverability": {
       "enum": [
         "UNLISTED",
-        "PRIVATE"
+        "PRIVATE",
+        "LISTED"
       ],
       "type": "string"
     },
@@ -4153,6 +4231,22 @@
       ],
       "type": "object"
     },
+    "ThreadRealtimeInitialItem": {
+      "description": "EXPERIMENTAL - role-bearing text item included when a realtime V3 session starts.",
+      "properties": {
+        "role": {
+          "$ref": "#/definitions/ConversationTextRole"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "text"
+      ],
+      "type": "object"
+    },
     "ThreadRealtimeStartTransport": {
       "description": "EXPERIMENTAL - transport used by thread realtime.",
       "oneOf": [
@@ -4853,6 +4947,46 @@
             "type"
           ],
           "title": "LocalImageUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "audio"
+              ],
+              "title": "AudioUserInputType",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "AudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "localAudio"
+              ],
+              "title": "LocalAudioUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "type"
+          ],
+          "title": "LocalAudioUserInput",
           "type": "object"
         },
         {

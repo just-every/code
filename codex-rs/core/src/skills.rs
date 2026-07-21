@@ -6,14 +6,13 @@ use codex_analytics::SkillInvocation;
 use codex_analytics::build_track_events_context;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::SkillInvocationKind;
+use codex_otel::sanitize_metric_tag_value;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::PluginSkillRoot;
 
 pub use codex_core_skills::SkillError;
 pub use codex_core_skills::SkillLoadOutcome;
-pub use codex_core_skills::SkillMetadata;
-pub use codex_core_skills::SkillPolicy;
 pub use codex_core_skills::SkillRenderReport;
 pub use codex_core_skills::SkillsLoadInput;
 pub use codex_core_skills::SkillsService;
@@ -34,6 +33,8 @@ pub use codex_core_skills::render;
 pub use codex_core_skills::render::SkillRenderSideEffects;
 pub use codex_core_skills::service;
 pub use codex_core_skills::system;
+pub use codex_skills::SkillMetadata;
+pub use codex_skills::SkillPolicy;
 
 pub(crate) fn skills_load_input_from_config(
     config: &Config,
@@ -87,6 +88,7 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
     if !inserted {
         return;
     }
+    let skill_name_tag = sanitize_metric_tag_value(skill_name.as_str());
 
     for contributor in sess.services.extensions.skill_invocation_contributors() {
         contributor
@@ -106,7 +108,7 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
         /*inc*/ 1,
         &[
             ("status", "ok"),
-            ("skill", skill_name.as_str()),
+            ("skill", skill_name_tag.as_str()),
             ("invoke_type", "implicit"),
         ],
     );

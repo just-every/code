@@ -135,6 +135,9 @@ pub struct PluginListParams {
     /// the default remote catalog when enabled by feature flag.
     #[ts(optional = nullable)]
     pub marketplace_kinds: Option<Vec<PluginListMarketplaceKind>>,
+    /// Whether the client requests a fresh remote plugin catalog fetch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_refetch: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -345,6 +348,9 @@ pub enum PluginShareUpdateDiscoverability {
     #[serde(rename = "PRIVATE")]
     #[ts(rename = "PRIVATE")]
     Private,
+    #[serde(rename = "LISTED")]
+    #[ts(rename = "LISTED")]
+    Listed,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -516,6 +522,9 @@ pub struct HookMetadata {
     pub command: Option<String>,
     pub timeout_sec: u64,
     pub status_message: Option<String>,
+    /// Configured `additionalContext` spill threshold.
+    /// `null` uses 2,500 tokens; `0` disables spilling.
+    pub additional_context_limit: Option<usize>,
     pub source_path: AbsolutePathBuf,
     pub source: HookSource,
     pub plugin_id: Option<String>,

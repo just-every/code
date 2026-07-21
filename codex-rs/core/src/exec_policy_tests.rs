@@ -1182,12 +1182,14 @@ fn managed_cwd_write_profile_has_filesystem_restrictions() {
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
     ]);
     let permission_profile = PermissionProfile::from_runtime_permissions(
@@ -1208,6 +1210,7 @@ fn managed_unresolvable_write_profile_has_filesystem_restrictions() {
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
@@ -1217,6 +1220,7 @@ fn managed_unresolvable_write_profile_has_filesystem_restrictions() {
                 ),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
     ]);
     let permission_profile = PermissionProfile::from_runtime_permissions(
@@ -1237,6 +1241,7 @@ fn managed_full_disk_write_profile_has_no_filesystem_restrictions() {
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }]);
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &file_system_sandbox_policy,
@@ -1946,6 +1951,7 @@ fn derive_requested_execpolicy_amendment_returns_none_for_shell_and_powershell_v
         vec!["pwsh".to_string()],
         vec!["pwsh".to_string(), "-Command".to_string()],
         vec!["pwsh".to_string(), "-c".to_string()],
+        vec!["pwsh".to_string(), "-ec".to_string()],
         vec!["powershell".to_string()],
         vec!["powershell".to_string(), "-Command".to_string()],
         vec!["powershell".to_string(), "-c".to_string()],

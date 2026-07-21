@@ -349,10 +349,10 @@ fn composite_cell_preserves_child_web_links() {
 
     assert_eq!(
         lines[2].hyperlinks,
-        vec![crate::terminal_hyperlinks::TerminalHyperlink {
-            columns: 0..destination.len(),
-            destination: destination.to_string(),
-        }]
+        vec![crate::terminal_hyperlinks::TerminalHyperlink::web(
+            /*columns*/ 0..destination.len(),
+            destination.to_string(),
+        )]
     );
 }
 
@@ -1699,34 +1699,30 @@ fn coalesces_reads_across_multiple_calls() {
     // Call 1: Search only
     cell.complete_call("c1", CommandOutput::default(), Duration::from_millis(1));
     // Call 2: Read A
-    cell = cell
-        .with_added_call(
-            "c2".into(),
-            vec!["bash".into(), "-lc".into(), "echo".into()],
-            vec![ParsedCommand::Read {
-                name: "shimmer.rs".into(),
-                cmd: "cat shimmer.rs".into(),
-                path: "shimmer.rs".into(),
-            }],
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
-        )
-        .unwrap();
+    assert!(cell.add_call(
+        "c2".into(),
+        vec!["bash".into(), "-lc".into(), "echo".into()],
+        vec![ParsedCommand::Read {
+            name: "shimmer.rs".into(),
+            cmd: "cat shimmer.rs".into(),
+            path: "shimmer.rs".into(),
+        }],
+        ExecCommandSource::Agent,
+        /*interaction_input*/ None,
+    ));
     cell.complete_call("c2", CommandOutput::default(), Duration::from_millis(1));
     // Call 3: Read B
-    cell = cell
-        .with_added_call(
-            "c3".into(),
-            vec!["bash".into(), "-lc".into(), "echo".into()],
-            vec![ParsedCommand::Read {
-                name: "status_indicator_widget.rs".into(),
-                cmd: "cat status_indicator_widget.rs".into(),
-                path: "status_indicator_widget.rs".into(),
-            }],
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
-        )
-        .unwrap();
+    assert!(cell.add_call(
+        "c3".into(),
+        vec!["bash".into(), "-lc".into(), "echo".into()],
+        vec![ParsedCommand::Read {
+            name: "status_indicator_widget.rs".into(),
+            cmd: "cat status_indicator_widget.rs".into(),
+            path: "status_indicator_widget.rs".into(),
+        }],
+        ExecCommandSource::Agent,
+        /*interaction_input*/ None,
+    ));
     cell.complete_call("c3", CommandOutput::default(), Duration::from_millis(1));
 
     let lines = cell.display_lines(/*width*/ 80);
@@ -1916,11 +1912,7 @@ fn stderr_tail_more_than_five_lines_snapshot() {
         .join("\n");
     cell.complete_call(
         &call_id,
-        CommandOutput {
-            exit_code: 1,
-            formatted_output: String::new(),
-            aggregated_output: stderr,
-        },
+        CommandOutput::new(/*exit_code*/ 1, stderr),
         Duration::from_millis(1),
     );
 
@@ -1964,11 +1956,7 @@ fn ran_cell_multiline_with_stderr_snapshot() {
     let stderr = "error: first line on stderr\nerror: second line on stderr".to_string();
     cell.complete_call(
         &call_id,
-        CommandOutput {
-            exit_code: 1,
-            formatted_output: String::new(),
-            aggregated_output: stderr,
-        },
+        CommandOutput::new(/*exit_code*/ 1, stderr),
         Duration::from_millis(5),
     );
 

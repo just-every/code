@@ -20,6 +20,7 @@ use crate::startup_sync::curated_plugins_repo_path;
 use crate::test_support::TEST_CURATED_PLUGIN_CACHE_VERSION;
 use crate::test_support::TEST_CURATED_PLUGIN_SHA;
 use crate::test_support::load_plugins_config as load_plugins_config_input;
+use crate::test_support::test_http_client_factory;
 use crate::test_support::write_curated_plugin;
 use crate::test_support::write_curated_plugin_sha_with as write_curated_plugin_sha;
 use crate::test_support::write_file;
@@ -42,13 +43,13 @@ use codex_config::types::McpServerTransportConfig;
 use codex_core_skills::PluginSkillSnapshots;
 use codex_core_skills::SkillsLoadInput;
 use codex_core_skills::SkillsService;
-use codex_core_skills::config_rules::SkillConfigRules;
 use codex_login::CodexAuth;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::Product;
+use codex_skills::SkillConfigRules;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use pretty_assertions::assert_eq;
@@ -110,6 +111,7 @@ fn plugins_config_input_with_requirements(
         /*plugins_enabled*/ true,
         /*remote_plugin_enabled*/ false,
         String::new(),
+        test_http_client_factory(),
     )
 }
 
@@ -2626,6 +2628,7 @@ async fn plugin_cache_ignores_unrelated_session_overrides() {
             /*plugins_enabled*/ true,
             /*remote_plugin_enabled*/ false,
             "https://chatgpt.com".to_string(),
+            test_http_client_factory(),
         )
     };
     let manager = PluginsManager::new(codex_home.path().to_path_buf());
@@ -6071,9 +6074,10 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
     };
     let request =
         |change, on_effective_plugins_changed| RemoteInstalledPluginsCacheRefreshRequest {
-            service_config: RemotePluginServiceConfig {
-                chatgpt_base_url: "https://example.com".to_string(),
-            },
+            service_config: RemotePluginServiceConfig::new(
+                "https://example.com".to_string(),
+                test_http_client_factory(),
+            ),
             auth: None,
             notify: RemoteInstalledPluginsCacheRefreshNotify::IfCacheChanged,
             on_effective_plugins_changed: Some(on_effective_plugins_changed),

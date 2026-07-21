@@ -1182,7 +1182,16 @@ async fn cli_main(
                         print_app_server_daemon_output(AppServerLifecycleCommand::Version).await?;
                     }
                     AppServerDaemonSubcommand::PidUpdateLoop => {
-                        codex_app_server_daemon::run_pid_update_loop().await?;
+                        let cli_overrides = root_config_overrides
+                            .parse_overrides()
+                            .map_err(anyhow::Error::msg)?;
+                        let config = ConfigBuilder::default()
+                            .cli_overrides(cli_overrides)
+                            .build()
+                            .await
+                            .map_err(anyhow::Error::from);
+                        let http_client_factory = updater_http_client_factory(config);
+                        codex_app_server_daemon::run_pid_update_loop(http_client_factory).await?;
                     }
                 },
                 Some(AppServerSubcommand::Proxy(proxy_cli)) => {
@@ -1436,6 +1445,14 @@ async fn cli_main(
                 .await?;
         }
         Some(Subcommand::Sandbox(mut sandbox_cli)) => {
+            let config_profile = sandbox_cli
+                .config_profile
+                .as_ref()
+                .or(interactive.config_profile_v2.as_ref());
+            prepend_config_flags(
+                &mut sandbox_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
             #[cfg(target_os = "windows")]
             if let Some(setup_cli) = sandbox_setup::parse_setup_command(&sandbox_cli.command)? {
                 reject_remote_mode_for_subcommand(
@@ -1443,7 +1460,11 @@ async fn cli_main(
                     root_remote_auth_token_env.as_deref(),
                     "sandbox setup",
                 )?;
-                sandbox_setup::run(setup_cli).await?;
+                let cli_overrides = sandbox_cli
+                    .config_overrides
+                    .parse_overrides()
+                    .map_err(anyhow::Error::msg)?;
+                sandbox_setup::run(setup_cli, config_profile.cloned(), cli_overrides).await?;
                 return Ok(());
             }
             reject_remote_mode_for_subcommand(
@@ -1451,15 +1472,7 @@ async fn cli_main(
                 root_remote_auth_token_env.as_deref(),
                 "sandbox",
             )?;
-            let config_profile = sandbox_cli
-                .config_profile
-                .as_ref()
-                .or(interactive.config_profile_v2.as_ref());
             let loader_overrides = loader_overrides_for_profile(config_profile)?;
-            prepend_config_flags(
-                &mut sandbox_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
             #[cfg(target_os = "macos")]
             codex_cli::run_command_under_seatbelt(
                 sandbox_cli,
@@ -1870,13 +1883,26 @@ fn loader_overrides_for_profile(
     match profile_v2 {
         Some(profile_v2) => {
             let codex_home = find_codex_home()?;
-            Ok(LoaderOverrides {
-                user_config_path: Some(resolve_profile_v2_config_path(&codex_home, profile_v2)),
-                user_config_profile: Some(profile_v2.clone()),
-                ..Default::default()
-            })
+            Ok(loader_overrides_for_profile_at_codex_home(
+                Some(profile_v2),
+                &codex_home,
+            ))
         }
         None => Ok(LoaderOverrides::default()),
+    }
+}
+
+fn loader_overrides_for_profile_at_codex_home(
+    profile_v2: Option<&ProfileV2Name>,
+    codex_home: &std::path::Path,
+) -> LoaderOverrides {
+    match profile_v2 {
+        Some(profile_v2) => LoaderOverrides {
+            user_config_path: Some(resolve_profile_v2_config_path(codex_home, profile_v2)),
+            user_config_profile: Some(profile_v2.clone()),
+            ..Default::default()
+        },
+        None => LoaderOverrides::default(),
     }
 }
 
@@ -2205,6 +2231,20 @@ async fn print_app_server_daemon_output(command: AppServerLifecycleCommand) -> a
     Ok(())
 }
 
+fn updater_http_client_factory(
+    config: anyhow::Result<codex_core::config::Config>,
+) -> codex_http_client::HttpClientFactory {
+    match config {
+        Ok(config) => config.http_client_factory(),
+        Err(error) => {
+            eprintln!("warning: failed to load updater network configuration: {error}");
+            codex_http_client::HttpClientFactory::new(
+                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+            )
+        }
+    }
+}
+
 async fn print_app_server_remote_control_output(
     mode: AppServerRemoteControlMode,
 ) -> anyhow::Result<()> {
@@ -2501,6 +2541,34 @@ mod tests {
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
 
+    #[tokio::test]
+    async fn updater_http_client_factory_honors_respect_system_proxy() {
+        let codex_home = tempfile::tempdir().expect("temporary Codex home");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .cli_overrides(vec![(
+                "features.respect_system_proxy".to_string(),
+                toml::Value::Boolean(true),
+            )])
+            .build()
+            .await
+            .expect("config should load");
+
+        assert_eq!(
+            updater_http_client_factory(Ok(config)).outbound_proxy_policy(),
+            codex_http_client::OutboundProxyPolicy::RespectSystemProxy
+        );
+    }
+
+    #[test]
+    fn updater_http_client_factory_falls_back_when_config_load_fails() {
+        assert_eq!(
+            updater_http_client_factory(Err(anyhow::anyhow!("invalid config")))
+                .outbound_proxy_policy(),
+            codex_http_client::OutboundProxyPolicy::ReqwestDefault
+        );
+    }
+
     #[test]
     fn exec_server_remote_auth_accepts_api_key_auth() {
         let auth = CodexAuth::from_api_key("sk-test");
@@ -2653,6 +2721,22 @@ mod tests {
                 .map(std::string::ToString::to_string));
         };
         Ok(profile_v2_for_subcommand(&cli.interactive, subcommand)?.map(ToString::to_string))
+    }
+
+    #[test]
+    fn profile_loader_overrides_use_explicit_codex_home() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let profile: ProfileV2Name = "work".parse()?;
+
+        let overrides =
+            loader_overrides_for_profile_at_codex_home(Some(&profile), codex_home.path());
+
+        assert_eq!(
+            overrides.user_config_path,
+            Some(resolve_profile_v2_config_path(codex_home.path(), &profile))
+        );
+        assert_eq!(overrides.user_config_profile, Some(profile));
+        Ok(())
     }
 
     #[test]
@@ -4037,6 +4121,16 @@ mod tests {
             overrides,
             vec!["features.image_detail_original=true".to_string(),]
         );
+    }
+
+    #[test]
+    fn feature_toggles_accept_removed_enable_fanout_flag() {
+        let toggles = FeatureToggles {
+            enable: vec!["enable_fanout".to_string()],
+            disable: Vec::new(),
+        };
+        let overrides = toggles.to_overrides().expect("valid features");
+        assert_eq!(overrides, vec!["features.enable_fanout=true".to_string(),]);
     }
 
     #[test]

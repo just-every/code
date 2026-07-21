@@ -707,6 +707,7 @@ pub(crate) struct CodexDynamicToolCallEventParams {
     pub(crate) output_content_item_count: Option<u64>,
     pub(crate) output_text_item_count: Option<u64>,
     pub(crate) output_image_item_count: Option<u64>,
+    pub(crate) output_audio_item_count: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -1024,6 +1025,7 @@ pub(crate) struct CodexPluginInstallFailedEventRequest {
 pub(crate) struct CodexOnboardingExternalAgentImportCompleteMetadata {
     pub(crate) import_id: String,
     pub(crate) source: String,
+    pub(crate) provider_id: String,
     #[serde(rename = "type")]
     pub(crate) item_type: String,
     pub(crate) success_count: usize,
@@ -1041,6 +1043,7 @@ pub(crate) struct CodexOnboardingExternalAgentImportCompleteEventRequest {
 pub(crate) struct CodexOnboardingExternalAgentImportFailureMetadata {
     pub(crate) import_id: String,
     pub(crate) source: String,
+    pub(crate) provider_id: String,
     #[serde(rename = "type")]
     pub(crate) item_type: String,
     pub(crate) failure_stage: String,

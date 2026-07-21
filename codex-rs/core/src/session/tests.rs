@@ -903,7 +903,14 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
     use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
 
-    let mut stream = tokio::net::TcpStream::connect(started_proxy.proxy().http_addr()).await?;
+    let prepared = started_proxy
+        .proxy()
+        .prepare_for_remote_environment(std::collections::HashMap::new(), "test-bridge")?;
+    let proxy_addr = prepared.env["HTTP_PROXY"]
+        .strip_prefix("http://")
+        .expect("HTTP proxy URL")
+        .parse::<std::net::SocketAddr>()?;
+    let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
     stream
         .write_all(
             b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
@@ -1245,6 +1252,39 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
 }
 
 #[tokio::test]
+async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_disabled()
+-> anyhow::Result<()> {
+    let (session, rx) = make_session_with_config_and_rx(|config| {
+        config.permissions.allow_login_shell = false;
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    let command = "echo managed-login-shell".to_string();
+    let expected_command = session
+        .user_shell()
+        .derive_exec_args(&command, /*use_login_shell*/ true);
+
+    execute_user_shell_command(
+        Arc::clone(&session),
+        turn_context,
+        command,
+        CancellationToken::new(),
+        UserShellCommandMode::StandaloneTurn,
+    )
+    .await;
+
+    loop {
+        let event = rx.recv().await.expect("channel open");
+        if let EventMsg::ExecCommandBegin(event) = event.msg {
+            assert_eq!(event.command, expected_command);
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn get_base_instructions_no_user_content() {
     let prompt_with_apply_patch_instructions =
         include_str!("../../prompt_with_apply_patch_instructions.md");
@@ -1331,6 +1371,45 @@ async fn reload_user_config_layer_updates_effective_apps_config() {
 
     assert!(!app.enabled);
     assert_eq!(app.destructive_enabled, Some(false));
+}
+
+#[tokio::test]
+async fn reload_user_config_layer_keeps_previous_config_for_malformed_shell_policy() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let codex_home = session.codex_home().await;
+    std::fs::create_dir_all(&codex_home).expect("create codex home");
+    let config_toml_path = codex_home.join(CONFIG_TOML_FILE);
+    std::fs::write(&config_toml_path, "[apps.calendar]\nenabled = false\n")
+        .expect("write valid user config");
+    session.reload_user_config_layer().await;
+    let previous_config = session
+        .get_config()
+        .await
+        .config_layer_stack
+        .effective_user_config()
+        .expect("previous user config");
+
+    std::fs::write(
+        &config_toml_path,
+        r#"
+[apps.calendar]
+enabled = true
+
+[shell_environment_policy]
+exclude = ["SECRET_*", 17]
+"#,
+    )
+    .expect("write malformed user config");
+
+    session.reload_user_config_layer().await;
+
+    let current_config = session
+        .get_config()
+        .await
+        .config_layer_stack
+        .effective_user_config()
+        .expect("current user config");
+    assert_eq!(current_config, previous_config);
 }
 
 #[tokio::test]
@@ -1438,7 +1517,8 @@ async fn reload_user_config_layer_refreshes_hooks() -> anyhow::Result<()> {
         config_layer_stack: Some(
             config
                 .config_layer_stack
-                .with_user_config(&config_toml_path, user_config.clone()),
+                .with_user_config(&config_toml_path, user_config.clone())
+                .expect("hook user config should be valid"),
         ),
         ..codex_hooks::HooksConfig::default()
     });
@@ -1503,6 +1583,7 @@ async fn refresh_runtime_config_refreshes_hooks() -> anyhow::Result<()> {
                     timeout_sec: Some(600),
                     r#async: false,
                     status_message: None,
+                    additional_context_limit: None,
                 }],
             },
         };
@@ -2814,11 +2895,13 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
     .await;
     let rollout_path =
         attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let world_state =
-        Arc::new(build_world_state_from_turn_context(session.as_ref(), &turn_context).await);
+    let step_context = session
+        .capture_step_context(Arc::clone(&turn_context))
+        .await;
+    let world_state = Arc::new(session.build_world_state_for_step(&step_context).await);
 
     session
-        .start_new_context_window(turn_context.as_ref(), world_state)
+        .start_new_context_window(&step_context, world_state)
         .await;
 
     let live_history = session.clone_history().await;
@@ -4530,10 +4613,12 @@ async fn session_configuration_apply_preserves_profile_file_system_policy_on_cwd
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: docs_dir },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
     ]);
     let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
@@ -4577,6 +4662,7 @@ async fn session_configuration_apply_permission_profile_preserves_existing_deny_
             pattern: "**/*.env".to_string(),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     };
     let mut existing_file_system_policy =
         FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
@@ -4640,6 +4726,7 @@ async fn session_configuration_apply_permission_profile_accepts_direct_write_roo
                 path: external_write_path.clone(),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }]);
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &file_system_sandbox_policy,
@@ -4889,12 +4976,14 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: original_cwd.clone(),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
     ]);
     session_configuration
@@ -5338,7 +5427,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
-        guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
@@ -5385,9 +5473,10 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
-        code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
-            codex_code_mode::InProcessCodeModeSessionProvider,
-        )),
+        code_mode_service: crate::tools::code_mode::CodeModeService::new(
+            Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+            &config.features,
+        ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
     };
@@ -6132,6 +6221,7 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
                     path: environment_cwd.join("relative.txt"),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -6218,6 +6308,7 @@ async fn request_permissions_response_materializes_session_cwd_grants_before_rec
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -7496,7 +7587,6 @@ where
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
-        guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
@@ -7543,9 +7633,10 @@ where
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
-        code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
-            codex_code_mode::InProcessCodeModeSessionProvider,
-        )),
+        code_mode_service: crate::tools::code_mode::CodeModeService::new(
+            Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+            &config.features,
+        ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
     };
@@ -8273,6 +8364,7 @@ impl codex_extension_api::ContextContributor for PromptExtensionTestContributor 
         &'a self,
         _session_store: &'a codex_extension_api::ExtensionData,
         thread_store: &'a codex_extension_api::ExtensionData,
+        _step_store: &'a codex_extension_api::ExtensionData,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Vec<codex_extension_api::PromptFragment>> + Send + 'a>,
     > {
@@ -8781,6 +8873,7 @@ fn file_system_policy_with_unreadable_glob(turn_context: &TurnContext) -> FileSy
             pattern: format!("{cwd_display}/**/*.env"),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     });
     policy
 }
@@ -8913,12 +9006,22 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
     let previous_context_item = turn_context.to_turn_context_item();
     let previous_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &previous_context).await;
+    let retained_world_state = world_state
+        .render_full()
+        .into_iter()
+        .map(ContextualUserFragment::into_boxed_response_item)
+        .collect::<Vec<_>>();
+    session
+        .replace_history(
+            retained_world_state.clone(),
+            Some(previous_context_item.clone()),
+        )
+        .await;
     let mut turn_context = Arc::try_unwrap(previous_context)
         .unwrap_or_else(|_| panic!("previous turn context should have no remaining references"));
     turn_context.sub_id = format!("{}-next", turn_context.sub_id);
     {
         let mut state = session.state.lock().await;
-        state.set_reference_context_item(Some(previous_context_item.clone()));
         state
             .history
             .set_world_state_baseline(world_state.snapshot());
@@ -8938,7 +9041,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
 
     assert_eq!(
         session.clone_history().await.raw_items().to_vec(),
-        Vec::new()
+        retained_world_state
     );
     assert_eq!(
         serde_json::to_value(session.reference_context_item().await)

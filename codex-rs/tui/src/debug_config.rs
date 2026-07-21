@@ -81,11 +81,6 @@ fn render_agents_config_lines(config: &Config) -> Vec<Line<'static>> {
         )
         .into(),
         format!(
-            "  - job_max_runtime_seconds = {}",
-            format_optional(config.agent_job_max_runtime_seconds)
-        )
-        .into(),
-        format!(
             "  - interrupt_message = {}",
             config.agent_interrupt_message_enabled
         )
@@ -164,6 +159,64 @@ fn render_debug_config_lines(
     lines.push("".into());
     lines.push("Requirements:".bold().into());
     let mut requirement_lines = Vec::new();
+
+    if let Some(sqlite_home) = requirements.sqlite_home.as_ref() {
+        requirement_lines.push(requirement_line(
+            "sqlite_home",
+            sqlite_home.value.display().to_string(),
+            Some(&sqlite_home.source),
+        ));
+    }
+
+    if let Some(log_dir) = requirements.log_dir.as_ref() {
+        requirement_lines.push(requirement_line(
+            "log_dir",
+            log_dir.value.display().to_string(),
+            Some(&log_dir.source),
+        ));
+    }
+
+    if let Some(model_catalog_json) = requirements.model_catalog_json.as_ref() {
+        requirement_lines.push(requirement_line(
+            "model_catalog_json",
+            model_catalog_json.value.display().to_string(),
+            Some(&model_catalog_json.source),
+        ));
+    }
+
+    if let Some(check_for_update_on_startup) = requirements.check_for_update_on_startup.as_ref() {
+        requirement_lines.push(requirement_line(
+            "check_for_update_on_startup",
+            check_for_update_on_startup.value.to_string(),
+            Some(&check_for_update_on_startup.source),
+        ));
+    }
+
+    if let Some(allow_login_shell) = requirements.allow_login_shell.as_ref() {
+        requirement_lines.push(requirement_line(
+            "allow_login_shell",
+            allow_login_shell.value.to_string(),
+            Some(&allow_login_shell.source),
+        ));
+    }
+
+    if let Some(feedback) = requirements.feedback.as_ref()
+        && let Some(enabled) = feedback.value.enabled
+    {
+        requirement_lines.push(requirement_line(
+            "feedback.enabled",
+            enabled.to_string(),
+            Some(&feedback.source),
+        ));
+    }
+
+    if let Some(sandbox_private_desktop) = requirements.windows_sandbox_private_desktop.as_ref() {
+        requirement_lines.push(requirement_line(
+            "windows.sandbox_private_desktop",
+            sandbox_private_desktop.value.to_string(),
+            Some(&sandbox_private_desktop.source),
+        ));
+    }
 
     if let Some(policies) = requirements_toml.allowed_approval_policies.as_ref() {
         let value = join_or_empty(policies.iter().map(ToString::to_string).collect::<Vec<_>>());
@@ -631,7 +684,9 @@ mod tests {
     use codex_config::SandboxModeRequirement;
     use codex_config::Sourced;
     use codex_config::WebSearchModeRequirement;
+    use codex_config::WindowsRequirementsToml;
     use codex_config::sandbox_mode_requirement_for_permission_profile;
+    use codex_config::types::FeedbackConfigToml;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::WebSearchMode;
     use codex_protocol::models::PermissionProfile;
@@ -651,7 +706,6 @@ max_concurrent_threads_per_session = 7
 max_depth = -2
 default_subagent_model = "gpt-5.6-terra"
 default_subagent_reasoning_effort = "high"
-job_max_runtime_seconds = 900
 interrupt_message = false
 "#,
         )
@@ -755,8 +809,53 @@ interrupt_message = false
         } else {
             absolute_path("/home/alice/.gitconfig")
         };
+        let sqlite_home = if cfg!(windows) {
+            absolute_path("C:\\Users\\alice\\.codex\\state")
+        } else {
+            absolute_path("/home/alice/.codex/state")
+        };
+        let log_dir = if cfg!(windows) {
+            absolute_path("C:\\Users\\alice\\.codex\\logs")
+        } else {
+            absolute_path("/home/alice/.codex/logs")
+        };
+        let model_catalog_json = if cfg!(windows) {
+            absolute_path("C:\\Users\\alice\\.codex\\models.json")
+        } else {
+            absolute_path("/home/alice/.codex/models.json")
+        };
 
         let requirements = ConfigRequirements {
+            sqlite_home: Some(Sourced::new(
+                sqlite_home.clone(),
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            log_dir: Some(Sourced::new(
+                log_dir.clone(),
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            model_catalog_json: Some(Sourced::new(
+                model_catalog_json.clone(),
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            check_for_update_on_startup: Some(Sourced::new(
+                /*value*/ false,
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            allow_login_shell: Some(Sourced::new(
+                /*value*/ false,
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            feedback: Some(Sourced::new(
+                FeedbackConfigToml {
+                    enabled: Some(false),
+                },
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
+            windows_sandbox_private_desktop: Some(Sourced::new(
+                /*value*/ false,
+                RequirementSource::LegacyManagedConfigTomlFromMdm,
+            )),
             approval_policy: ConstrainedWithSource::new(
                 Constrained::allow_any(AskForApproval::OnRequest.to_core()),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
@@ -834,6 +933,14 @@ interrupt_message = false
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            sqlite_home: Some(sqlite_home),
+            log_dir: Some(log_dir),
+            model_catalog_json: Some(model_catalog_json),
+            check_for_update_on_startup: Some(false),
+            allow_login_shell: Some(false),
+            feedback: Some(FeedbackConfigToml {
+                enabled: Some(false),
+            }),
             allowed_approval_policies: Some(vec![AskForApproval::OnRequest.to_core()]),
             allowed_approvals_reviewers: Some(vec![ApprovalsReviewer::AutoReview]),
             allowed_sandbox_modes: Some(vec![SandboxModeRequirement::ReadOnly]),
@@ -845,7 +952,10 @@ interrupt_message = false
             allow_appshots: Some(false),
             allow_remote_control: Some(false),
             computer_use: None,
-            windows: None,
+            windows: Some(WindowsRequirementsToml {
+                allowed_sandbox_implementations: None,
+                sandbox_private_desktop: Some(false),
+            }),
             guardian_policy_config: Some("Use the managed guardian policy.".to_string()),
             feature_requirements: Some(FeatureRequirementsToml {
                 entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
@@ -1226,6 +1336,7 @@ approval_policy = "never"
             network: None,
             permissions: None,
             models: None,
+            ..ConfigRequirementsToml::default()
         };
 
         let stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)
@@ -1258,6 +1369,7 @@ approval_policy = "never"
                                 timeout_sec: Some(10),
                                 r#async: false,
                                 status_message: Some("checking".to_string()),
+                                additional_context_limit: None,
                             }],
                         }],
                         ..Default::default()

@@ -4129,11 +4129,26 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "User has denied this command and the agent should not execute it, but it should continue the session and try something else.",
-          "enum": [
+          "properties": {
+            "denied": {
+              "properties": {
+                "rejection": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "rejection"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
             "denied"
           ],
-          "type": "string"
+          "title": "DeniedReviewDecision",
+          "type": "object"
         },
         {
           "description": "Automatic approval review timed out before reaching a decision.",
@@ -7416,6 +7431,14 @@
           }
         ]
       },
+      "CodexResponseHandoffMode": {
+        "enum": [
+          "thinking",
+          "commentary",
+          "bemTags"
+        ],
+        "type": "string"
+      },
       "CollabAgentState": {
         "properties": {
           "message": {
@@ -8519,6 +8542,12 @@
               "null"
             ]
           },
+          "allowLoginShell": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "allowManagedHooksOnly": {
             "type": [
               "boolean",
@@ -8576,6 +8605,12 @@
               "null"
             ]
           },
+          "checkForUpdateOnStartup": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "computerUse": {
             "anyOf": [
               {
@@ -8611,6 +8646,28 @@
               "null"
             ]
           },
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/FeedbackRequirements"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logDir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelCatalogJson": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "models": {
             "anyOf": [
               {
@@ -8619,6 +8676,18 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "sqliteHome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "windowsSandboxPrivateDesktop": {
+            "type": [
+              "boolean",
+              "null"
             ]
           }
         },
@@ -8753,6 +8822,15 @@
         "oneOf": [
           {
             "properties": {
+              "additionalContextLimit": {
+                "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk. `null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is evaluated against the original context; a spilled preview also includes recovery metadata.",
+                "format": "uint",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "async": {
                 "type": "boolean"
               },
@@ -8858,7 +8936,19 @@
               "null"
             ]
           },
+          "distributionChannel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "iconUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iconUrlDark": {
             "type": [
               "string",
               "null"
@@ -8867,8 +8957,21 @@
           "id": {
             "type": "string"
           },
+          "installUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "pluginDisplayNames": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "toolSummaries": {
             "items": {
@@ -9006,6 +9109,26 @@
           },
           {
             "properties": {
+              "audio_url": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "input_audio"
+                ],
+                "title": "InputAudioContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "audio_url",
+              "type"
+            ],
+            "title": "InputAudioContentItem",
+            "type": "object"
+          },
+          {
+            "properties": {
               "text": {
                 "type": "string"
               },
@@ -9134,6 +9257,26 @@
               "type"
             ],
             "title": "InputImageDynamicToolCallOutputContentItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "audioUrl": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "inputAudio"
+                ],
+                "title": "InputAudioDynamicToolCallOutputContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "audioUrl",
+              "type"
+            ],
+            "title": "InputAudioDynamicToolCallOutputContentItem",
             "type": "object"
           }
         ]
@@ -9480,6 +9623,24 @@
             "description": "If true, include detection under the user's home directory.",
             "type": "boolean"
           },
+          "maxSessionAgeDays": {
+            "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxSessions": {
+            "description": "Maximum number of sessions to detect. Missing values use the default limit.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "migrationSource": {
             "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
             "type": [
@@ -9675,6 +9836,13 @@
               "null"
             ]
           },
+          "providerId": {
+            "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not select the migration source.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
             "description": "Optional identifier for the product that initiated the import.",
             "type": [
@@ -9820,6 +9988,17 @@
           "remoteMcpServersConfig"
         ],
         "type": "string"
+      },
+      "FeedbackRequirements": {
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "FeedbackUploadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10622,6 +10801,26 @@
           },
           {
             "properties": {
+              "audio_url": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "input_audio"
+                ],
+                "title": "InputAudioFunctionCallOutputContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "audio_url",
+              "type"
+            ],
+            "title": "InputAudioFunctionCallOutputContentItem",
+            "type": "object"
+          },
+          {
+            "properties": {
               "encrypted_content": {
                 "type": "string"
               },
@@ -11143,6 +11342,15 @@
       },
       "HookMetadata": {
         "properties": {
+          "additionalContextLimit": {
+            "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "command": {
             "type": [
               "string",
@@ -11500,6 +11708,13 @@
             "description": "Image attachments included in user turns.",
             "enum": [
               "image"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Audio attachments included in user turns.",
+            "enum": [
+              "audio"
             ],
             "type": "string"
           }
@@ -13566,6 +13781,9 @@
           }
         ]
       },
+      "PathUri": {
+        "type": "string"
+      },
       "PermissionProfileListParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -14099,6 +14317,10 @@
               "null"
             ]
           },
+          "forceRefetch": {
+            "description": "Whether the client requests a fresh remote plugin catalog fetch.",
+            "type": "boolean"
+          },
           "marketplaceKinds": {
             "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus the default remote catalog when enabled by feature flag.",
             "items": {
@@ -14523,7 +14745,8 @@
       "PluginShareUpdateDiscoverability": {
         "enum": [
           "UNLISTED",
-          "PRIVATE"
+          "PRIVATE",
+          "LISTED"
         ],
         "type": "string"
       },
@@ -19525,6 +19748,22 @@
         "title": "ThreadRealtimeErrorNotification",
         "type": "object"
       },
+      "ThreadRealtimeInitialItem": {
+        "description": "EXPERIMENTAL - role-bearing text item included when a realtime V3 session starts.",
+        "properties": {
+          "role": {
+            "$ref": "#/definitions/v2/ConversationTextRole"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "type": "object"
+      },
       "ThreadRealtimeItemAddedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.",
@@ -21223,6 +21462,46 @@
               "type"
             ],
             "title": "LocalImageUserInput",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "audio"
+                ],
+                "title": "AudioUserInputType",
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "url"
+            ],
+            "title": "AudioUserInput",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "localAudio"
+                ],
+                "title": "LocalAudioUserInputType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "type"
+            ],
+            "title": "LocalAudioUserInput",
             "type": "object"
           },
           {

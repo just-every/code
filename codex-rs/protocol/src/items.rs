@@ -516,6 +516,26 @@ impl UserMessageItem {
                 .collect(),
         )
     }
+
+    pub fn audio_urls(&self) -> Vec<String> {
+        self.content
+            .iter()
+            .filter_map(|c| match c {
+                UserInput::Audio { audio_url } => Some(audio_url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn local_audio_paths(&self) -> Vec<std::path::PathBuf> {
+        self.content
+            .iter()
+            .filter_map(|c| match c {
+                UserInput::LocalAudio { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 fn trim_trailing_default_image_details(
@@ -610,17 +630,6 @@ fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<Strin
     .ok()
 }
 
-impl AgentMessageItem {
-    pub fn new(content: &[AgentMessageContent]) -> Self {
-        Self {
-            id: new_item_id(),
-            content: content.to_vec(),
-            phase: None,
-            memory_citation: None,
-        }
-    }
-}
-
 impl TurnItem {
     pub fn id(&self) -> String {
         match self {
@@ -668,6 +677,30 @@ mod tests {
                 "id": "sleep-1",
                 "durationMs": 1_000,
             })
+        );
+    }
+
+    #[test]
+    fn user_message_item_extracts_audio_attachments() {
+        let item = UserMessageItem::new(&[
+            UserInput::Text {
+                text: "transcribe these".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Audio {
+                audio_url: "https://example.com/remote.mp3".to_string(),
+            },
+            UserInput::LocalAudio {
+                path: std::path::PathBuf::from("local.wav"),
+            },
+        ]);
+
+        assert_eq!(
+            (item.audio_urls(), item.local_audio_paths()),
+            (
+                vec!["https://example.com/remote.mp3".to_string()],
+                vec![std::path::PathBuf::from("local.wav")],
+            )
         );
     }
 

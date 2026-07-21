@@ -102,7 +102,7 @@ use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
-use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
+use codex_app_server_protocol::SkillMetadata;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
@@ -123,7 +123,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::Notifications;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_connectors::AppInfo;
-use codex_core_skills::model::SkillMetadata;
 use codex_features::FEATURES;
 use codex_features::Feature;
 #[cfg(test)]
@@ -590,7 +589,7 @@ pub(crate) struct ChatWidget {
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
-    skills_all: Vec<ProtocolSkillMetadata>,
+    skills_all: Vec<SkillMetadata>,
     skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
@@ -630,6 +629,8 @@ pub(crate) struct ChatWidget {
     interrupts: InterruptManager,
     // Accumulates the current reasoning block text to extract a header
     reasoning_buffer: String,
+    // Caches the first completed bold header so later deltas do not rescan the whole block.
+    reasoning_header: Option<String>,
     // Preserves reasoning-summary part boundaries for transcript-only recording.
     reasoning_summary_parts: Vec<String>,
     status_state: StatusState,
@@ -1175,13 +1176,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_history_entry_response(&mut self, event: HistoryLookupResponse) {
-        let HistoryLookupResponse {
-            offset,
-            log_id,
-            entry,
-        } = event;
-        self.bottom_pane
-            .on_history_entry_response(log_id, offset, entry);
+        self.bottom_pane.on_history_lookup_response(event);
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {

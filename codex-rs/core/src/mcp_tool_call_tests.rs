@@ -962,13 +962,18 @@ fn codex_apps_connectors_support_persistent_approval() {
 }
 
 #[test]
-fn sanitize_mcp_tool_result_for_model_rewrites_image_content() {
+fn sanitize_mcp_tool_result_for_model_rewrites_unsupported_media_content() {
     let result = Ok(CallToolResult {
         content: vec![
             serde_json::json!({
                 "type": "image",
                 "data": "Zm9v",
                 "mimeType": "image/png",
+            }),
+            serde_json::json!({
+                "type": "audio",
+                "data": "YmFy",
+                "mimeType": "audio/wav",
             }),
             serde_json::json!({
                 "type": "text",
@@ -980,39 +985,59 @@ fn sanitize_mcp_tool_result_for_model_rewrites_image_content() {
         meta: None,
     });
 
-    let got = sanitize_mcp_tool_result_for_model(/*supports_image_input*/ false, result)
+    let got = sanitize_mcp_tool_result_for_model(&[InputModality::Text], result)
         .expect("sanitized result");
 
     assert_eq!(
-        got.content,
-        vec![
-            serde_json::json!({
-                "type": "text",
-                "text": "<image content omitted because you do not support image input>",
-            }),
-            serde_json::json!({
-                "type": "text",
-                "text": "hello",
-            }),
-        ]
+        got,
+        CallToolResult {
+            content: vec![
+                serde_json::json!({
+                    "type": "text",
+                    "text": "<image content omitted because you do not support image input>",
+                }),
+                serde_json::json!({
+                    "type": "text",
+                    "text": "<audio content omitted because you do not support audio input>",
+                }),
+                serde_json::json!({
+                    "type": "text",
+                    "text": "hello",
+                }),
+            ],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        }
     );
 }
 
 #[test]
-fn sanitize_mcp_tool_result_for_model_preserves_image_when_supported() {
+fn sanitize_mcp_tool_result_for_model_preserves_supported_media() {
     let original = CallToolResult {
-        content: vec![serde_json::json!({
-            "type": "image",
-            "data": "Zm9v",
-            "mimeType": "image/png",
-        })],
+        content: vec![
+            serde_json::json!({
+                "type": "image",
+                "data": "Zm9v",
+                "mimeType": "image/png",
+            }),
+            serde_json::json!({
+                "type": "audio",
+                "data": "YmFy",
+                "mimeType": "audio/wav",
+            }),
+        ],
         structured_content: Some(serde_json::json!({"x": 1})),
         is_error: Some(false),
         meta: Some(serde_json::json!({"k": "v"})),
     };
 
     let got = sanitize_mcp_tool_result_for_model(
-        /*supports_image_input*/ true,
+        &[
+            InputModality::Text,
+            InputModality::Image,
+            InputModality::Audio,
+        ],
         Ok(original.clone()),
     )
     .expect("unsanitized result");
@@ -1424,7 +1449,6 @@ async fn host_owned_codex_apps_manager(
     let auth = session.services.auth_manager.auth().await;
     let startup_cancellation_token = CancellationToken::new();
     startup_cancellation_token.cancel();
-    let (tx_event, _rx_event) = async_channel::unbounded();
     let mcp_servers = HashMap::from([(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
         codex_mcp::EffectiveMcpServer::configured(codex_mcp::codex_apps_mcp_server_config(
@@ -1439,7 +1463,7 @@ async fn host_owned_codex_apps_manager(
         turn_context.config.auth_keyring_backend_kind(),
         &turn_context.approval_policy,
         turn_context.sub_id.clone(),
-        tx_event,
+        /*tx_event*/ None,
         startup_cancellation_token,
         turn_context.permission_profile(),
         codex_mcp::McpRuntimeContext::new(
@@ -1876,33 +1900,15 @@ fn guardian_mcp_review_request_ignores_untrusted_connected_account_email() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn guardian_review_decision_maps_to_mcp_tool_decision() {
-    let (session, _) = make_session_and_context().await;
-    let session = Arc::new(session);
-
+#[test]
+fn guardian_review_decision_maps_to_mcp_tool_decision() {
     assert_eq!(
-        mcp_tool_approval_decision_from_guardian(
-            session.as_ref(),
-            "review-id",
-            ReviewDecision::Approved
-        )
-        .await,
+        mcp_tool_approval_decision_from_guardian(ReviewDecision::Approved),
         McpToolApprovalDecision::Accept
     );
-    session.services.guardian_rejections.lock().await.insert(
-        "review-id".to_string(),
-        crate::guardian::GuardianRejection {
-            rationale: "too risky".to_string(),
-            source: codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
-        },
-    );
-    let denial = mcp_tool_approval_decision_from_guardian(
-        session.as_ref(),
-        "review-id",
-        ReviewDecision::Denied,
-    )
-    .await;
+    let denial = mcp_tool_approval_decision_from_guardian(ReviewDecision::denied(
+        "This action was rejected due to unacceptable risk.\nReason: too risky\nThe agent must not attempt to achieve the same outcome",
+    ));
     let McpToolApprovalDecision::Decline {
         message: Some(message),
     } = denial
@@ -1911,12 +1917,7 @@ async fn guardian_review_decision_maps_to_mcp_tool_decision() {
     };
     assert!(message.contains("Reason: too risky"));
     assert!(message.contains("The agent must not attempt to achieve the same outcome"));
-    let timeout = mcp_tool_approval_decision_from_guardian(
-        session.as_ref(),
-        "review-id",
-        ReviewDecision::TimedOut,
-    )
-    .await;
+    let timeout = mcp_tool_approval_decision_from_guardian(ReviewDecision::TimedOut);
     let McpToolApprovalDecision::Decline {
         message: Some(message),
     } = timeout
@@ -1926,12 +1927,7 @@ async fn guardian_review_decision_maps_to_mcp_tool_decision() {
     assert!(message.contains("did not finish before its deadline"));
     assert!(!message.contains("unacceptable risk"));
     assert_eq!(
-        mcp_tool_approval_decision_from_guardian(
-            session.as_ref(),
-            "review-id",
-            ReviewDecision::Abort
-        )
-        .await,
+        mcp_tool_approval_decision_from_guardian(ReviewDecision::Abort),
         McpToolApprovalDecision::Decline { message: None }
     );
 }

@@ -34,6 +34,7 @@ codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-home = { workspace = true }
+codex-http-client = { workspace = true }
 codex-exec = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-execpolicy = { workspace = true }
@@ -104,6 +105,7 @@ predicates = { workspace = true }
 pretty_assertions = { workspace = true }
 sqlx = { workspace = true }
 wiremock = { workspace = true }
+zstd = { workspace = true }
 
 [package.metadata.cargo-shear]
 # These Rust sources are intentionally Bazel-only macrobenchmarks rather than

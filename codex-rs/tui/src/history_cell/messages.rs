@@ -1,5 +1,6 @@
 //! User, assistant, reasoning, and streaming message history cells.
 
+use super::markdown_render_cache::MarkdownRenderCache;
 use super::*;
 
 #[derive(Debug)]
@@ -361,10 +362,15 @@ impl HistoryCell for AgentMessageCell {
 /// The cell snapshots `cwd` at construction so local file-link display remains aligned with the
 /// session that produced the message. Reusing the current process cwd during reflow would make old
 /// transcript content change meaning after a later `/cd` or resumed session.
+///
+/// Ordinary markdown caches its latest rich render. Visualization directives bypass that cache
+/// because resolving their local file links depends on filesystem state that can change later.
 #[derive(Debug)]
 pub(crate) struct AgentMarkdownCell {
     markdown_source: String,
     cwd: PathBuf,
+    inline_visualization_context: Option<crate::inline_visualization::InlineVisualizationContext>,
+    rendered_lines: Option<MarkdownRenderCache>,
 }
 
 impl AgentMarkdownCell {
@@ -373,10 +379,30 @@ impl AgentMarkdownCell {
     /// `markdown_source` must be the raw source accumulated by the stream controller, not already
     /// wrapped terminal lines. Passing rendered lines here would make future resize reflow preserve
     /// stale wrapping instead of repairing it.
+    #[cfg(test)]
     pub(crate) fn new(markdown_source: String, cwd: &Path) -> Self {
+        Self::new_with_inline_visualizations(
+            markdown_source,
+            cwd,
+            /*inline_visualization_context*/ None,
+        )
+    }
+
+    pub(crate) fn new_with_inline_visualizations(
+        markdown_source: String,
+        cwd: &Path,
+        inline_visualization_context: Option<
+            crate::inline_visualization::InlineVisualizationContext,
+        >,
+    ) -> Self {
+        let rendered_lines = (!markdown_source
+            .contains(crate::inline_visualization::DIRECTIVE_PREFIX))
+        .then(MarkdownRenderCache::default);
         Self {
             markdown_source,
             cwd: cwd.to_path_buf(),
+            inline_visualization_context,
+            rendered_lines,
         }
     }
 }
@@ -387,24 +413,33 @@ impl HistoryCell for AgentMarkdownCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        let Some(wrap_width) =
-            crate::width::usable_content_width_u16(width, /*reserved_cols*/ 2)
-        else {
-            return prefix_hyperlink_lines(
-                vec![HyperlinkLine::new(Line::default())],
-                "• ".dim(),
-                "  ".into(),
+        let render = || {
+            let Some(wrap_width) =
+                crate::width::usable_content_width_u16(width, /*reserved_cols*/ 2)
+            else {
+                return prefix_hyperlink_lines(
+                    vec![HyperlinkLine::new(Line::default())],
+                    "• ".dim(),
+                    "  ".into(),
+                );
+            };
+
+            // Re-render markdown from source at the current width. Reserve 2 columns for the "• " /
+            // " " prefix prepended below.
+            let lines = crate::markdown::render_markdown_agent_with_links_cwd_and_visualizations(
+                &self.markdown_source,
+                Some(wrap_width),
+                Some(self.cwd.as_path()),
+                self.inline_visualization_context.as_ref(),
             );
+            prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
         };
 
-        // Re-render markdown from source at the current width. Reserve 2 columns for the "• " /
-        // " " prefix prepended below.
-        let lines = crate::markdown::render_markdown_agent_with_links_and_cwd(
-            &self.markdown_source,
-            Some(wrap_width),
-            Some(self.cwd.as_path()),
-        );
-        prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
+        if let Some(rendered_lines) = &self.rendered_lines {
+            rendered_lines.render(width, render)
+        } else {
+            render()
+        }
     }
 
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
@@ -414,14 +449,22 @@ impl HistoryCell for AgentMarkdownCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         raw_lines_from_source(&self.markdown_source)
     }
+
+    fn has_stable_transcript_height(&self) -> bool {
+        self.rendered_lines.is_some()
+    }
 }
+
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod tests;
 
 /// Transient active-cell representation of the mutable tail of an agent stream.
 ///
 /// During streaming, lines that have not yet been committed to scrollback because they belong to
 /// an in-progress table are displayed via this cell in the `active_cell` slot. It is replaced on
-/// every delta and cleared when the stream finalizes.
-#[derive(Debug)]
+/// deltas that change the visible tail and cleared when the stream finalizes.
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct StreamingAgentTailCell {
     lines: Vec<HyperlinkLine>,
     is_first_line: bool,

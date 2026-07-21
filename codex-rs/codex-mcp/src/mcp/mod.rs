@@ -19,7 +19,6 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use async_channel::unbounded;
 use codex_config::Constrained;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
@@ -311,8 +310,6 @@ pub async fn read_mcp_resource(
 ) -> anyhow::Result<ReadResourceResult> {
     let mut mcp_servers = effective_mcp_servers(config, auth);
     mcp_servers.retain(|name, _| name == server);
-    let (tx_event, rx_event) = unbounded();
-    drop(rx_event);
     let cancel_token = CancellationToken::new();
     let manager = McpConnectionManager::new(
         &mcp_servers,
@@ -320,7 +317,7 @@ pub async fn read_mcp_resource(
         config.auth_keyring_backend_kind,
         &config.approval_policy,
         String::new(),
-        tx_event,
+        /*tx_event*/ None,
         cancel_token.clone(),
         PermissionProfile::default(),
         runtime_context,
@@ -390,9 +387,6 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
 
     let server_names = mcp_servers.keys().cloned().collect();
 
-    let (tx_event, rx_event) = unbounded();
-    drop(rx_event);
-
     let cancel_token = CancellationToken::new();
     let mcp_connection_manager = McpConnectionManager::new(
         &mcp_servers,
@@ -400,7 +394,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         config.auth_keyring_backend_kind,
         &config.approval_policy,
         submit_id,
-        tx_event,
+        /*tx_event*/ None,
         cancel_token.clone(),
         PermissionProfile::default(),
         runtime_context,
@@ -475,14 +469,12 @@ fn normalize_codex_apps_base_url(base_url: &str) -> String {
 
 fn codex_apps_mcp_url_for_base_url(base_url: &str) -> String {
     let base_url = normalize_codex_apps_base_url(base_url);
-    let (base_url, default_path) = if base_url.contains("/backend-api") {
-        (base_url, "wham/apps")
-    } else if base_url.contains("/api/codex") {
-        (base_url, "apps")
+    let base_url = if base_url.contains("/backend-api") || base_url.contains("/api/codex") {
+        base_url
     } else {
-        (format!("{base_url}/api/codex"), "apps")
+        format!("{base_url}/api/codex")
     };
-    format!("{base_url}/{default_path}")
+    format!("{base_url}/ps/mcp")
 }
 
 pub fn codex_apps_mcp_server_config(
@@ -504,18 +496,7 @@ pub fn hosted_plugin_runtime_mcp_server_config(
     apps_mcp_product_sku: Option<&str>,
     originator: Option<&str>,
 ) -> McpServerConfig {
-    let base_url = normalize_codex_apps_base_url(chatgpt_base_url);
-    let base_url = if base_url.contains("/backend-api") || base_url.contains("/api/codex") {
-        base_url
-    } else {
-        format!("{base_url}/api/codex")
-    };
-    mcp_server_config_for_url(
-        format!("{base_url}/ps/mcp"),
-        apps_mcp_product_sku,
-        originator,
-        McpServerAuth::ChatGpt,
-    )
+    codex_apps_mcp_server_config(chatgpt_base_url, apps_mcp_product_sku, originator)
 }
 
 fn mcp_server_config_for_url(
@@ -715,4 +696,4 @@ async fn collect_mcp_server_status_snapshot_from_manager(
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]
-mod tests;
+pub(crate) mod tests;

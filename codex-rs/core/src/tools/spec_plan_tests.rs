@@ -15,8 +15,6 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -705,24 +703,6 @@ async fn environment_tools_follow_the_step_context() {
 }
 
 #[tokio::test]
-async fn host_context_gates_agent_job_tools() {
-    let normal_agent_job = probe(|turn| {
-        set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);
-    })
-    .await;
-    normal_agent_job.assert_visible_contains(&["spawn_agents_on_csv"]);
-    normal_agent_job.assert_visible_lacks(&["report_agent_job_result"]);
-
-    let worker_agent_job = probe(|turn| {
-        set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);
-        turn.session_source =
-            SessionSource::SubAgent(SubAgentSource::Other("agent_job:42".to_string()));
-    })
-    .await;
-    worker_agent_job.assert_visible_contains(&["spawn_agents_on_csv", "report_agent_job_result"]);
-}
-
-#[tokio::test]
 async fn sleep_tool_follows_current_time_config() {
     let disabled = probe(|turn| {
         set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
@@ -1089,6 +1069,20 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
         code_mode_only.namespace_function_names("codex_app"),
         Vec::<String>::new().as_slice()
     );
+}
+
+#[tokio::test]
+async fn code_mode_buffered_exec_updates_exec_description() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::CodeModeBufferedExec]);
+    })
+    .await;
+
+    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("expected code mode exec tool");
+    };
+    assert!(exec.description.contains("Defaults to 30000 ms."));
+    assert!(!exec.description.contains("Defaults to 10000 ms."));
 }
 
 #[tokio::test]

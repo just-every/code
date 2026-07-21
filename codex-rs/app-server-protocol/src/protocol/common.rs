@@ -630,6 +630,13 @@ client_request_definitions! {
         serialization: None,
         response: v2::ThreadSearchResponse,
     },
+    #[experimental("thread/searchOccurrences")]
+    ThreadSearchOccurrences => "thread/searchOccurrences" {
+        params: v2::ThreadSearchOccurrencesParams,
+        // Explicitly concurrent: this reads persisted paginated history.
+        serialization: None,
+        response: v2::ThreadSearchOccurrencesResponse,
+    },
     ThreadLoadedList => "thread/loaded/list" {
         params: v2::ThreadLoadedListParams,
         serialization: None,
@@ -1764,6 +1771,8 @@ mod tests {
     use codex_protocol::config_types::MultiAgentMode;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::parse_command::ParsedCommand;
+    use codex_protocol::protocol::CodexResponseHandoffMode;
+    use codex_protocol::protocol::ConversationTextRole;
     use codex_protocol::protocol::RealtimeConversationVersion;
     use codex_protocol::protocol::RealtimeOutputModality;
     use codex_protocol::protocol::RealtimeVoice;
@@ -1929,6 +1938,7 @@ mod tests {
             params: v2::PluginListParams {
                 cwds: None,
                 marketplace_kinds: None,
+                force_refetch: false,
             },
         };
         assert_eq!(plugin_list.serialization_scope(), None);
@@ -3390,10 +3400,21 @@ mod tests {
                 flush_transcript_tail_on_session_end: Some(true),
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
+                codex_response_handoff_mode: Some(CodexResponseHandoffMode::BemTags),
                 thread_id: "thr_123".to_string(),
                 model: Some("realtime-treatment-model".to_string()),
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: Some(false),
+                initial_items: Some(vec![
+                    v2::ThreadRealtimeInitialItem {
+                        role: ConversationTextRole::Developer,
+                        text: "Remember this.".to_string(),
+                    },
+                    v2::ThreadRealtimeInitialItem {
+                        role: ConversationTextRole::Assistant,
+                        text: "Understood.".to_string(),
+                    },
+                ]),
                 prompt: Some(Some("You are on a call".to_string())),
                 realtime_session_id: Some("sess_456".to_string()),
                 transport: None,
@@ -3411,9 +3432,20 @@ mod tests {
                     "flushTranscriptTailOnSessionEnd": true,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
+                    "codexResponseHandoffMode": "bemTags",
                     "model": "realtime-treatment-model",
                     "outputModality": "audio",
                     "includeStartupContext": false,
+                    "initialItems": [
+                        {
+                            "role": "developer",
+                            "text": "Remember this."
+                        },
+                        {
+                            "role": "assistant",
+                            "text": "Understood."
+                        }
+                    ],
                     "prompt": "You are on a call",
                     "realtimeSessionId": "sess_456",
                     "transport": null,
@@ -3435,10 +3467,12 @@ mod tests {
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
+                codex_response_handoff_mode: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
+                initial_items: None,
                 prompt: None,
                 realtime_session_id: None,
                 transport: None,
@@ -3456,9 +3490,11 @@ mod tests {
                     "flushTranscriptTailOnSessionEnd": null,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
+                    "codexResponseHandoffMode": null,
                     "model": null,
                     "outputModality": "audio",
                     "includeStartupContext": null,
+                    "initialItems": null,
                     "realtimeSessionId": null,
                     "transport": null,
                     "version": null,
@@ -3475,10 +3511,12 @@ mod tests {
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
+                codex_response_handoff_mode: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
+                initial_items: None,
                 prompt: Some(None),
                 realtime_session_id: None,
                 transport: None,
@@ -3496,9 +3534,11 @@ mod tests {
                     "flushTranscriptTailOnSessionEnd": null,
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
+                    "codexResponseHandoffMode": null,
                     "model": null,
                     "outputModality": "audio",
                     "includeStartupContext": null,
+                    "initialItems": null,
                     "prompt": null,
                     "realtimeSessionId": null,
                     "transport": null,
@@ -3715,10 +3755,12 @@ mod tests {
                 flush_transcript_tail_on_session_end: None,
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
+                codex_response_handoff_mode: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
                 include_startup_context: None,
+                initial_items: None,
                 prompt: Some(Some("You are on a call".to_string())),
                 realtime_session_id: None,
                 transport: None,

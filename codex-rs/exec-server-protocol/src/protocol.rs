@@ -6,6 +6,7 @@ use codex_file_system::FileSystemSandboxContext;
 pub use codex_file_system::WalkOptions;
 pub use codex_file_system::WalkOutcome;
 use codex_network_proxy::ManagedNetworkSandboxContext;
+use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_shell_command::shell_detect::DetectedShell;
@@ -92,6 +93,18 @@ pub struct EnvironmentInfo {
     /// Working directory inherited by the exec-server process.
     #[serde(default)]
     pub cwd: Option<PathUri>,
+    /// Optional executor features that clients must gate before sending newer request fields.
+    #[serde(default)]
+    pub capabilities: EnvironmentCapabilities,
+}
+
+/// Features supported by the selected exec-server environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentCapabilities {
+    /// Whether `exec` accepts instructions for launching an executor-local network proxy.
+    #[serde(default)]
+    pub network_proxy_launch: bool,
 }
 
 /// Status returned by an initialized exec-server connection.
@@ -121,6 +134,9 @@ impl EnvironmentInfo {
             cwd: std::env::current_dir()
                 .ok()
                 .and_then(|cwd| PathUri::from_host_native_path(cwd).ok()),
+            capabilities: EnvironmentCapabilities {
+                network_proxy_launch: true,
+            },
         }
     }
 }
@@ -176,6 +192,9 @@ pub struct ExecParams {
     /// continue to fail closed. This preserves compatibility with older clients.
     #[serde(default)]
     pub managed_network: Option<ManagedNetworkSandboxContext>,
+    /// Optional instructions for starting an executor-local managed-network proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_proxy: Option<RemoteNetworkProxyLaunchConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -710,6 +729,7 @@ mod base64_bytes {
 
 #[cfg(test)]
 mod tests {
+    use super::EnvironmentCapabilities;
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
     use super::ExecParams;
@@ -719,18 +739,24 @@ mod tests {
     use super::ShellInfo;
     use codex_file_system::FileSystemSandboxContext;
     use codex_network_proxy::ManagedNetworkSandboxContext;
+    use codex_network_proxy::NetworkProxyAuditMetadata;
+    use codex_network_proxy::NetworkProxyConfig;
+    use codex_network_proxy::RemoteNetworkProxyConfig;
+    use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
+    use codex_protocol::models::ManagedFileSystemPermissions;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::FileSystemSpecialPath;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
 
     #[test]
-    fn exec_params_managed_network_context_round_trips_and_defaults_for_legacy_peers() {
+    fn exec_params_keeps_proxy_launch_separate_from_sandbox_facts() {
         let cwd =
             PathUri::from_host_native_path(std::env::current_dir().expect("current directory"))
                 .expect("cwd URI");
@@ -749,6 +775,17 @@ mod tests {
                 loopback_ports: vec![43123, 48081],
                 allow_local_binding: false,
             }),
+            network_proxy: Some(
+                RemoteNetworkProxyLaunchConfig::new(
+                    RemoteNetworkProxyConfig::from_effective_config(&NetworkProxyConfig::default())
+                        .expect("supported remote config"),
+                )
+                .with_audit_metadata(NetworkProxyAuditMetadata {
+                    conversation_id: Some("conversation-1".to_string()),
+                    ..NetworkProxyAuditMetadata::default()
+                })
+                .for_execution("remote".to_string(), "execution-1".to_string()),
+            ),
         };
 
         let mut serialized = serde_json::to_value(&params).expect("serialize exec params");
@@ -759,6 +796,10 @@ mod tests {
                 "allowLocalBinding": false,
             })
         );
+        assert_eq!(
+            serialized["networkProxy"]["auditMetadata"]["conversationId"],
+            "conversation-1"
+        );
         let round_trip: ExecParams =
             serde_json::from_value(serialized.clone()).expect("deserialize exec params");
         assert_eq!(round_trip, params);
@@ -767,10 +808,18 @@ mod tests {
             .as_object_mut()
             .expect("exec params object")
             .remove("managedNetwork");
+        serialized
+            .as_object_mut()
+            .expect("exec params object")
+            .remove("networkProxy");
         let legacy: ExecParams =
             serde_json::from_value(serialized).expect("deserialize legacy exec params");
         assert!(legacy.enforce_managed_network);
         assert_eq!(legacy.managed_network, None);
+        assert_eq!(legacy.network_proxy, None);
+        let legacy_serialized =
+            serde_json::to_value(&legacy).expect("serialize exec params without proxy launch");
+        assert!(legacy_serialized.get("networkProxy").is_none());
     }
 
     #[test]
@@ -788,6 +837,7 @@ mod tests {
                     path: "/bin/zsh".to_string(),
                 },
                 cwd: None,
+                capabilities: EnvironmentCapabilities::default(),
             }
         );
     }
@@ -823,7 +873,75 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_protocol_round_trips_permission_paths_as_uris() {
+    fn filesystem_protocol_round_trips_permission_entries() {
+        let native_cwd = std::env::current_dir().expect("current directory");
+        let cwd = PathUri::from_host_native_path(&native_cwd).expect("cwd URI");
+        let file_system = ManagedFileSystemPermissions::Restricted {
+            entries: vec![
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: native_cwd.clone().try_into().expect("absolute cwd"),
+                    },
+                    access: FileSystemAccessMode::Read,
+                    missing_path_behavior: None,
+                },
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Path {
+                        path: native_cwd.join(".git").try_into().expect("absolute path"),
+                    },
+                    FileSystemAccessMode::Read,
+                ),
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::ProjectRoots {
+                            subpath: Some(".codex".into()),
+                        },
+                    },
+                    FileSystemAccessMode::Read,
+                ),
+            ],
+            glob_scan_max_depth: Some(2.try_into().expect("non-zero depth")),
+        };
+        let permissions = PermissionProfile::Managed {
+            file_system,
+            network: NetworkSandboxPolicy::Restricted,
+        };
+        let sandbox =
+            FileSystemSandboxContext::from_permission_profile_with_cwd(permissions, cwd.clone());
+
+        let serialized = serde_json::to_value(&sandbox).expect("serialize sandbox");
+
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][0]["path"]["path"],
+            serde_json::json!(cwd.to_string())
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][1]["path"]["type"],
+            serde_json::json!("path")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][1]["missing_path_behavior"],
+            serde_json::json!("skip")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][2]["path"]["type"],
+            serde_json::json!("special")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][2]["missing_path_behavior"],
+            serde_json::json!("skip")
+        );
+        assert!(!serialized.to_string().contains("generated_default_path"));
+        assert!(!serialized.to_string().contains("generated_default_special"));
+        assert_eq!(
+            serde_json::from_value::<FileSystemSandboxContext>(serialized)
+                .expect("deserialize sandbox"),
+            sandbox
+        );
+    }
+
+    #[test]
+    fn filesystem_protocol_round_trips_legacy_policy_paths_as_uris() {
         let native_cwd = std::env::current_dir().expect("current directory");
         let cwd = PathUri::from_host_native_path(&native_cwd).expect("cwd URI");
         let mut file_system_policy =
@@ -832,6 +950,7 @@ mod tests {
                     path: native_cwd.try_into().expect("absolute cwd"),
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             }]);
         file_system_policy.glob_scan_max_depth = Some(2);
         let permissions = PermissionProfile::from_runtime_permissions(

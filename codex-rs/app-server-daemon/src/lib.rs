@@ -198,13 +198,6 @@ pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
     Daemon::from_environment()?.bootstrap(options).await
 }
 
-pub async fn ensure_remote_control_started() -> Result<RemoteControlStartOutput> {
-    ensure_supported_platform()?;
-    Daemon::from_environment()?
-        .ensure_remote_control_started()
-        .await
-}
-
 pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
     ensure_supported_platform()?;
     Daemon::from_environment()?
@@ -238,9 +231,11 @@ pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControl
     Daemon::from_environment()?.set_remote_control(mode).await
 }
 
-pub async fn run_pid_update_loop() -> Result<()> {
+pub async fn run_pid_update_loop(
+    http_client_factory: codex_http_client::HttpClientFactory,
+) -> Result<()> {
     ensure_supported_platform()?;
-    update_loop::run().await
+    update_loop::run(http_client_factory).await
 }
 
 #[cfg(unix)]

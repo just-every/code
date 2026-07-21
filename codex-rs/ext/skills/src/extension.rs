@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use codex_core_skills::HostSkillsSnapshot;
-use codex_core_skills::default_skill_metadata_budget;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
@@ -43,7 +42,9 @@ use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
 use crate::render::MAX_SKILL_NAME_BYTES;
 use crate::render::MAX_SKILL_PATH_BYTES;
+use crate::render::SkillCatalogRenderPolicy;
 use crate::render::available_skills_fragment;
+use crate::render::capped_skill_metadata_budget;
 use crate::render::truncate_main_prompt_contents;
 use crate::render::truncate_utf8_to_bytes;
 use crate::selection::collect_explicit_skill_mentions;
@@ -113,6 +114,7 @@ where
         &'a self,
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
+        _step_store: &'a ExtensionData,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<PromptFragment>> + Send + 'a>> {
         Box::pin(async move {
             let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
@@ -143,10 +145,15 @@ where
             let include_usage = thread_store
                 .get::<ModelInfo>()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-            available_skills_fragment(&catalog, include_usage)
-                .map(|fragment| PromptFragment::developer_capability(fragment.render()))
-                .into_iter()
-                .collect()
+            available_skills_fragment(
+                &catalog,
+                include_usage,
+                SkillCatalogRenderPolicy::ExtensionCompatible,
+                capped_skill_metadata_budget(/*context_window*/ None),
+            )
+            .map(|fragment| PromptFragment::developer_capability(fragment.render()))
+            .into_iter()
+            .collect()
         })
     }
 
@@ -181,10 +188,15 @@ where
             let include_usage = model_info
                 .as_deref()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
+            let context_window = model_info
+                .as_deref()
+                .and_then(ModelInfo::resolved_context_window);
+            let metadata_budget = capped_skill_metadata_budget(context_window);
             let mut sections = vec![executor_skills_world_state_section(
                 &catalog,
                 config.include_instructions,
                 include_usage,
+                metadata_budget,
             )];
             if let Some(host_snapshot) = input.turn_store.get::<HostSkillsSnapshot>()
                 && self.providers.has_host_provider()
@@ -194,11 +206,7 @@ where
                     &host_snapshot,
                     config.include_instructions,
                     include_usage,
-                    default_skill_metadata_budget(
-                        model_info
-                            .as_deref()
-                            .and_then(|model_info| model_info.context_window),
-                    ),
+                    metadata_budget,
                 ));
             }
             sections
@@ -214,6 +222,7 @@ where
         &self,
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
+        _step_store: &ExtensionData,
     ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
         let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
             return Vec::new();
@@ -269,6 +278,7 @@ where
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
         turn_store: &'a ExtensionData,
+        _step_store: &'a ExtensionData,
     ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>> {
         Box::pin(async move {
             let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
@@ -323,10 +333,20 @@ where
                     entry.authority.kind != SkillSourceKind::Executor
                         && entry.authority.kind != SkillSourceKind::Orchestrator
                 });
-                let include_usage = thread_store
-                    .get::<ModelInfo>()
+                let model_info = thread_store.get::<ModelInfo>();
+                let include_usage = model_info
+                    .as_deref()
                     .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-                if let Some(fragment) = available_skills_fragment(&turn_catalog, include_usage) {
+                let context_window = model_info
+                    .as_deref()
+                    .and_then(ModelInfo::resolved_context_window);
+                let metadata_budget = capped_skill_metadata_budget(context_window);
+                if let Some(fragment) = available_skills_fragment(
+                    &turn_catalog,
+                    include_usage,
+                    SkillCatalogRenderPolicy::ExtensionCompatible,
+                    metadata_budget,
+                ) {
                     fragments.push(Box::new(fragment));
                 }
             }

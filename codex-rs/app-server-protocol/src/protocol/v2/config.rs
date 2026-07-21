@@ -12,6 +12,7 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -337,6 +338,7 @@ pub struct ConfigWriteResponse {
 #[ts(export_to = "v2/")]
 pub enum ConfigWriteErrorCode {
     ConfigLayerReadonly,
+    ConfigRequirementReadonly,
     ConfigVersionConflict,
     ConfigValidationError,
     ConfigPathNotFound,
@@ -392,6 +394,16 @@ pub struct ConfigRequirements {
     #[experimental("configRequirements/read.network")]
     pub network: Option<NetworkRequirements>,
     pub models: Option<ModelsRequirements>,
+    #[schemars(with = "Option<String>")]
+    pub sqlite_home: Option<PathUri>,
+    #[schemars(with = "Option<String>")]
+    pub log_dir: Option<PathUri>,
+    #[schemars(with = "Option<String>")]
+    pub model_catalog_json: Option<PathUri>,
+    pub check_for_update_on_startup: Option<bool>,
+    pub allow_login_shell: Option<bool>,
+    pub feedback: Option<FeedbackRequirements>,
+    pub windows_sandbox_private_desktop: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -408,6 +420,13 @@ pub struct NewThreadModelDefaults {
     pub model: Option<String>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub service_tier: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FeedbackRequirements {
+    pub enabled: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -484,6 +503,13 @@ pub enum ConfiguredHookHandler {
         #[serde(rename = "statusMessage")]
         #[ts(rename = "statusMessage")]
         status_message: Option<String>,
+        /// Approximate token threshold for spilling this hook's `additionalContext` to disk.
+        /// `null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is
+        /// evaluated against the original context; a spilled preview also includes recovery
+        /// metadata.
+        #[serde(rename = "additionalContextLimit")]
+        #[ts(rename = "additionalContextLimit")]
+        additional_context_limit: Option<usize>,
     },
     #[serde(rename = "prompt")]
     #[ts(rename = "prompt")]
@@ -692,6 +718,12 @@ pub struct ExternalAgentConfigDetectParams {
     /// Zero or more working directories to include for repo-scoped detection.
     #[ts(optional = nullable)]
     pub cwds: Option<Vec<PathBuf>>,
+    /// Maximum age in days for detected sessions. Missing values use the default limit.
+    #[ts(optional = nullable)]
+    pub max_session_age_days: Option<u32>,
+    /// Maximum number of sessions to detect. Missing values use the default limit.
+    #[ts(optional = nullable)]
+    pub max_sessions: Option<u32>,
     /// Deprecated field retained for compatibility. This field is ignored; use `migrationSource`
     /// to select the migration source.
     #[ts(optional = nullable)]
@@ -709,6 +741,10 @@ pub struct ExternalAgentConfigImportParams {
     /// Optional identifier for the product that initiated the import.
     #[ts(optional = nullable)]
     pub source: Option<String>,
+    /// Opaque provider identifier supplied by the caller for analytics attribution. This does not
+    /// select the migration source.
+    #[ts(optional = nullable)]
+    pub provider_id: Option<String>,
     /// Migration-source selector used to produce the migration items. Pass the same value to
     /// detection and import; missing or unrecognized values use the default source.
     #[ts(optional = nullable)]

@@ -56,12 +56,6 @@
           "description": "Whether to record a model-visible message when an agent turn is interrupted. Defaults to true.",
           "type": "boolean"
         },
-        "job_max_runtime_seconds": {
-          "description": "Default maximum runtime in seconds for agent job workers.",
-          "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
-        },
         "max_concurrent_threads_per_session": {
           "description": "Maximum number of spawned agent threads that can be open concurrently per session. When unset, the selected multi-agent backend uses its default.",
           "format": "uint",
@@ -463,6 +457,9 @@
             },
             "code_mode": {
               "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
+            },
+            "code_mode_buffered_exec": {
+              "type": "boolean"
             },
             "code_mode_host": {
               "type": "boolean"
@@ -1198,6 +1195,12 @@
       "oneOf": [
         {
           "properties": {
+            "additionalContextLimit": {
+              "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk. Unset uses 2,500 tokens; `0` disables spilling for this hook. The threshold is evaluated against the original context; a spilled preview also includes recovery metadata.",
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "async": {
               "default": false,
               "type": "boolean"
@@ -2754,6 +2757,25 @@
         }
       ]
     },
+    "ResumeCwdMode": {
+      "description": "Working directory to use when resuming or forking a session.",
+      "oneOf": [
+        {
+          "description": "Use the directory where Codex was launched.",
+          "enum": [
+            "current"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Use the latest working directory recorded in the selected session.",
+          "enum": [
+            "session"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "RolloutBudgetConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -2827,6 +2849,14 @@
       ],
       "type": "string"
     },
+    "ShellEnvironmentPolicyFilter": {
+      "description": "Assigns a shell environment variable pattern to the include-only or exclude set. Includes do not re-add variables removed by another exclude pattern.",
+      "enum": [
+        "include",
+        "exclude"
+      ],
+      "type": "string"
+    },
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
@@ -2854,10 +2884,28 @@
     },
     "ShellEnvironmentPolicyToml": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "exclude",
+              "filters"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "filters",
+              "include_only"
+            ]
+          }
+        }
+      ],
       "description": "Policy for building the `env` when spawning a process via shell-like tools.",
       "properties": {
         "exclude": {
-          "description": "List of regular expressions.",
+          "description": "Legacy list of regular expressions to exclude.",
           "items": {
             "type": "string"
           },
@@ -2866,11 +2914,18 @@
         "experimental_use_profile": {
           "type": "boolean"
         },
+        "filters": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ShellEnvironmentPolicyFilter"
+          },
+          "description": "Pattern actions used by the canonical table representation.\n\nOrdinary config keeps accepting the legacy arrays above during the migration. Requirements will accept only this keyed form, keeping array compatibility isolated so the legacy fields can be deprecated later. Pattern keys merge case-insensitively across config layers, matching how the resulting patterns match environment variable names.",
+          "type": "object"
+        },
         "ignore_default_excludes": {
           "type": "boolean"
         },
         "include_only": {
-          "description": "List of regular expressions.",
+          "description": "Legacy list of regular expressions to include.",
           "items": {
             "type": "string"
           },
@@ -3284,6 +3339,15 @@
           "default": false,
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
+        },
+        "resume_cwd": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResumeCwdMode"
+            }
+          ],
+          "default": null,
+          "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
         },
         "session_picker_view": {
           "allOf": [
@@ -4662,7 +4726,6 @@
       "description": "Agent-related settings (thread limits, etc.)."
     },
     "allow_login_shell": {
-      "default": true,
       "description": "Whether the model may request a login shell for shell-based tools. Default to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
       "type": "boolean"
     },
@@ -4867,6 +4930,9 @@
         },
         "code_mode": {
           "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
+        },
+        "code_mode_buffered_exec": {
+          "type": "boolean"
         },
         "code_mode_host": {
           "type": "boolean"
@@ -5507,6 +5573,7 @@
       "default": {
         "exclude": null,
         "experimental_use_profile": null,
+        "filters": null,
         "ignore_default_excludes": null,
         "include_only": null,
         "inherit": null,

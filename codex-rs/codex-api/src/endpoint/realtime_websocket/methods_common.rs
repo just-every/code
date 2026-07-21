@@ -10,12 +10,14 @@ use crate::endpoint::realtime_websocket::methods_v2::conversation_function_call_
 use crate::endpoint::realtime_websocket::methods_v2::conversation_item_create_message as v2_conversation_item_create_message;
 use crate::endpoint::realtime_websocket::methods_v2::session_update_session as v2_session_update_session;
 use crate::endpoint::realtime_websocket::methods_v2::websocket_intent as v2_websocket_intent;
+use crate::endpoint::realtime_websocket::protocol::RealtimeContextAppendChannel;
 use crate::endpoint::realtime_websocket::protocol::RealtimeOutboundMessage;
 use crate::endpoint::realtime_websocket::protocol::RealtimeOutputModality;
 use crate::endpoint::realtime_websocket::protocol::RealtimeSessionConfig;
 use crate::endpoint::realtime_websocket::protocol::RealtimeSessionMode;
 use crate::endpoint::realtime_websocket::protocol::RealtimeVoice;
 use crate::endpoint::realtime_websocket::protocol::RealtimeWireAdapter;
+use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::ConversationTextRole;
 use serde_json::Result as JsonResult;
 use serde_json::Value;
@@ -40,10 +42,13 @@ pub(super) fn conversation_item_create_message(
     wire_adapter: RealtimeWireAdapter,
     text: String,
     role: ConversationTextRole,
+    context_append_channel: Option<RealtimeContextAppendChannel>,
 ) -> RealtimeOutboundMessage {
     match wire_adapter {
         RealtimeWireAdapter::V1 => v1_conversation_item_create_message(text, role),
-        RealtimeWireAdapter::FramelessBidi => frameless_session_context_append_message(text),
+        RealtimeWireAdapter::FramelessBidi => {
+            frameless_session_context_append_message(text, context_append_channel)
+        }
         RealtimeWireAdapter::RealtimeV2 => v2_conversation_item_create_message(text, role),
     }
 }
@@ -52,12 +57,15 @@ pub(super) fn conversation_handoff_append_message(
     wire_adapter: RealtimeWireAdapter,
     handoff_id: String,
     output_text: String,
+    context_append_channel: Option<RealtimeContextAppendChannel>,
 ) -> RealtimeOutboundMessage {
     match wire_adapter {
         RealtimeWireAdapter::V1 => v1_conversation_handoff_append_message(handoff_id, output_text),
-        RealtimeWireAdapter::FramelessBidi => {
-            frameless_delegation_context_append_message(handoff_id, output_text)
-        }
+        RealtimeWireAdapter::FramelessBidi => frameless_delegation_context_append_message(
+            handoff_id,
+            output_text,
+            context_append_channel,
+        ),
         RealtimeWireAdapter::RealtimeV2 => {
             unreachable!("realtime v2 does not send conversation handoff output")
         }
@@ -68,10 +76,13 @@ pub(super) fn standalone_handoff_message(
     wire_adapter: RealtimeWireAdapter,
     handoff_id: String,
     output_text: String,
+    context_append_channel: Option<RealtimeContextAppendChannel>,
 ) -> RealtimeOutboundMessage {
     match wire_adapter {
         RealtimeWireAdapter::V1 => v1_conversation_handoff_append_message(handoff_id, output_text),
-        RealtimeWireAdapter::FramelessBidi => frameless_session_context_append_message(output_text),
+        RealtimeWireAdapter::FramelessBidi => {
+            frameless_session_context_append_message(output_text, context_append_channel)
+        }
         RealtimeWireAdapter::RealtimeV2 => {
             unreachable!("realtime v2 does not send standalone handoff output")
         }
@@ -82,6 +93,7 @@ pub(super) fn conversation_function_call_output_message(
     wire_adapter: RealtimeWireAdapter,
     call_id: String,
     output_text: String,
+    context_append_channel: Option<RealtimeContextAppendChannel>,
 ) -> RealtimeOutboundMessage {
     match wire_adapter {
         RealtimeWireAdapter::V1 => v1_conversation_handoff_append_message(
@@ -90,7 +102,8 @@ pub(super) fn conversation_function_call_output_message(
         ),
         RealtimeWireAdapter::FramelessBidi => frameless_delegation_context_append_message(
             call_id,
-            format!("{AGENT_FINAL_MESSAGE_PREFIX}{output_text}"),
+            output_text,
+            context_append_channel,
         ),
         RealtimeWireAdapter::RealtimeV2 => {
             v2_conversation_function_call_output_message(call_id, output_text)
@@ -101,6 +114,7 @@ pub(super) fn conversation_function_call_output_message(
 pub(super) fn session_update_message(
     wire_adapter: RealtimeWireAdapter,
     instructions: String,
+    initial_items: Vec<ConversationTextParams>,
     session_mode: RealtimeSessionMode,
     output_modality: RealtimeOutputModality,
     voice: RealtimeVoice,
@@ -110,7 +124,9 @@ pub(super) fn session_update_message(
         RealtimeWireAdapter::V1 => RealtimeOutboundMessage::SessionUpdate {
             session: v1_session_update_session(instructions, voice),
         },
-        RealtimeWireAdapter::FramelessBidi => frameless_session_update_message(instructions, voice),
+        RealtimeWireAdapter::FramelessBidi => {
+            frameless_session_update_message(instructions, initial_items, voice)
+        }
         RealtimeWireAdapter::RealtimeV2 => RealtimeOutboundMessage::SessionUpdate {
             session: v2_session_update_session(instructions, session_mode, output_modality, voice),
         },
@@ -139,6 +155,7 @@ pub fn session_update_session_json(config: RealtimeSessionConfig) -> JsonResult<
         RealtimeWireAdapter::FramelessBidi => Ok(frameless_session_json(
             config.model,
             config.instructions,
+            config.initial_items,
             config.voice,
         )),
     }

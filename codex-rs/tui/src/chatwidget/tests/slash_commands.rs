@@ -1308,8 +1308,10 @@ async fn usage_command_runs_with_backend_auth_without_chatgpt_account_flag() {
 #[tokio::test]
 async fn usage_command_runs_with_backend_auth_from_widget_init() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual_with_auth(
-        /*model_override*/ None, /*has_chatgpt_account*/ false,
+        /*model_override*/ None,
+        /*has_chatgpt_account*/ false,
         /*has_codex_backend_auth*/ true,
+        FrameRequester::test_dummy(),
     )
     .await;
 
@@ -2102,7 +2104,39 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 
     chat.dispatch_command(SlashCommand::Clear);
 
-    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi { name: None }));
+}
+
+#[tokio::test]
+async fn slash_new_with_name_requests_named_session() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane
+        .set_composer_text("/new   Add User  ".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::NewSession {
+            name: Some(name)
+        }) if name == "Add User"
+    );
+}
+
+#[tokio::test]
+async fn slash_clear_with_name_requests_named_session() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane
+        .set_composer_text("/clear   Add User  ".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ClearUi {
+            name: Some(name)
+        }) if name == "Add User"
+    );
 }
 
 #[tokio::test]
@@ -2128,7 +2162,7 @@ async fn slash_clear_after_ctrl_c_keeps_stashed_draft_recallable() {
         .set_composer_text("/clear".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi { name: None }));
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(chat.bottom_pane.composer_text(), stashed_draft);
 

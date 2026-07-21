@@ -46,10 +46,11 @@ const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "EnvironmentShellInfo",
     "EnvironmentStatusKind",
-    "PathUri",
     "RemoteControlClient",
     "RemoteControlClientsListOrder",
     "ThreadBackgroundTerminal",
+    "ThreadSearchOccurrence",
+    "ThreadSearchTextRange",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",

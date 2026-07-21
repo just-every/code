@@ -129,6 +129,7 @@ export type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigr
 export type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
 export type { ExternalAgentImportedConnectorCandidate } from "./ExternalAgentImportedConnectorCandidate";
 export type { ExternalAgentImportedConnectorSource } from "./ExternalAgentImportedConnectorSource";
+export type { FeedbackRequirements } from "./FeedbackRequirements";
 export type { FeedbackUploadParams } from "./FeedbackUploadParams";
 export type { FeedbackUploadResponse } from "./FeedbackUploadResponse";
 export type { FileChangeApprovalDecision } from "./FileChangeApprovalDecision";
@@ -449,6 +450,7 @@ export type { ThreadReadResponse } from "./ThreadReadResponse";
 export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
 export type { ThreadRealtimeClosedNotification } from "./ThreadRealtimeClosedNotification";
 export type { ThreadRealtimeErrorNotification } from "./ThreadRealtimeErrorNotification";
+export type { ThreadRealtimeInitialItem } from "./ThreadRealtimeInitialItem";
 export type { ThreadRealtimeItemAddedNotification } from "./ThreadRealtimeItemAddedNotification";
 export type { ThreadRealtimeOutputAudioDeltaNotification } from "./ThreadRealtimeOutputAudioDeltaNotification";
 export type { ThreadRealtimeSdpNotification } from "./ThreadRealtimeSdpNotification";

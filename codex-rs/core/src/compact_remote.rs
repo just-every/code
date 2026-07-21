@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use crate::compact::CompactedHistoryMetadata;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
@@ -11,6 +12,7 @@ use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::context::world_state::WorldState;
 use crate::context_manager::ContextManager;
+use crate::context_manager::estimate_item_token_count;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -31,10 +33,10 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
+use codex_utils_output_truncation::approx_token_count;
 
 #[path = "compact_remote_request.rs"]
 mod request;
@@ -258,41 +260,34 @@ async fn run_remote_compact_task_inner_impl(
         trace_input_history,
     } = attempt;
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) = process_compacted_history(
-        sess.as_ref(),
-        compaction_turn_context.as_ref(),
-        new_history,
-        &initial_context_injection,
-    )
-    .await;
+    let (new_history, world_state_baseline) =
+        process_compacted_history(sess.as_ref(), new_history, &initial_context_injection).await;
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage(_) => {
+        InitialContextInjection::BeforeLastUserMessage { .. } => {
             Some(compaction_turn_context.to_turn_context_item())
         }
-    };
-    let compacted_item = CompactedItem {
-        message: String::new(),
-        replacement_history: Some(new_history.clone()),
-        window_number: Some(new_window_number),
-        first_window_id: Some(new_window_ids.first_window_id.to_string()),
-        previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
-        window_id: Some(new_window_ids.window_id.to_string()),
     };
     // Install is the semantic boundary where the compact endpoint's output becomes live
     // thread history. Keep it distinct from the later inference request so the reducer can
     // still represent repeated developer/context prefix items exactly as the model saw them.
-    compaction_trace.record_installed(&CompactionCheckpointTracePayload {
-        input_history: &trace_input_history,
-        replacement_history: &new_history,
-    });
+    if let Some(trace_input_history) = trace_input_history.as_deref() {
+        compaction_trace.record_installed(&CompactionCheckpointTracePayload {
+            input_history: trace_input_history,
+            replacement_history: &new_history,
+        });
+    }
     sess.replace_compacted_history(
         compaction_turn_context.as_ref(),
         new_history,
         reference_context_item,
         world_state_baseline,
-        compacted_item,
+        CompactedHistoryMetadata {
+            message: String::new(),
+            window_number: new_window_number,
+            window_ids: new_window_ids,
+        },
     )
     .await;
     sess.recompute_token_usage(compaction_turn_context).await;
@@ -304,7 +299,6 @@ async fn run_remote_compact_task_inner_impl(
 
 pub(crate) async fn process_compacted_history(
     sess: &Session,
-    turn_context: &TurnContext,
     mut compacted_history: Vec<ResponseItem>,
     initial_context_injection: &InitialContextInjection,
 ) -> (Vec<ResponseItem>, Option<Arc<WorldState>>) {
@@ -312,7 +306,7 @@ pub(crate) async fn process_compacted_history(
     // message in the replacement history. Pre-turn compaction instead injects context after the
     // compaction item, but mid-turn compaction keeps the compaction item last for model training.
     let (initial_context, world_state_baseline) =
-        build_compaction_initial_context(sess, turn_context, initial_context_injection).await;
+        build_compaction_initial_context(sess, initial_context_injection).await;
 
     compacted_history.retain(should_keep_compacted_history_item);
     (
@@ -374,37 +368,46 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let Some(context_window) = turn_context.model_context_window() else {
         return (0, 0);
     };
-    let mut rewritten_outputs = 0usize;
-    let mut estimated_deleted_tokens = 0i64;
-    let item_count = history.raw_items().len();
+    // Keep the unclamped total so replacing an item cannot lose an overflow hidden by i64
+    // saturation in the normal history estimator.
+    let base_tokens =
+        i128::try_from(approx_token_count(&base_instructions.text)).unwrap_or(i128::MAX);
+    let original_items = history.raw_items();
+    let item_token_estimates = original_items
+        .iter()
+        .map(estimate_item_token_count)
+        .collect::<Vec<_>>();
+    let mut estimated_tokens = item_token_estimates
+        .iter()
+        .copied()
+        .map(i128::from)
+        .fold(base_tokens, i128::saturating_add);
+    let initial_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
+    let mut rewritten_items = Vec::new();
 
-    for index in (0..item_count).rev() {
-        let Some(estimated_tokens_before) =
-            history.estimate_token_count_with_base_instructions(base_instructions)
-        else {
-            break;
-        };
-        if estimated_tokens_before <= context_window {
+    for (item, item_tokens) in original_items.iter().zip(item_token_estimates).rev() {
+        if i64::try_from(estimated_tokens).unwrap_or(i64::MAX) <= context_window {
             break;
         }
-        let Some(rewritten_item) = history
-            .raw_items()
-            .get(index)
-            .and_then(rewritten_output_for_context_window)
-        else {
+        let Some(rewritten_item) = rewritten_output_for_context_window(item) else {
             break;
         };
-        let mut items = history.raw_items().to_vec();
-        items[index] = rewritten_item;
-        history.replace(items);
-        let estimated_tokens_after = history
-            .estimate_token_count_with_base_instructions(base_instructions)
-            .unwrap_or_default();
-        rewritten_outputs += 1;
-        estimated_deleted_tokens = estimated_deleted_tokens
-            .saturating_add(estimated_tokens_before.saturating_sub(estimated_tokens_after));
+        estimated_tokens = estimated_tokens
+            .saturating_sub(i128::from(item_tokens))
+            .saturating_add(i128::from(estimate_item_token_count(&rewritten_item)));
+        rewritten_items.push(rewritten_item);
     }
 
+    let rewritten_outputs = rewritten_items.len();
+    if rewritten_outputs > 0 {
+        let retained_len = original_items.len() - rewritten_outputs;
+        let mut items = original_items[..retained_len].to_vec();
+        items.extend(rewritten_items.into_iter().rev());
+        history.replace(items);
+    }
+
+    let final_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
+    let estimated_deleted_tokens = initial_estimated_tokens.saturating_sub(final_estimated_tokens);
     (rewritten_outputs, estimated_deleted_tokens)
 }
 

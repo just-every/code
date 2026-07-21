@@ -43,6 +43,7 @@ use codex_config::types::MemoriesConfig;
 use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_config::types::ResumeCwdMode;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::ToolSuggestConfig;
 use codex_config::types::ToolSuggestDisabledTool;
@@ -152,6 +153,7 @@ mod network_proxy_spec;
 mod otel;
 mod permission_profile_catalog;
 mod permissions;
+mod requirements;
 mod resolved_permission_profile;
 #[cfg(test)]
 mod schema;
@@ -265,7 +267,6 @@ pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
 pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
-pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
@@ -789,6 +790,10 @@ pub struct Config {
     /// Preferred layout for resume/fork session picker results.
     pub tui_session_picker_view: SessionPickerViewMode,
 
+    /// Working directory to use when resuming or forking a session.
+    /// When unset, prompt if the current and session directories differ.
+    pub tui_resume_cwd: Option<ResumeCwdMode>,
+
     /// Terminal resize-reflow tuning knobs.
     pub terminal_resize_reflow: TerminalResizeReflowConfig,
 
@@ -868,9 +873,6 @@ pub struct Config {
 
     /// Default reasoning effort for spawned subagents when the spawn call does not select one.
     pub agent_default_subagent_reasoning_effort: Option<ReasoningEffort>,
-
-    /// Maximum runtime in seconds for agent job workers before they are failed.
-    pub agent_job_max_runtime_seconds: Option<u64>,
 
     /// Whether to record a model-visible message when an agent turn is interrupted.
     pub agent_interrupt_message_enabled: bool,
@@ -1534,6 +1536,7 @@ impl Config {
             self.features.enabled(Feature::Plugins),
             self.features.enabled(Feature::RemotePlugin),
             self.chatgpt_base_url.clone(),
+            self.http_client_factory(),
         )
     }
 
@@ -2407,6 +2410,7 @@ fn apply_managed_filesystem_constraints(
                     pattern: deny_read.as_str().to_string(),
                 },
                 access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             }
         } else {
             let Ok(path) = AbsolutePathBuf::try_from(deny_read.as_str()) else {
@@ -2415,6 +2419,7 @@ fn apply_managed_filesystem_constraints(
             codex_protocol::permissions::FileSystemSandboxEntry {
                 path: codex_protocol::permissions::FileSystemPath::Path { path },
                 access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             }
         };
         if !file_system_sandbox_policy
@@ -3035,7 +3040,7 @@ impl Config {
 
     pub(crate) async fn load_config_with_layer_stack(
         fs: &dyn ExecutorFileSystem,
-        cfg: ConfigToml,
+        mut cfg: ConfigToml,
         overrides: ConfigOverrides,
         codex_home: AbsolutePathBuf,
         config_layer_stack: ConfigLayerStack,
@@ -3056,13 +3061,31 @@ impl Config {
             resolve_orchestrator_feature_enabled(orchestrator.and_then(|value| value.skills.as_ref()));
         let orchestrator_mcp_enabled =
             resolve_orchestrator_feature_enabled(orchestrator.and_then(|value| value.mcp.as_ref()));
-        // Ensure that every field of ConfigRequirements is applied to the final
-        // Config.
+        let mut startup_warnings = config_layer_stack
+            .startup_warnings()
+            .unwrap_or_default()
+            .to_vec();
+        let configured_sqlite_home = cfg.sqlite_home.clone();
+        requirements::apply_to_config(
+            &mut cfg,
+            config_layer_stack.requirements(),
+            &mut startup_warnings,
+        );
+
+        // Destructure every field to ensure ConfigRequirements additions are
+        // either applied above or handled while constructing the final Config.
         let ConfigRequirements {
+            sqlite_home: _,
+            log_dir: _,
+            model_catalog_json: _,
+            check_for_update_on_startup: _,
+            allow_login_shell: _,
+            feedback: _,
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
             permission_profile: mut constrained_permission_profile,
             windows_sandbox_mode: mut constrained_windows_sandbox_mode,
+            windows_sandbox_private_desktop: _,
             web_search_mode: mut constrained_web_search_mode,
             allow_managed_hooks_only: _,
             allow_appshots: _,
@@ -3079,11 +3102,6 @@ impl Config {
             filesystem: filesystem_requirements,
             guardian_policy_config_source: _,
         } = config_layer_stack.requirements().clone();
-
-        let mut startup_warnings = config_layer_stack
-            .startup_warnings()
-            .unwrap_or_default()
-            .to_vec();
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
@@ -3611,25 +3629,6 @@ impl Config {
             .agents
             .as_ref()
             .and_then(|agents| agents.default_subagent_reasoning_effort.clone());
-        let agent_job_max_runtime_seconds = cfg
-            .agents
-            .as_ref()
-            .and_then(|agents| agents.job_max_runtime_seconds)
-            .or(DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS);
-        if agent_job_max_runtime_seconds == Some(0) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "agents.job_max_runtime_seconds must be at least 1",
-            ));
-        }
-        if let Some(max_runtime_seconds) = agent_job_max_runtime_seconds
-            && max_runtime_seconds > i64::MAX as u64
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "agents.job_max_runtime_seconds must fit within a 64-bit signed integer",
-            ));
-        }
         let agent_interrupt_message_enabled = cfg
             .agents
             .as_ref()
@@ -3771,11 +3770,18 @@ impl Config {
             .as_ref()
             .map(AbsolutePathBuf::to_path_buf)
             .unwrap_or_else(|| codex_home.join("log").to_path_buf());
+        let sqlite_home_env = resolve_sqlite_home_env(&resolved_cwd);
+        requirements::push_sqlite_home_env_override_warning(
+            configured_sqlite_home.as_ref(),
+            sqlite_home_env.as_deref(),
+            config_layer_stack.requirements().sqlite_home.as_ref(),
+            &mut startup_warnings,
+        );
         let sqlite_home = cfg
             .sqlite_home
             .as_ref()
             .map(AbsolutePathBuf::to_path_buf)
-            .or_else(|| resolve_sqlite_home_env(&resolved_cwd))
+            .or(sqlite_home_env)
             .unwrap_or_else(|| codex_home.to_path_buf());
         let original_permission_profile = permission_profile.clone();
         apply_requirement_constrained_value(
@@ -3968,7 +3974,6 @@ impl Config {
             agent_max_depth,
             agent_roles,
             memories: memories_config,
-            agent_job_max_runtime_seconds,
             agent_interrupt_message_enabled,
             codex_home,
             sqlite_home,
@@ -4118,6 +4123,7 @@ impl Config {
                 .as_ref()
                 .and_then(|t| t.session_picker_view)
                 .unwrap_or_default(),
+            tui_resume_cwd: cfg.tui.as_ref().and_then(|t| t.resume_cwd),
             terminal_resize_reflow,
             tui_keymap: cfg
                 .tui
@@ -4222,8 +4228,12 @@ impl Config {
                         ),
                     )
                 })?;
-            let mut configured_network_proxy_config = network_proxy_config_for_profile_selection(
+            let permissions = merge_managed_permission_profiles(
                 cfg.permissions.as_ref(),
+                self.config_layer_stack.requirements_toml(),
+            )?;
+            let mut configured_network_proxy_config = network_proxy_config_for_profile_selection(
+                permissions.as_ref(),
                 active_permission_profile.id.as_str(),
             )?;
             if self.features.enabled(Feature::NetworkProxy)

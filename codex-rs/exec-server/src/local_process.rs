@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_exec_server_protocol::JSONRPCErrorError;
+use codex_network_proxy::NetworkProxyHandle;
 use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::exec_output::ExecToolCallOutput;
@@ -17,7 +18,6 @@ use codex_sandboxing::SandboxType;
 use codex_sandboxing::is_likely_sandbox_denied;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::ProcessSignal as PtyProcessSignal;
-use codex_utils_pty::TerminalSize;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
@@ -100,6 +100,7 @@ struct RunningProcess {
     termination_requested: bool,
     sandbox: SandboxType,
     sandbox_denied: bool,
+    network_proxy_handle: Option<NetworkProxyHandle>,
 }
 
 /// Bounded cache of stdin write ids that have already been accepted for one process.
@@ -238,11 +239,10 @@ impl LocalProcess {
     ) -> Result<(ExecResponse, watch::Sender<u64>, ExecProcessEventLog), JSONRPCErrorError> {
         let process_id = params.process_id.clone();
         let prepared =
-            prepare_exec_request(&params, child_env(&params), self.runtime_paths.as_ref())?;
-        let (program, args) = prepared
-            .command
-            .split_first()
-            .ok_or_else(|| invalid_params("argv must not be empty".to_string()))?;
+            prepare_exec_request(&params, child_env(&params), self.runtime_paths.as_ref()).await?;
+        if prepared.command.is_empty() {
+            return Err(invalid_params("argv must not be empty".to_string()));
+        }
 
         let start = Arc::new(ProcessStart);
         {
@@ -258,35 +258,18 @@ impl LocalProcess {
             );
         }
 
-        let spawned_result = if params.tty {
-            codex_utils_pty::spawn_pty_process(
-                program,
-                args,
-                prepared.cwd.as_path(),
-                &prepared.env,
-                &prepared.arg0,
-                TerminalSize::default(),
-            )
-            .await
-        } else if params.pipe_stdin {
-            codex_utils_pty::spawn_pipe_process(
-                program,
-                args,
-                prepared.cwd.as_path(),
-                &prepared.env,
-                &prepared.arg0,
-            )
-            .await
-        } else {
-            codex_utils_pty::spawn_pipe_process_no_stdin(
-                program,
-                args,
-                prepared.cwd.as_path(),
-                &prepared.env,
-                &prepared.arg0,
-            )
-            .await
-        };
+        let spawned_result = codex_sandboxing::spawn_process(codex_sandboxing::SpawnRequest {
+            command: &prepared.command,
+            cwd: prepared.cwd.as_path(),
+            env: &prepared.env,
+            arg0: &prepared.arg0,
+            sandbox: prepared.sandbox,
+            windows_sandbox: prepared.windows_sandbox_spawn_request(),
+            tty: params.tty,
+            stdin_open: params.tty || params.pipe_stdin,
+            inherited_fds: &[],
+        })
+        .await;
         let spawned = match spawned_result {
             Ok(spawned) => spawned,
             Err(err) => {
@@ -341,6 +324,7 @@ impl LocalProcess {
                     termination_requested: false,
                     sandbox: prepared.sandbox,
                     sandbox_denied: false,
+                    network_proxy_handle: prepared.network_proxy_handle,
                 })),
             );
         }
@@ -924,7 +908,7 @@ async fn finish_output_stream(process_id: ProcessId, inner: Arc<Inner>) {
 }
 
 async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
-    let (notification, output_notify) = {
+    let (notification, output_notify, network_proxy_handle) = {
         let mut processes = inner.processes.lock().await;
         let Some(ProcessEntry::Running(process)) = processes.get_mut(&process_id) else {
             return;
@@ -945,8 +929,15 @@ async fn maybe_emit_closed(process_id: ProcessId, inner: Arc<Inner>) {
                 seq,
             },
             Arc::clone(&process.output_notify),
+            process.network_proxy_handle.take(),
         )
     };
+
+    if let Some(network_proxy_handle) = network_proxy_handle
+        && let Err(err) = network_proxy_handle.shutdown().await
+    {
+        tracing::warn!("failed to shut down executor network proxy: {err}");
+    }
 
     output_notify.notify_waiters();
     let cleanup_process_id = process_id.clone();
@@ -985,6 +976,11 @@ mod tests {
     use codex_exec_server_protocol::JSONRPCMessage;
     use codex_exec_server_protocol::JSONRPCResponse;
     use codex_exec_server_protocol::RequestId;
+    use codex_network_proxy::NetworkProxy;
+    use codex_network_proxy::NetworkProxyConfig;
+    use codex_network_proxy::NetworkProxyState;
+    use codex_network_proxy::RemoteNetworkProxyConfig;
+    use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
     use codex_otel::MetricsConfig;
     use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
     use codex_utils_path_uri::PathUri;
@@ -1010,6 +1006,7 @@ mod tests {
             sandbox: None,
             enforce_managed_network: false,
             managed_network: None,
+            network_proxy: None,
         }
     }
 
@@ -1328,6 +1325,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exited_process_keeps_network_proxy_until_inherited_streams_close() {
+        let backend = LocalProcess::default();
+        let mut process = spawn_test_process(&backend, "proc-background-child").await;
+        let config = NetworkProxyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let proxy_config = RemoteNetworkProxyConfig::from_effective_config(&config)
+            .expect("build remote network proxy config");
+        let state = NetworkProxyState::from_remote_launch_config(
+            RemoteNetworkProxyLaunchConfig::new(proxy_config),
+        )
+        .expect("build network proxy state");
+        let proxy = NetworkProxy::builder()
+            .state(Arc::new(state))
+            .build()
+            .await
+            .expect("build network proxy");
+        let handle = proxy.run().await.expect("start network proxy");
+        let prepared = proxy
+            .prepare_for_optional_environment(HashMap::new(), /*environment_id*/ None)
+            .expect("prepare network proxy environment");
+        let proxy_addr: std::net::SocketAddr = prepared
+            .env
+            .get("HTTP_PROXY")
+            .and_then(|value| value.strip_prefix("http://"))
+            .expect("HTTP proxy address")
+            .parse()
+            .expect("parse HTTP proxy address");
+
+        {
+            let mut processes = backend.inner.processes.lock().await;
+            let Some(ProcessEntry::Running(running)) = processes.get_mut(&process.process_id)
+            else {
+                panic!("test process should be running");
+            };
+            running.network_proxy_handle = Some(handle);
+        }
+
+        process.exit(/*exit_code*/ 0);
+        let exit_response =
+            read_process_until_change(&backend, &process.process_id, /*after_seq*/ None).await;
+        assert!(exit_response.exited);
+        assert!(!exit_response.closed);
+        tokio::net::TcpStream::connect(proxy_addr)
+            .await
+            .expect("proxy should remain available to a child holding inherited output streams");
+        #[cfg(target_os = "windows")]
+        assert!(proxy.network_proxy_restricting_sid(None).is_some());
+
+        drop(process.stdout_tx);
+        drop(process.stderr_tx);
+        let closed_response = timeout(
+            Duration::from_secs(1),
+            read_process_until_closed(&backend, &process.process_id),
+        )
+        .await
+        .expect("process should close");
+        assert!(closed_response.closed);
+        #[cfg(target_os = "windows")]
+        assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+        #[cfg(not(target_os = "windows"))]
+        assert!(tokio::net::TcpStream::connect(proxy_addr).await.is_err());
+        backend.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn closed_process_is_evicted_after_retention() {
         let backend = LocalProcess::default();
         let mut process = spawn_test_process(&backend, "proc-closed-eviction").await;
@@ -1411,6 +1475,7 @@ mod tests {
                 termination_requested: false,
                 sandbox: SandboxType::None,
                 sandbox_denied: false,
+                network_proxy_handle: None,
             })),
         );
         assert!(previous.is_none());

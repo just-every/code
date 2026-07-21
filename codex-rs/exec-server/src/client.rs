@@ -625,14 +625,6 @@ impl ExecServerClient {
         }
     }
 
-    pub async fn initialize(
-        &self,
-        options: ExecServerClientConnectOptions,
-    ) -> Result<InitializeResponse, ExecServerError> {
-        let rpc_client = self.rpc_client().await?;
-        self.initialize_rpc(&rpc_client, options).await
-    }
-
     async fn initialize_rpc(
         &self,
         rpc_client: &RpcClient,
@@ -1681,6 +1673,7 @@ mod tests {
                 sandbox: None,
                 enforce_managed_network: false,
                 managed_network: None,
+                network_proxy: None,
             })
             .instrument(parent_span)
             .await

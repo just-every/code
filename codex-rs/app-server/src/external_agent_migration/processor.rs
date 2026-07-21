@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config_manager::ConfigManager;
 use crate::error_code::internal_error;
@@ -30,6 +31,7 @@ use codex_external_agent_migration::ExternalAgentConfigImportItemResult as CoreI
 use codex_external_agent_migration::ExternalAgentConfigImportOutcome as CoreImportOutcome;
 use codex_external_agent_migration::ExternalAgentConfigMigrationItemType as CoreMigrationItemType;
 use codex_external_agent_migration::ExternalAgentConfigService;
+use codex_external_agent_migration::ExternalAgentSessionImportLimits;
 use codex_external_agent_migration::PluginImportOutcome;
 use codex_external_agent_migration::record_import_error;
 use codex_external_agent_migration::sessions::ExternalAgentSessionMigration as CoreSessionMigration;
@@ -119,6 +121,18 @@ impl ExternalAgentConfigRequestProcessor {
         let migration_service = self
             .migration_service
             .with_migration_source(params.migration_source.as_deref());
+        let default_session_import_limits = ExternalAgentSessionImportLimits::default();
+        let migration_service =
+            migration_service.with_session_import_limits(ExternalAgentSessionImportLimits {
+                max_age: params
+                    .max_session_age_days
+                    .map(|days| Duration::from_secs(u64::from(days) * 24 * 60 * 60))
+                    .unwrap_or(default_session_import_limits.max_age),
+                max_sessions: params
+                    .max_sessions
+                    .map(|max_sessions| max_sessions as usize)
+                    .unwrap_or(default_session_import_limits.max_sessions),
+            });
         let options = ExternalAgentConfigDetectOptions {
             include_home: params.include_home,
             include_memory: self.external_agent_memory_import_enabled().await,
@@ -158,6 +172,7 @@ impl ExternalAgentConfigRequestProcessor {
         }
         let import_id = Uuid::new_v4().to_string();
         let analytics_source = params.source.clone().unwrap_or_default();
+        let provider_id = params.provider_id.clone().unwrap_or_default();
         let migration_service = self
             .migration_service
             .with_migration_source(params.migration_source.as_deref());
@@ -209,6 +224,7 @@ impl ExternalAgentConfigRequestProcessor {
                 &self.analytics_events_client,
                 import_id,
                 analytics_source,
+                provider_id,
                 &completed_item_results,
             )
             .await;
@@ -303,6 +319,7 @@ impl ExternalAgentConfigRequestProcessor {
                 &analytics_events_client,
                 import_id,
                 analytics_source,
+                provider_id,
                 &completed_item_results,
             )
             .await;
@@ -466,11 +483,17 @@ async fn send_completed_import_notification(
     analytics_events_client: &AnalyticsEventsClient,
     import_id: String,
     analytics_source: String,
+    provider_id: String,
     item_results: &[CoreImportItemResult],
 ) {
     let notification = completed_notification(import_id, item_results);
     log_completed_import_failures(&notification);
-    track_completed_import_notification(analytics_events_client, &analytics_source, &notification);
+    track_completed_import_notification(
+        analytics_events_client,
+        &analytics_source,
+        &provider_id,
+        &notification,
+    );
     if let Some(state_db) = state_db
         && let Err(err) = record_completed_import_notification(state_db, &notification).await
     {
@@ -508,6 +531,7 @@ fn log_completed_import_failures(notification: &ExternalAgentConfigImportComplet
 fn track_completed_import_notification(
     analytics_events_client: &AnalyticsEventsClient,
     analytics_source: &str,
+    provider_id: &str,
     notification: &ExternalAgentConfigImportCompletedNotification,
 ) {
     for type_result in &notification.item_type_results {
@@ -516,6 +540,7 @@ fn track_completed_import_notification(
             ExternalAgentConfigImportCompletedInput {
                 import_id: notification.import_id.clone(),
                 source: analytics_source.to_string(),
+                provider_id: provider_id.to_string(),
                 item_type: item_type.clone(),
                 success_count: type_result.successes.len(),
                 failed_count: type_result.failures.len(),
@@ -526,6 +551,7 @@ fn track_completed_import_notification(
                 ExternalAgentConfigImportFailureInput {
                     import_id: notification.import_id.clone(),
                     source: analytics_source.to_string(),
+                    provider_id: provider_id.to_string(),
                     item_type: item_type.clone(),
                     failure_stage: failure.failure_stage.clone(),
                     error_type: import_failure_error_type(failure),

@@ -192,21 +192,6 @@ fn codex_hooks_is_legacy_alias_for_hooks() {
 }
 
 #[test]
-fn enable_fanout_normalization_enables_multi_agent_one_way() {
-    let mut enable_fanout_features = Features::with_defaults();
-    enable_fanout_features.enable(Feature::SpawnCsv);
-    enable_fanout_features.normalize_dependencies();
-    assert_eq!(enable_fanout_features.enabled(Feature::SpawnCsv), true);
-    assert_eq!(enable_fanout_features.enabled(Feature::Collab), true);
-
-    let mut collab_features = Features::with_defaults();
-    collab_features.enable(Feature::Collab);
-    collab_features.normalize_dependencies();
-    assert_eq!(collab_features.enabled(Feature::Collab), true);
-    assert_eq!(collab_features.enabled(Feature::SpawnCsv), false);
-}
-
-#[test]
 fn apps_require_feature_flag_and_chatgpt_auth() {
     let mut features = Features::with_defaults();
     assert!(!features.apps_enabled_for_auth(/*has_chatgpt_auth*/ false));
@@ -531,7 +516,7 @@ fn unstable_warning_event_only_mentions_enabled_under_development_features() {
 }
 
 #[test]
-fn unstable_warning_event_mentions_enabled_structured_under_development_feature() {
+fn unstable_warning_event_ignores_enabled_structured_stable_feature() {
     let configured_features: Table = toml::from_str(
         r#"
 multi_agent_v2 = { enabled = true, tool_namespace = "agents" }
@@ -556,7 +541,7 @@ code_mode = true
         panic!("expected warning event");
     };
     assert_eq!(
-        "Under-development features enabled: code_mode, multi_agent_v2. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
+        "Under-development features enabled: code_mode. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
         message
     );
 }

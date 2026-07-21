@@ -4,6 +4,7 @@ use crate::Prompt;
 use crate::ResponseStream;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compact::CompactedHistoryMetadata;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
@@ -33,7 +34,6 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
@@ -283,38 +283,32 @@ async fn run_remote_compact_task_inner_impl(
         build_v2_compacted_history(&prompt_input, compaction_output);
     analytics_details.retained_image_count = Some(retained_images);
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) = process_compacted_history(
-        sess.as_ref(),
-        compaction_turn_context.as_ref(),
-        compacted_history,
-        &initial_context_injection,
-    )
-    .await;
+    let (new_history, world_state_baseline) =
+        process_compacted_history(sess.as_ref(), compacted_history, &initial_context_injection)
+            .await;
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage(_) => {
+        InitialContextInjection::BeforeLastUserMessage { .. } => {
             Some(compaction_turn_context.to_turn_context_item())
         }
     };
-    let compacted_item = CompactedItem {
-        message: String::new(),
-        replacement_history: Some(new_history.clone()),
-        window_number: Some(new_window_number),
-        first_window_id: Some(new_window_ids.first_window_id.to_string()),
-        previous_window_id: new_window_ids.previous_window_id.map(|id| id.to_string()),
-        window_id: Some(new_window_ids.window_id.to_string()),
-    };
-    compaction_trace.record_installed(&CompactionCheckpointTracePayload {
-        input_history: &trace_input_history,
-        replacement_history: &new_history,
-    });
+    if let Some(trace_input_history) = trace_input_history.as_deref() {
+        compaction_trace.record_installed(&CompactionCheckpointTracePayload {
+            input_history: trace_input_history,
+            replacement_history: &new_history,
+        });
+    }
     sess.replace_compacted_history(
         compaction_turn_context.as_ref(),
         new_history,
         reference_context_item,
         world_state_baseline,
-        compacted_item,
+        CompactedHistoryMetadata {
+            message: String::new(),
+            window_number: new_window_number,
+            window_ids: new_window_ids,
+        },
     )
     .await;
     sess.recompute_token_usage(compaction_turn_context).await;
@@ -516,7 +510,7 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                 approx_token_count(text)
             }
-            ContentItem::InputImage { .. } => 0,
+            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => 0,
         })
         .sum()
 }
@@ -556,7 +550,9 @@ fn truncate_message_text_to_token_budget(
                     truncated_content.push(content_item);
                 }
             }
-            ContentItem::InputImage { .. } => truncated_content.push(content_item),
+            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {
+                truncated_content.push(content_item);
+            }
         }
     }
 

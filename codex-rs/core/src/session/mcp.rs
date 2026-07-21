@@ -451,7 +451,7 @@ impl Session {
             mcp_config.auth_keyring_backend_kind,
             &turn_context.approval_policy,
             turn_context.sub_id.clone(),
-            self.get_tx_event(),
+            Some(self.get_tx_event()),
             mcp_startup_cancellation_token,
             turn_context.permission_profile(),
             mcp_runtime_context.clone(),
@@ -735,10 +735,9 @@ async fn review_guardian_mcp_elicitation(
         /*retry_reason*/ None,
     )
     .await;
-    Ok(Some(
-        mcp_elicitation_response_from_guardian_decision(session.as_ref(), &review_id, decision)
-            .await,
-    ))
+    Ok(Some(mcp_elicitation_response_from_guardian_decision(
+        decision,
+    )))
 }
 
 fn guardian_elicitation_review_request(
@@ -882,23 +881,8 @@ fn mcp_elicitation_request_id(id: &RequestId) -> String {
     }
 }
 
-async fn mcp_elicitation_response_from_guardian_decision(
-    session: &Session,
-    review_id: &str,
+fn mcp_elicitation_response_from_guardian_decision(
     decision: ReviewDecision,
-) -> ElicitationResponse {
-    let denial_message = match decision {
-        ReviewDecision::Denied => {
-            Some(crate::guardian::guardian_rejection_message(session, review_id).await)
-        }
-        _ => None,
-    };
-    mcp_elicitation_response_from_guardian_decision_parts(decision, denial_message)
-}
-
-fn mcp_elicitation_response_from_guardian_decision_parts(
-    decision: ReviewDecision,
-    denial_message: Option<String>,
 ) -> ElicitationResponse {
     match decision {
         ReviewDecision::Approved
@@ -909,9 +893,7 @@ fn mcp_elicitation_response_from_guardian_decision_parts(
             content: Some(serde_json::json!({})),
             meta: Some(mcp_elicitation_auto_meta()),
         },
-        ReviewDecision::Denied => mcp_elicitation_decline_with_message(
-            denial_message.unwrap_or_else(|| "Guardian denied this request.".to_string()),
-        ),
+        ReviewDecision::Denied { rejection } => mcp_elicitation_decline_with_message(rejection),
         ReviewDecision::TimedOut => {
             mcp_elicitation_decline_with_message(crate::guardian::guardian_timeout_message())
         }
