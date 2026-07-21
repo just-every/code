@@ -1036,7 +1036,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--codex-version",
         help=(
             "Codex release version to write into the staged runtime package. "
-            "Accepts PEP 440 versions or release tags such as rust-v0.116.0-alpha.1."
+            "Accepts PEP 440 versions or release tags such as "
+            "rust-v0.116.0-alpha.1.2."
         ),
     )
     stage_runtime_parser.add_argument(

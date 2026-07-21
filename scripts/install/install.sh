@@ -4,6 +4,10 @@ set -eu
 
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
+DEFAULT_PREFER_RELEASES_OPENAI_COM="false"
+PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
+RELEASES_BASE_URL="https://releases.openai.com/codex"
+release_source="github"
 
 BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/codex"
@@ -55,8 +59,8 @@ validate_version() {
     return
   fi
 
-  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N]|-beta[.N]]." >&2
+  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
+    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
     exit 1
   fi
 }
@@ -124,6 +128,23 @@ download_text() {
 
   echo "curl or wget is required to install Codex." >&2
   exit 1
+}
+
+download_file_with_fallback() {
+  primary_url="$1"
+  fallback_url="$2"
+  output="$3"
+
+  if download_file "$primary_url" "$output"; then
+    return
+  fi
+
+  if [ -z "$fallback_url" ]; then
+    return 1
+  fi
+
+  warn "Could not download $primary_url; retrying from GitHub Releases."
+  download_file "$fallback_url" "$output"
 }
 
 parse_release_metadata() {
@@ -238,6 +259,13 @@ release_url_for_asset() {
   resolved_version="$2"
 
   printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+}
+
+releases_url_for_asset() {
+  asset="$1"
+  resolved_version="$2"
+
+  printf '%s/releases/%s/%s\n' "$RELEASES_BASE_URL" "$resolved_version" "$asset"
 }
 
 release_metadata_url() {
@@ -864,6 +892,10 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
 
   step "Installing standalone package to $release_dir"
   install_release "$release_dir" "$extract_dir/package/vendor/$vendor_target"
+fi
+if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
+  echo "Installed Codex command did not report expected version $resolved_version." >&2
+  exit 1
 fi
 update_current_link "$release_dir"
 update_visible_command

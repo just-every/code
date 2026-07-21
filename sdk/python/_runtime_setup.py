@@ -17,6 +17,15 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+_SDK_PYTHON_ROOT = str(Path(__file__).resolve().parent)
+if _SDK_PYTHON_ROOT not in sys.path:
+    sys.path.insert(0, _SDK_PYTHON_ROOT)
+
+from release_version import (  # noqa: E402
+    codex_release_tag as _release_tag,
+    normalize_codex_version as _normalized_package_version,
+)
+
 PACKAGE_NAME = "openai-codex-cli-bin"
 SDK_PACKAGE_NAME = "openai-codex-app-server-sdk"
 REPO_SLUG = "openai/codex"
