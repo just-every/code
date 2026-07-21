@@ -3598,8 +3598,8 @@ context_mode = "1m"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::OneM));
-        assert_eq!(config.model_context_window, Some(372_000));
-        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
         Ok(())
     }
 
@@ -3670,8 +3670,8 @@ context_mode = "auto"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Auto));
-        assert_eq!(config.model_context_window, Some(372_000));
-        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
         Ok(())
     }
 
@@ -3693,8 +3693,8 @@ model = "gpt-5.4"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Auto));
-        assert_eq!(config.model_context_window, Some(372_000));
-        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
         Ok(())
     }
 
@@ -3717,8 +3717,8 @@ context_mode = "disabled"
         )?;
 
         assert_eq!(config.context_mode, Some(ContextMode::Disabled));
-        assert_eq!(config.model_context_window, Some(372_000));
-        assert_eq!(config.model_auto_compact_token_limit, Some(334_800));
+        assert_eq!(config.model_context_window, Some(272_000));
+        assert_eq!(config.model_auto_compact_token_limit, Some(244_800));
         Ok(())
     }
 
