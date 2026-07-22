@@ -1,8 +1,5 @@
 exports_files([
     "abseil_windows_gnullvm_thread_identity.patch",
-    "aws-lc-sys_memcmp_check.patch",
-    "aws-lc-sys_windows_msvc_prebuilt_nasm.patch",
-    "aws-lc-sys_windows_msvc_memcmp_probe.patch",
     "bzip2_windows_stack_args.patch",
     "llvm_windows_symlink_extract.patch",
     "rules_rust_windows_bootstrap_process_wrapper_linker.patch",
