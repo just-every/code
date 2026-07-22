@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use codex_app_server::in_process;
@@ -47,6 +48,7 @@ use codex_config::NoopThreadConfigLoader;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
+use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
@@ -56,6 +58,7 @@ use codex_thread_store::CreateThreadParams as StoreCreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -402,7 +405,9 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
         "non-local thread persistence should not create archived rollout sessions"
     );
     assert!(
-        !codex_state::state_db_path(codex_home).exists(),
+        !codex_state::SqliteConfig::new_for_testing(codex_home.abs())
+            .state_db_path()
+            .exists(),
         "non-local thread persistence should not create local thread sqlite"
     );
 
@@ -467,27 +472,10 @@ fn create_config_toml_with_thread_store(
     server_uri: &str,
     store_id: &str,
 ) -> std::io::Result<()> {
-    std::fs::write(
-        codex_home.join("config.toml"),
-        format!(
-            r#"
-model = "mock-model"
-approval_policy = "never"
-sandbox_mode = "read-only"
-experimental_thread_store = {{ type = "in_memory", id = "{store_id}" }}
-
-model_provider = "mock_provider"
-
-[model_providers.mock_provider]
-name = "Mock provider for test"
-base_url = "{server_uri}/v1"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-
-[features]
-plugins = false
-"#
-        ),
-    )
+    MockResponsesConfig::new(server_uri)
+        .with_root_config(&format!(
+            "experimental_thread_store = {{ type = \"in_memory\", id = \"{store_id}\" }}"
+        ))
+        .disable_feature(Feature::Plugins)
+        .write(codex_home)
 }

@@ -162,11 +162,6 @@ enum TurnMultiAgentRuntime {
 }
 
 impl TurnContext {
-    pub(crate) fn item_ids_enabled(&self) -> bool {
-        self.config.features.enabled(Feature::ItemIds)
-            || matches!(self.history_mode, ThreadHistoryMode::Paginated)
-    }
-
     pub(crate) fn collaboration_mode(&self) -> CollaborationMode {
         CollaborationMode {
             mode: self.mode,
@@ -678,6 +673,7 @@ impl Session {
             session_configuration,
             final_output_json_schema,
             TurnMultiAgentRuntime::ResolveAndStore,
+            self.git_enrichment_policy,
         )
         .await
     }
@@ -692,6 +688,7 @@ impl Session {
             session_configuration,
             /*final_output_json_schema*/ None,
             TurnMultiAgentRuntime::Preview,
+            GitEnrichmentPolicy::Skip,
         )
         .await
     }
@@ -703,6 +700,7 @@ impl Session {
         session_configuration: SessionConfiguration,
         final_output_json_schema: Option<Option<Value>>,
         multi_agent_runtime: TurnMultiAgentRuntime,
+        git_enrichment_policy: GitEnrichmentPolicy,
     ) -> Arc<TurnContext> {
         let turn_environments = self.services.turn_environments.snapshot().await;
         let primary_turn_environment = turn_environments.primary();
@@ -797,10 +795,11 @@ impl Session {
             turn_context.final_output_json_schema = final_schema;
         }
         let turn_context = Arc::new(turn_context);
-        if turn_context
-            .environments
-            .single_local_environment_cwd()
-            .is_some()
+        if git_enrichment_policy == GitEnrichmentPolicy::Fresh
+            && turn_context
+                .environments
+                .single_local_environment_cwd()
+                .is_some()
         {
             turn_context.turn_metadata_state.spawn_git_enrichment_task();
         }

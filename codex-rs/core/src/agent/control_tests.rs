@@ -36,7 +36,6 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -56,6 +55,7 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::ThreadStore;
 use codex_utils_path_uri::PathUri;
+use core_test_support::responses::strip_response_item_ids;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::Duration;
@@ -159,7 +159,7 @@ impl AgentControlHarness {
     async fn start_thread(&self) -> (ThreadId, Arc<CodexThread>) {
         let new_thread = self
             .manager
-            .start_thread(self.config.clone())
+            .start_thread(StartThreadOptions::new(self.config.clone()))
             .await
             .expect("start thread");
         (new_thread.thread_id, new_thread.thread)
@@ -168,19 +168,10 @@ impl AgentControlHarness {
     async fn start_paginated_thread(&self) -> (ThreadId, Arc<CodexThread>) {
         let new_thread = self
             .manager
-            .start_thread_with_options(StartThreadOptions {
-                config: self.config.clone(),
-                allow_provider_model_fallback: false,
-                initial_history: InitialHistory::New,
+            .start_thread(StartThreadOptions {
                 history_mode: Some(ThreadHistoryMode::Paginated),
-                session_source: None,
-                thread_source: None,
-                dynamic_tools: Vec::new(),
-                metrics_service_name: None,
-                parent_trace: None,
-                environments: Vec::new(),
-                thread_extension_init: ExtensionDataInit::default(),
-                supports_openai_form_elicitation: false,
+                environments: Some(Vec::new()),
+                ..StartThreadOptions::new(self.config.clone())
             })
             .await
             .expect("start paginated thread");
@@ -1218,7 +1209,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         Some("Child subagent guidance.".to_string());
     let new_thread = harness
         .manager
-        .start_thread(parent_config.clone())
+        .start_thread(StartThreadOptions::new(parent_config.clone()))
         .await
         .expect("start parent thread");
     let parent_thread_id = new_thread.thread_id;
@@ -1322,6 +1313,10 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         .await
         .expect("child thread should be registered");
     assert_ne!(child_thread_id, parent_thread_id);
+    assert_eq!(
+        child_thread.config_snapshot().await.history_mode,
+        ThreadHistoryMode::Legacy
+    );
     let history = child_thread.session.clone_history().await;
     let mut expected_final_answer =
         assistant_message("parent final answer", Some(MessagePhase::FinalAnswer));
@@ -1340,8 +1335,8 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         },
     ];
     assert_eq!(
-        history.raw_items(),
-        &expected_history,
+        strip_response_item_ids(history.raw_items()),
+        strip_response_item_ids(&expected_history),
         "full-history forked child history should replace parent usage hints with the child subagent hint while filtering non-final assistant/tool chatter"
     );
     assert_eq!(
@@ -1440,7 +1435,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         Some("Child subagent guidance.".to_string());
     let new_thread = harness
         .manager
-        .start_thread(parent_config)
+        .start_thread(StartThreadOptions::new(parent_config))
         .await
         .expect("start parent thread");
     let parent_thread_id = new_thread.thread_id;
@@ -1745,19 +1740,10 @@ async fn spawn_agent_fork_last_n_turns_drops_parent_startup_prefix_when_under_li
     thread_extension_init.insert(selected_capability_roots.clone());
     let parent = harness
         .manager
-        .start_thread_with_options(StartThreadOptions {
-            config: harness.config.clone(),
-            allow_provider_model_fallback: false,
-            initial_history: InitialHistory::New,
-            history_mode: None,
-            session_source: None,
-            thread_source: None,
-            dynamic_tools: Vec::new(),
-            metrics_service_name: None,
-            parent_trace: None,
-            environments: Vec::new(),
+        .start_thread(StartThreadOptions {
+            environments: Some(Vec::new()),
             thread_extension_init,
-            supports_openai_form_elicitation: false,
+            ..StartThreadOptions::new(harness.config.clone())
         })
         .await
         .expect("start parent thread");
@@ -1871,7 +1857,7 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
         Some("Child subagent guidance.".to_string());
     let new_thread = harness
         .manager
-        .start_thread(parent_config)
+        .start_thread(StartThreadOptions::new(parent_config))
         .await
         .expect("start parent thread");
     let parent_thread_id = new_thread.thread_id;
@@ -1971,7 +1957,7 @@ async fn spawn_agent_respects_legacy_max_threads_alias() {
     let control = manager.agent_control();
 
     let _ = manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start thread");
 
@@ -2222,7 +2208,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
     let _ = config.features.enable(Feature::MultiAgentV2);
     let root = harness
         .manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("root thread should start");
     let root_thread_id = root.thread_id;
@@ -2334,7 +2320,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let _ = tester_config.features.enable(Feature::MultiAgentV2);
     let tester_thread_id = harness
         .manager
-        .start_thread(tester_config.clone())
+        .start_thread(StartThreadOptions::new(tester_config.clone()))
         .await
         .expect("tester thread should start")
         .thread_id;
@@ -2516,19 +2502,10 @@ async fn spawn_thread_subagents_persist_parent_originator_across_new_and_truncat
     let harness = AgentControlHarness::new().await;
     let parent = harness
         .manager
-        .start_thread_with_options(StartThreadOptions {
-            config: harness.config.clone(),
-            allow_provider_model_fallback: false,
-            initial_history: InitialHistory::New,
-            history_mode: None,
-            session_source: None,
-            thread_source: None,
-            dynamic_tools: Vec::new(),
+        .start_thread(StartThreadOptions {
             metrics_service_name: Some("codex_work_desktop".to_string()),
-            parent_trace: None,
-            environments: Vec::new(),
-            thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            environments: Some(Vec::new()),
+            ..StartThreadOptions::new(harness.config.clone())
         })
         .await
         .expect("parent thread should start");
@@ -3039,7 +3016,7 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
     );
     let control = manager.agent_control();
     let parent_thread_id = manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("parent should start")
         .thread_id;

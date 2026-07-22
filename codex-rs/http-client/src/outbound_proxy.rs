@@ -17,7 +17,6 @@ use tokio::sync::Semaphore;
 
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
-use crate::default_client::HttpClient;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -217,26 +216,6 @@ impl HttpClientFactory {
         }
         cached_system_proxy_decision(&request_url)
             .map(|decision| route_from_system_decision(&ProcessEnv, env_proxy_kind, decision))
-    }
-
-    /// Builds an HTTP client for a concrete outbound route.
-    pub fn build_client(
-        &self,
-        request_url: &str,
-        route_class: ClientRouteClass,
-    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
-            .map(HttpClient::new)
-    }
-
-    /// Builds a route-aware client without request URL or response-header diagnostics.
-    pub fn build_client_without_request_logging(
-        &self,
-        request_url: &str,
-        route_class: ClientRouteClass,
-    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
-            .map(HttpClient::new_without_request_logging)
     }
 
     /// Builds a reqwest client for a concrete outbound route.
@@ -565,13 +544,20 @@ fn cached_system_proxy_decision_from_cache(
     None
 }
 
-#[cfg(test)]
 fn cache_system_proxy_decision(request_url: &str, decision: SystemProxyDecision) {
     let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut cache) = cache.lock() {
         let cache_key = system_proxy_cache_key(request_url);
         insert_system_proxy_cache_entry(&mut cache, &cache_key, decision, Instant::now());
     }
+}
+
+/// Primes one proxy decision for cross-crate integration tests.
+///
+/// This is public only so tests in HTTP-client consumers can exercise system-proxy routing
+/// deterministically on every supported platform.
+pub fn cache_system_proxy_route_for_test(request_url: &str, proxy_url: String) {
+    cache_system_proxy_decision(request_url, SystemProxyDecision::Proxy { url: proxy_url });
 }
 
 fn insert_system_proxy_cache_entry(

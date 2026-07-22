@@ -6,7 +6,6 @@ use codex_config::CloudConfigBundleLoadErrorCode;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_http_client::HttpClientFactory;
-use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
@@ -65,12 +64,9 @@ pub async fn cloud_config_bundle_loader_for_storage(
     credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
     chatgpt_base_url: String,
-    auth_route_config: Option<AuthRouteConfig>,
+    auth_route_config: AuthRouteConfig,
 ) -> CloudConfigBundleLoader {
-    let http_client_factory = match auth_route_config.as_ref() {
-        Some(config) => config.http_client_factory().clone(),
-        None => HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    };
+    let http_client_factory = auth_route_config.http_client_factory().clone();
     let auth_manager = AuthManager::shared(
         codex_home.clone(),
         enable_codex_api_key_env,

@@ -47,11 +47,15 @@ pub async fn load_auth_manager(
     chatgpt_base_url: Option<String>,
 ) -> (Option<AuthManager>, HttpClientFactory) {
     // TODO: pass in cli overrides once cloud tasks properly support them.
-    let Some(config) = Config::load_with_cli_overrides(Vec::new()).await.ok() else {
-        return (
-            None,
-            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-        );
+    let config = match Config::load_with_cli_overrides(Vec::new()).await {
+        Ok(config) => config,
+        Err(error) => {
+            append_error_log(format!(
+                "failed to load auth config; using transport-default proxy handling: {error}"
+            ));
+            let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+            return (None, http_client_factory);
+        }
     };
     let http_client_factory = config.http_client_factory();
     let auth_manager = AuthManager::new(

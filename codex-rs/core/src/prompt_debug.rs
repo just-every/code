@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::UserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_protocol::error::CodexErr;
@@ -17,9 +18,9 @@ use crate::session::session::Session;
 use crate::session::turn::build_prompt;
 use crate::session::turn::built_tools;
 use crate::state_db_bridge::StateDbHandle;
+use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::ThreadManager;
 use crate::thread_manager::thread_store_from_config;
-use codex_extension_api::empty_extension_registry;
 
 /// Build the model-visible `input` list for a single debug turn.
 #[doc(hidden)]
@@ -27,6 +28,7 @@ pub async fn build_prompt_input(
     mut config: Config,
     input: Vec<UserInput>,
     state_db: Option<StateDbHandle>,
+    extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
 ) -> CodexResult<Vec<ResponseItem>> {
     config.ephemeral = true;
@@ -55,7 +57,7 @@ pub async fn build_prompt_input(
             .await
             .map_err(|err| CodexErr::Fatal(err.to_string()))?,
         ),
-        empty_extension_registry(),
+        extensions,
         user_instructions_provider,
         /*analytics_events_client*/ None,
         thread_store,
@@ -64,7 +66,9 @@ pub async fn build_prompt_input(
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
     );
-    let thread = thread_manager.start_thread(config).await?;
+    let thread = thread_manager
+        .start_thread(StartThreadOptions::new(config))
+        .await?;
 
     let output = build_prompt_input_from_session(&thread.thread.session, input).await;
     let shutdown = thread.thread.shutdown_and_wait().await;

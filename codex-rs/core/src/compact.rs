@@ -97,7 +97,6 @@ pub(crate) async fn build_compaction_initial_context(
                     step_context.turn.as_ref(),
                     world_state.as_ref(),
                     step_context.mcp.as_ref(),
-                    &step_context.extension_data,
                 )
                 .await;
             (items, Some(Arc::clone(world_state)))
@@ -368,7 +367,6 @@ async fn run_compact_task_inner_impl(
         }
     };
     sess.replace_compacted_history(
-        turn_context.as_ref(),
         new_history,
         reference_context_item,
         world_state_baseline,

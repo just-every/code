@@ -5,6 +5,7 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::NetworkProxyConfig;
+use codex_network_proxy::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 use codex_network_proxy::RemoteNetworkProxyConfig;
 use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
 #[cfg(windows)]
@@ -64,9 +65,14 @@ async fn sandbox_request_wraps_native_argv_on_executor() {
         network_proxy: None,
     };
 
-    let prepared = prepare_exec_request(&params, HashMap::new(), Some(&runtime_paths))
-        .await
-        .expect("prepare sandboxed request");
+    let prepared = prepare_exec_request(
+        &params,
+        HashMap::new(),
+        Some(&runtime_paths),
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare sandboxed request");
 
     assert_ne!(prepared.command, params.argv);
     assert_eq!(prepared.cwd, cwd);
@@ -127,9 +133,14 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
         network_proxy: None,
     };
 
-    let prepared = prepare_exec_request(&params, HashMap::new(), Some(&runtime_paths))
-        .await
-        .expect("prepare sandboxed request");
+    let prepared = prepare_exec_request(
+        &params,
+        HashMap::new(),
+        Some(&runtime_paths),
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare sandboxed request");
     let helper_mode = prepared
         .command
         .iter()
@@ -185,9 +196,14 @@ async fn sandbox_request_allows_prepared_managed_proxy_port() {
         network_proxy: None,
     };
 
-    let prepared = prepare_exec_request(&params, HashMap::new(), Some(&runtime_paths))
-        .await
-        .expect("prepare managed-network sandbox request");
+    let prepared = prepare_exec_request(
+        &params,
+        HashMap::new(),
+        Some(&runtime_paths),
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare managed-network sandbox request");
     let policy = prepared
         .command
         .windows(2)
@@ -220,9 +236,14 @@ async fn native_request_preserves_native_launch_fields() {
         network_proxy: None,
     };
 
-    let prepared = prepare_exec_request(&params, env.clone(), /*runtime_paths*/ None)
-        .await
-        .expect("prepare native request");
+    let prepared = prepare_exec_request(
+        &params,
+        env.clone(),
+        /*runtime_paths*/ None,
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare native request");
 
     assert_eq!(prepared.command, params.argv);
     assert_eq!(prepared.cwd, cwd);
@@ -264,11 +285,17 @@ async fn native_request_handles_remote_proxy_config_for_platform() {
     let env = HashMap::from([
         ("HTTP_PROXY".to_string(), stale_proxy.clone()),
         ("TEST_ENV".to_string(), "value".to_string()),
+        (
+            PROXY_ATTRIBUTION_TOKEN_ENV_KEY.to_string(),
+            "foreign-token".to_string(),
+        ),
     ]);
 
-    let prepared = prepare_exec_request(&params, env, /*runtime_paths*/ None)
-        .await
-        .expect("prepare request with executor-local proxy");
+    let prepared = prepare_exec_request(
+        &params, env, /*runtime_paths*/ None, /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare request with executor-local proxy");
 
     if cfg!(target_os = "windows") {
         assert_eq!(prepared.env.get("HTTP_PROXY"), None);
@@ -280,6 +307,7 @@ async fn native_request_handles_remote_proxy_config_for_platform() {
     let http_proxy = prepared.env.get("HTTP_PROXY").expect("HTTP proxy env");
     assert_ne!(http_proxy, &stale_proxy);
     assert!(http_proxy.starts_with("http://127.0.0.1:"));
+    assert!(!prepared.env.contains_key(PROXY_ATTRIBUTION_TOKEN_ENV_KEY));
     let proxy_addr: SocketAddr = http_proxy
         .strip_prefix("http://")
         .expect("HTTP proxy scheme")
@@ -332,10 +360,15 @@ async fn disabled_remote_proxy_config_is_rejected_before_exporting_ports() {
         network_proxy: Some(RemoteNetworkProxyLaunchConfig::new(proxy_config)),
     };
 
-    let error = prepare_exec_request(&params, HashMap::new(), /*runtime_paths*/ None)
-        .await
-        .err()
-        .expect("disabled executor proxy launch must fail closed");
+    let error = prepare_exec_request(
+        &params,
+        HashMap::new(),
+        /*runtime_paths*/ None,
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .err()
+    .expect("disabled executor proxy launch must fail closed");
 
     assert_eq!(error.code, -32602);
     assert!(
@@ -382,9 +415,14 @@ async fn managed_network_selects_elevated_windows_spawn() {
         network_proxy: Some(RemoteNetworkProxyLaunchConfig::new(proxy_config)),
     };
 
-    let mut prepared = prepare_exec_request(&params, HashMap::new(), Some(&runtime_paths))
-        .await
-        .expect("prepare sandboxed request");
+    let mut prepared = prepare_exec_request(
+        &params,
+        HashMap::new(),
+        Some(&runtime_paths),
+        /*network_policy_decider*/ None,
+    )
+    .await
+    .expect("prepare sandboxed request");
     {
         let spawn = prepared
             .windows_sandbox_spawn_request()
