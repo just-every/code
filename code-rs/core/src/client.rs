@@ -745,7 +745,7 @@ impl ModelClient {
             prompt.get_formatted_input_for_request(request_family.use_responses_lite);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
-        prepare_response_items_for_request(&mut input_with_instructions, store);
+        prepare_response_items_for_request(&mut input_with_instructions);
         let (instructions, tools) = if request_family.use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
@@ -1228,7 +1228,7 @@ impl ModelClient {
             prompt.get_formatted_input_for_request(request_family.use_responses_lite);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
-        prepare_response_items_for_request(&mut input_with_instructions, store);
+        prepare_response_items_for_request(&mut input_with_instructions);
         let (instructions, tools) = if request_family.use_responses_lite {
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
@@ -2503,7 +2503,7 @@ fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
     }
 }
 
-fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
+fn prepare_response_items_for_request(input: &mut [ResponseItem]) {
     for item in input {
         match item {
             ResponseItem::AdditionalTools { id, .. }
@@ -2514,7 +2514,7 @@ fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
             | ResponseItem::LocalShellCall { id, .. }
             | ResponseItem::ToolSearchCall { id, .. }
             | ResponseItem::CustomToolCall { id, .. } => {
-                if !store || id.as_deref().is_some_and(|id| !is_prefixed_response_item_id(id)) {
+                if id.as_deref().is_some_and(|id| !is_prefixed_response_item_id(id)) {
                     *id = None;
                 }
             }
@@ -3307,7 +3307,7 @@ mod tests {
     }
 
     #[test]
-    fn non_stored_responses_strip_server_item_ids() {
+    fn responses_requests_keep_prefixed_item_ids() {
         let mut input = vec![
             ResponseItem::Message {
                 id: Some("msg_123".to_string()),
@@ -3333,17 +3333,16 @@ mod tests {
             },
         ];
 
-        prepare_response_items_for_request(&mut input, false);
+        prepare_response_items_for_request(&mut input);
 
         let serialized = serde_json::to_value(&input).expect("serialize input");
-        assert!(
-            !serialized.to_string().contains("\"id\""),
-            "non-stored Responses requests must not replay server item IDs: {serialized}"
-        );
+        assert_eq!(serialized[0]["id"], "msg_123");
+        assert_eq!(serialized[1]["id"], "rs_123");
+        assert_eq!(serialized[2]["id"], "fc_123");
     }
 
     #[test]
-    fn stored_responses_strip_unprefixed_item_ids() {
+    fn responses_requests_strip_unprefixed_item_ids() {
         let mut input = vec![
             ResponseItem::Message {
                 id: Some("legacy-id".to_string()),
@@ -3365,7 +3364,7 @@ mod tests {
             },
         ];
 
-        prepare_response_items_for_request(&mut input, true);
+        prepare_response_items_for_request(&mut input);
 
         let serialized = serde_json::to_value(&input).expect("serialize input");
         assert_eq!(serialized[0].get("id"), None);
