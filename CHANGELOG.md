@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.150] - 2026-07-22
+
+- Core: backport upstream Responses and review prompt parity. (69e15f3d)
+- Release: publish release metadata, stable installer aliases, and Rust artifacts to Cloudflare R2 channels. (a148e0b5, 667b6bba, cc875d61)
+- Install: add an optional releases.openai.com installer source. (765675a1)
+- Core: preserve audio across history and tool outputs. (6f785632)
+
 ## [0.6.149] - 2026-07-17
 
 - Core: confirm usage-limit resets before redeeming limit credits. (a50e8223)

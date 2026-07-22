@@ -1,11 +1,13 @@
-## @just-every/code v0.6.149
+## @just-every/code v0.6.150
 
-This release improves usage-limit redemption checks and adds release publication recovery support.
+This release brings upstream parity updates, release pipeline improvements, installer source support, and audio history fixes.
 
 ### Changes
 
-- Core: confirm usage-limit resets before redeeming limit credits.
-- Release: add an npm publication recovery workflow for failed release publishes.
+- Core: backport upstream Responses and review prompt parity.
+- Release: publish release metadata, stable installer aliases, and Rust artifacts to Cloudflare R2 channels.
+- Install: add an optional releases.openai.com installer source.
+- Core: preserve audio across history and tool outputs.
 
 ### Install
 
@@ -14,4 +16,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.148...v0.6.149
+Compare: https://github.com/just-every/code/compare/v0.6.149...v0.6.150
