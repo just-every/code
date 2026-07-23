@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.151] - 2026-07-23
+
+- MCP: set a default streamable HTTP user agent for server connections. (ef631d7e)
+- Install: integrate upstream standalone installer updates, including releases.openai.com resolution. (4736e619, 39a2438d)
+
 ## [0.6.150] - 2026-07-22
 
 - Core: backport upstream Responses and review prompt parity. (69e15f3d)

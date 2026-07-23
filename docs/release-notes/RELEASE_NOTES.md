@@ -1,19 +1,17 @@
-## @just-every/code v0.6.150
+## @just-every/code v0.6.151
 
-This release brings upstream parity updates, release pipeline improvements, installer source support, and audio history fixes.
+This release improves MCP HTTP defaults and refreshes standalone installer behavior.
 
 ### Changes
 
-- Core: backport upstream Responses and review prompt parity.
-- Release: publish release metadata, stable installer aliases, and Rust artifacts to Cloudflare R2 channels.
-- Install: add an optional releases.openai.com installer source.
-- Core: preserve audio across history and tool outputs.
+- MCP: set a default streamable HTTP user agent for server connections.
+- Install: integrate upstream standalone installer updates, including releases.openai.com resolution.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.149...v0.6.150
+Compare: https://github.com/just-every/code/compare/v0.6.150...v0.6.151
