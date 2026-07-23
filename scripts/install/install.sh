@@ -4,9 +4,12 @@ set -eu
 
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
-DEFAULT_PREFER_RELEASES_OPENAI_COM="false"
+DEFAULT_PREFER_RELEASES_OPENAI_COM="true"
 PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
 RELEASES_BASE_URL="https://releases.openai.com/codex"
+RELEASES_CONNECT_TIMEOUT=10
+RELEASES_METADATA_TIMEOUT=30
+RELEASES_ASSET_TIMEOUT=300
 release_source="github"
 
 BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
@@ -61,7 +64,7 @@ validate_version() {
 
   if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
     echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
-    exit 1
+    return 1
   fi
 }
 
@@ -83,6 +86,8 @@ Usage: install.sh [--release VERSION]
 Environment:
   CODEX_RELEASE          Version to install; overridden by --release.
   CODEX_NON_INTERACTIVE  Set to 1, true, or yes to skip prompts.
+  CODEX_INSTALLER_USE_RELEASES_OPENAI_COM
+                         Set to 0, false, or no to use GitHub Releases.
 EOF
         exit 0
         ;;
@@ -100,12 +105,26 @@ download_file() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$output"
+    case "$url" in
+      "$RELEASES_BASE_URL"/*)
+        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
+        ;;
+      *)
+        curl -fsSL "$url" -o "$output"
+        ;;
+    esac
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O "$output" "$url"
+    case "$url" in
+      "$RELEASES_BASE_URL"/*)
+        wget -q -t 1 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
+        ;;
+      *)
+        wget -q -O "$output" "$url"
+        ;;
+    esac
     return
   fi
 
@@ -117,12 +136,26 @@ download_text() {
   url="$1"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    case "$url" in
+      "$RELEASES_BASE_URL"/*)
+        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
+        ;;
+      *)
+        curl -fsSL "$url"
+        ;;
+    esac
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O - "$url"
+    case "$url" in
+      "$RELEASES_BASE_URL"/*)
+        wget -q -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
+        ;;
+      *)
+        wget -q -O - "$url"
+        ;;
+    esac
     return
   fi
 
@@ -134,8 +167,13 @@ download_file_with_fallback() {
   primary_url="$1"
   fallback_url="$2"
   output="$3"
+  expected_digest="$4"
+  fallback_asset="$5"
+  required_manifest_asset="${6:-}"
 
-  if download_file "$primary_url" "$output"; then
+  if download_file "$primary_url" "$output" &&
+    verify_archive_digest "$output" "$expected_digest" &&
+    { [ -z "$required_manifest_asset" ] || package_archive_digest "$required_manifest_asset" "$output" >/dev/null; }; then
     return
   fi
 
@@ -143,8 +181,19 @@ download_file_with_fallback() {
     return 1
   fi
 
-  warn "Could not download $primary_url; retrying from GitHub Releases."
+  warn "Could not download or verify $primary_url; retrying from GitHub Releases."
   download_file "$fallback_url" "$output"
+  if verify_archive_digest "$output" "$expected_digest" &&
+    { [ -z "$required_manifest_asset" ] || package_archive_digest "$required_manifest_asset" "$output" >/dev/null; }; then
+    return
+  fi
+
+  resolve_release_from_github "$resolved_version"
+  fallback_digest="$(release_asset_digest "$fallback_asset")"
+  verify_archive_digest "$output" "$fallback_digest"
+  if [ -n "$required_manifest_asset" ]; then
+    package_archive_digest "$required_manifest_asset" "$output" >/dev/null
+  fi
 }
 
 parse_release_metadata() {
@@ -308,7 +357,11 @@ release_asset_digest() {
 
   case "$digest" in
     sha256:????????????????????????????????????????????????????????????????)
-      printf '%s\n' "${digest#sha256:}"
+      digest="${digest#sha256:}"
+      case "$digest" in
+        *[!0-9a-fA-F]*) return 1 ;;
+      esac
+      printf '%s\n' "$digest"
       ;;
     *)
       echo "Could not find SHA-256 digest for release asset $asset." >&2
@@ -348,7 +401,7 @@ verify_archive_digest() {
     echo "Downloaded Codex archive checksum did not match release metadata." >&2
     echo "expected: $expected_digest" >&2
     echo "actual:   $actual_digest" >&2
-    exit 1
+    return 1
   fi
 }
 

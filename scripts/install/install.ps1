@@ -12,13 +12,15 @@ if ([string]::IsNullOrWhiteSpace($Release)) {
 }
 
 $NonInteractive = $env:CODEX_NON_INTERACTIVE -match "^(?i:1|true|yes)$"
-$DefaultPreferReleasesOpenAICom = $false
+$DefaultPreferReleasesOpenAICom = $true
 $PreferReleasesOpenAICom = if ([string]::IsNullOrWhiteSpace($env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM)) {
     $DefaultPreferReleasesOpenAICom
 } else {
     $env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM -match "^(?i:1|true|yes)$"
 }
 $ReleasesBaseUri = "https://releases.openai.com/codex"
+$ReleasesMetadataTimeoutSec = 30
+$ReleasesAssetTimeoutSec = 300
 
 function Write-Step {
     param(
@@ -101,17 +103,45 @@ function Get-ReleaseAssetMetadata {
 function Invoke-WebRequestWithFallback {
     param(
         [object]$Metadata,
-        [string]$OutFile
+        [string]$OutFile,
+        [string]$ExpectedDigest,
+        [string]$AssetName,
+        [string]$ReleaseVersion,
+        [string]$RequiredManifestAsset
     )
 
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $Metadata.Url -OutFile $OutFile
+        if ($Metadata.Url.StartsWith("$ReleasesBaseUri/", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Invoke-WebRequest -UseBasicParsing -Uri $Metadata.Url -OutFile $OutFile -TimeoutSec $ReleasesAssetTimeoutSec
+        } else {
+            Invoke-WebRequest -UseBasicParsing -Uri $Metadata.Url -OutFile $OutFile
+        }
+        Test-ArchiveDigest -ArchivePath $OutFile -ExpectedDigest $ExpectedDigest
+        if (-not [string]::IsNullOrWhiteSpace($RequiredManifestAsset)) {
+            $null = Get-PackageArchiveDigest -ManifestPath $OutFile -AssetName $RequiredManifestAsset
+        }
     } catch {
         if ([string]::IsNullOrWhiteSpace($Metadata.FallbackUrl)) {
             throw
         }
-        Write-WarningStep "Could not download $($Metadata.Url); retrying from GitHub Releases."
+        Write-WarningStep "Could not download or verify $($Metadata.Url); retrying from GitHub Releases."
         Invoke-WebRequest -UseBasicParsing -Uri $Metadata.FallbackUrl -OutFile $OutFile
+        try {
+            Test-ArchiveDigest -ArchivePath $OutFile -ExpectedDigest $ExpectedDigest
+            if (-not [string]::IsNullOrWhiteSpace($RequiredManifestAsset)) {
+                $null = Get-PackageArchiveDigest -ManifestPath $OutFile -AssetName $RequiredManifestAsset
+            }
+        } catch {
+            $githubRelease = Resolve-ReleaseFromGitHub -NormalizedVersion $ReleaseVersion
+            $githubAssetMetadata = Find-ReleaseAssetMetadata -AssetName $AssetName -ReleaseMetadata $githubRelease.Metadata
+            if ($null -eq $githubAssetMetadata) {
+                throw "Could not find GitHub release metadata for asset $AssetName."
+            }
+            Test-ArchiveDigest -ArchivePath $OutFile -ExpectedDigest $githubAssetMetadata.Sha256
+            if (-not [string]::IsNullOrWhiteSpace($RequiredManifestAsset)) {
+                $null = Get-PackageArchiveDigest -ManifestPath $OutFile -AssetName $RequiredManifestAsset
+            }
+        }
     }
 }
 
@@ -310,25 +340,22 @@ function Resolve-ReleaseFromReleases {
         "$ReleasesBaseUri/releases/$NormalizedVersion/release.json"
     }
     try {
-        $metadataResponse = Invoke-WebRequest -UseBasicParsing -Uri $metadataUri
+        $metadataResponse = Invoke-WebRequest -UseBasicParsing -Uri $metadataUri -TimeoutSec $ReleasesMetadataTimeoutSec
+        $releaseMetadata = [string]$metadataResponse.Content | ConvertFrom-Json -ErrorAction Stop
+        $resolvedVersion = Resolve-VersionFromReleaseMetadata -ReleaseMetadata $releaseMetadata
+        if ($NormalizedVersion -ne "latest" -and $resolvedVersion -cne $NormalizedVersion) {
+            throw "Release metadata version did not match requested Codex version $NormalizedVersion."
+        }
+        $resolvedRelease = [PSCustomObject]@{
+            Version = $resolvedVersion
+            Metadata = $releaseMetadata
+            Source = "ReleasesOpenAICom"
+        }
+        $null = Resolve-ReleaseAssetSelection -ResolvedRelease $resolvedRelease -Target $target -NpmTag $npmTag
     } catch {
         return $null
     }
-    try {
-        $releaseMetadata = [string]$metadataResponse.Content | ConvertFrom-Json -ErrorAction Stop
-    } catch {
-        throw "Invalid release metadata from releases.openai.com."
-    }
-
-    $resolvedVersion = Resolve-VersionFromReleaseMetadata -ReleaseMetadata $releaseMetadata
-    if ($NormalizedVersion -ne "latest" -and $resolvedVersion -cne $NormalizedVersion) {
-        throw "Release metadata version did not match requested Codex version $NormalizedVersion."
-    }
-    return [PSCustomObject]@{
-        Version = $resolvedVersion
-        Metadata = $releaseMetadata
-        Source = "ReleasesOpenAICom"
-    }
+    return $resolvedRelease
 }
 
 function Resolve-Release {
