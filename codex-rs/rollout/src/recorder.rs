@@ -437,6 +437,7 @@ impl RolloutRecorder {
         search_term: Option<&str>,
     ) -> std::io::Result<ThreadsPage> {
         let codex_home = config.codex_home();
+        let sqlite = config.sqlite_config();
         let archived = match archive_filter {
             ThreadListArchiveFilter::Active => false,
             ThreadListArchiveFilter::Archived => true,
@@ -448,7 +449,7 @@ impl RolloutRecorder {
         if matches!(repair_mode, ThreadListRepairMode::StateDbOnly) {
             return Ok(state_db::list_threads_db(
                 state_db_ctx.as_deref(),
-                codex_home,
+                sqlite,
                 page_size,
                 cursor,
                 sort_key,
@@ -458,6 +459,7 @@ impl RolloutRecorder {
                 cwd_filters,
                 /*relation_filter*/ None,
                 archived,
+                /*is_pinned*/ None,
                 search_term,
             )
             .await
@@ -557,7 +559,7 @@ impl RolloutRecorder {
 
         let db_page = state_db::list_threads_db(
             state_db_ctx.as_deref(),
-            codex_home,
+            sqlite,
             page_size,
             cursor,
             sort_key,
@@ -567,6 +569,7 @@ impl RolloutRecorder {
             cwd_filters,
             /*relation_filter*/ None,
             archived,
+            /*is_pinned*/ None,
             search_term,
         )
         .await;
@@ -586,7 +589,7 @@ impl RolloutRecorder {
                 }
                 if let Some(repaired_db_page) = state_db::list_threads_db(
                     state_db_ctx.as_deref(),
-                    codex_home,
+                    sqlite,
                     page_size,
                     cursor,
                     sort_key,
@@ -596,6 +599,7 @@ impl RolloutRecorder {
                     cwd_filters,
                     /*relation_filter*/ None,
                     archived,
+                    /*is_pinned*/ None,
                     search_term,
                 )
                 .await
@@ -626,7 +630,7 @@ impl RolloutRecorder {
                 if sort_key == ThreadSortKey::RecencyAt {
                     if let Some(repaired_db_page) = state_db::list_threads_db(
                         state_db_ctx.as_deref(),
-                        codex_home,
+                        sqlite,
                         page_size,
                         cursor,
                         sort_key,
@@ -636,6 +640,7 @@ impl RolloutRecorder {
                         cwd_filters,
                         /*relation_filter*/ None,
                         archived,
+                        /*is_pinned*/ None,
                         search_term,
                     )
                     .await
@@ -697,6 +702,7 @@ impl RolloutRecorder {
         filter_cwd: Option<&Path>,
     ) -> std::io::Result<Option<PathBuf>> {
         let codex_home = config.codex_home();
+        let sqlite = config.sqlite_config();
         let cwd_filter = filter_cwd.map(Path::to_path_buf);
         let mut fallback_reason = state_db_ctx.is_none().then_some("db_unavailable");
         if state_db_ctx.is_some() {
@@ -704,7 +710,7 @@ impl RolloutRecorder {
             loop {
                 let Some(db_page) = state_db::list_threads_db(
                     state_db_ctx.as_deref(),
-                    codex_home,
+                    sqlite,
                     page_size,
                     db_cursor.as_ref(),
                     sort_key,
@@ -714,6 +720,7 @@ impl RolloutRecorder {
                     cwd_filter.as_ref().map(std::slice::from_ref),
                     /*relation_filter*/ None,
                     /*archived*/ false,
+                    /*is_pinned*/ None,
                     /*search_term*/ None,
                 )
                 .await
@@ -1180,6 +1187,7 @@ fn fill_missing_thread_item_metadata(item: &mut ThreadItem, state_item: ThreadIt
         thread_id: _state_thread_id,
         first_user_message,
         preview,
+        is_pinned,
         cwd,
         git_branch,
         git_sha,
@@ -1202,6 +1210,7 @@ fn fill_missing_thread_item_metadata(item: &mut ThreadItem, state_item: ThreadIt
     if item.preview.is_none() {
         item.preview = preview;
     }
+    item.is_pinned = is_pinned;
     if item.cwd.is_none() {
         item.cwd = cwd;
     }
@@ -1928,6 +1937,7 @@ fn thread_item_from_state_metadata(
         thread_id: Some(item.id),
         first_user_message: item.first_user_message,
         preview: item.preview,
+        is_pinned: item.is_pinned,
         cwd: Some(item.cwd),
         git_branch: item.git_branch,
         git_sha: item.git_sha,

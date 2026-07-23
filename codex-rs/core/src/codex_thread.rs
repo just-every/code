@@ -56,6 +56,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
 
@@ -488,8 +489,8 @@ impl CodexThread {
             // This history-only API runs without run_turn, so it owns its initial step.
             let step_context = self
                 .session
-                .capture_step_context(Arc::clone(&turn_context))
-                .await;
+                .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+                .await?;
             self.session
                 .record_context_updates_and_set_reference_context_item(step_context.as_ref())
                 .await;
@@ -605,14 +606,14 @@ impl CodexThread {
         self.session.runtime_mcp_config(config).await
     }
 
-    /// Returns the exact MCP config, environment bindings, and manager most recently published.
-    pub async fn current_mcp_runtime(&self) -> Arc<crate::session::McpRuntimeSnapshot> {
-        let turn_context = self.session.new_default_turn().await;
-        self.session
-            .capture_step_context(turn_context)
-            .await
-            .mcp
-            .clone()
+    /// Captures the exact MCP config and environment bindings for the current thread state.
+    pub async fn current_mcp_config_and_runtime_context(
+        &self,
+    ) -> (Arc<codex_mcp::McpConfig>, codex_mcp::McpRuntimeContext) {
+        let config = self.session.get_config().await;
+        let (mcp_config, runtime_context) =
+            self.session.runtime_mcp_config_and_context(&config).await;
+        (Arc::new(mcp_config), runtime_context)
     }
 
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
@@ -644,11 +645,12 @@ impl CodexThread {
         server: &str,
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
+        self.session.refresh_mcp_if_dirty().await;
         let result = self
-            .current_mcp_runtime()
-            .await
-            .manager_arc()
-            .read_resource(server, ReadResourceRequestParams::new(uri))
+            .session
+            .services
+            .mcp_runtime
+            .latest_read_resource(server, ReadResourceRequestParams::new(uri))
             .await?;
 
         Ok(serde_json::to_value(result)?)
@@ -661,10 +663,11 @@ impl CodexThread {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.current_mcp_runtime()
-            .await
-            .manager_arc()
-            .call_tool(server, tool, arguments, meta)
+        self.session.refresh_mcp_if_dirty().await;
+        self.session
+            .services
+            .mcp_runtime
+            .latest_call_tool(server, tool, arguments, meta)
             .await
     }
 

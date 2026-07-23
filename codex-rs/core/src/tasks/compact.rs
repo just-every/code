@@ -8,7 +8,7 @@ use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use codex_features::Feature;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -32,6 +32,7 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
         let session = session.clone_session();
+        let _profile_guard = ctx.turn_timing_state.begin_compaction();
         if ctx.config.features.enabled(Feature::TokenBudget) {
             crate::compact_token_budget::run_manual_compact_task(session, ctx).await?;
             return Ok(None);
@@ -75,7 +76,9 @@ impl SessionTask for CompactTask {
             }];
             crate::compact::run_compact_task(session.clone(), ctx, input).await
         };
-        if let Err(err @ CodexErr::TurnAborted) = result {
+        if let Err(err) = result
+            && matches!(err.details(), CodexErrorDetails::TurnAborted)
+        {
             return Err(err);
         }
         Ok(None)

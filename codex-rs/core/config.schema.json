@@ -591,7 +591,7 @@
               "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
             },
             "non_prefixed_mcp_tool_names": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
             },
             "personality": {
               "type": "boolean"
@@ -1004,6 +1004,16 @@
         },
         {
           "$ref": "#/definitions/NetworkProxyConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_NonPrefixedMcpToolNamesConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/NonPrefixedMcpToolNamesConfigToml"
         }
       ]
     },
@@ -1736,6 +1746,11 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "supports_standalone_web_search": {
+          "default": false,
+          "description": "Whether this provider supports the standalone web-search endpoint.",
+          "type": "boolean"
+        },
         "supports_websockets": {
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",
@@ -1819,6 +1834,10 @@
         },
         "usage_hint_text": {
           "type": "string"
+        },
+        "wait_agent_enabled": {
+          "description": "Expose the multi-agent v2 `wait_agent` tool.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -2074,6 +2093,22 @@
       "type": "string"
     },
     "NetworkUnixSocketPermissionsToml": {
+      "type": "object"
+    },
+    "NonPrefixedMcpToolNamesConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "server_names": {
+          "description": "MCP servers whose tools should omit the legacy `mcp__` namespace prefix.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "Notice": {
@@ -5067,7 +5102,7 @@
           "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
         },
         "non_prefixed_mcp_tool_names": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
         },
         "personality": {
           "type": "boolean"

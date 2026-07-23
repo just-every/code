@@ -18,6 +18,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::fs::File;
@@ -31,7 +32,7 @@ use uuid::Uuid;
 fn test_config(codex_home: &Path) -> RolloutConfig {
     RolloutConfig {
         codex_home: codex_home.to_path_buf(),
-        sqlite_home: codex_home.to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.abs()),
         cwd: codex_home.to_path_buf(),
         model_provider_id: "test-provider".to_string(),
         generate_memories: true,
@@ -943,7 +944,7 @@ async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Resul
     ));
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1009,7 +1010,7 @@ async fn list_threads_db_enabled_repairs_stale_rollout_paths() -> std::io::Resul
     ));
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1070,7 +1071,7 @@ async fn list_threads_state_db_only_skips_jsonl_repair_scan() -> std::io::Result
     let config = test_config(home.path());
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1174,7 +1175,7 @@ async fn list_threads_default_filter_returns_filesystem_scan_results() -> std::i
     let stale_cwd = home.path().join("stale-cwd");
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1264,7 +1265,7 @@ async fn list_threads_metadata_filter_overlays_state_db_list_metadata() -> std::
     let rollout_path = write_session_file(home.path(), "2025-01-03T16-00-00", uuid)?;
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1332,6 +1333,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         thread_id: Some(filesystem_thread_id),
         first_user_message: Some("filesystem message".to_string()),
         preview: Some("filesystem preview".to_string()),
+        is_pinned: false,
         cwd: None,
         git_branch: Some("filesystem-branch".to_string()),
         git_sha: Some("filesystem-sha".to_string()),
@@ -1352,6 +1354,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         thread_id: Some(state_thread_id),
         first_user_message: Some("state message".to_string()),
         preview: Some("state preview".to_string()),
+        is_pinned: true,
         cwd: Some(PathBuf::from("/tmp/state-cwd")),
         git_branch: Some("state-branch".to_string()),
         git_sha: Some("state-sha".to_string()),
@@ -1372,6 +1375,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
 
     assert_eq!(item.path, filesystem_path);
     assert_eq!(item.thread_id, Some(filesystem_thread_id));
+    assert!(item.is_pinned);
     assert_eq!(
         item.first_user_message.as_deref(),
         Some("filesystem message")
@@ -1404,7 +1408,7 @@ async fn list_threads_search_repairs_stale_state_db_hits_before_returning() -> s
     let real_path = write_session_file(home.path(), "2025-01-03T15-00-00", uuid)?;
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await

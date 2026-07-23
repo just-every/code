@@ -7,6 +7,7 @@ use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::CollaborationModeState;
 use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
+use crate::context::world_state::MultiAgentModeState;
 use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PluginsInstructionsState;
 use crate::context::world_state::RealtimeState;
@@ -91,9 +92,8 @@ impl Session {
         ));
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
-                let tools = step_context.mcp_tools().await;
                 connectors::with_app_enabled_state(
-                    connectors::accessible_connectors_from_mcp_tools(tools),
+                    connectors::accessible_connectors_from_mcp_tools(&step_context.mcp_tools),
                     &turn_context.config,
                 )
                 .into_iter()
@@ -130,6 +130,9 @@ impl Session {
                 world_state.add_extension_section(section);
             }
         }
+        world_state.add_section(MultiAgentModeState::new(
+            super::multi_agents::effective_multi_agent_mode(turn_context),
+        ));
         world_state
     }
 }

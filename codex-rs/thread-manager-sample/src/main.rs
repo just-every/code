@@ -45,6 +45,7 @@ use codex_core_api::RealtimeAudioConfig;
 use codex_core_api::RealtimeConfig;
 use codex_core_api::SessionPickerViewMode;
 use codex_core_api::SessionSource;
+use codex_core_api::SqliteConfig;
 use codex_core_api::StartThreadOptions;
 use codex_core_api::TerminalResizeReflowConfig;
 use codex_core_api::ThreadManager;
@@ -122,8 +123,12 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     )?;
     let thread_store = thread_store_from_config(&config, state_db.clone());
     let environment_manager = Arc::new(
-        EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(local_runtime_paths))
-            .await?,
+        EnvironmentManager::from_codex_home(
+            config.codex_home.clone(),
+            Some(local_runtime_paths),
+            config.http_client_factory(),
+        )
+        .await?,
     );
     let installation_id = resolve_installation_id(&config.codex_home).await?;
     let user_instructions_provider = Arc::new(CodexHomeUserInstructionsProvider::new(
@@ -235,6 +240,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         mcp_servers: Constrained::allow_any(HashMap::new()),
+        non_prefixed_mcp_tool_servers: None,
         mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::File,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
@@ -250,7 +256,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         agent_max_depth: 1,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
-        sqlite_home: codex_home.to_path_buf(),
+        sqlite: SqliteConfig::from_sqlite_home(codex_home.clone()),
         log_dir: codex_home.join("log").to_path_buf(),
         config_lock_export_dir: None,
         config_lock_allow_codex_version_mismatch: false,

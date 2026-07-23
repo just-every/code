@@ -26,7 +26,6 @@ use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::ContextualUserFragment;
-use crate::context::MultiAgentModeInstructions;
 use crate::context::NetworkRuleSaved;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
@@ -54,8 +53,7 @@ use chrono::Utc;
 use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
-use codex_config::types::AuthKeyringBackendKind;
-use codex_config::types::OAuthCredentialsStoreMode;
+use codex_async_utils::OrCancelExt;
 use codex_connectors::connector_runtime_context_key;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_exec_server::Environment;
@@ -74,10 +72,10 @@ use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
-use codex_mcp::McpConnectionSet;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
+use codex_mcp::McpRuntimeInput;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_network_proxy::NetworkProxy;
@@ -120,6 +118,7 @@ use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -195,9 +194,12 @@ use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStackOrdering;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::McpServerConfig;
+use codex_config::types::OAuthCredentialsStoreMode;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
@@ -231,7 +233,6 @@ use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
-pub use self::mcp_runtime::McpRuntimeSnapshot;
 use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
 use self::session::Session;
@@ -819,7 +820,7 @@ impl SessionIo {
         let session_loop_termination = self.session_loop_termination.clone();
         match self.submit(Op::Shutdown).await {
             Ok(_) => {}
-            Err(CodexErr::InternalAgentDied) => {}
+            Err(err) if matches!(err.details(), CodexErrorDetails::InternalAgentDied) => {}
             Err(err) => return Err(err),
         }
         session_loop_termination.await;
@@ -1494,10 +1495,14 @@ impl Session {
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
+            let mcp_inputs_changed = state.session_configuration.mcp_inputs_differ(&updated);
             if updates.environments.is_some() {
                 self.services
                     .turn_environments
                     .update_selections(updated.environment_selections());
+            }
+            if mcp_inputs_changed {
+                self.mark_mcp_runtime_dirty();
             }
             state.session_configuration = updated;
             (previous_config, new_config, permission_profile_changed)
@@ -1507,7 +1512,6 @@ impl Session {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
         }
-
         Ok(())
     }
 
@@ -1540,8 +1544,7 @@ impl Session {
         })
         .await?;
         self.services
-            .latest_mcp_runtime()
-            .manager()
+            .mcp_runtime
             .set_elicitations_auto_deny(mcp_elicitations_auto_deny);
         Ok(())
     }
@@ -1608,15 +1611,22 @@ impl Session {
                 .with_user_layer_from(&next_config.config_layer_stack);
             config.tool_suggest =
                 resolve_tool_suggest_config_from_layer_stack(&config.config_layer_stack);
+            config.mcp_servers = next_config.mcp_servers.clone();
+            config.mcp_oauth_credentials_store_mode = next_config.mcp_oauth_credentials_store_mode;
+            if let Err(err) = config.features.set_enabled(
+                Feature::SecretAuthStorage,
+                next_config.features.enabled(Feature::SecretAuthStorage),
+            ) {
+                warn!("failed to refresh MCP auth storage config: {err}");
+            }
             let config = Arc::new(config);
             state.session_configuration.original_config_do_not_use = Arc::clone(&config);
+            self.mark_mcp_runtime_dirty();
             let new_config = notify_config_contributors
                 .then(|| Self::build_effective_session_config(&state.session_configuration));
             (previous_config, new_config, config)
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        self.services.skills_service.clear_cache();
-        self.services.plugins_manager.clear_cache();
         let environments = self.services.turn_environments.snapshot().await;
         let hooks = build_hooks_for_config(
             config.as_ref(),
@@ -1634,6 +1644,54 @@ impl Session {
         ) {
             self.services.hooks.store(Arc::new(hooks));
         }
+    }
+
+    pub(crate) async fn refresh_mcp_config(&self, next_config: McpServerRefreshConfig) {
+        let McpServerRefreshConfig {
+            mcp_servers,
+            mcp_oauth_credentials_store_mode,
+            auth_keyring_backend_kind,
+        } = next_config;
+        let mcp_servers =
+            match serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers) {
+                Ok(servers) => servers,
+                Err(err) => {
+                    warn!("failed to parse MCP server refresh config: {err}");
+                    return;
+                }
+            };
+        let store_mode = match serde_json::from_value::<OAuthCredentialsStoreMode>(
+            mcp_oauth_credentials_store_mode,
+        ) {
+            Ok(mode) => mode,
+            Err(err) => {
+                warn!("failed to parse MCP OAuth refresh config: {err}");
+                return;
+            }
+        };
+        let keyring_backend_kind =
+            match serde_json::from_value::<AuthKeyringBackendKind>(auth_keyring_backend_kind) {
+                Ok(kind) => kind,
+                Err(err) => {
+                    warn!("failed to parse MCP auth keyring backend refresh config: {err}");
+                    return;
+                }
+            };
+        let mut state = self.state.lock().await;
+        let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+        if let Err(err) = config.mcp_servers.set(mcp_servers) {
+            warn!("failed to apply MCP server refresh config: {err}");
+            return;
+        }
+        config.mcp_oauth_credentials_store_mode = store_mode;
+        if let Err(err) = config.features.set_enabled(
+            Feature::SecretAuthStorage,
+            matches!(keyring_backend_kind, AuthKeyringBackendKind::Secrets),
+        ) {
+            warn!("failed to refresh MCP auth storage config: {err}");
+        }
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+        self.mark_mcp_runtime_dirty();
     }
 
     fn emit_config_changed_contributors(
@@ -1732,6 +1790,8 @@ impl Session {
                 resolve_tool_suggest_config_from_layer_stack(&config.config_layer_stack);
             config
         };
+        self.services.skills_service.clear_cache();
+        self.services.plugins_manager.clear_cache();
         self.refresh_runtime_config(next_config).await;
     }
 
@@ -2920,7 +2980,8 @@ impl Session {
     pub(crate) async fn capture_step_context(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
-    ) -> Arc<StepContext> {
+        cancellation_token: &CancellationToken,
+    ) -> CodexResult<Arc<StepContext>> {
         // Keep selections fixed for the turn while allowing their startup work to finish.
         let environments = turn_context.environments.refresh_readiness();
         self.services
@@ -2940,21 +3001,27 @@ impl Session {
             )
             .await;
         let mcp = self
-            .mcp_runtime_for_step(
-                turn_context.as_ref(),
-                &environments,
-                &selected_capability_roots,
-                executor_capability_discovery.as_deref(),
-            )
-            .await;
-        Arc::new(StepContext::new(
-            turn_context,
+            .mcp_runtime_for_step(turn_context.as_ref(), &selected_capability_roots)
+            .or_cancel(cancellation_token)
+            .await?;
+        let (mcp_tools, tool_router) = turn::built_tools(
+            self.as_ref(),
+            turn_context.as_ref(),
+            &environments,
+            mcp.as_ref(),
+        )
+        .or_cancel(cancellation_token)
+        .await?;
+        Ok(Arc::new(StepContext {
+            turn: turn_context,
             environments,
             selected_capability_roots,
             executor_capability_discovery,
             mcp,
+            mcp_tools,
+            tool_router,
             loaded_agents_md,
-        ))
+        }))
     }
 
     pub(crate) async fn record_inter_agent_communication(
@@ -3216,22 +3283,10 @@ impl Session {
         items
     }
 
-    #[cfg(test)]
     pub(crate) async fn build_initial_context_with_world_state(
         &self,
         turn_context: &TurnContext,
         world_state: &WorldState,
-    ) -> Vec<ResponseItem> {
-        let mcp = self.services.latest_mcp_runtime();
-        self.build_initial_context_with_world_state_and_mcp(turn_context, world_state, &mcp)
-            .await
-    }
-
-    pub(crate) async fn build_initial_context_with_world_state_and_mcp(
-        &self,
-        turn_context: &TurnContext,
-        world_state: &WorldState,
-        mcp: &McpRuntimeSnapshot,
     ) -> Vec<ResponseItem> {
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
@@ -3381,9 +3436,10 @@ impl Session {
         if turn_context.config.features.enabled(Feature::TokenBudget)
             && turn_context.model_context_window().is_some()
         {
-            let mcp_result = mcp
-                .manager()
-                .call_tool(
+            let mcp_result = self
+                .services
+                .mcp_runtime
+                .latest_call_tool(
                     "notes",
                     "thread_hint",
                     /*arguments*/ None,
@@ -3426,8 +3482,13 @@ impl Session {
                     .push(crate::context::ContextWindowGuidance::new(guidance_message).render());
             }
         }
+        // Render the active mode after the usage hint so it can override that hint.
+        let mut initial_multi_agent_mode = None;
         for fragment in world_state.render_full() {
             match fragment.role() {
+                "developer" if fragment.markers().0 == MULTI_AGENT_MODE_OPEN_TAG => {
+                    initial_multi_agent_mode = Some(fragment);
+                }
                 "developer" => developer_sections.push(fragment.render()),
                 "user" => contextual_user_sections.push(fragment.render()),
                 _ => {}
@@ -3458,10 +3519,8 @@ impl Session {
         {
             items.push(usage_hint_message);
         }
-        if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context)
-            && let Some(instructions) = MultiAgentModeInstructions::from_mode(multi_agent_mode)
-        {
-            items.push(ContextualUserFragment::into(instructions));
+        if let Some(initial_multi_agent_mode) = initial_multi_agent_mode {
+            items.push(initial_multi_agent_mode.into_boxed_response_item());
         }
         if let Some(contextual_user_message) =
             crate::context_manager::updates::build_contextual_user_message(contextual_user_sections)
@@ -3535,11 +3594,7 @@ impl Session {
         };
         let (window_number, window_ids) = window;
         let context_items = self
-            .build_initial_context_with_world_state_and_mcp(
-                turn_context,
-                world_state.as_ref(),
-                step_context.mcp.as_ref(),
-            )
+            .build_initial_context_with_world_state(turn_context, world_state.as_ref())
             .await;
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
@@ -3592,11 +3647,7 @@ impl Session {
         // Full initial context resets the baseline; later turns persist only its changes.
         let (mut context_items, world_state_item) = if should_inject_full_context {
             let context_items = self
-                .build_initial_context_with_world_state_and_mcp(
-                    turn_context,
-                    world_state.as_ref(),
-                    step_context.mcp.as_ref(),
-                )
+                .build_initial_context_with_world_state(turn_context, world_state.as_ref())
                 .await;
             let snapshot = world_state.snapshot();
             self.state
@@ -3952,7 +4003,7 @@ impl Session {
         let had_active_turn = self.active_turn.lock().await.is_some();
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {
-            self.cancel_mcp_startup().await;
+            self.cancel_mcp_startup();
         }
     }
 

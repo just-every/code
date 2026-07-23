@@ -444,6 +444,65 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
 }
 
 #[tokio::test]
+async fn load_config_resolves_non_prefixed_mcp_tool_servers() -> std::io::Result<()> {
+    let cases = [
+        (
+            "[features]\nnon_prefixed_mcp_tool_names = false\n",
+            None,
+            true,
+        ),
+        (
+            "[features]\nnon_prefixed_mcp_tool_names = true\n",
+            None,
+            false,
+        ),
+        (
+            "[features.non_prefixed_mcp_tool_names]\nenabled = true\n",
+            None,
+            false,
+        ),
+        (
+            "[features.non_prefixed_mcp_tool_names]\nenabled = true\nserver_names = [\"history\", \"notes\"]\n",
+            Some(vec!["history".to_string(), "notes".to_string()]),
+            true,
+        ),
+        (
+            "[features.non_prefixed_mcp_tool_names]\nenabled = true\nserver_names = []\n",
+            Some(Vec::new()),
+            true,
+        ),
+        (
+            "[features.non_prefixed_mcp_tool_names]\nenabled = false\nserver_names = [\"history\"]\n",
+            None,
+            true,
+        ),
+    ];
+
+    for (config_contents, expected_servers, expected_prefix) in cases {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str::<ConfigToml>(config_contents)
+            .expect("TOML deserialization should succeed");
+        let config = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
+        assert_eq!(config.non_prefixed_mcp_tool_servers, expected_servers);
+        assert_eq!(config.prefix_mcp_tool_names(), expected_prefix);
+        let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+        let mcp_config = config.to_mcp_config(&plugins_manager).await;
+        assert_eq!(mcp_config.prefix_mcp_tool_names, expected_prefix);
+        assert_eq!(
+            mcp_config.non_prefixed_mcp_tool_servers,
+            expected_servers.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_resolves_code_mode_config() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml: ConfigToml = toml::from_str(
@@ -5355,7 +5414,7 @@ async fn sqlite_home_defaults_to_codex_home_for_workspace_write() -> std::io::Re
     )
     .await?;
 
-    assert_eq!(config.sqlite_home, codex_home.path().to_path_buf());
+    assert_eq!(config.sqlite.home(), codex_home.path());
 
     Ok(())
 }
@@ -6225,10 +6284,25 @@ async fn to_mcp_config_flows_mcp_tool_prefix_from_feature() -> std::io::Result<(
 
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(mcp_config.prefix_mcp_tool_names);
+    assert!(mcp_config.non_prefixed_mcp_tool_servers.is_empty());
 
     let _ = config.features.enable(Feature::NonPrefixedMcpToolNames);
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(!mcp_config.prefix_mcp_tool_names);
+    assert!(mcp_config.non_prefixed_mcp_tool_servers.is_empty());
+
+    config.non_prefixed_mcp_tool_servers = Some(vec!["history".to_string(), "notes".to_string()]);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+    assert!(mcp_config.prefix_mcp_tool_names);
+    assert_eq!(
+        mcp_config.non_prefixed_mcp_tool_servers,
+        vec!["history".to_string(), "notes".to_string()]
+    );
+
+    let _ = config.features.disable(Feature::NonPrefixedMcpToolNames);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+    assert!(mcp_config.prefix_mcp_tool_names);
+    assert!(mcp_config.non_prefixed_mcp_tool_servers.is_empty());
 
     Ok(())
 }
@@ -10602,6 +10676,7 @@ multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = false
+wait_agent_enabled = false
 non_code_mode_only = true
 
 [agents]
@@ -10649,6 +10724,7 @@ max_concurrent_threads_per_session = 9
     );
     assert!(config.multi_agent_v2.hide_spawn_agent_metadata);
     assert!(!config.multi_agent_v2.expose_spawn_agent_model_overrides);
+    assert!(!config.multi_agent_v2.wait_agent_enabled);
     assert!(config.multi_agent_v2.non_code_mode_only);
 
     Ok(())
@@ -10750,6 +10826,48 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
             hint.ends_with(DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT)
         }))
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_allows_disabled_wait_agent_without_sleep_tool() -> std::io::Result<()> {
+    for config_toml in [
+        r#"
+[features.multi_agent_v2]
+enabled = true
+wait_agent_enabled = false
+"#,
+        r#"
+[features.multi_agent_v2]
+enabled = true
+wait_agent_enabled = false
+
+[features.current_time_reminder]
+enabled = true
+sleep_tool = false
+"#,
+        r#"
+[features.multi_agent_v2]
+enabled = true
+wait_agent_enabled = false
+
+[features.current_time_reminder]
+enabled = false
+sleep_tool = true
+"#,
+    ] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(config_toml).expect("TOML should deserialize");
+        let config = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
+        assert!(!config.multi_agent_v2.wait_agent_enabled);
+    }
+
+    Ok(())
 }
 
 #[test]
@@ -11815,7 +11933,7 @@ sandbox_private_desktop = false
     );
     let config = load_with_enterprise_requirement(&codex_home, requirements).await?;
 
-    assert_eq!(config.sqlite_home, required_sqlite_home);
+    assert_eq!(config.sqlite.home(), required_sqlite_home.as_path());
     assert_eq!(config.log_dir, required_log_dir);
     assert_eq!(config.model_catalog, Some(catalog));
     assert!(!config.check_for_update_on_startup);

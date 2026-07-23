@@ -16,6 +16,12 @@
         "importId": {
           "type": "string"
         },
+        "providerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "successes": {
           "items": {
             "$ref": "#/definitions/ExternalAgentConfigImportItemTypeSuccess"

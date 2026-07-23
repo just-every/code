@@ -46,6 +46,7 @@ use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
 use codex_state::StateRuntime;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -78,6 +79,7 @@ async fn list_threads(mcp: &mut TestAppServer) -> Result<ThreadListResponse> {
             model_providers: None,
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -521,8 +523,11 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
     }
     mcp.clear_message_buffer();
 
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     let source_goal = state_db
         .thread_goals()
         .replace_thread_goal(

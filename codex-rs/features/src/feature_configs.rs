@@ -31,6 +31,26 @@ impl FeatureConfig for CodeModeConfigToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct NonPrefixedMcpToolNamesConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// MCP servers whose tools should omit the legacy `mcp__` namespace prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_names: Option<Vec<String>>,
+}
+
+impl FeatureConfig for NonPrefixedMcpToolNamesConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = Some(enabled);
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MultiAgentV2ConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -66,6 +86,9 @@ pub struct MultiAgentV2ConfigToml {
     /// corresponding guidance to root and subagent usage hints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expose_spawn_agent_model_overrides: Option<bool>,
+    /// Expose the multi-agent v2 `wait_agent` tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_agent_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
 }

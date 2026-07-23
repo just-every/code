@@ -1,12 +1,11 @@
-use chrono::Utc;
-use codex_rollout::find_thread_path_by_id_str;
-
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
 use super::helpers::scoped_rollout_path;
 use crate::ArchiveThreadParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+use chrono::Utc;
+use codex_rollout::find_thread_path_by_id_str;
 
 pub(super) async fn archive_thread(
     store: &LocalThreadStore,
@@ -66,6 +65,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SessionSource;
     use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
+    use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -108,6 +108,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                is_pinned: None,
                 archived: true,
                 search_term: None,
                 relation_filter: None,
@@ -133,7 +134,7 @@ mod tests {
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await

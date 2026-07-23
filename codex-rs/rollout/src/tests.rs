@@ -1,6 +1,7 @@
 #![allow(warnings, clippy::all)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use codex_utils_absolute_path::test_support::PathExt;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
@@ -62,9 +63,12 @@ async fn insert_state_db_thread(
     rollout_path: &Path,
     archived: bool,
 ) -> crate::state_db::StateDbHandle {
-    let runtime = codex_state::StateRuntime::init(home.to_path_buf(), TEST_PROVIDER.to_string())
-        .await
-        .expect("state db should initialize");
+    let runtime = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(home.abs()),
+        TEST_PROVIDER.to_string(),
+    )
+    .await
+    .expect("state db should initialize");
     runtime
         .mark_backfill_complete(/*last_watermark*/ None)
         .await
@@ -227,9 +231,12 @@ async fn find_thread_path_repairs_missing_db_row_after_filesystem_fallback() {
     let fs_rollout_path = home.join(format!("sessions/2025/01/03/rollout-{ts}-{uuid}.jsonl"));
 
     // Create an empty state DB so lookup takes the DB-first path and then falls back to files.
-    let runtime = codex_state::StateRuntime::init(home.to_path_buf(), TEST_PROVIDER.to_string())
-        .await
-        .expect("state db should initialize");
+    let runtime = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(home.abs()),
+        TEST_PROVIDER.to_string(),
+    )
+    .await
+    .expect("state db should initialize");
     runtime
         .mark_backfill_complete(/*last_watermark*/ None)
         .await
@@ -280,9 +287,12 @@ async fn assert_state_db_rollout_path(
     thread_id: ThreadId,
     expected_path: Option<&Path>,
 ) {
-    let runtime = codex_state::StateRuntime::init(home.to_path_buf(), TEST_PROVIDER.to_string())
-        .await
-        .expect("state db should initialize");
+    let runtime = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(home.abs()),
+        TEST_PROVIDER.to_string(),
+    )
+    .await
+    .expect("state db should initialize");
     let path = runtime
         .find_rollout_path_by_id(thread_id, Some(false))
         .await
@@ -640,6 +650,7 @@ async fn test_list_conversations_latest_first() {
                 thread_id: Some(thread_id_from_uuid(u3)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -660,6 +671,7 @@ async fn test_list_conversations_latest_first() {
                 thread_id: Some(thread_id_from_uuid(u2)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -680,6 +692,7 @@ async fn test_list_conversations_latest_first() {
                 thread_id: Some(thread_id_from_uuid(u1)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -793,6 +806,7 @@ async fn test_pagination_cursor() {
                 thread_id: Some(thread_id_from_uuid(u5)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -813,6 +827,7 @@ async fn test_pagination_cursor() {
                 thread_id: Some(thread_id_from_uuid(u4)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -869,6 +884,7 @@ async fn test_pagination_cursor() {
                 thread_id: Some(thread_id_from_uuid(u3)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -889,6 +905,7 @@ async fn test_pagination_cursor() {
                 thread_id: Some(thread_id_from_uuid(u2)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -937,6 +954,7 @@ async fn test_pagination_cursor() {
             thread_id: Some(thread_id_from_uuid(u1)),
             first_user_message: Some("Hello from user".to_string()),
             preview: Some("Hello from user".to_string()),
+            is_pinned: false,
             cwd: Some(Path::new(".").to_path_buf()),
             git_branch: None,
             git_sha: None,
@@ -1110,6 +1128,7 @@ async fn test_get_thread_contents() {
             thread_id: Some(thread_id_from_uuid(uuid)),
             first_user_message: Some("Hello from user".to_string()),
             preview: Some("Hello from user".to_string()),
+            is_pinned: false,
             cwd: Some(Path::new(".").to_path_buf()),
             git_branch: None,
             git_sha: None,
@@ -1477,6 +1496,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
                 thread_id: Some(thread_id_from_uuid(u3)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,
@@ -1497,6 +1517,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
                 thread_id: Some(thread_id_from_uuid(u2)),
                 first_user_message: Some("Hello from user".to_string()),
                 preview: Some("Hello from user".to_string()),
+                is_pinned: false,
                 cwd: Some(Path::new(".").to_path_buf()),
                 git_branch: None,
                 git_sha: None,

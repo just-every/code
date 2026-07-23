@@ -36,6 +36,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::cmp::Reverse;
@@ -95,6 +96,7 @@ async fn list_threads_with_sort(
             model_providers: providers,
             source_kinds,
             archived,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -132,6 +134,7 @@ async fn list_threads_for_relation(
             model_providers,
             source_kinds,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -535,6 +538,7 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::Many(vec![
                 first_target_cwd.to_string_lossy().into_owned(),
                 second_target_cwd.to_string_lossy().into_owned(),
@@ -605,15 +609,17 @@ sqlite = true
     // `thread/list` applies `search_term` on the sqlite fast path. This test creates
     // rollouts manually, so mark the DB backfill complete and then run an unsearched
     // list large enough to repair every rollout the searched list should find.
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
         codex_home: codex_home.path().to_path_buf(),
-        sqlite_home: codex_home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
         model_provider_id: "mock_provider".to_string(),
         generate_memories: false,
@@ -644,6 +650,7 @@ sqlite = true
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: Some("needle".to_string()),
@@ -827,9 +834,11 @@ sqlite = true
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
@@ -844,6 +853,7 @@ sqlite = true
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -878,6 +888,7 @@ sqlite = true
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
@@ -905,6 +916,7 @@ sqlite = true
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
@@ -931,7 +943,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
     let newer_child_id = ThreadId::new();
     let grandchild_id = ThreadId::new();
     let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         "mock_provider".to_string(),
     )
     .await?;
@@ -1088,6 +1100,7 @@ async fn thread_list_relation_filters_reject_invalid_requests() -> Result<()> {
             model_providers: None,
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -1112,6 +1125,7 @@ async fn thread_list_relation_filters_reject_invalid_requests() -> Result<()> {
             model_providers: None,
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -1713,15 +1727,17 @@ async fn thread_list_sort_recency_at_uses_state_db_order_with_provider_filter() 
         "2025-01-03T00:00:00Z",
     )?;
 
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
         codex_home: codex_home.path().to_path_buf(),
-        sqlite_home: codex_home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
         model_provider_id: "mock_provider".to_string(),
         generate_memories: false,
@@ -1901,6 +1917,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -1940,6 +1957,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 model_providers: Some(vec!["mock_provider".to_string()]),
                 source_kinds: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -2175,6 +2193,7 @@ async fn thread_list_invalid_cursor_returns_error() -> Result<()> {
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,

@@ -33,7 +33,9 @@ use codex_models_manager::manager::RefreshStrategy;
 use codex_utils_path_uri::LegacyAppPathString;
 
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -46,6 +48,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use codex_utils_path_uri::PathUri;
@@ -77,6 +80,7 @@ use serde_json::json;
 use serial_test::serial;
 use std::io::Cursor;
 use tempfile::tempdir;
+use test_case::test_case;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -692,6 +696,119 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdio_mcp_tool_names_respect_selected_servers() -> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let call_id = "history-echo";
+    let search_call_id = "search-mcp-echo";
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_tool_search_call(
+                search_call_id,
+                &json!({"query": "echo message and environment data"}),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let call_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-2"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                "history",
+                "echo",
+                r#"{"message":"ping"}"#,
+            ),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "history echo completed successfully."),
+            responses::ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+
+    let command = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_pre_build_hook(move |codex_home| {
+            fs::write(
+                codex_home.join("config.toml"),
+                r#"
+[features.non_prefixed_mcp_tool_names]
+enabled = true
+server_names = ["history", "notes"]
+"#,
+            )
+            .expect("write MCP namespace configuration");
+        })
+        .with_config(move |config| {
+            for server_name in ["history", "notes", "other"] {
+                insert_mcp_server(
+                    config,
+                    server_name,
+                    stdio_transport(command.clone(), /*env*/ None, Vec::new()),
+                    TestMcpServerOptions {
+                        environment_id: remote_aware_environment_id(),
+                        ..Default::default()
+                    },
+                );
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, "history").await?;
+
+    fixture
+        .submit_turn_with_permission_profile(
+            "call the history echo tool",
+            PermissionProfile::read_only(),
+        )
+        .await?;
+
+    let search_output = call_mock
+        .single_request()
+        .tool_search_output(search_call_id);
+    let mut actual_namespaces = [
+        "history",
+        "notes",
+        "other",
+        "mcp__history",
+        "mcp__notes",
+        "mcp__other",
+    ]
+    .into_iter()
+    .filter(|namespace| {
+        responses::namespace_child_tool(&search_output, namespace, "echo").is_some()
+    })
+    .collect::<Vec<_>>();
+    actual_namespaces.sort_unstable();
+    assert_eq!(actual_namespaces, ["history", "mcp__other", "notes"]);
+
+    let output = final_mock.single_request().function_call_output(call_id);
+    let output_text = output["output"]
+        .as_str()
+        .expect("MCP function-call output should be a string");
+    let output_json: Value = serde_json::from_str(split_wall_time_wrapped_output(output_text))?;
+    assert_eq!(output_json["echo"], "ECHOING: ping");
+
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_cancels_startup_prewarm_waiting_for_mcp_startup() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -734,6 +851,107 @@ async fn shutdown_cancels_startup_prewarm_waiting_for_mcp_startup() -> anyhow::R
     );
 
     server.shutdown().await;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum InterruptedMcpStartupPhase {
+    PreSamplingCompaction,
+    FirstStep,
+    StartupPrewarm,
+}
+
+#[test_case(InterruptedMcpStartupPhase::PreSamplingCompaction; "pre sampling compaction")]
+#[test_case(InterruptedMcpStartupPhase::FirstStep; "first step")]
+#[test_case(InterruptedMcpStartupPhase::StartupPrewarm; "startup prewarm")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_during_mcp_startup_preserves_user_input_in_history(
+    startup_phase: InterruptedMcpStartupPhase,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let pending_mcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let pending_mcp_url = format!("http://{}/mcp", pending_mcp_listener.local_addr()?);
+
+    let fixture = test_codex()
+        .with_config(move |config| {
+            config.model_provider.supports_websockets =
+                matches!(startup_phase, InterruptedMcpStartupPhase::StartupPrewarm);
+            if matches!(
+                startup_phase,
+                InterruptedMcpStartupPhase::PreSamplingCompaction
+            ) {
+                config.model_auto_compact_token_limit = Some(0);
+            }
+            insert_mcp_server(
+                config,
+                "interrupted_startup",
+                McpServerTransportConfig::StreamableHttp {
+                    url: pending_mcp_url,
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                TestMcpServerOptions::default(),
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    let (_pending_mcp_connection, _) =
+        tokio::time::timeout(Duration::from_secs(5), pending_mcp_listener.accept())
+            .await
+            .context("MCP startup should connect before the turn is interrupted")??;
+    let prompt = "keep this interrupted prompt in conversation history";
+    fixture
+        .codex
+        .submit(read_only_user_turn(&fixture, prompt))
+        .await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnStarted(_))
+    })
+    .await;
+
+    fixture.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+
+    let history = fixture
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?;
+    let user_prompt_index = history
+        .items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. })
+                    if role == "user"
+                        && content.iter().any(|item| {
+                            matches!(item, ContentItem::InputText { text } if text == prompt)
+                        })
+            )
+        })
+        .expect("an interrupted turn should retain its submitted user prompt");
+    let interruption_marker_index = history
+        .items
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                    if content.iter().any(|item| {
+                        matches!(item, ContentItem::InputText { text } if text.contains("<turn_aborted>"))
+                    })
+            )
+        })
+        .expect("an interrupted turn should retain its interruption marker");
+    assert!(user_prompt_index < interruption_marker_index);
+
     Ok(())
 }
 

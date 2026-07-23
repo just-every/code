@@ -5,6 +5,7 @@ use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -19,6 +20,7 @@ struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
     archived: bool,
+    is_pinned: Option<bool>,
     cwd_filters: Option<Vec<PathBuf>>,
     search_term: Option<String>,
     use_state_db_only: bool,
@@ -1252,10 +1254,12 @@ impl ThreadRequestProcessor {
                 thread_start.dynamic_tool_count = dynamic_tool_count,
             ))
             .await
-            .map_err(|err| match err {
-                CodexErr::InvalidRequest(message) => invalid_request(message),
-                CodexErr::UnsupportedOperation(message) => method_not_found(message),
-                err => internal_error(format!("error creating thread: {err}")),
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+                CodexErrorDetails::UnsupportedOperation(message) => {
+                    method_not_found(message.clone())
+                }
+                _ => internal_error(format!("error creating thread: {err}")),
             })?;
         let session_telemetry = thread.session_telemetry();
         session_telemetry.record_startup_phase(
@@ -1552,9 +1556,9 @@ impl ThreadRequestProcessor {
         let count = thread
             .decrement_out_of_band_elicitation_count()
             .await
-            .map_err(|err| match err {
-                CodexErr::InvalidRequest(message) => invalid_request(message),
-                err => internal_error(format!(
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+                _ => internal_error(format!(
                     "failed to decrement out-of-band elicitation counter: {err}"
                 )),
             })?;
@@ -1654,35 +1658,47 @@ impl ThreadRequestProcessor {
         let ThreadMetadataUpdateParams {
             thread_id,
             git_info,
+            is_pinned,
         } = params;
 
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let Some(ThreadMetadataGitInfoUpdateParams {
-            sha,
-            branch,
-            origin_url,
-        }) = git_info
-        else {
-            return Err(invalid_request("gitInfo must include at least one field"));
-        };
-
-        if sha.is_none() && branch.is_none() && origin_url.is_none() {
-            return Err(invalid_request("gitInfo must include at least one field"));
+        if git_info.is_none() && is_pinned.is_none() {
+            return Err(invalid_request(
+                "thread metadata update must include at least one field",
+            ));
         }
 
-        let git_sha = Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?;
-        let git_branch = Self::normalize_thread_metadata_git_field(branch, "gitInfo.branch")?;
-        let git_origin_url =
-            Self::normalize_thread_metadata_git_field(origin_url, "gitInfo.originUrl")?;
+        let git_info = git_info
+            .map(
+                |ThreadMetadataGitInfoUpdateParams {
+                     sha,
+                     branch,
+                     origin_url,
+                 }| {
+                    if sha.is_none() && branch.is_none() && origin_url.is_none() {
+                        return Err(invalid_request("gitInfo must include at least one field"));
+                    }
+
+                    Ok(StoreGitInfoPatch {
+                        sha: Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?,
+                        branch: Self::normalize_thread_metadata_git_field(
+                            branch,
+                            "gitInfo.branch",
+                        )?,
+                        origin_url: Self::normalize_thread_metadata_git_field(
+                            origin_url,
+                            "gitInfo.originUrl",
+                        )?,
+                    })
+                },
+            )
+            .transpose()?;
 
         let patch = StoreThreadMetadataPatch {
-            git_info: Some(StoreGitInfoPatch {
-                sha: git_sha,
-                branch: git_branch,
-                origin_url: git_origin_url,
-            }),
+            git_info,
+            is_pinned,
             ..Default::default()
         };
 
@@ -1981,6 +1997,7 @@ impl ThreadRequestProcessor {
             model_providers,
             source_kinds,
             archived,
+            is_pinned,
             cwd,
             use_state_db_only,
             search_term,
@@ -2025,6 +2042,7 @@ impl ThreadRequestProcessor {
                     model_providers,
                     source_kinds,
                     archived: archived.unwrap_or(false),
+                    is_pinned,
                     cwd_filters,
                     search_term,
                     use_state_db_only,
@@ -3384,7 +3402,10 @@ impl ThreadRequestProcessor {
                     .await;
             }
             Err(err) => {
-                let error = internal_error(format!("error resuming thread: {err}"));
+                let error = match err.details() {
+                    CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+                    _ => internal_error(format!("error resuming thread: {err}")),
+                };
                 self.outgoing.send_error(request_id, error).await;
             }
         }
@@ -4111,12 +4132,12 @@ impl ThreadRequestProcessor {
                 supports_openai_form_elicitation,
             )
             .await
-            .map_err(|err| match err {
-                CodexErr::Io(_) | CodexErr::Json(_) => {
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::Io(_) | CodexErrorDetails::Json(_) => {
                     invalid_request(format!("failed to load thread {source_thread_id}: {err}"))
                 }
-                CodexErr::InvalidRequest(message) => invalid_request(message),
-                err => internal_error(format!("error forking thread: {err}")),
+                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+                _ => internal_error(format!("error forking thread: {err}")),
             })?;
 
         Self::set_app_server_client_info(
@@ -4343,6 +4364,7 @@ impl ThreadRequestProcessor {
             model_providers,
             source_kinds,
             archived,
+            is_pinned,
             cwd_filters,
             search_term,
             use_state_db_only,
@@ -4390,6 +4412,7 @@ impl ThreadRequestProcessor {
                     model_providers: model_provider_filter.clone(),
                     cwd_filters: cwd_filters.clone(),
                     archived,
+                    is_pinned,
                     search_term: search_term.clone(),
                     use_state_db_only,
                     relation_filter,
@@ -4912,13 +4935,13 @@ fn conversation_summary_rollout_path_read_error(
 }
 
 pub(super) fn core_thread_write_error(operation: &str, err: CodexErr) -> JSONRPCErrorError {
-    match err {
-        CodexErr::ThreadNotFound(thread_id) => {
+    match err.details() {
+        CodexErrorDetails::ThreadNotFound(thread_id) => {
             invalid_request(format!("thread not found: {thread_id}"))
         }
-        CodexErr::InvalidRequest(message) => invalid_request(message),
-        CodexErr::UnsupportedOperation(message) => method_not_found(message),
-        err => internal_error(format!("failed to {operation}: {err}")),
+        CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+        CodexErrorDetails::UnsupportedOperation(message) => method_not_found(message.clone()),
+        _ => internal_error(format!("failed to {operation}: {err}")),
     }
 }
 
@@ -4972,6 +4995,7 @@ pub(crate) fn thread_from_stored_thread(
         parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),
         preview: thread.preview,
         ephemeral: false,
+        is_pinned: thread.is_pinned,
         history_mode: thread.history_mode.into(),
         model_provider: if thread.model_provider.is_empty() {
             fallback_provider.to_string()
@@ -5183,6 +5207,7 @@ fn build_thread_from_snapshot(
         parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
+        is_pinned: false,
         history_mode: config_snapshot.history_mode.into(),
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,

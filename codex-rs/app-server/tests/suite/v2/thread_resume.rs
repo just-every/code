@@ -55,6 +55,8 @@ use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
@@ -96,6 +98,7 @@ use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::read_session_meta_line;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_absolute_path::test_support::PathExt;
 use codex_utils_path_uri::LegacyAppPathString;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
@@ -164,6 +167,114 @@ async fn thread_resume_paginated_metadata_only_uses_model_context() -> Result<()
     assert_eq!(resumed.id, conversation_id);
     assert_eq!(resumed.history_mode, ThreadHistoryMode::Paginated);
     assert!(resumed.turns.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_rejects_paginated_writer_owned_by_another_process() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri()).write(codex_home.path())?;
+
+    let mut primary = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = primary
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.4".to_string()),
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        primary.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "first writer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    )
+    .await??;
+
+    let secondary_sqlite_home = TempDir::new()?;
+    let secondary_sqlite_home_path = secondary_sqlite_home.path().to_string_lossy();
+    let mut secondary = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[(
+            "CODEX_SQLITE_HOME",
+            Some(secondary_sqlite_home_path.as_ref()),
+        )])
+        .build_initialized()
+        .await?;
+    let read_id = secondary
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let ThreadReadResponse { thread: read, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, secondary.read_response(read_id)).await??;
+    assert_eq!(read.id, thread.id);
+
+    let resume_id = secondary
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        secondary.read_stream_until_error_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(
+        error.error.message,
+        format!("thread {} already has an active writer", thread.id)
+    );
+
+    timeout(DEFAULT_READ_TIMEOUT, primary.shutdown_gracefully()).await??;
+
+    let next_resume_id = secondary
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadResumeResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        secondary.read_response(next_resume_id),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        secondary.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "second writer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    )
+    .await??;
+
+    let list_id = secondary
+        .send_thread_turns_list_request(ThreadTurnsListParams {
+            thread_id: thread.id,
+            cursor: None,
+            limit: None,
+            sort_direction: None,
+            items_view: None,
+        })
+        .await?;
+    let ThreadTurnsListResponse { data, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, secondary.read_response(list_id)).await??;
+    assert_eq!(data.len(), 2);
     Ok(())
 }
 
@@ -1780,8 +1891,11 @@ async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()>
     )
     .await??;
 
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     let thread_id = ThreadId::from_string(&thread_id)?;
     let thread_metadata = state_db
         .get_thread(thread_id)
@@ -2479,8 +2593,11 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
         .join("\n")
             + "\n",
     )?;
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
@@ -2493,6 +2610,7 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
     let update_id = mcp
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
+            is_pinned: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/pr-branch".to_string())),

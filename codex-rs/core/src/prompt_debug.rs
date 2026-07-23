@@ -16,7 +16,6 @@ use crate::config::Config;
 use crate::resolve_installation_id;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
-use crate::session::turn::built_tools;
 use crate::state_db_bridge::StateDbHandle;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::ThreadManager;
@@ -53,6 +52,7 @@ pub async fn build_prompt_input(
             EnvironmentManager::from_codex_home(
                 config.codex_home.clone(),
                 Some(local_runtime_paths),
+                config.http_client_factory(),
             )
             .await
             .map_err(|err| CodexErr::Fatal(err.to_string()))?,
@@ -84,7 +84,9 @@ pub(crate) async fn build_prompt_input_from_session(
 ) -> CodexResult<Vec<ResponseItem>> {
     let turn_context = sess.new_default_turn().await;
     // Prompt debugging builds a standalone request without entering run_turn.
-    let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
+    let step_context = sess
+        .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+        .await?;
     sess.record_context_updates_and_set_reference_context_item(step_context.as_ref())
         .await;
 
@@ -98,11 +100,10 @@ pub(crate) async fn build_prompt_input_from_session(
         .clone_history()
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
-    let router = built_tools(sess, step_context.as_ref(), &CancellationToken::new()).await?;
     let base_instructions = sess.get_base_instructions().await;
     let prompt = build_prompt(
         prompt_input,
-        router.as_ref(),
+        step_context.tool_router.as_ref(),
         turn_context.as_ref(),
         base_instructions,
     );

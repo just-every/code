@@ -1,3 +1,4 @@
+use crate::client::AnalyticsEventsClient;
 use crate::client::AnalyticsEventsQueue;
 use crate::events::AppServerRpcTransport;
 use crate::events::CodexAcceptedLineFingerprintsEventParams;
@@ -174,6 +175,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 
 const TEST_PRODUCT_CLIENT_ID: &str = "codex_work_desktop";
@@ -202,6 +204,7 @@ fn sample_thread_with_metadata(
         parent_thread_id,
         preview: "first prompt".to_string(),
         ephemeral,
+        is_pinned: false,
         history_mode: Default::default(),
         model_provider: "openai".to_string(),
         created_at: 1,
@@ -439,9 +442,10 @@ fn sample_turn_profile() -> TurnProfile {
     TurnProfile {
         before_first_sampling_ms: 100,
         sampling_ms: 700,
+        compaction_ms: 40,
         between_sampling_overhead_ms: 50,
         tool_blocking_ms: 250,
-        after_last_sampling_ms: 134,
+        after_last_sampling_ms: 94,
         sampling_request_count: 2,
         sampling_retry_count: 1,
     }
@@ -1296,6 +1300,110 @@ index 1111111..2222222
     let event = accepted_line_events[0];
     assert_eq!(event.event_params.accepted_added_lines, 1);
     assert!(event.event_params.line_fingerprints.is_empty());
+}
+
+#[tokio::test]
+#[cfg(debug_assertions)]
+async fn analytics_flush_delivers_completed_turn_with_file_diff() {
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos();
+    let capture_path = std::env::temp_dir().join(format!(
+        "codex-analytics-turn-flush-{}-{nonce}.jsonl",
+        std::process::id()
+    ));
+    let auth_manager = codex_login::AuthManager::from_auth_for_testing(
+        codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    );
+    let client = AnalyticsEventsClient::new_for_capture_file(auth_manager, capture_path.clone());
+
+    for fact in [
+        sample_initialize_fact(/*connection_id*/ 7),
+        AnalyticsFact::ClientResponse {
+            connection_id: 7,
+            request_id: RequestId::Integer(1),
+            response: Box::new(sample_thread_start_response(
+                "thread-2", /*ephemeral*/ false, "gpt-5",
+            )),
+            thread_originator: None,
+        },
+        AnalyticsFact::ClientRequest {
+            connection_id: 7,
+            request_id: RequestId::Integer(3),
+            request: Box::new(sample_turn_start_request("thread-2", /*request_id*/ 3)),
+        },
+        AnalyticsFact::ClientResponse {
+            connection_id: 7,
+            request_id: RequestId::Integer(3),
+            response: Box::new(sample_turn_start_response("turn-2")),
+            thread_originator: None,
+        },
+        AnalyticsFact::Custom(CustomAnalyticsFact::TurnResolvedConfig(Box::new(
+            sample_turn_resolved_config("thread-2", "turn-2"),
+        ))),
+        AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+            "thread-2", "turn-2",
+        ))),
+        AnalyticsFact::Custom(CustomAnalyticsFact::TurnProfile(Box::new(
+            TurnProfileFact {
+                turn_id: "turn-2".to_string(),
+                profile: sample_turn_profile(),
+            },
+        ))),
+        AnalyticsFact::Notification(Box::new(ServerNotification::TurnDiffUpdated(
+            TurnDiffUpdatedNotification {
+                thread_id: "thread-2".to_string(),
+                turn_id: "turn-2".to_string(),
+                diff: "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -0,0 +1 @@
++let value = 1;
+"
+                .to_string(),
+            },
+        ))),
+        AnalyticsFact::Notification(Box::new(sample_turn_completed_notification(
+            "thread-2",
+            "turn-2",
+            AppServerTurnStatus::Completed,
+            /*codex_error_info*/ None,
+        ))),
+    ] {
+        client.record_fact(fact);
+    }
+
+    client.flush().await;
+
+    let contents = std::fs::read_to_string(&capture_path).expect("read captured analytics events");
+    let event_types = contents
+        .lines()
+        .flat_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .expect("parse captured analytics events")["events"]
+                .as_array()
+                .expect("captured events should be an array")
+                .iter()
+                .map(|event| {
+                    event["event_type"]
+                        .as_str()
+                        .expect("captured event type should be a string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert!(event_types.iter().any(|event| event == "codex_turn_event"));
+    assert!(
+        event_types
+            .iter()
+            .any(|event| event == "codex_accepted_line_fingerprints")
+    );
+
+    std::fs::remove_file(capture_path).expect("remove analytics capture file");
 }
 
 #[test]
@@ -3959,9 +4067,10 @@ fn turn_event_serializes_expected_shape() {
             total_tokens: None,
             before_first_sampling_ms: 100,
             sampling_ms: 700,
+            compaction_ms: 40,
             between_sampling_overhead_ms: 50,
             tool_blocking_ms: 250,
-            after_last_sampling_ms: 134,
+            after_last_sampling_ms: 94,
             sampling_request_count: 2,
             sampling_retry_count: 1,
             duration_ms: Some(1234),
@@ -4032,9 +4141,10 @@ fn turn_event_serializes_expected_shape() {
                 "total_tokens": null,
                 "before_first_sampling_ms": 100,
                 "sampling_ms": 700,
+                "compaction_ms": 40,
                 "between_sampling_overhead_ms": 50,
                 "tool_blocking_ms": 250,
-                "after_last_sampling_ms": 134,
+                "after_last_sampling_ms": 94,
                 "sampling_request_count": 2,
                 "sampling_retry_count": 1,
                 "duration_ms": 1234,

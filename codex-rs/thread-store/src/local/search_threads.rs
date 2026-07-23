@@ -60,7 +60,7 @@ pub(super) async fn search_threads(
     let state_db = store.state_db().await;
     let rollout_config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
-        sqlite_home: store.config.sqlite.home().to_path_buf(),
+        sqlite: store.config.sqlite.clone(),
         cwd: store.config.codex_home.clone(),
         model_provider_id: store.config.default_model_provider_id.clone(),
         generate_memories: false,
@@ -93,6 +93,7 @@ pub(super) async fn search_threads(
         allowed_sources: params.allowed_sources.clone(),
         model_providers: None,
         cwd_filters: None,
+        is_pinned: None,
         archived: params.archived,
         search_term: None,
         relation_filter: None,

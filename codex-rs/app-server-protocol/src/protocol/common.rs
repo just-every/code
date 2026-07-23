@@ -1155,6 +1155,11 @@ client_request_definitions! {
         serialization: global("config"),
         response: v2::ExternalAgentConfigImportResponse,
     },
+    ExternalAgentConfigImportHistoryRecord => "externalAgentConfig/import/recordHistory" {
+        params: v2::ExternalAgentConfigImportHistoryRecordParams,
+        serialization: global("config"),
+        response: v2::ExternalAgentConfigImportHistoryRecordResponse,
+    },
     ExternalAgentConfigImportHistoriesRead => "externalAgentConfig/import/readHistories" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: global_shared_read("config"),
@@ -2725,6 +2730,7 @@ mod tests {
                     parent_thread_id: None,
                     preview: "first prompt".to_string(),
                     ephemeral: true,
+                    is_pinned: false,
                     history_mode: Default::default(),
                     model_provider: "openai".to_string(),
                     created_at: 1,
@@ -2777,6 +2783,7 @@ mod tests {
                         "parentThreadId": null,
                         "preview": "first prompt",
                         "ephemeral": true,
+                        "isPinned": false,
                         "historyMode": "legacy",
                         "modelProvider": "openai",
                         "createdAt": 1,

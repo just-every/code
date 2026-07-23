@@ -107,7 +107,6 @@ pub struct AppMetadata {
     pub version: Option<String>,
     pub version_id: Option<String>,
     pub version_notes: Option<String>,
-    pub first_party_type: Option<String>,
     pub first_party_requires_install: Option<bool>,
     pub show_in_composer_when_unlinked: Option<bool>,
 }
@@ -191,6 +190,11 @@ pub struct AppToolSummary {
     pub name: String,
     pub title: Option<String>,
     pub description: String,
+    #[serde(default = "default_enabled")]
+    pub is_enabled: bool,
+    pub disabled_reason: Option<String>,
+    #[serde(default)]
+    pub is_read_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

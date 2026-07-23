@@ -89,11 +89,17 @@ pub(crate) fn connector_metadata_to_api(metadata: ConnectorMetadata) -> ApiConne
                         name,
                         title,
                         description,
+                        is_enabled,
+                        disabled_reason,
+                        is_read_only,
                     } = tool;
                     ApiAppToolSummary {
                         name,
                         title,
                         description,
+                        is_enabled,
+                        disabled_reason,
+                        is_read_only,
                     }
                 })
                 .collect()
@@ -149,7 +155,6 @@ fn app_metadata_to_api(metadata: AppMetadata) -> ApiAppMetadata {
         version,
         version_id,
         version_notes,
-        first_party_type,
         first_party_requires_install,
         show_in_composer_when_unlinked,
     } = metadata;
@@ -164,7 +169,6 @@ fn app_metadata_to_api(metadata: AppMetadata) -> ApiAppMetadata {
         version,
         version_id,
         version_notes,
-        first_party_type,
         first_party_requires_install,
         show_in_composer_when_unlinked,
     }

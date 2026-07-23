@@ -480,13 +480,7 @@ pub async fn run_main_with_transport_options(
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
-    let environment_manager = if loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await
-    } else {
-        EnvironmentManager::from_codex_home(codex_home.clone(), Some(local_runtime_paths)).await
-    }
-    .map(Arc::new)
-    .map_err(std::io::Error::other)?;
+    let ignore_user_config = loader_overrides.ignore_user_config;
     let config_manager = ConfigManager::new(
         codex_home.to_path_buf(),
         cli_kv_overrides.clone(),
@@ -540,6 +534,18 @@ pub async fn run_main_with_transport_options(
             })?
         }
     };
+    let environment_manager = if ignore_user_config {
+        EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory()).await
+    } else {
+        EnvironmentManager::from_codex_home(
+            codex_home.clone(),
+            Some(local_runtime_paths),
+            config.http_client_factory(),
+        )
+        .await
+    }
+    .map(Arc::new)
+    .map_err(std::io::Error::other)?;
 
     let otel = codex_core::otel_init::build_provider(
         &config,
@@ -569,7 +575,7 @@ pub async fn run_main_with_transport_options(
         Err(err) => {
             return Err(std::io::Error::other(format!(
                 "failed to initialize sqlite state runtime under {}: {err}",
-                config.sqlite_home.display()
+                config.sqlite_config().home().display()
             )));
         }
     };
@@ -1196,16 +1202,8 @@ async fn init_sqlite_state_db_with_fresh_start_on_corruption(
             }
             Err(err) => err,
         };
-        let database_path =
-            codex_state::runtime_db_path_for_corruption_error(&err).unwrap_or_else(|| {
-                codex_state::SqliteConfig::from_sqlite_home(
-                    codex_utils_absolute_path::AbsolutePathBuf::resolve_path_against_base(
-                        config.sqlite_home.clone(),
-                        &config.codex_home,
-                    ),
-                )
-                .state_db_path()
-            });
+        let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
+            .unwrap_or_else(|| config.sqlite_config().state_db_path());
         if !codex_state::is_sqlite_corruption_error(&err)
             && !sqlite_home_is_blocking_file(database_path.as_path())
         {
