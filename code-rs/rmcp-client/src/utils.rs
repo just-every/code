@@ -10,10 +10,13 @@ use reqwest::ClientBuilder;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
+use reqwest::header::USER_AGENT;
 use rmcp::model::CallToolResult as RmcpCallToolResult;
 use rmcp::service::ServiceError;
 use serde_json::Value;
 use tokio::time;
+
+const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) async fn run_with_timeout<F, T>(
     fut: F,
@@ -77,6 +80,7 @@ pub(crate) fn build_default_headers(
     env_http_headers: Option<HashMap<String, String>>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
 
     if let Some(http_headers) = http_headers {
         for (name, value) in http_headers {
@@ -202,6 +206,37 @@ mod tests {
         }
         assert_eq!(result.structured_content, None);
         assert_eq!(result.is_error, Some(false));
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_default_headers_adds_mcp_user_agent() -> Result<()> {
+        let headers = build_default_headers(None, None)?;
+
+        assert_eq!(
+            headers.get(USER_AGENT),
+            Some(&HeaderValue::from_static(MCP_USER_AGENT))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_default_headers_preserves_configured_user_agent() -> Result<()> {
+        let custom_user_agent = "custom-agent/9.9";
+        let headers = build_default_headers(
+            Some(HashMap::from([(
+                "user-agent".to_string(),
+                custom_user_agent.to_string(),
+            )])),
+            None,
+        )?;
+
+        assert_eq!(
+            headers.get(USER_AGENT),
+            Some(&HeaderValue::from_static(custom_user_agent))
+        );
 
         Ok(())
     }
