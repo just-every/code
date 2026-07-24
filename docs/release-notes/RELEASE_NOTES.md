@@ -1,17 +1,17 @@
-## @just-every/code v0.6.151
+## @just-every/code v0.6.152
 
-This release improves MCP HTTP defaults and refreshes standalone installer behavior.
+This release backports plan parity updates for account metadata and app-server protocol responses.
 
 ### Changes
 
-- MCP: set a default streamable HTTP user agent for server connections.
-- Install: integrate upstream standalone installer updates, including releases.openai.com resolution.
+- Core: backport plan parity for account token data and protocol responses.
+- App Server: expose plan metadata across session, fork, resume, and account schemas.
 
 ### Install
 
-```
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.150...v0.6.151
+Compare: https://github.com/just-every/code/compare/v0.6.151...v0.6.152

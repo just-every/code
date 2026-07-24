@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.152] - 2026-07-24
+
+- Core: backport plan parity for account token data and protocol responses. (cd284b9f)
+- App Server: expose plan metadata across session, fork, resume, and account schemas. (cd284b9f)
+
 ## [0.6.151] - 2026-07-23
 
 - MCP: set a default streamable HTTP user agent for server connections. (ef631d7e)
