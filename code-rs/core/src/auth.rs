@@ -437,6 +437,7 @@ pub fn login_with_chatgpt_auth_tokens(
             "prolite" => PlanType::Known(KnownPlan::ProLite),
             "team" => PlanType::Known(KnownPlan::Team),
             "business" => PlanType::Known(KnownPlan::Business),
+            "ent26" => PlanType::Known(KnownPlan::Ent26),
             "enterprise" => PlanType::Known(KnownPlan::Enterprise),
             "edu" => PlanType::Known(KnownPlan::Edu),
             _ => PlanType::Unknown(plan_type.to_string()),

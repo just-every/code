@@ -2098,6 +2098,7 @@ mod tests {
             parse_plan_type(Some("BUSINESS".to_string())),
             PlanType::Business
         );
+        assert_eq!(parse_plan_type(Some("ent26".to_string())), PlanType::Ent26);
         assert_eq!(parse_plan_type(Some("mystery".to_string())), PlanType::Unknown);
         assert_eq!(parse_plan_type(None), PlanType::Unknown);
     }
@@ -2286,6 +2287,7 @@ fn parse_plan_type(plan: Option<String>) -> PlanType {
         "pro" => PlanType::Pro,
         "team" => PlanType::Team,
         "business" => PlanType::Business,
+        "ent26" => PlanType::Ent26,
         "enterprise" => PlanType::Enterprise,
         "edu" => PlanType::Edu,
         _ => PlanType::Unknown,

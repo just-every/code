@@ -89,6 +89,7 @@ pub(crate) enum KnownPlan {
     ProLite,
     Team,
     Business,
+    Ent26,
     Enterprise,
     Edu,
 }
@@ -261,6 +262,38 @@ mod tests {
         let plan = info.chatgpt_plan_type.expect("plan should parse");
         assert_eq!(plan.as_string(), "prolite");
         assert!(plan.supports_pro_only_models());
+    }
+
+    #[test]
+    fn ent26_plan_parses_as_known_plan() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+        let payload = serde_json::json!({
+            "email": "user@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "ent26"
+            }
+        });
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        let header_b64 = b64url_no_pad(&serde_json::to_vec(&header).unwrap());
+        let payload_b64 = b64url_no_pad(&serde_json::to_vec(&payload).unwrap());
+        let signature_b64 = b64url_no_pad(b"sig");
+        let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+        let info = parse_id_token(&fake_jwt).expect("should parse");
+        let plan = info.chatgpt_plan_type.expect("plan should parse");
+        assert_eq!(plan.as_string(), "ent26");
     }
 
     #[test]

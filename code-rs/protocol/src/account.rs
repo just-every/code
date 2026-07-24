@@ -14,9 +14,26 @@ pub enum PlanType {
     Pro,
     Team,
     Business,
+    Ent26,
     Enterprise,
     Edu,
     #[serde(other)]
     Unknown,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::PlanType;
+
+    #[test]
+    fn ent26_uses_expected_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&PlanType::Ent26).expect("ent26 should serialize"),
+            "\"ent26\""
+        );
+        assert_eq!(
+            serde_json::from_str::<PlanType>("\"ent26\"").expect("ent26 should deserialize"),
+            PlanType::Ent26
+        );
+    }
+}
