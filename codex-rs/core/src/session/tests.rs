@@ -1,3 +1,4 @@
+use super::mcp_refresh::McpRefresh;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -673,6 +674,7 @@ fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> T
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
         &Default::default(),
@@ -1725,6 +1727,89 @@ disabled_tools = [
             ToolSuggestDisabledTool::plugin("slack@openai-curated"),
         ]
     );
+}
+
+#[tokio::test]
+async fn refresh_mcp_config_replaces_managed_server_and_plugin_requirements() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let server = serde_json::from_value::<McpServerConfig>(json!({
+        "url": "https://example.com/mcp",
+        "enabled": true
+    }))
+    .expect("valid test MCP server");
+    let requirement = serde_json::from_value::<codex_config::McpServerRequirement>(json!({
+        "identity": { "url": "https://example.com/mcp" }
+    }))
+    .expect("valid managed MCP requirement");
+    let plugin_requirements = std::collections::BTreeMap::from([(
+        "example-plugin".to_string(),
+        codex_config::PluginRequirementsToml {
+            mcp_servers: Some(std::collections::BTreeMap::from([(
+                "beta".to_string(),
+                requirement,
+            )])),
+        },
+    )]);
+
+    let mut next_config = session.get_config().await.as_ref().clone();
+    next_config.mcp_servers = codex_config::Constrained::normalized(
+        HashMap::from([("beta".to_string(), server.clone())]),
+        |mut servers: HashMap<String, McpServerConfig>| {
+            servers.retain(|name, _| name == "beta");
+            servers
+        },
+    )
+    .expect("valid refreshed MCP constraints");
+    let mut requirements = next_config.config_layer_stack.requirements().clone();
+    requirements.plugins = Some(Sourced::new(
+        plugin_requirements.clone(),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    ));
+    let mut requirements_toml = next_config.config_layer_stack.requirements_toml().clone();
+    requirements_toml.plugins = Some(plugin_requirements.clone());
+    let layers = next_config
+        .config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+    next_config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
+        .expect("managed MCP and plugin requirements");
+
+    session.refresh_mcp_config(next_config).await;
+
+    let config = session.get_config().await;
+    let mut managed_servers = config.mcp_servers.clone();
+    managed_servers
+        .set(HashMap::from([
+            ("alpha".to_string(), server.clone()),
+            ("beta".to_string(), server.clone()),
+        ]))
+        .expect("apply refreshed managed MCP constraints");
+    assert_eq!(
+        managed_servers.get(),
+        &HashMap::from([("beta".to_string(), server.clone())])
+    );
+    assert_eq!(
+        config
+            .config_layer_stack
+            .requirements()
+            .plugins
+            .as_ref()
+            .map(|requirements| &requirements.value),
+        Some(&plugin_requirements)
+    );
+
+    let mut plugin_servers = HashMap::from([
+        ("alpha".to_string(), server.clone()),
+        ("beta".to_string(), server),
+    ]);
+    config.apply_plugin_mcp_server_requirements("example-plugin", &mut plugin_servers);
+    assert!(!plugin_servers["alpha"].enabled);
+    assert!(plugin_servers["beta"].enabled);
 }
 
 #[test]
@@ -4205,7 +4290,7 @@ async fn wait_for_thread_rollback_failed(rx: &async_channel::Receiver<Event>) ->
     }
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+async fn open_thread_persistence(session: &mut Session) -> PathBuf {
     let config = session.get_config().await;
     let live_thread = LiveThread::create(
         Arc::clone(&session.services.thread_store),
@@ -4224,6 +4309,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -4239,16 +4325,21 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     .await
     .expect("create thread persistence");
     session.services.live_thread = Some(live_thread);
-    session.ensure_rollout_materialized().await;
-    session
-        .flush_rollout()
-        .await
-        .expect("attached rollout should flush");
     session
         .current_rollout_path()
         .await
         .expect("load rollout path")
         .expect("thread should have rollout path")
+}
+
+async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+    let rollout_path = open_thread_persistence(session).await;
+    session.ensure_rollout_materialized().await;
+    session
+        .flush_rollout()
+        .await
+        .expect("attached rollout should flush");
+    rollout_path
 }
 
 fn text_block(s: &str) -> serde_json::Value {
@@ -5267,6 +5358,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         tx_event,
         agent_status_tx,
         InitialHistory::New,
+        ForkPersistence::Copied,
         SessionSource::Exec,
         skills_service,
         plugins_manager,
@@ -5288,6 +5380,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
         GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     )
     .await;
 
@@ -5539,20 +5632,26 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        windows_sandbox_proxy_settings_mode:
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
-        mcp_refresh_pending: std::sync::atomic::AtomicBool::new(true),
-        mcp_refresh_lock: Semaphore::new(/*permits*/ 1),
+        mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
+        mcp_prewarm_tx: async_channel::bounded(1).0,
+        mcp_prewarm_shutdown: CancellationToken::new(),
+        mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
+        fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),
     };
 
+    session.mark_mcp_runtime_dirty();
     (session, turn_context)
 }
 
@@ -5652,6 +5751,7 @@ async fn make_session_with_config_and_rx(
         tx_event,
         agent_status_tx,
         InitialHistory::New,
+        ForkPersistence::Copied,
         SessionSource::Exec,
         skills_service,
         plugins_manager,
@@ -5673,6 +5773,7 @@ async fn make_session_with_config_and_rx(
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
         GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     )
     .await?;
 
@@ -5760,6 +5861,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         tx_event,
         agent_status_tx,
         initial_history,
+        ForkPersistence::Copied,
         session_source,
         skills_service,
         plugins_manager,
@@ -5788,6 +5890,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
         GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     )
     .await?;
 
@@ -6677,9 +6780,7 @@ async fn user_turn_updates_approvals_reviewer() {
         codex_config::types::ApprovalsReviewer::AutoReview
     );
     assert!(
-        session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        session.mcp_refresh.is_pending(),
         "server elicitation authority changes must refresh MCP state"
     );
 }
@@ -7029,6 +7130,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -7107,6 +7209,7 @@ async fn submission_loop_channel_close_runs_full_thread_teardown() {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -7702,20 +7805,26 @@ where
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        windows_sandbox_proxy_settings_mode:
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
-        mcp_refresh_pending: std::sync::atomic::AtomicBool::new(true),
-        mcp_refresh_lock: Semaphore::new(/*permits*/ 1),
+        mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
+        mcp_prewarm_tx: async_channel::bounded(1).0,
+        mcp_prewarm_shutdown: CancellationToken::new(),
+        mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
+        fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),
     });
 
+    session.mark_mcp_runtime_dirty();
     (session, turn_context, rx_event)
 }
 
@@ -7852,6 +7961,106 @@ async fn refreshed_mcp_binding_captures_current_approval_authority() {
 }
 
 #[tokio::test]
+async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
+    let (session, old_turn, rx) = make_session_and_context_with_rx().await;
+    assert_eq!(old_turn.config.approvals_reviewer, ApprovalsReviewer::User);
+    session
+        .spawn_task(
+            Arc::clone(&old_turn),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            ..Default::default()
+        })
+        .await
+        .expect("reviewer settings should update");
+    session.refresh_mcp_if_dirty().await;
+
+    let request = codex_mcp::ElicitationReviewRequest {
+        server_name: "browser-use".to_string(),
+        request_id: rmcp::model::NumberOrString::Number(7),
+        elicitation: codex_rmcp_client::Elicitation::Mcp(
+            rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+                meta: Some(rmcp::model::Meta(serde_json::Map::from_iter([
+                    ("codex_approval_kind".to_string(), json!("mcp_tool_call")),
+                    ("codex_request_type".to_string(), json!("approval_request")),
+                    ("tool_name".to_string(), json!("access_browser_origin")),
+                ]))),
+                message: "Allow origin?".to_string(),
+                requested_schema: rmcp::model::ElicitationSchema::builder()
+                    .build()
+                    .expect("schema should build"),
+            },
+        ),
+    };
+    assert!(
+        session
+            .mcp_elicitation_reviewer()
+            .review(request.clone())
+            .await
+            .expect("elicitation review should succeed")
+            .is_some()
+    );
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event.msg, EventMsg::GuardianAssessment(_))),
+        "a valid elicitation should reach Guardian"
+    );
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            approval_policy: Some(AskForApproval::Never),
+            ..Default::default()
+        })
+        .await
+        .expect("approval policy should update");
+    session.refresh_mcp_if_dirty().await;
+    assert_eq!(
+        session
+            .mcp_elicitation_reviewer()
+            .review(request.clone())
+            .await
+            .expect("elicitation review should succeed"),
+        Some(ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+            meta: Some(json!({ "approvals_reviewer": "auto_review" })),
+        })
+    );
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            permission_profile: Some(PermissionProfile::Disabled),
+            ..Default::default()
+        })
+        .await
+        .expect("permission profile should update");
+    session.refresh_mcp_if_dirty().await;
+    assert_eq!(
+        session
+            .mcp_elicitation_reviewer()
+            .review(request)
+            .await
+            .expect("elicitation review should succeed"),
+        Some(ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: Some(json!({})),
+            meta: None,
+        })
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn cancelled_mcp_refresh_remains_pending() {
     let (session, _turn_context) = make_session_and_context().await;
     let session = Arc::new(session);
@@ -7863,26 +8072,20 @@ async fn cancelled_mcp_refresh_remains_pending() {
             let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
             assert!(std::future::Future::poll(refresh.as_mut(), &mut context).is_pending());
             assert!(
-                !session
-                    .mcp_refresh_pending
-                    .load(std::sync::atomic::Ordering::Acquire),
+                !session.mcp_refresh.is_pending(),
                 "the refresh should have claimed its pending invalidation"
             );
         }
     }
 
     assert!(
-        session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        session.mcp_refresh.is_pending(),
         "a cancelled refresh must leave the runtime dirty"
     );
 
     session.refresh_mcp_if_dirty().await;
     assert!(
-        !session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        !session.mcp_refresh.is_pending(),
         "the next refresh should publish the pending runtime"
     );
 }
@@ -7897,6 +8100,80 @@ async fn mcp_elicitation_reviewer_is_reused_across_runtime_refreshes() {
     session.refresh_mcp_if_dirty().await;
 
     assert!(Arc::ptr_eq(&previous, &session.mcp_elicitation_reviewer()));
+}
+
+#[tokio::test]
+async fn mcp_policy_changes_schedule_runtime_refresh() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+
+    session
+        .new_turn_with_sub_id(
+            "policy-change".to_string(),
+            SessionSettingsUpdate {
+                approval_policy: Some(AskForApproval::Never),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("approval policy update should succeed");
+
+    assert!(session.mcp_refresh.is_pending());
+}
+
+#[tokio::test]
+async fn mcp_refresh_updates_plugin_auth_mode_before_checking_pending_state() {
+    let codex_home = tempfile::tempdir().expect("create auth test directory");
+    let (mut session, _turn_context) = make_session_and_context().await;
+    session.services.auth_manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::from_api_key("old-api-key"),
+        codex_home.path().to_path_buf(),
+    );
+    let session = Arc::new(session);
+    let auth_mode = session.services.auth_manager.get_api_auth_mode();
+
+    assert_ne!(session.services.plugins_manager.auth_mode(), auth_mode);
+    session.mcp_refresh.claim();
+
+    session.refresh_mcp_if_dirty().await;
+
+    assert_eq!(session.services.plugins_manager.auth_mode(), auth_mode);
+    assert!(
+        session
+            .services
+            .mcp_runtime
+            .current_binding()
+            .await
+            .is_some()
+    );
+
+    codex_login::login_with_api_key(
+        codex_home.path(),
+        "new-api-key",
+        codex_login::AuthCredentialsStoreMode::File,
+        codex_login::AuthKeyringBackendKind::default(),
+    )
+    .expect("store replacement API key");
+    session.services.auth_manager.reload().await;
+    assert_eq!(
+        session
+            .services
+            .auth_manager
+            .auth_cached()
+            .and_then(|auth| auth.get_token().ok()),
+        Some("new-api-key".to_string())
+    );
+    assert_eq!(session.services.plugins_manager.auth_mode(), auth_mode);
+    session.mcp_refresh.claim();
+
+    session.refresh_mcp_if_dirty().await;
+
+    assert!(
+        session
+            .services
+            .mcp_runtime
+            .current_auth_matches(session.services.auth_manager.auth_cached().as_ref())
+    );
 }
 
 struct PendingNoiseConnectProvider;
@@ -9329,6 +9606,7 @@ async fn attach_in_memory_thread_store(
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -9346,6 +9624,41 @@ async fn attach_in_memory_thread_store(
     session.services.thread_store = thread_store;
     session.services.live_thread = Some(live_thread);
     store
+}
+
+#[tokio::test]
+async fn hook_transcript_path_does_not_persist_non_local_thread_store() {
+    let (mut session, _) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+
+    assert_eq!(session.hook_transcript_path().await, None);
+    assert_eq!(
+        store.calls().await,
+        codex_thread_store::InMemoryThreadStoreCalls {
+            create_thread: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn hook_transcript_path_materializes_lazy_local_thread() {
+    let (mut session, _) = make_session_and_context().await;
+    let rollout_path = open_thread_persistence(&mut session).await;
+    assert!(!rollout_path.exists());
+
+    assert_eq!(
+        session.hook_transcript_path().await,
+        Some(rollout_path.clone())
+    );
+    let (items, thread_id, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read materialized rollout");
+    assert_eq!((thread_id, parse_errors), (Some(session.thread_id), 0));
+    assert!(matches!(
+        items.as_slice(),
+        [RolloutItem::SessionMeta(meta)] if meta.meta.id == session.thread_id
+    ));
 }
 
 async fn wait_for_flush_count(
@@ -10556,6 +10869,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
         &Default::default(),

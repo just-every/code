@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -17,7 +19,7 @@ use codex_connectors::ConnectorRuntimeManager;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::HttpClient;
-use codex_exec_server::ReqwestHttpClient;
+use codex_exec_server::RouteAwareHttpClient;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -70,14 +72,30 @@ pub struct McpRuntimeInput {
 /// their exact connections and configuration for as long as they are needed.
 pub struct McpRuntime {
     current: ArcSwap<PublishedMcpRuntime>,
+    reconnect_pending: AtomicBool,
     elicitation_router: ElicitationRequestRouter,
 }
 
 struct PublishedMcpRuntime {
     connections: Arc<McpConnectionSet>,
     config: Option<Arc<McpConfig>>,
+    auth: Option<CodexAuth>,
+    auth_token: Option<String>,
     plugins_available: bool,
     ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
+}
+
+struct McpReconnectGuard<'a> {
+    pending: &'a AtomicBool,
+    claimed: bool,
+}
+
+impl Drop for McpReconnectGuard<'_> {
+    fn drop(&mut self) {
+        if self.claimed {
+            self.pending.store(true, Ordering::Release);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -125,9 +143,12 @@ impl McpRuntime {
             current: ArcSwap::from_pointee(PublishedMcpRuntime {
                 connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
                 config: None,
+                auth: None,
+                auth_token: None,
                 plugins_available: false,
                 ready_selected_capability_roots: Vec::new(),
             }),
+            reconnect_pending: AtomicBool::new(false),
             elicitation_router: ElicitationRequestRouter::default(),
         }
     }
@@ -141,13 +162,34 @@ impl McpRuntime {
     /// Reconciles configured servers and publishes their immutable runtime snapshot.
     pub async fn replace(&self, input: McpRuntimeInput) {
         let current = self.current.load_full();
+        let mut reconnect = McpReconnectGuard {
+            pending: &self.reconnect_pending,
+            claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
+        };
+        self.publish(
+            input,
+            (!reconnect.claimed).then_some(current.connections.as_ref()),
+        )
+        .await;
+        reconnect.claimed = false;
+    }
+
+    /// Starts fresh connections and returns their complete, refreshed Apps catalog.
+    pub async fn replace_fresh(&self, input: McpRuntimeInput) -> anyhow::Result<Vec<ToolInfo>> {
+        self.publish(input, /*previous*/ None).await;
+        self.latest_hard_refresh_codex_apps_tools_cache().await
+    }
+
+    async fn publish(&self, input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
         let (publish, publication_gate) = McpPublicationGate::pending();
         let config = Arc::clone(&input.config);
+        let auth = input.auth.clone();
+        let auth_token = auth.as_ref().and_then(|auth| auth.get_token().ok());
         let plugins_available = input.plugins_available;
         let ready_selected_capability_roots = input.ready_selected_capability_roots.clone();
         let connections = Arc::new(
             McpConnectionSet::new(
-                Some(current.connections.as_ref()),
+                previous,
                 publication_gate,
                 input,
                 self.elicitation_router.clone(),
@@ -157,10 +199,17 @@ impl McpRuntime {
         self.current.store(Arc::new(PublishedMcpRuntime {
             connections,
             config: Some(config),
+            auth,
+            auth_token,
             plugins_available,
             ready_selected_capability_roots,
         }));
         let _ = publish.send(true);
+    }
+
+    /// Ensures the next refresh creates fresh connections for every configured server.
+    pub fn reconnect_on_next_refresh(&self) {
+        self.reconnect_pending.store(true, Ordering::Release);
     }
 
     /// Captures the latest published configuration and live client handles.
@@ -173,6 +222,27 @@ impl McpRuntime {
                 .capture_binding_with_metadata(config, current.plugins_available)
                 .await,
         ))
+    }
+
+    /// Returns whether the published snapshot still belongs to the current credentials.
+    pub fn current_auth_matches(&self, auth: Option<&CodexAuth>) -> bool {
+        let current = self.current.load();
+        match (current.auth.as_ref(), auth) {
+            (Some(previous), Some(latest)) => {
+                previous == latest
+                    && previous.get_account_id() == latest.get_account_id()
+                    && previous.get_chatgpt_user_id() == latest.get_chatgpt_user_id()
+                    && previous.is_fedramp_account() == latest.is_fedramp_account()
+                    && current.auth_token == latest.get_token().ok()
+            }
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
+    }
+
+    /// Returns the latest published configuration without waiting for clients.
+    pub fn current_config(&self) -> Option<Arc<McpConfig>> {
+        self.current.load().config.clone()
     }
 
     pub fn current_ready_selected_capability_roots(&self) -> Vec<SelectedCapabilityRoot> {
@@ -295,6 +365,12 @@ impl McpRuntimeContext {
         self.local_stdio_fallback_cwd.clone()
     }
 
+    pub(crate) fn local_http_client(&self) -> Arc<dyn HttpClient> {
+        Arc::new(RouteAwareHttpClient::new(
+            self.environment_manager.http_client_factory().clone(),
+        ))
+    }
+
     pub(crate) fn resolve_server_environment(
         &self,
         server_name: &str,
@@ -334,7 +410,7 @@ impl McpRuntimeContext {
         Ok(self
             .resolve_server_environment(server_name, config)?
             .map_or_else(
-                || Arc::new(ReqwestHttpClient) as Arc<dyn HttpClient>,
+                || self.local_http_client(),
                 |environment| environment.get_http_client(),
             ))
     }

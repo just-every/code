@@ -50,6 +50,7 @@ fn stores() -> &'static Mutex<HashMap<String, Arc<InMemoryThreadStore>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ItemSortKey;
     use crate::ListItemsParams;
     use crate::ListTurnsParams;
     use crate::SortDirection;
@@ -90,6 +91,8 @@ mod tests {
                 cursor: None,
                 page_size: 10,
                 sort_direction: SortDirection::Asc,
+                sort_key: ItemSortKey::CreatedAtOrdinal,
+                after_updated_at_ordinal: None,
             })
             .await
             .expect_err("default list_items should be unsupported");
@@ -132,6 +135,7 @@ mod tests {
                     selected_capability_roots: Vec::new(),
                     multi_agent_version: None,
                     history_mode: ThreadHistoryMode::Legacy,
+                    history_base: None,
                     subagent_history_start_ordinal: None,
                     initial_window_id: uuid::Uuid::now_v7().to_string(),
                     metadata: ThreadPersistenceMetadata {
@@ -368,6 +372,7 @@ mod tests {
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
             history_mode,
+            history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
             metadata: thread_metadata(),
@@ -485,7 +490,7 @@ impl InMemoryThreadStore {
             memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)
                 .then_some("disabled".to_string()),
             history_mode: params.history_mode,
-            history_base: None,
+            history_base: params.history_base,
             subagent_history_start_ordinal: params.subagent_history_start_ordinal,
             multi_agent_version: params.multi_agent_version,
             context_window: Some(SessionContextWindow::new(params.initial_window_id.clone())),

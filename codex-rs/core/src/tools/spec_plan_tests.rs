@@ -28,6 +28,7 @@ use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
+use crate::WaitForEnvironmentToolConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
@@ -36,6 +37,7 @@ use crate::session::tests::mcp_config_for_test;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::override_tool_exposure;
@@ -51,6 +53,7 @@ struct ToolPlanInputs {
     tool_runtimes: Vec<Arc<dyn CoreToolRuntime>>,
     tool_suggest_candidates: Option<ToolSuggestCandidates>,
     extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
+    wait_for_environment_tool_config: Option<Arc<WaitForEnvironmentToolConfig>>,
     dynamic_tools: Vec<DynamicToolSpec>,
 }
 
@@ -193,6 +196,7 @@ async fn probe_with(
             tool_suggest_candidates: inputs.tool_suggest_candidates,
             tool_runtimes: inputs.tool_runtimes,
             extension_tool_executors: inputs.extension_tool_executors,
+            wait_for_environment_tool_config: inputs.wait_for_environment_tool_config,
             dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
         &Default::default(),
@@ -447,6 +451,129 @@ fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
 }
 
 #[tokio::test]
+async fn wait_for_environment_requires_feature_and_uses_host_config_when_present() {
+    const TOOL_DESCRIPTION: &str = "Host-provided wait tool description";
+    const ENVIRONMENT_ID_DESCRIPTION: &str = "Host-provided environment ID description";
+
+    for deferred_executor_enabled in [false, true] {
+        for config_present in [false, true] {
+            let wait_for_environment_tool_config = config_present.then(|| {
+                Arc::new(WaitForEnvironmentToolConfig {
+                    tool_description: TOOL_DESCRIPTION.to_string(),
+                    environment_id_description: ENVIRONMENT_ID_DESCRIPTION.to_string(),
+                })
+            });
+            let plan = probe_with(
+                |turn| {
+                    set_feature(turn, Feature::DeferredExecutor, deferred_executor_enabled);
+                },
+                ToolPlanInputs {
+                    wait_for_environment_tool_config,
+                    ..ToolPlanInputs::default()
+                },
+            )
+            .await;
+
+            if deferred_executor_enabled {
+                plan.assert_visible_contains(&["wait_for_environment"]);
+                plan.assert_registered_contains(&["wait_for_environment"]);
+                if !config_present {
+                    assert_eq!(
+                        plan.visible_spec("wait_for_environment"),
+                        &WaitForEnvironmentHandler::default().spec()
+                    );
+                    continue;
+                }
+                let ToolSpec::Function(ResponsesApiTool {
+                    description,
+                    parameters,
+                    ..
+                }) = plan.visible_spec("wait_for_environment")
+                else {
+                    panic!("expected wait_for_environment function spec");
+                };
+                assert_eq!(description, TOOL_DESCRIPTION);
+                assert_eq!(
+                    parameters
+                        .properties
+                        .as_ref()
+                        .and_then(|properties| properties.get("environment_id"))
+                        .and_then(|schema| schema.description.as_deref()),
+                    Some(ENVIRONMENT_ID_DESCRIPTION)
+                );
+            } else {
+                plan.assert_visible_lacks(&["wait_for_environment"]);
+                plan.assert_registered_lacks(&["wait_for_environment"]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn wait_for_environment_falls_back_for_oversized_host_configuration() {
+    const MAX_COMBINED_DESCRIPTION_BYTES: usize = 1_024;
+
+    for (tool_description, environment_id_description) in [
+        (
+            "x".repeat(MAX_COMBINED_DESCRIPTION_BYTES + 1),
+            String::new(),
+        ),
+        (
+            String::new(),
+            "x".repeat(MAX_COMBINED_DESCRIPTION_BYTES + 1),
+        ),
+        ("x".repeat(512), "x".repeat(513)),
+        // The descriptions fit the aggregate input cap, but the complete serialized schema does
+        // not fit its model-context cap once the surrounding tool definition is included.
+        ("x".repeat(500), "x".repeat(500)),
+    ] {
+        let configured_tool_description = tool_description.clone();
+        let configured_environment_id_description = environment_id_description.clone();
+        let plan = probe_with(
+            |turn| {
+                set_feature(turn, Feature::DeferredExecutor, /*enabled*/ true);
+            },
+            ToolPlanInputs {
+                wait_for_environment_tool_config: Some(Arc::new(WaitForEnvironmentToolConfig {
+                    tool_description,
+                    environment_id_description,
+                })),
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+
+        plan.assert_visible_contains(&["wait_for_environment"]);
+        plan.assert_registered_contains(&["wait_for_environment"]);
+        let ToolSpec::Function(ResponsesApiTool {
+            description,
+            parameters,
+            ..
+        }) = plan.visible_spec("wait_for_environment")
+        else {
+            panic!("expected wait_for_environment function spec");
+        };
+        let environment_id_description = parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("environment_id"))
+            .and_then(|schema| schema.description.as_deref())
+            .expect("environment_id description should be present");
+        assert_ne!(description, &configured_tool_description);
+        assert_ne!(
+            environment_id_description,
+            configured_environment_id_description
+        );
+        assert!(
+            serde_json::to_vec(plan.visible_spec("wait_for_environment"))
+                .expect("tool spec should serialize")
+                .len()
+                <= 1_000
+        );
+    }
+}
+
+#[tokio::test]
 async fn request_user_input_tool_respects_experimental_config_gate() {
     let enabled = probe(|_| {}).await;
     enabled.assert_visible_contains(&["request_user_input"]);
@@ -464,6 +591,22 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
     .await;
     disabled.assert_visible_lacks(&["request_user_input"]);
     disabled.assert_registered_lacks(&["request_user_input"]);
+}
+
+#[tokio::test]
+async fn update_plan_tool_respects_config_gate() {
+    let enabled = probe(|_| {}).await;
+    enabled.assert_visible_contains(&["update_plan"]);
+    enabled.assert_registered_contains(&["update_plan"]);
+
+    let disabled = probe(|turn| {
+        update_config(turn, |config| {
+            config.update_plan_enabled = false;
+        });
+    })
+    .await;
+    disabled.assert_visible_lacks(&["update_plan"]);
+    disabled.assert_registered_lacks(&["update_plan"]);
 }
 
 #[tokio::test]
@@ -694,6 +837,7 @@ async fn environment_tools_follow_the_step_context() {
             tool_runtimes: Vec::new(),
             tool_suggest_candidates: None,
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: &[],
         },
         &Default::default(),
@@ -896,6 +1040,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             )],
             tool_suggest_candidates: None,
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: &[],
         },
         &cache,
@@ -919,6 +1064,7 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             )],
             tool_suggest_candidates: None,
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: &[],
         },
         &cache,
@@ -944,6 +1090,51 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     };
     assert!(second_description.contains("- second: Tools from second."));
     assert!(!second_description.contains("- first: Tools from first."));
+}
+
+#[tokio::test]
+async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
+    let cache = ToolSearchHandlerCache::default();
+
+    for world_state_enabled in [false, true, false] {
+        let (_session, mut turn) = make_session_and_context().await;
+        turn.model_info.supports_search_tool = true;
+        set_feature(
+            &mut turn,
+            Feature::DeferredToolWorldState,
+            world_state_enabled,
+        );
+        let turn = Arc::new(turn);
+        let step_context = StepContext::for_test(Arc::clone(&turn));
+        let router = ToolRouter::from_context(
+            step_context.turn.as_ref(),
+            &step_context.environments,
+            step_context.mcp.as_ref(),
+            ToolRouterParams {
+                tool_runtimes: vec![mcp_runtime(
+                    "calendar",
+                    "mcp__calendar",
+                    "lookup",
+                    ToolExposure::Deferred,
+                )],
+                tool_suggest_candidates: None,
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: &[],
+            },
+            &cache,
+        );
+        let plan = ToolPlanProbe::from_router(router);
+        let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
+            panic!("expected visible tool_search spec");
+        };
+
+        assert_eq!(
+            description.contains("- calendar: Tools from calendar."),
+            !world_state_enabled,
+            "tool search cache should follow the deferred world-state feature"
+        );
+    }
 }
 
 #[tokio::test]

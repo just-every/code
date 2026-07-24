@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::config::Config;
@@ -119,6 +120,7 @@ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn.dynamic_tools.as_slice(),
         },
         &Default::default(),
@@ -232,6 +234,7 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
                 )),
             ],
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn.dynamic_tools.as_slice(),
         },
         &Default::default(),
@@ -271,6 +274,7 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn.dynamic_tools.as_slice(),
         },
         &Default::default(),
@@ -329,6 +333,7 @@ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
+            wait_for_environment_tool_config: None,
             dynamic_tools: &dynamic_tools,
         },
         &Default::default(),
@@ -338,6 +343,11 @@ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
         namespace_function_names(&router.model_visible_specs(), "codex_app"),
         vec![visible_tool.to_string()]
     );
+    assert_eq!(
+        router.deferred_tool_namespaces(),
+        BTreeMap::from([("codex_app".to_string(), "Codex app tools.".to_string())])
+    );
+
     Ok(())
 }
 
@@ -400,7 +410,11 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         ToolRouterParams {
             tool_suggest_candidates: None,
             tool_runtimes: Vec::new(),
-            extension_tool_executors: extension_tool_executors(&session),
+            extension_tool_executors: extension_tool_executors(
+                &session,
+                &codex_extension_api::ExtensionData::new(turn.sub_id.clone()),
+            ),
+            wait_for_environment_tool_config: None,
             dynamic_tools: turn.dynamic_tools.as_slice(),
         },
         &Default::default(),

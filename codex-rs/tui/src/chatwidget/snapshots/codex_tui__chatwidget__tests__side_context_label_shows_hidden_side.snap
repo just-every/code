@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests/side.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"                                                                                "
+"› Ask Codex to do anything                                                      "
+"                                                                                "
+"  gpt-5.6-sol                                                ctrl + / for side  "

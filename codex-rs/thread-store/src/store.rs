@@ -6,6 +6,7 @@ use std::pin::Pin;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
+use crate::ArchiveThreadsParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
 use crate::DeleteThreadsParams;
@@ -14,6 +15,8 @@ use crate::ListItemsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
+use crate::PrepareForkParams;
+use crate::PreparedFork;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
@@ -94,6 +97,17 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Freezes source history and model context used to initialize a referenced fork.
+    ///
+    /// Stores without reference-backed fork support can retain this default implementation.
+    fn prepare_fork(&self, _params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "prepare_fork",
+            })
+        })
+    }
+
     /// Reads a thread summary and optionally its persisted history.
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
@@ -166,6 +180,26 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Archives a thread.
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()>;
+
+    /// Archives threads in order, returning the successfully archived thread ids.
+    ///
+    /// The first thread must archive successfully; later failures are best effort.
+    fn archive_threads(
+        &self,
+        params: ArchiveThreadsParams,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
+            let mut archived_thread_ids = Vec::new();
+            for thread_id in params.thread_ids {
+                match self.archive_thread(ArchiveThreadParams { thread_id }).await {
+                    Ok(()) => archived_thread_ids.push(thread_id),
+                    Err(err) if archived_thread_ids.is_empty() => return Err(err),
+                    Err(err) => tracing::warn!("failed to archive thread {thread_id}: {err}"),
+                }
+            }
+            Ok(archived_thread_ids)
+        })
+    }
 
     /// Unarchives a thread and returns its updated metadata.
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread>;

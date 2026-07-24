@@ -497,6 +497,9 @@
             "deferred_executor": {
               "type": "boolean"
             },
+            "deferred_tool_world_state": {
+              "type": "boolean"
+            },
             "elevated_windows_sandbox": {
               "type": "boolean"
             },
@@ -537,6 +540,9 @@
               "type": "boolean"
             },
             "guardian_approval": {
+              "type": "boolean"
+            },
+            "guardianv2": {
               "type": "boolean"
             },
             "hooks": {
@@ -3144,6 +3150,9 @@
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
         },
+        "update_plan": {
+          "$ref": "#/definitions/UpdatePlanToolConfig"
+        },
         "web_search": {
           "allOf": [
             {
@@ -3240,6 +3249,7 @@
               "toggle_fast_mode": null,
               "toggle_raw_output": null,
               "toggle_shortcuts": null,
+              "toggle_side_conversation": null,
               "toggle_vim_mode": null
             },
             "list": {
@@ -3818,6 +3828,14 @@
           ],
           "description": "Toggle the composer shortcut overlay."
         },
+        "toggle_side_conversation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Switch between a side conversation and its parent without closing either."
+        },
         "toggle_vim_mode": {
           "allOf": [
             {
@@ -3919,6 +3937,7 @@
             "toggle_fast_mode": null,
             "toggle_raw_output": null,
             "toggle_shortcuts": null,
+            "toggle_side_conversation": null,
             "toggle_vim_mode": null
           }
         },
@@ -4635,6 +4654,16 @@
       },
       "type": "object"
     },
+    "UpdatePlanToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "UriBasedFileOpener": {
       "oneOf": [
         {
@@ -5008,6 +5037,9 @@
         "deferred_executor": {
           "type": "boolean"
         },
+        "deferred_tool_world_state": {
+          "type": "boolean"
+        },
         "elevated_windows_sandbox": {
           "type": "boolean"
         },
@@ -5048,6 +5080,9 @@
           "type": "boolean"
         },
         "guardian_approval": {
+          "type": "boolean"
+        },
+        "guardianv2": {
           "type": "boolean"
         },
         "hooks": {

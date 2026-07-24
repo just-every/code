@@ -59,6 +59,8 @@ fn plugin_skills_to_info(
                     short_description: interface.short_description,
                     icon_small: interface.icon_small,
                     icon_large: interface.icon_large,
+                    icon_small_url: None,
+                    icon_large_url: None,
                     brand_color: interface.brand_color,
                     default_prompt: interface.default_prompt,
                 }
@@ -1864,6 +1866,7 @@ impl PluginRequestProcessor {
             let callback_url = config.mcp_oauth_callback_url.clone();
             let outgoing = Arc::clone(&self.outgoing);
             let notification_name = name.clone();
+            let thread_manager = Arc::clone(&self.thread_manager);
 
             tokio::spawn(async move {
                 let oauth_client_id = server.oauth_client_id();
@@ -1906,6 +1909,9 @@ impl PluginRequestProcessor {
                     Ok(()) => (true, None),
                     Err(err) => (false, Some(err.to_string())),
                 };
+                if success {
+                    thread_manager.invalidate_mcp_runtimes().await;
+                }
 
                 let notification = ServerNotification::McpServerOauthLoginCompleted(
                     McpServerOauthLoginCompletedNotification {

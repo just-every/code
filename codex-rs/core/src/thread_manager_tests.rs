@@ -428,12 +428,14 @@ async fn code_mode_session_provider_is_shared_across_threads() {
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
+    let provider: Arc<dyn CodeModeSessionProvider> = Arc::new(InProcessCodeModeSessionProvider);
     let manager = ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
+    )
+    .with_code_mode_session_provider(Arc::clone(&provider));
     let first = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -456,6 +458,7 @@ async fn code_mode_session_provider_is_shared_across_threads() {
         .code_mode_service
         .session_provider();
     assert!(Arc::ptr_eq(&first_provider, &second_provider));
+    assert!(Arc::ptr_eq(&first_provider, &provider));
     assert!(Arc::ptr_eq(
         &first_provider,
         &manager.state.code_mode_session_provider
@@ -474,6 +477,102 @@ async fn code_mode_session_provider_is_shared_across_threads() {
             timed_out: Vec::new(),
         }
     );
+}
+
+#[tokio::test]
+async fn mcp_invalidation_refreshes_threads_that_are_still_starting() {
+    struct BlockingThreadStartup {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        refreshed: tokio::sync::Notify,
+        projections: std::sync::atomic::AtomicUsize,
+    }
+
+    impl codex_extension_api::ThreadLifecycleContributor<Config> for BlockingThreadStartup {
+        fn on_thread_start<'a>(
+            &'a self,
+            _input: codex_extension_api::ThreadStartInput<'a, Config>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+            })
+        }
+    }
+
+    impl codex_extension_api::McpServerContributor<Config> for BlockingThreadStartup {
+        fn id(&self) -> &'static str {
+            "starting_mcp_runtime_refresh_test"
+        }
+
+        fn contribute<'a>(
+            &'a self,
+            _context: codex_extension_api::McpServerContributionContext<'a, Config>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Vec<codex_extension_api::McpServerContribution>>
+        {
+            Box::pin(async move {
+                if self.projections.fetch_add(1, Ordering::AcqRel) != 0 {
+                    self.refreshed.notify_one();
+                }
+                Vec::new()
+            })
+        }
+    }
+
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let observer = Arc::new(BlockingThreadStartup {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        refreshed: tokio::sync::Notify::new(),
+        projections: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(observer.clone());
+    extensions.mcp_server_contributor(observer.clone());
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = Arc::new(ThreadManager::new(
+        &config,
+        Arc::clone(&auth_manager),
+        build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Arc::new(extensions.build()),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*agent_graph_store*/ None,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    ));
+    let starting = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move { manager.start_thread(StartThreadOptions::new(config)).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), observer.entered.notified())
+        .await
+        .expect("thread should enter its startup lifecycle");
+    assert!(manager.list_thread_ids().await.is_empty());
+    manager.invalidate_mcp_runtimes().await;
+    observer.release.notify_one();
+    starting
+        .await
+        .expect("thread startup task should finish")
+        .expect("thread should start");
+    tokio::time::timeout(Duration::from_secs(5), observer.refreshed.notified())
+        .await
+        .expect("invalidation during startup should refresh the newly published thread");
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert!(shutdown.timed_out.is_empty());
 }
 
 #[tokio::test]

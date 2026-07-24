@@ -1234,6 +1234,17 @@
       ],
       "type": "string"
     },
+    "BrowserUseRequirements": {
+      "properties": {
+        "disableAutoReview": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ByteRange": {
       "properties": {
         "end": {
@@ -4813,6 +4824,16 @@
           "type": [
             "array",
             "null"
+          ]
+        },
+        "browserUse": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrowserUseRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "checkForUpdateOnStartup": {
@@ -10320,6 +10341,7 @@
         "team",
         "self_serve_business_usage_based",
         "business",
+        "ent26",
         "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
@@ -15222,6 +15244,13 @@
             }
           ]
         },
+        "iconLargeUrl": {
+          "description": "Remote large icon URL from the plugin catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "iconSmall": {
           "anyOf": [
             {
@@ -15230,6 +15259,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "iconSmallUrl": {
+          "description": "Remote small icon URL from the plugin catalog.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "shortDescription": {
@@ -16658,8 +16694,24 @@
             "id": {
               "type": "string"
             },
+            "pluginId": {
+              "default": null,
+              "description": "Trusted first-party plugin id when this command resolves to one plugin script.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "processId": {
               "description": "Identifier for the underlying PTY process (when available).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scriptPath": {
+              "default": null,
+              "description": "Safe plugin-relative path when this command resolves to one plugin script.",
               "type": [
                 "string",
                 "null"

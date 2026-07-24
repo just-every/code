@@ -1,4 +1,4 @@
-//! Messages and local IPC framing for the code-mode host boundary.
+//! Messages and framing for the code-mode host boundary.
 //!
 //! Protocol version 1 multiplexes session operations and delegate callbacks by
 //! request ID over one ordered connection. It defines no optional capabilities
@@ -10,6 +10,9 @@ mod error;
 mod message;
 mod payload;
 mod types;
+
+/// Maximum number of unresolved delegate callbacks allowed per host connection.
+pub const MAX_PENDING_DELEGATE_CALLS: usize = 1_024;
 
 pub use codec::EncodedFrame;
 pub use codec::FramedReader;

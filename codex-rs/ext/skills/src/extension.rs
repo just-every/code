@@ -4,6 +4,7 @@ use codex_core_skills::HostSkillsSnapshot;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ContextualUserFragment;
@@ -11,6 +12,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ExtensionWarning;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
@@ -27,9 +29,6 @@ use codex_extension_api::WorldStateSectionContribution;
 use codex_mcp::McpResourceClient;
 use codex_otel::MetricsClient;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::WarningEvent;
 
 use crate::SkillsExtensionConfig;
 use crate::catalog::SkillCatalog;
@@ -37,6 +36,7 @@ use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillSourceKind;
 use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::ExecutorSkillResourceAccess;
 use crate::fragments::SkillInstructions;
 use crate::provider::HostSkillProvider;
 use crate::provider::SkillListQuery;
@@ -58,6 +58,7 @@ use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsTurnState;
 use crate::tools::skill_tools;
+use crate::warnings::bounded_warnings;
 use crate::world_state::executor_skills_world_state_section;
 use crate::world_state::host_skills_world_state_section;
 
@@ -158,6 +159,7 @@ where
                     SkillListQuery {
                         turn_id: thread_store.level_id().to_string(),
                         executor_roots: Vec::new(),
+                        resolved_executor_roots: Vec::new(),
                         host_snapshot: None,
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
@@ -170,8 +172,8 @@ where
                     &thread_state,
                 )
                 .await;
-            for warning in &catalog.warnings {
-                self.emit_warning(thread_store.level_id(), warning.clone());
+            for warning in bounded_warnings(&catalog.warnings) {
+                self.emit_warning(thread_store.level_id(), /*turn_id*/ None, warning);
             }
             let include_usage = thread_store
                 .get::<ModelInfo>()
@@ -183,7 +185,7 @@ where
                 capped_skill_metadata_budget(/*context_window*/ None),
             );
             if let Some(message) = rendered.warning_message {
-                self.emit_warning(thread_store.level_id(), message);
+                self.emit_warning(thread_store.level_id(), /*turn_id*/ None, message);
             }
             rendered
                 .fragment
@@ -208,6 +210,7 @@ where
                     SkillListQuery {
                         turn_id: input.turn_id.to_string(),
                         executor_roots: input.ready_selected_capability_roots.to_vec(),
+                        resolved_executor_roots: Vec::new(),
                         host_snapshot: None,
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
@@ -247,7 +250,7 @@ where
                     .get_or_init(EmittedCatalogBudgetWarnings::default)
                     .insert(&message)
             {
-                self.emit_warning(input.turn_id, message);
+                self.emit_warning(input.thread_store.level_id(), Some(input.turn_id), message);
             }
             let executor_body = rendered.fragment.map(|fragment| fragment.body());
             let mut sections = vec![executor_skills_world_state_section(
@@ -279,23 +282,34 @@ where
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
-        let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
-            return Vec::new();
-        };
-        if !self.providers.has_orchestrator_provider()
-            || !thread_state.orchestrator_skills_enabled()
-        {
-            return Vec::new();
-        }
+        self.build_skill_tools(session_store, thread_store, /*executor_query*/ None)
+    }
 
-        skill_tools(
-            self.providers.clone(),
-            session_store
-                .get::<SkillsSessionState>()
-                .and_then(|state| state.mcp_resources.clone()),
-            thread_state,
-            Arc::clone(&self.shadow_selection),
-        )
+    fn tools_for_step(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+        let resolved_executor_roots = step_store
+            .get::<Vec<ResolvedSelectedCapabilityRoot>>()
+            .map(|roots| roots.as_slice().to_vec())
+            .unwrap_or_default();
+        let executor_query = (!resolved_executor_roots.is_empty()).then(|| SkillListQuery {
+            turn_id: step_store.level_id().to_string(),
+            executor_roots: resolved_executor_roots
+                .iter()
+                .map(|root| root.selected_root().clone())
+                .collect(),
+            resolved_executor_roots,
+            host_snapshot: None,
+            include_host_skills: false,
+            include_bundled_skills: false,
+            include_orchestrator_skills: false,
+            mcp_resources: None,
+            executor_capability_discovery: None,
+        });
+        self.build_skill_tools(session_store, thread_store, executor_query)
     }
 }
 
@@ -351,6 +365,7 @@ where
             let query = SkillListQuery {
                 turn_id: input.turn_id.clone(),
                 executor_roots: Vec::new(),
+                resolved_executor_roots: Vec::new(),
                 host_snapshot: host_snapshot.clone(),
                 include_host_skills: !host_catalog_in_world_state,
                 include_bundled_skills: config.bundled_skills_enabled,
@@ -364,8 +379,8 @@ where
                 .map(|executor_skills| executor_skills.0.clone())
                 .unwrap_or_default();
             catalog.extend(self.list_skills(query, &thread_state).await);
-            for warning in &catalog.warnings {
-                self.emit_warning(&input.turn_id, warning.clone());
+            for warning in bounded_warnings(&catalog.warnings) {
+                self.emit_warning(thread_store.level_id(), Some(&input.turn_id), warning);
             }
 
             let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
@@ -407,7 +422,7 @@ where
                     metadata_budget,
                 );
                 if let Some(message) = rendered.warning_message {
-                    self.emit_warning(&input.turn_id, message);
+                    self.emit_warning(thread_store.level_id(), Some(&input.turn_id), message);
                 }
                 if let Some(fragment) = rendered.fragment {
                     fragments.push(Box::new(fragment));
@@ -435,7 +450,11 @@ where
                                 "Skill `{}` exceeded the main prompt context limit and was truncated.",
                                 entry.name
                             );
-                            self.emit_warning(&input.turn_id, warning.clone());
+                            self.emit_warning(
+                                thread_store.level_id(),
+                                Some(&input.turn_id),
+                                warning.clone(),
+                            );
                             warnings.push(warning);
                         }
                         let fragment = SkillInstructions {
@@ -446,6 +465,13 @@ where
                             )
                             .0,
                             contents,
+                            executor_resource_access: (!entry.prompt_visible
+                                && entry.authority.kind == SkillSourceKind::Executor)
+                                .then(|| ExecutorSkillResourceAccess {
+                                    authority_id: entry.authority.id.clone(),
+                                    package: entry.id.0.clone(),
+                                    main_resource: entry.main_prompt.as_str().to_string(),
+                                }),
                         };
                         fragments.push(Box::new(fragment));
                         main_prompts_injected = true;
@@ -455,7 +481,11 @@ where
                     }
                     Err(message) => {
                         let warning = format!("Failed to load skill `{}`: {message}", entry.name);
-                        self.emit_warning(&input.turn_id, warning.clone());
+                        self.emit_warning(
+                            thread_store.level_id(),
+                            Some(&input.turn_id),
+                            warning.clone(),
+                        );
                         warnings.push(warning);
                     }
                 }
@@ -494,6 +524,33 @@ where
 }
 
 impl<C> SkillsExtension<C> {
+    fn build_skill_tools(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        executor_query: Option<SkillListQuery>,
+    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+        let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
+            return Vec::new();
+        };
+        let orchestrator_available = self.providers.has_orchestrator_provider()
+            && thread_state.orchestrator_skills_enabled();
+        if !orchestrator_available && executor_query.is_none() {
+            return Vec::new();
+        }
+
+        skill_tools(
+            self.providers.clone(),
+            session_store
+                .get::<SkillsSessionState>()
+                .and_then(|state| state.mcp_resources.clone()),
+            thread_state,
+            orchestrator_available,
+            executor_query,
+            Arc::clone(&self.shadow_selection),
+        )
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
     async fn list_skills(
         &self,
@@ -534,6 +591,7 @@ impl<C> SkillsExtension<C> {
                     authority: entry.authority.clone(),
                     package: entry.id.clone(),
                     resource: entry.main_prompt.clone(),
+                    resolved_executor_roots: Vec::new(),
                     host_snapshot,
                     mcp_resources,
                 },
@@ -542,10 +600,11 @@ impl<C> SkillsExtension<C> {
             .map_err(|err| err.message)
     }
 
-    fn emit_warning(&self, turn_id: &str, message: String) {
-        self.event_sink.emit(Event {
-            id: turn_id.to_string(),
-            msg: EventMsg::Warning(WarningEvent { message }),
+    fn emit_warning(&self, thread_id: &str, turn_id: Option<&str>, message: String) {
+        self.event_sink.emit_warning(ExtensionWarning {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.map(str::to_string),
+            message,
         });
     }
 }

@@ -5,6 +5,7 @@ mod helpers;
 mod list_threads;
 mod live_writer;
 mod model_context;
+mod paginated_fork;
 mod read_thread;
 // This lands before the reader PRs that consume the shared lineage resolver.
 #[allow(dead_code)]
@@ -31,9 +32,13 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tokio::sync::OwnedMutexGuard;
+use tokio::sync::OwnedRwLockReadGuard;
+use tokio::sync::OwnedRwLockWriteGuard;
+use tokio::sync::RwLock;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
+use crate::ArchiveThreadsParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
 use crate::DeleteThreadsParams;
@@ -42,6 +47,8 @@ use crate::ListItemsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
+use crate::PrepareForkParams;
+use crate::PreparedFork;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
@@ -91,26 +98,62 @@ struct LiveRecorderEntry {
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
     history_mode: ThreadHistoryMode,
-    _writer_lock: Option<WriterLockGuard>,
+    writer_lock: Option<WriterLockGuard>,
 }
 
 #[derive(Default)]
 struct LiveWriterLocks {
     // Keep per-thread locks after a writer goes idle. Removing one while another caller is about
     // to acquire it could let two operations for the same thread run at once.
-    by_thread: Mutex<HashMap<ThreadId, Arc<Mutex<()>>>>,
+    by_thread: Mutex<HashMap<ThreadId, Arc<ThreadCoordination>>>,
+}
+
+#[derive(Default)]
+struct ThreadCoordination {
+    // Serialize writes and capture consistent fork snapshots.
+    writer: Arc<Mutex<()>>,
+    // Forks hold a shared lease until their child reference is durable; deletion, archive, and
+    // unarchive require exclusive access. Keeping this separate from `writer` lets the source
+    // accept writes during child initialization, including MCP startup that can take 30 seconds.
+    // Operations that need both locks must acquire `lifecycle` before `writer`.
+    lifecycle: Arc<RwLock<()>>,
 }
 
 impl LiveWriterLocks {
-    async fn lock(&self, thread_id: ThreadId) -> OwnedMutexGuard<()> {
-        let lock = self
-            .by_thread
+    async fn coordination(&self, thread_id: ThreadId) -> Arc<ThreadCoordination> {
+        self.by_thread
             .lock()
             .await
             .entry(thread_id)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
-        lock.lock_owned().await
+            .or_default()
+            .clone()
+    }
+
+    async fn lock(&self, thread_id: ThreadId) -> OwnedMutexGuard<()> {
+        self.coordination(thread_id)
+            .await
+            .writer
+            .clone()
+            .lock_owned()
+            .await
+    }
+
+    async fn reserve_lifecycle(&self, thread_id: ThreadId) -> OwnedRwLockReadGuard<()> {
+        self.coordination(thread_id)
+            .await
+            .lifecycle
+            .clone()
+            .read_owned()
+            .await
+    }
+
+    async fn lock_lifecycle(&self, thread_id: ThreadId) -> OwnedRwLockWriteGuard<()> {
+        self.coordination(thread_id)
+            .await
+            .lifecycle
+            .clone()
+            .write_owned()
+            .await
     }
 }
 
@@ -207,6 +250,42 @@ impl LocalThreadStore {
         Ok(())
     }
 
+    async fn acquire_paginated_writer_locks(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> ThreadStoreResult<Vec<WriterLockGuard>> {
+        let mut writer_locks = Vec::new();
+        for &thread_id in thread_ids {
+            if self
+                .live_recorders
+                .lock()
+                .await
+                .get(&thread_id)
+                .is_some_and(|entry| entry.writer_lock.is_some())
+            {
+                continue;
+            }
+
+            // Only a readable legacy header proves no paginated writer can own this id. Missing
+            // lazy rollouts and damaged headers must conservatively try the lock.
+            let history_mode = match read_thread::resolve_rollout_path(
+                self, thread_id, /*include_archived*/ true,
+            )
+            .await?
+            {
+                Some(rollout_path) => codex_rollout::read_session_meta_line(rollout_path.as_path())
+                    .await
+                    .ok()
+                    .map(|meta_line| meta_line.meta.history_mode),
+                None => None,
+            };
+            if !matches!(history_mode, Some(ThreadHistoryMode::Legacy)) {
+                writer_locks.push(self.writer_lock_coordinator.acquire(thread_id)?);
+            }
+        }
+        Ok(writer_locks)
+    }
+
     async fn insert_live_recorder(
         &self,
         thread_id: ThreadId,
@@ -222,7 +301,7 @@ impl LocalThreadStore {
                 entry.insert(LiveRecorderEntry {
                     recorder,
                     history_mode,
-                    _writer_lock: writer_lock,
+                    writer_lock,
                 });
                 Ok(())
             }
@@ -351,6 +430,10 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { model_context::load_latest_model_context(self, params).await })
     }
 
+    fn prepare_fork(&self, params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
+        Box::pin(async move { paginated_fork::prepare(self, params).await })
+    }
+
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(async move { read_thread::read_thread(self, params).await })
     }
@@ -402,7 +485,24 @@ impl ThreadStore for LocalThreadStore {
     }
 
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {
-        Box::pin(async move { archive_thread::archive_thread(self, params).await })
+        Box::pin(async move {
+            archive_thread::archive_threads(
+                self,
+                ArchiveThreadsParams {
+                    thread_ids: vec![params.thread_id],
+                    writer_lock_thread_ids: Vec::new(),
+                },
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+
+    fn archive_threads(
+        &self,
+        params: ArchiveThreadsParams,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move { archive_thread::archive_threads(self, params).await })
     }
 
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
@@ -1259,6 +1359,15 @@ mod tests {
                 RolloutItem::EventMsg(EventMsg::UserMessage(event)) if event.message == "Hello from user"
             )
         }));
+
+        let error = store
+            .prepare_fork(PrepareForkParams {
+                thread_id,
+                boundary: crate::ForkBoundary::Latest,
+            })
+            .await
+            .expect_err("external rollouts cannot be referenced by thread id");
+        assert!(error.to_string().contains("must be in Codex home"));
     }
 
     #[tokio::test]
@@ -1521,6 +1630,7 @@ mod tests {
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
             history_mode: ThreadHistoryMode::Legacy,
+            history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
             metadata: thread_metadata(),

@@ -516,6 +516,9 @@ struct AppServerCommand {
     #[command(subcommand)]
     subcommand: Option<AppServerSubcommand>,
 
+    #[command(flatten)]
+    code_mode_host: codex_app_server::AppServerCodeModeHostArgs,
+
     /// Error out when config.toml contains fields that are not recognized by this version of Codex.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
@@ -1099,6 +1102,7 @@ async fn cli_main(
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
                 subcommand,
+                code_mode_host,
                 strict_config: app_server_strict_config,
                 listen,
                 stdio,
@@ -1122,6 +1126,7 @@ async fn cli_main(
                     };
                     let auth = auth.try_into_settings()?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
+                        code_mode_host_transport: code_mode_host.into(),
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
                         {
                             (true, _) => {
@@ -1713,6 +1718,7 @@ async fn run_exec_server_command(
             base_url,
             environment_id,
             auth_provider,
+            config.http_client_factory(),
         )?;
         if let Some(name) = cmd.name {
             remote_config.name = name;
@@ -1731,11 +1737,25 @@ async fn run_exec_server_command(
             config_result.ok()
         };
         let (_otel, telemetry) = exec_server_telemetry::init(config.as_ref());
+        let http_client_factory = config
+            .as_ref()
+            .map(codex_core::config::Config::http_client_factory)
+            .unwrap_or_else(|| {
+                codex_http_client::HttpClientFactory::new(
+                    codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+                )
+            });
         let listen_url = cmd
             .listen
             .unwrap_or_else(|| codex_exec_server::DEFAULT_LISTEN_URL.to_string());
         exec_server_telemetry::run_until_shutdown(async move {
-            codex_exec_server::run_main_with_telemetry(&listen_url, runtime_paths, telemetry).await
+            codex_exec_server::run_main_with_telemetry(
+                &listen_url,
+                runtime_paths,
+                telemetry,
+                http_client_factory,
+            )
+            .await
         })
         .await
         .map_err(anyhow::Error::from_boxed)
@@ -3051,9 +3071,10 @@ mod tests {
 
     #[test]
     fn delete_force_requires_uuid() {
-        assert!(delete_action("123e4567-e89b-12d3-a456-426614174000", true).is_ok());
+        assert!(delete_action("123e4567-e89b-12d3-a456-426614174000", /*force*/ true).is_ok());
 
-        let err = delete_action("my-thread", true).expect_err("name should require prompt");
+        let err =
+            delete_action("my-thread", /*force*/ true).expect_err("name should require prompt");
         assert_eq!(
             err.to_string(),
             "--force requires a session UUID; names must be confirmed interactively"
@@ -3799,6 +3820,50 @@ mod tests {
         })
         .expect_err("empty env vars should be rejected");
         assert!(err.to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn app_server_code_mode_host_url_parses_independently_of_listen_transport() {
+        let app_server = app_server_from_args(
+            [
+                "codex",
+                "app-server",
+                "--code-mode-host",
+                "wss://example.test/code-mode",
+                "--listen",
+                "ws://127.0.0.1:4500",
+            ]
+            .as_ref(),
+        );
+
+        assert_eq!(
+            app_server.code_mode_host.code_mode_host,
+            Some(
+                url::Url::parse("wss://example.test/code-mode")
+                    .expect("test endpoint should parse")
+            )
+        );
+        assert_eq!(
+            app_server.listen,
+            codex_app_server::AppServerTransport::WebSocket {
+                bind_address: "127.0.0.1:4500".parse().expect("valid socket address"),
+            }
+        );
+    }
+
+    #[test]
+    fn app_server_rejects_invalid_code_mode_host_urls() {
+        for endpoint in [
+            "http://127.0.0.1:8765",
+            "ws://",
+            "wss://example.test/code-mode#fragment",
+        ] {
+            let error =
+                MultitoolCli::try_parse_from(["codex", "app-server", "--code-mode-host", endpoint])
+                    .expect_err("invalid code-mode host endpoint should fail argument parsing");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

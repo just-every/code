@@ -172,8 +172,12 @@ impl McpRequestProcessor {
             })?;
 
         let discovered_scopes = if scopes.is_none() && server.scopes.is_none() {
-            discover_supported_scopes_with_http_client(&server.transport, Arc::clone(&http_client))
-                .await
+            discover_supported_scopes_with_http_client(
+                &server.transport,
+                Arc::clone(&http_client),
+                codex_rmcp_client::OAuthDiscoveryTimeout::Requested,
+            )
+            .await
         } else {
             None
         };
@@ -201,12 +205,16 @@ impl McpRequestProcessor {
         let notification_name = name.clone();
         let notification_thread_id = thread_id;
         let outgoing = Arc::clone(&self.outgoing);
+        let thread_manager = Arc::clone(&self.thread_manager);
 
         tokio::spawn(async move {
             let (success, error) = match handle.wait().await {
                 Ok(()) => (true, None),
                 Err(err) => (false, Some(err.to_string())),
             };
+            if success {
+                thread_manager.invalidate_mcp_runtimes().await;
+            }
 
             let notification = ServerNotification::McpServerOauthLoginCompleted(
                 McpServerOauthLoginCompletedNotification {
@@ -246,11 +254,7 @@ impl McpRequestProcessor {
         let mcp_manager = self.thread_manager.mcp_manager();
         let auth = self.auth_manager.auth().await;
         let (mcp_config, runtime_context) = match thread {
-            Some(thread) => {
-                let mcp_config = thread.runtime_mcp_config(&config).await;
-                let (_, runtime_context) = thread.current_mcp_config_and_runtime_context().await;
-                (mcp_config, runtime_context)
-            }
+            Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
             None => {
                 let mcp_config = mcp_manager.runtime_config(&config).await;
                 let runtime_context = McpRuntimeContext::new(
