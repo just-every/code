@@ -245,6 +245,7 @@ pub struct RemotePluginShareContext {
     pub creator_account_user_id: Option<String>,
     pub creator_name: Option<String>,
     pub share_principals: Option<Vec<RemotePluginSharePrincipal>>,
+    pub can_publish_to_workspace: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -481,7 +482,7 @@ impl RemotePluginScope {
         }
     }
 
-    fn from_marketplace_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_marketplace_name(name: &str) -> Option<Self> {
         match name {
             REMOTE_GLOBAL_MARKETPLACE_NAME => Some(Self::Global),
             REMOTE_CREATED_BY_ME_MARKETPLACE_NAME => Some(Self::User),
@@ -628,6 +629,8 @@ struct RemotePluginDirectoryItem {
     share_url: Option<String>,
     #[serde(default)]
     share_principals: Option<Vec<RemotePluginDirectorySharePrincipal>>,
+    #[serde(default)]
+    can_publish_to_workspace: Option<bool>,
     installation_policy: PluginInstallPolicy,
     installation_policy_source: Option<RemotePluginInstallPolicySource>,
     #[serde(default)]
@@ -1690,6 +1693,7 @@ fn remote_plugin_share_context(
                         })
                         .collect()
                 }),
+                can_publish_to_workspace: plugin.can_publish_to_workspace,
             }))
         }
     }

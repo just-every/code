@@ -2092,13 +2092,17 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_item_started(&self, turn_context: &TurnContext, item: &TurnItem) {
+        let started_at_ms = turn_context
+            .turn_timing_state
+            .record_item_started(item.id(), now_unix_timestamp_ms())
+            .await;
         self.send_event(
             turn_context,
             EventMsg::ItemStarted(ItemStartedEvent {
                 thread_id: self.thread_id,
                 turn_id: turn_context.sub_id.clone(),
                 item: item.clone(),
-                started_at_ms: now_unix_timestamp_ms(),
+                started_at_ms,
             }),
         )
         .await;
@@ -2110,13 +2114,29 @@ impl Session {
         item: TurnItem,
     ) {
         record_turn_ttfm_metric(turn_context, &item).await;
+        let completed_at_ms = now_unix_timestamp_ms();
+        let item_id = item.id();
+        let started_at_ms = turn_context
+            .turn_timing_state
+            .take_item_started(&item_id)
+            .await
+            .unwrap_or_else(|| {
+                warn!(
+                    thread_id = %self.thread_id,
+                    turn_id = %turn_context.sub_id,
+                    item_id = %item_id,
+                    "item completed without a recorded start timestamp"
+                );
+                completed_at_ms
+            });
         self.send_event(
             turn_context,
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id: self.thread_id,
                 turn_id: turn_context.sub_id.clone(),
                 item,
-                completed_at_ms: now_unix_timestamp_ms(),
+                started_at_ms: Some(started_at_ms),
+                completed_at_ms,
             }),
         )
         .await;
@@ -2184,6 +2204,7 @@ impl Session {
         &self,
         amendment: &NetworkPolicyAmendment,
         network_approval_context: &NetworkApprovalContext,
+        on_policy_applied: impl FnOnce() + Send,
     ) -> anyhow::Result<()> {
         let _refresh_guard = self
             .managed_network_proxy_refresh_lock
@@ -2201,6 +2222,7 @@ impl Session {
             .clone();
         let execpolicy_amendment =
             execpolicy_network_rule_amendment(amendment, network_approval_context, &host);
+        let mut on_policy_applied = Some(on_policy_applied);
 
         if let Some(started_network_proxy) = self.services.network_proxy.load_full() {
             let proxy = started_network_proxy.proxy();
@@ -2213,6 +2235,11 @@ impl Session {
                     .add_denied_domain(&host)
                     .await
                     .map_err(|err| anyhow::anyhow!("failed to update runtime denylist: {err}"))?,
+            }
+            // Active enforcement changed successfully. Notify the owner before
+            // the next fallible await so cancellation cannot contradict it.
+            if let Some(on_policy_applied) = on_policy_applied.take() {
+                on_policy_applied();
             }
         }
 
@@ -2229,6 +2256,11 @@ impl Session {
             .map_err(|err| {
                 anyhow::anyhow!("failed to persist network policy amendment to execpolicy: {err}")
             })?;
+
+        // Without a running proxy, persistence is the first effective policy change.
+        if let Some(on_policy_applied) = on_policy_applied {
+            on_policy_applied();
+        }
 
         Ok(())
     }

@@ -2002,6 +2002,47 @@ async fn record_response_item_and_emit_turn_item_emits_hook_prompt_lifecycle() {
 }
 
 #[tokio::test]
+async fn item_completion_without_a_start_uses_completion_timestamp() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let item = TurnItem::UserMessage(UserMessageItem {
+        id: "missing-start".to_string(),
+        client_id: None,
+        content: Vec::new(),
+    });
+
+    session.emit_turn_item_completed(&turn_context, item).await;
+
+    let completed = rx.recv().await.expect("completed item event");
+    let EventMsg::ItemCompleted(event) = completed.msg else {
+        panic!("expected completed item event");
+    };
+    assert_eq!(event.started_at_ms, Some(event.completed_at_ms));
+}
+
+#[tokio::test]
+async fn subagent_activity_emits_matching_start_and_completion() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let item = codex_protocol::items::SubAgentActivityItem {
+        id: "activity-1".to_string(),
+        kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+        agent_thread_id: ThreadId::new(),
+        agent_path: AgentPath::root(),
+    };
+
+    crate::tools::handlers::multi_agents_v2::emit_sub_agent_activity(&session, &turn_context, item)
+        .await;
+
+    let EventMsg::ItemStarted(started) = rx.recv().await.expect("started item event").msg else {
+        panic!("expected started item event");
+    };
+    let EventMsg::ItemCompleted(completed) = rx.recv().await.expect("completed item event").msg
+    else {
+        panic!("expected completed item event");
+    };
+    assert_eq!(completed.started_at_ms, Some(started.started_at_ms));
+}
+
+#[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let (mut session, turn_context) = make_session_and_context().await;
     let rollout_path = attach_thread_persistence(&mut session).await;
@@ -8921,6 +8962,7 @@ async fn build_initial_context_trims_skill_metadata_from_context_window_budget()
             path_to_skills_md: test_path_buf("/tmp/admin-skill/SKILL.md").abs(),
             scope: SkillScope::Admin,
             plugin_id: None,
+            remote_plugin_id: None,
         },
         SkillMetadata {
             name: "repo-skill".to_string(),
@@ -8932,6 +8974,7 @@ async fn build_initial_context_trims_skill_metadata_from_context_window_budget()
             path_to_skills_md: test_path_buf("/tmp/repo-skill/SKILL.md").abs(),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         },
     ];
     turn_context.model_info.context_window = Some(100);
@@ -8969,6 +9012,7 @@ fn emit_thread_start_skill_metrics_records_enabled_kept_and_truncated_values() {
         path_to_skills_md: test_path_buf("/tmp/repo-skill/SKILL.md").abs(),
         scope: SkillScope::Repo,
         plugin_id: None,
+        remote_plugin_id: None,
     }];
     let rendered = build_available_skills(
         &outcome,
@@ -9014,6 +9058,7 @@ fn emit_thread_start_skill_metrics_records_description_truncated_chars_without_o
         path_to_skills_md: test_path_buf("/tmp/alpha-skill/SKILL.md").abs(),
         scope: SkillScope::Repo,
         plugin_id: None,
+        remote_plugin_id: None,
     };
     let beta = SkillMetadata {
         name: "beta-skill".to_string(),
@@ -9025,6 +9070,7 @@ fn emit_thread_start_skill_metrics_records_description_truncated_chars_without_o
         path_to_skills_md: test_path_buf("/tmp/beta-skill/SKILL.md").abs(),
         scope: SkillScope::Repo,
         plugin_id: None,
+        remote_plugin_id: None,
     };
     let minimum_skill_line_cost = |skill: &SkillMetadata| {
         let path = skill.path_to_skills_md.to_string_lossy().replace('\\', "/");
@@ -9073,6 +9119,7 @@ async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_buil
             path_to_skills_md: test_path_buf("/tmp/admin-skill/SKILL.md").abs(),
             scope: SkillScope::Admin,
             plugin_id: None,
+            remote_plugin_id: None,
         },
         SkillMetadata {
             name: "repo-skill".to_string(),
@@ -9084,6 +9131,7 @@ async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_buil
             path_to_skills_md: test_path_buf("/tmp/repo-skill/SKILL.md").abs(),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         },
     ];
     turn_context.model_info.context_window = Some(100);

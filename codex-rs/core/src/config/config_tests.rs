@@ -537,6 +537,10 @@ async fn load_config_resolves_code_mode_config() -> std::io::Result<()> {
 enabled = true
 excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
 direct_only_tool_namespaces = ["mcp__history", "mcp__notes"]
+
+[features.code_mode_host]
+enabled = true
+disable_in_process_fallback = true
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -555,7 +559,9 @@ direct_only_tool_namespaces = ["mcp__history", "mcp__notes"]
         config.code_mode.direct_only_tool_namespaces,
         vec!["mcp__history".to_string(), "mcp__notes".to_string()]
     );
+    assert!(config.code_mode.disable_in_process_fallback);
     assert!(config.features.enabled(Feature::CodeMode));
+    assert!(config.features.enabled(Feature::CodeModeHost));
     Ok(())
 }
 
@@ -4632,6 +4638,63 @@ fn filter_mcp_servers_by_allowlist_blocks_all_when_empty() {
     let source = RequirementSource::LegacyManagedConfigTomlFromMdm;
     let requirements = Sourced::new(BTreeMap::new(), source.clone());
     filter_mcp_servers_by_requirements(&mut servers, Some(&requirements));
+
+    let reason = Some(McpServerDisabledReason::Requirements { source });
+    assert_eq!(
+        servers
+            .iter()
+            .map(|(name, server)| (
+                name.clone(),
+                (server.enabled, server.disabled_reason.clone())
+            ))
+            .collect::<HashMap<String, (bool, Option<McpServerDisabledReason>)>>(),
+        HashMap::from([
+            ("server-a".to_string(), (false, reason.clone())),
+            ("server-b".to_string(), (false, reason)),
+        ])
+    );
+}
+
+#[test]
+fn filter_plugin_mcp_servers_without_allowlists_does_not_filter_any_plugin() {
+    let original_servers = HashMap::from([
+        ("server-a".to_string(), stdio_mcp("cmd-a")),
+        ("server-b".to_string(), http_mcp("https://example.com/b")),
+    ]);
+    let requirements = Sourced::new(
+        BTreeMap::from([(
+            "sites@openai-bundled".to_string(),
+            codex_config::PluginRequirementsToml { mcp_servers: None },
+        )]),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    for plugin_name in ["sites@openai-bundled", "sample@test"] {
+        let mut servers = original_servers.clone();
+        filter_plugin_mcp_servers_by_requirements(plugin_name, &mut servers, Some(&requirements));
+
+        assert_eq!(servers, original_servers);
+    }
+}
+
+#[test]
+fn filter_plugin_mcp_servers_by_empty_allowlist_blocks_all() {
+    let mut servers = HashMap::from([
+        ("server-a".to_string(), stdio_mcp("cmd-a")),
+        ("server-b".to_string(), http_mcp("https://example.com/b")),
+    ]);
+    let source = RequirementSource::LegacyManagedConfigTomlFromMdm;
+    let requirements = Sourced::new(
+        BTreeMap::from([(
+            "sample@test".to_string(),
+            codex_config::PluginRequirementsToml {
+                mcp_servers: Some(BTreeMap::new()),
+            },
+        )]),
+        source.clone(),
+    );
+
+    filter_plugin_mcp_servers_by_requirements("sample@test", &mut servers, Some(&requirements));
 
     let reason = Some(McpServerDisabledReason::Requirements { source });
     assert_eq!(
