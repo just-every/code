@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.153] - 2026-07-25
+
+- Release: preserve JustEvery packaging state while merging upstream/main. (30420ad9)
+- Core: refresh the codex-rs mirror to upstream/main. (af2dc7e1)
+
 ## [0.6.152] - 2026-07-24
 
 - Core: backport plan parity for account token data and protocol responses. (cd284b9f)

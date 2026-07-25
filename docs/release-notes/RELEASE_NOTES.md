@@ -1,11 +1,11 @@
-## @just-every/code v0.6.152
+## @just-every/code v0.6.153
 
-This release backports plan parity updates for account metadata and app-server protocol responses.
+This release refreshes upstream alignment while preserving JustEvery release packaging.
 
 ### Changes
 
-- Core: backport plan parity for account token data and protocol responses.
-- App Server: expose plan metadata across session, fork, resume, and account schemas.
+- Release: preserve JustEvery packaging state while merging upstream/main.
+- Core: refresh the codex-rs mirror to upstream/main.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.151...v0.6.152
+Compare: https://github.com/just-every/code/compare/v0.6.152...v0.6.153
