@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.154] - 2026-07-26
+
+- MCP: add a server recursion limit to prevent runaway nested requests. (743d90d5)
+- Core: refresh upstream parity while preserving fork release behavior. (c447db55)
+
 ## [0.6.153] - 2026-07-25
 
 - Release: preserve JustEvery packaging state while merging upstream/main. (30420ad9)
