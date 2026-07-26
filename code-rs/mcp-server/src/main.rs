@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use code_arg0::arg0_dispatch_or_else;
 use code_common::CliConfigOverrides;
 use code_mcp_server::run_main;
