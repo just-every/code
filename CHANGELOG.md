@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.155] - 2026-07-27
+
+- Release: allow alpha hotfix versions in R2 release publishing. (3d519bf6)
+- Core: refresh upstream parity for v0.6.155. (d04174d4, 78278289)
+
 ## [0.6.154] - 2026-07-26
 
 - MCP: add a server recursion limit to prevent runaway nested requests. (743d90d5)
