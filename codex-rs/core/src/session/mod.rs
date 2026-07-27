@@ -26,8 +26,8 @@ use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::ContextualUserFragment;
+use crate::context::ModelSwitchInstructions;
 use crate::context::NetworkRuleSaved;
-use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
 use crate::context::world_state::WorldState;
 use crate::current_time::TimeProvider;
@@ -206,6 +206,7 @@ use codex_protocol::exec_output::StreamOutput;
 mod code_mode_warning;
 mod config_lock;
 pub(crate) mod context_window;
+mod extension_metrics;
 mod handlers;
 mod inject;
 mod input_queue;
@@ -601,7 +602,7 @@ impl Session {
             )
         };
 
-        let config = Arc::new(config);
+        let mut config = Arc::new(config);
         let refresh_strategy = if session_source.is_non_root_agent() {
             codex_models_manager::manager::RefreshStrategy::Offline
         } else {
@@ -644,6 +645,11 @@ impl Session {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
+        if config.config_lock_export_dir.is_some()
+            && config.config_lock_save_fields_resolved_from_model_catalog
+        {
+            self::token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
+        }
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
         });
@@ -1805,27 +1811,6 @@ impl Session {
         self.services.skills_service.clear_cache();
         self.services.plugins_manager.clear_cache();
         self.refresh_runtime_config(next_config).await;
-    }
-
-    async fn build_settings_update_items(
-        &self,
-        reference_context_item: Option<&TurnContextItem>,
-        current_context: &TurnContext,
-    ) -> Vec<ResponseItem> {
-        // TODO: Make context updates a pure diff of persisted previous/current TurnContextItem
-        // state so replay/backtracking is deterministic. Runtime inputs that affect model-visible
-        // context (feature gates and the previous-turn bridge) should be persisted
-        // state or explicit non-state replay events.
-        let previous_turn_settings = {
-            let state = self.state.lock().await;
-            state.previous_turn_settings()
-        };
-        crate::context_manager::updates::build_settings_update_items(
-            reference_context_item,
-            previous_turn_settings.as_ref(),
-            current_context,
-            self.features.enabled(Feature::Personality),
-        )
     }
 
     /// Record a terminal CodexErr before the app-server completion notification is reduced.
@@ -3351,23 +3336,13 @@ impl Session {
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let mut separate_developer_sections = Vec::<String>::new();
-        let (previous_turn_settings, base_instructions, session_source, auto_compact_window_ids) = {
+        let (session_source, auto_compact_window_ids) = {
             let state = self.state.lock().await;
             (
-                state.previous_turn_settings(),
-                state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
                 state.auto_compact_window_ids(),
             )
         };
-        if let Some(model_switch_message) =
-            crate::context_manager::updates::build_model_instructions_update_item(
-                previous_turn_settings.as_ref(),
-                turn_context,
-            )
-        {
-            developer_sections.push(model_switch_message);
-        }
         let separate_guardian_developer_message =
             crate::guardian::is_guardian_reviewer_source(&session_source);
         // Keep the guardian policy prompt out of the aggregated developer bundle so it
@@ -3378,34 +3353,22 @@ impl Session {
         {
             developer_sections.push(developer_instructions.to_string());
         }
-        if self.features.enabled(Feature::Personality)
-            && let Some(personality) = turn_context.personality
-        {
-            let model_info = turn_context.model_info.clone();
-            let has_baked_personality = model_info.supports_personality()
-                && base_instructions == model_info.get_model_instructions(Some(personality));
-            if !has_baked_personality
-                && let Some(personality_message) =
-                    crate::context_manager::updates::personality_message_for(
-                        &model_info,
-                        personality,
-                    )
-            {
-                developer_sections
-                    .push(PersonalitySpecInstructions::new(personality_message).render());
-            }
-        }
         if turn_context.config.include_skill_instructions {
             let host_catalog_in_world_state = turn_context
                 .extension_data
                 .get::<HostSkillsCatalogInWorldState>()
                 .is_some();
+            let side_effects = if host_catalog_in_world_state {
+                SkillRenderSideEffects::None
+            } else {
+                SkillRenderSideEffects::ThreadStart {
+                    session_telemetry: &self.services.session_telemetry,
+                }
+            };
             let available_skills = build_available_skills(
                 turn_context.turn_skills.snapshot.outcome(),
                 default_skill_metadata_budget(turn_context.model_info.context_window),
-                SkillRenderSideEffects::ThreadStart {
-                    session_telemetry: &self.services.session_telemetry,
-                },
+                side_effects,
             );
             if let Some(available_skills) = available_skills {
                 let warning_message = available_skills.warning_message.clone();
@@ -3531,21 +3494,17 @@ impl Session {
                 )
                 .render(),
             );
-            if let Some(guidance_message) = turn_context
-                .config
-                .token_budget
-                .as_ref()
-                .and_then(|config| config.guidance_message.as_deref())
-                .filter(|message| !message.trim().is_empty())
-            {
-                developer_sections
-                    .push(crate::context::ContextWindowGuidance::new(guidance_message).render());
-            }
         }
         // Render the active mode after the usage hint so it can override that hint.
         let mut initial_multi_agent_mode = None;
         for fragment in world_state.render_full() {
             match fragment.role() {
+                "developer"
+                    if fragment.markers().0 == ModelSwitchInstructions::type_markers().0 =>
+                {
+                    // New-model instructions must precede the rest of the developer context.
+                    developer_sections.insert(0, fragment.render());
+                }
                 "developer" if fragment.markers().0 == MULTI_AGENT_MODE_OPEN_TAG => {
                     initial_multi_agent_mode = Some(fragment);
                 }
@@ -3720,11 +3679,6 @@ impl Session {
                 Some(WorldStateItem::full(snapshot.into_value())),
             )
         } else {
-            // Steady-state path: append only built-in context diffs here; turn-scoped extension
-            // context is added below.
-            let mut context_items = self
-                .build_settings_update_items(reference_context_item.as_ref(), turn_context)
-                .await;
             let (world_state_items, world_state_item) = {
                 let mut state = self.state.lock().await;
                 let (fragments, rollout_item) =
@@ -3734,8 +3688,7 @@ impl Session {
                     rollout_item,
                 )
             };
-            context_items.extend(world_state_items);
-            (context_items, world_state_item)
+            (world_state_items, world_state_item)
         };
         if !should_inject_full_context && turn_context_changed {
             context_items.extend(

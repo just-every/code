@@ -88,7 +88,7 @@ pub(crate) enum SkillMetadataBudget {
     Characters(usize),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct SkillRenderReport {
     pub(crate) total_count: usize,
     pub(crate) included_count: usize,
@@ -121,7 +121,7 @@ impl SkillRenderReport {
             .then(|| SKILL_DESCRIPTION_TRUNCATED_WARNING.to_string())
     }
 
-    fn average_truncated_description_chars(&self) -> usize {
+    pub(crate) fn average_truncated_description_chars(&self) -> usize {
         if self.total_count == 0 || self.truncated_description_chars == 0 {
             return 0;
         }
@@ -158,7 +158,7 @@ fn metadata_line_cost(budget: SkillMetadataBudget, line: &str) -> usize {
 }
 
 impl SkillMetadataBudget {
-    fn limit(self) -> usize {
+    pub(crate) fn limit(self) -> usize {
         match self {
             Self::Tokens(limit) | Self::Characters(limit) => limit,
         }

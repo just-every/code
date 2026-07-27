@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use codex_core_skills::HostSkillsSnapshot;
 use codex_core_skills::build_available_skills;
 use codex_core_skills::render::SkillRenderSideEffects;
 use codex_extension_api::ContextualUserFragment;
+use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::PreviousWorldStateSection;
 use codex_extension_api::RenderedWorldStateFragment;
 use codex_extension_api::WorldStateSectionContribution;
@@ -11,6 +14,8 @@ use serde_json::json;
 
 use crate::fragments::AvailableSkillsInstructions;
 use crate::render::SkillMetadataBudget;
+use crate::render_observability::CatalogSurface;
+use crate::render_observability::record_catalog_metrics;
 
 pub(crate) const SKILLS_WORLD_STATE_ID: &str = "skills";
 pub(crate) const HOST_SKILLS_WORLD_STATE_ID: &str = "host_skills";
@@ -78,6 +83,7 @@ pub(crate) fn host_skills_world_state_section(
     include_instructions: bool,
     include_skills_usage_instructions: bool,
     metadata_budget: SkillMetadataBudget,
+    extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
 ) -> WorldStateSectionContribution {
     let outcome = host_snapshot.outcome();
     let metadata_budget = match metadata_budget {
@@ -91,6 +97,20 @@ pub(crate) fn host_skills_world_state_section(
     } else {
         None
     };
+    let render_metrics = include_instructions.then(|| {
+        available
+            .as_ref()
+            .map(|available| {
+                let report = &available.report;
+                (
+                    report.total_count,
+                    report.included_count,
+                    report.omitted_count,
+                    report.truncated_description_chars,
+                )
+            })
+            .unwrap_or_default()
+    });
     let body = available.map(|available| {
         AvailableSkillsInstructions::from_available_skills(
             available,
@@ -121,6 +141,18 @@ pub(crate) fn host_skills_world_state_section(
                 }
             }
 
+            if let Some((total_count, included_count, omitted_count, truncated_description_chars)) =
+                render_metrics
+            {
+                record_catalog_metrics(
+                    extension_metrics.as_deref(),
+                    CatalogSurface::HostWorldState,
+                    total_count,
+                    included_count,
+                    omitted_count,
+                    truncated_description_chars,
+                );
+            }
             let body = match body.as_deref() {
                 Some(body) => body,
                 None if previous_is_absent => return None,

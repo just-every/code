@@ -1,10 +1,13 @@
 mod agents_md;
 mod apps_instructions;
 mod collaboration_mode;
+mod context_window_guidance;
 mod environment;
 mod environments_instructions;
+mod model;
 mod multi_agent_mode;
 mod permissions;
+mod personality;
 mod plugins_instructions;
 mod realtime;
 #[cfg(test)]
@@ -30,10 +33,13 @@ use std::fmt;
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;
+pub(crate) use context_window_guidance::ContextWindowGuidanceState;
 pub(crate) use environment::EnvironmentsState;
 pub(crate) use environments_instructions::EnvironmentsInstructionsState;
+pub(crate) use model::ModelInstructionsState;
 pub(crate) use multi_agent_mode::MultiAgentModeState;
 pub(crate) use permissions::PermissionsState;
+pub(crate) use personality::PersonalityState;
 pub(crate) use plugins_instructions::PluginsInstructionsState;
 pub(crate) use realtime::RealtimeState;
 pub(crate) use tools::ToolsState;
@@ -305,8 +311,14 @@ impl WorldState {
             !self.sections.contains_key(id),
             "duplicate world-state section ID: {id}"
         );
-        self.sections
-            .insert(id, Box::new(ExtensionWorldStateSection(section)));
+        let section = Box::new(ExtensionWorldStateSection(section));
+        if id == "host_skills"
+            && let Some(index) = self.sections.get_index_of(PermissionsState::ID)
+        {
+            self.sections.shift_insert(index, id, section);
+        } else {
+            self.sections.insert(id, section);
+        }
     }
 
     pub(crate) fn snapshot(&self) -> WorldStateSnapshot {
