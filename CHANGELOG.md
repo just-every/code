@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.156] - 2026-07-28
+
+- Core: refresh upstream parity for v0.6.156. (cbca1b32, bde3df6e)
+- SDK: update generated app-server protocol artifacts and client RPC coverage. (cbca1b32)
+- MCP: use configured HTTP clients for all OAuth requests. (709283b4)
+- Core: honor the configured SQLite home in log storage and centralize connection creation. (3418498f, 50a7328f)
+- Release: advance the latest alpha CLI channel only after publishing completes. (dd6b8803)
+
 ## [0.6.155] - 2026-07-27
 
 - Release: allow alpha hotfix versions in R2 release publishing. (3d519bf6)
