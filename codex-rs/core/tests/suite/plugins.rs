@@ -10,7 +10,10 @@ use codex_core_plugins::store::PluginStore;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_plugin::PluginId;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -40,7 +43,9 @@ use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_mcp_server;
+use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+use test_case::test_case;
 use wiremock::MockServer;
 
 const SAMPLE_PLUGIN_CONFIG_NAME: &str = "sample@test";
@@ -160,6 +165,28 @@ fn write_plugin_mcp_plugin(home: &TempDir, command: &str) {
         ),
     )
     .expect("write plugin mcp config");
+}
+
+fn block_plugin_mcp_startup(home: &TempDir, command: &str) -> std::path::PathBuf {
+    let barrier = home.path().join("allow-plugin-initialize");
+    std::fs::write(
+        sample_plugin_root(home).join(".mcp.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mcpServers": {
+                "sample": {
+                    "command": command,
+                    "cwd": ".",
+                    "env": {
+                        "MCP_TEST_INITIALIZE_BARRIER_FILE": barrier,
+                    },
+                    "startup_timeout_sec": 10,
+                },
+            },
+        }))
+        .expect("serialize blocked plugin MCP configuration"),
+    )
+    .expect("write blocked plugin MCP configuration");
+    barrier
 }
 
 fn write_plugin_app_plugin(home: &TempDir) {
@@ -308,6 +335,7 @@ async fn persisted_remote_plugin_command_attribution_flows_through_turn_context(
 
     let mut builder = test_codex()
         .with_home(Arc::clone(&codex_home))
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model("gpt-5.2");
     let test_codex = builder.build_with_auto_env(&server).await?;
     let codex = Arc::clone(&test_codex.codex);
@@ -431,6 +459,260 @@ async fn capability_sections_render_in_developer_message_in_order() -> Result<()
         developer_text.contains("sample:sample-search: inspect sample data"),
         "expected namespaced plugin skill summary in developer message: {developer_messages:?}"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_turns_route_curated_plugin_skills_after_auth_switch() -> Result<()> {
+    const CHATGPT_CURATED_PLUGIN_SKILL: &str = "chatgpt-plugin:chatgpt-skill";
+    const API_CURATED_PLUGIN_SKILL: &str = "api-plugin:api-skill";
+    const CURATED_PLUGIN_SKILLS: &[&str] =
+        &[CHATGPT_CURATED_PLUGIN_SKILL, API_CURATED_PLUGIN_SKILL];
+
+    #[derive(Clone, Copy)]
+    enum TargetAuth {
+        Chatgpt,
+        ApiKey,
+        BedrockApiKey,
+        NoCodexAuth,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Fixture {
+        name: &'static str,
+        target_auth: TargetAuth,
+        target_model_provider_id: &'static str,
+        target_prompt: &'static str,
+        expected_target_loaded_plugin_skills: &'static [&'static str],
+        expected_target_skill_description: &'static str,
+    }
+
+    const FIXTURES: &[Fixture] = &[
+        Fixture {
+            name: "ChatGPT",
+            target_auth: TargetAuth::Chatgpt,
+            target_model_provider_id: OPENAI_PROVIDER_ID,
+            target_prompt: "chatgpt target turn",
+            expected_target_loaded_plugin_skills: &[CHATGPT_CURATED_PLUGIN_SKILL],
+            expected_target_skill_description: "chatgpt description",
+        },
+        Fixture {
+            name: "API key",
+            target_auth: TargetAuth::ApiKey,
+            target_model_provider_id: OPENAI_PROVIDER_ID,
+            target_prompt: "api key target turn",
+            expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
+            expected_target_skill_description: "api description before",
+        },
+        Fixture {
+            name: "Bedrock API key",
+            target_auth: TargetAuth::BedrockApiKey,
+            target_model_provider_id: AMAZON_BEDROCK_PROVIDER_ID,
+            target_prompt: "bedrock key target turn",
+            expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
+            expected_target_skill_description: "api description before",
+        },
+        Fixture {
+            name: "ambient Bedrock",
+            target_auth: TargetAuth::NoCodexAuth,
+            target_model_provider_id: AMAZON_BEDROCK_PROVIDER_ID,
+            target_prompt: "ambient bedrock target turn",
+            expected_target_loaded_plugin_skills: &[API_CURATED_PLUGIN_SKILL],
+            expected_target_skill_description: "api description before",
+        },
+    ];
+
+    async fn skills_for_agent_turn(
+        test_codex: &TestCodex,
+        response: &ResponseMock,
+        model_provider_id: &str,
+        prompt: &str,
+        expected_request_count: usize,
+    ) -> Result<String> {
+        let mut config = test_codex.config.clone();
+        config.model_provider_id = model_provider_id.to_string();
+        let thread = test_codex
+            .thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?
+            .thread;
+        thread
+            .submit(Op::UserInput {
+                items: vec![codex_protocol::user_input::UserInput::Text {
+                    text: prompt.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+        wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+        let requests = response.requests();
+        assert_eq!(requests.len(), expected_request_count);
+        Ok(requests
+            .last()
+            .expect("agent turn should send a request")
+            .message_input_text_groups("developer")
+            .into_iter()
+            .rev()
+            .find(|texts| texts.iter().any(|text| text.contains("## Skills")))
+            .expect("agent turn should include a skills developer message")
+            .join("\n"))
+    }
+
+    skip_if_no_network!(Ok(()));
+    let assert_loaded_plugin_skills =
+        |fixture_name: &str, phase: &str, skills: &str, expected: &[&str]| {
+            let loaded_plugin_skills = CURATED_PLUGIN_SKILLS
+                .iter()
+                .copied()
+                .filter(|plugin_skill| skills.contains(plugin_skill))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                loaded_plugin_skills.as_slice(),
+                expected,
+                "unexpected curated plugin skills for {fixture_name} during {phase}: {skills:?}"
+            );
+        };
+
+    for fixture in FIXTURES {
+        let server = start_mock_server().await;
+        let response = mount_sse_sequence(
+            &server,
+            vec![
+                sse(vec![
+                    ev_response_created("resp-initial"),
+                    ev_completed("resp-initial"),
+                ]),
+                sse(vec![
+                    ev_response_created("resp-target"),
+                    ev_completed("resp-target"),
+                ]),
+            ],
+        )
+        .await;
+
+        let codex_home = Arc::new(TempDir::new()?);
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            r#"[features]
+plugins = true
+remote_plugin = false
+
+[plugins."chatgpt-plugin@openai-curated"]
+enabled = true
+
+[plugins."api-plugin@openai-api-curated"]
+enabled = true
+"#,
+        )?;
+        for (marketplace_name, plugin_name, skill_name, description) in [
+            (
+                "openai-curated",
+                "chatgpt-plugin",
+                "chatgpt-skill",
+                "chatgpt description",
+            ),
+            (
+                "openai-api-curated",
+                "api-plugin",
+                "api-skill",
+                "api description before",
+            ),
+        ] {
+            let plugin_root = codex_home
+                .path()
+                .join("plugins/cache")
+                .join(marketplace_name)
+                .join(plugin_name)
+                .join("local");
+            std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
+            std::fs::write(
+                plugin_root.join(".codex-plugin/plugin.json"),
+                format!(r#"{{"name":"{plugin_name}","description":"{plugin_name}"}}"#),
+            )?;
+            let skill_dir = plugin_root.join("skills").join(skill_name);
+            std::fs::create_dir_all(&skill_dir)?;
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\ndescription: {description}\n---\n\n# body\n"),
+            )?;
+        }
+
+        let mut builder = test_codex()
+            .with_home(Arc::clone(&codex_home))
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let test_codex = builder.build_with_auto_env(&server).await?;
+        let plugins_manager = test_codex.thread_manager.plugins_manager();
+        let skills_service = test_codex.thread_manager.skills_service();
+
+        let initial_skills = skills_for_agent_turn(
+            &test_codex,
+            &response,
+            OPENAI_PROVIDER_ID,
+            "initial chatgpt turn",
+            /*expected_request_count*/ 1,
+        )
+        .await?;
+        assert_loaded_plugin_skills(
+            fixture.name,
+            "initial ChatGPT turn",
+            &initial_skills,
+            &[CHATGPT_CURATED_PLUGIN_SKILL],
+        );
+        assert!(initial_skills.contains("chatgpt description"));
+
+        std::fs::write(
+            codex_home.path().join(
+                "plugins/cache/openai-api-curated/api-plugin/local/skills/api-skill/SKILL.md",
+            ),
+            "---\ndescription: api description after\n---\n\n# body\n",
+        )?;
+
+        match fixture.target_auth {
+            TargetAuth::Chatgpt => {}
+            TargetAuth::ApiKey => {
+                plugins_manager.set_auth_mode(Some(AuthMode::ApiKey));
+            }
+            TargetAuth::BedrockApiKey => {
+                plugins_manager.set_auth_mode(Some(AuthMode::BedrockApiKey));
+            }
+            TargetAuth::NoCodexAuth => {
+                test_codex.thread_manager.auth_manager().logout().await?;
+                assert_eq!(
+                    test_codex.thread_manager.auth_manager().get_api_auth_mode(),
+                    None
+                );
+                plugins_manager.set_auth_mode(/*auth_mode*/ None);
+            }
+        }
+        skills_service.clear_cache();
+        let target_skills = skills_for_agent_turn(
+            &test_codex,
+            &response,
+            fixture.target_model_provider_id,
+            fixture.target_prompt,
+            /*expected_request_count*/ 2,
+        )
+        .await?;
+        assert_loaded_plugin_skills(
+            fixture.name,
+            "target turn",
+            &target_skills,
+            fixture.expected_target_loaded_plugin_skills,
+        );
+        assert!(
+            target_skills.contains(fixture.expected_target_skill_description),
+            "expected {:?} in current skills: {skills:?}",
+            fixture.expected_target_skill_description,
+            skills = target_skills
+        );
+        assert!(!target_skills.contains("api description after"));
+    }
 
     Ok(())
 }
@@ -577,8 +859,20 @@ async fn explicit_plugin_mentions_keep_non_conflicting_mcp_for_chatgpt_auth() ->
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ExplicitMcpRequest {
+    Plugin,
+    PluginSkill,
+    ServerMention,
+    LinkedServerMention,
+}
+
+#[test_case(ExplicitMcpRequest::Plugin; "plugin mention")]
+#[test_case(ExplicitMcpRequest::PluginSkill; "plugin skill")]
+#[test_case(ExplicitMcpRequest::ServerMention; "MCP server mention")]
+#[test_case(ExplicitMcpRequest::LinkedServerMention; "linked MCP server mention")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_plugin_mentions_use_mcp_for_api_key_dual_surface_plugins() -> Result<()> {
+async fn explicitly_requested_mcp_waits_for_startup(request: ExplicitMcpRequest) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let mock = mount_plugin_tool_search_turn(&server).await;
@@ -591,9 +885,10 @@ async fn explicit_plugin_mentions_use_mcp_for_api_key_dual_surface_plugins() -> 
             return Ok(());
         }
     };
-    write_plugin_skill_plugin(codex_home.as_ref());
+    let skill_path = std::fs::canonicalize(write_plugin_skill_plugin(codex_home.as_ref()))?;
     write_plugin_mcp_plugin(codex_home.as_ref(), &rmcp_test_server_bin);
     write_plugin_app_plugin(codex_home.as_ref());
+    let initialize_barrier = block_plugin_mcp_startup(codex_home.as_ref(), &rmcp_test_server_bin);
 
     let mut builder = test_codex()
         .with_home(codex_home)
@@ -609,37 +904,68 @@ async fn explicit_plugin_mentions_use_mcp_for_api_key_dual_surface_plugins() -> 
         .await
         .expect("create new conversation");
     let codex = Arc::clone(&test_codex.codex);
-    wait_for_mcp_server(&codex, "sample").await?;
 
+    let input = match request {
+        ExplicitMcpRequest::Plugin => UserInput::Mention {
+            name: "sample".into(),
+            path: format!("plugin://{SAMPLE_PLUGIN_CONFIG_NAME}"),
+        },
+        ExplicitMcpRequest::PluginSkill => UserInput::Skill {
+            name: "sample:sample-search".into(),
+            path: skill_path,
+        },
+        ExplicitMcpRequest::ServerMention => UserInput::Mention {
+            name: "sample".into(),
+            path: "mcp://sample".into(),
+        },
+        ExplicitMcpRequest::LinkedServerMention => UserInput::Text {
+            text: "use [$sample](mcp://sample)".to_string(),
+            text_elements: Vec::new(),
+        },
+    };
     codex
         .submit(Op::UserInput {
-            items: vec![codex_protocol::user_input::UserInput::Mention {
-                name: "sample".into(),
-                path: format!("plugin://{SAMPLE_PLUGIN_CONFIG_NAME}"),
-            }],
+            items: vec![input],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await?;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        mock.requests().is_empty(),
+        "an explicitly requested MCP should finish starting before inference"
+    );
+    std::fs::write(initialize_barrier, "ready")?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let requests = mock.requests();
-    let request = &requests[0];
-    let developer_messages = request.message_input_texts("developer");
-    assert!(
-        developer_messages
-            .iter()
-            .any(|text| text.contains("Skills from this plugin")),
-        "expected plugin skills guidance: {developer_messages:?}"
-    );
-    assert!(
-        developer_messages
-            .iter()
-            .any(|text| text.contains("MCP servers from this plugin")),
-        "expected visible plugin MCP guidance: {developer_messages:?}"
-    );
+    let model_request = &requests[0];
+    let developer_messages = model_request.message_input_texts("developer");
+    if matches!(request, ExplicitMcpRequest::Plugin) {
+        assert!(
+            developer_messages
+                .iter()
+                .any(|text| text.contains("Skills from this plugin")),
+            "expected plugin skills guidance: {developer_messages:?}"
+        );
+        assert!(
+            developer_messages
+                .iter()
+                .any(|text| text.contains("MCP servers from this plugin")),
+            "expected visible plugin MCP guidance: {developer_messages:?}"
+        );
+    }
+    if matches!(request, ExplicitMcpRequest::PluginSkill) {
+        let user_messages = model_request.message_input_texts("user");
+        assert!(
+            user_messages
+                .iter()
+                .any(|message| message.contains("sample:sample-search")),
+            "expected explicitly requested skill instructions: {user_messages:?}"
+        );
+    }
     assert!(
         !developer_messages
             .iter()
@@ -647,7 +973,7 @@ async fn explicit_plugin_mentions_use_mcp_for_api_key_dual_surface_plugins() -> 
         "expected plugin app guidance to be suppressed for API-key auth: {developer_messages:?}"
     );
     assert!(
-        request
+        model_request
             .tool_by_name(SAMPLE_PLUGIN_APP_NAMESPACE, SEARCH_CALENDAR_CREATE_TOOL)
             .is_none(),
         "plugin app tool should not leak into the request for API-key auth"

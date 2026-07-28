@@ -1,11 +1,10 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_config::types::McpServerEnvVar;
-use reqwest::ClientBuilder;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderName;
-use reqwest::header::HeaderValue;
-use reqwest::header::USER_AGENT;
+use http::HeaderMap;
+use http::HeaderName;
+use http::HeaderValue;
+use http::header::USER_AGENT;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -117,17 +116,6 @@ pub(crate) fn build_default_headers(
     }
 
     Ok(headers)
-}
-
-pub(crate) fn apply_default_headers(
-    builder: ClientBuilder,
-    default_headers: &HeaderMap,
-) -> ClientBuilder {
-    if default_headers.is_empty() {
-        builder
-    } else {
-        builder.default_headers(default_headers.clone())
-    }
 }
 
 #[cfg(unix)]

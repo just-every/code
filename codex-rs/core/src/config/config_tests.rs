@@ -6397,6 +6397,30 @@ async fn to_mcp_config_flows_mcp_tool_prefix_from_feature() -> std::io::Result<(
 }
 
 #[tokio::test]
+async fn to_mcp_config_flows_mcp_2026_feature_from_config() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
+
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+    assert_eq!(mcp_config.protocol_mode, codex_mcp::McpProtocolMode::Legacy);
+
+    let _ = config.features.enable(Feature::Mcp20260728);
+    let mcp_config = config.to_mcp_config(&plugins_manager).await;
+    assert_eq!(
+        mcp_config.protocol_mode,
+        codex_mcp::McpProtocolMode::V20260728
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn to_mcp_config_preserves_auth_elicitation_feature_from_config() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let mut config = Config::load_from_base_config_with_overrides(
@@ -6410,10 +6434,9 @@ async fn to_mcp_config_preserves_auth_elicitation_feature_from_config() -> std::
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert_eq!(
         mcp_config.client_elicitation_capability,
-        ElicitationCapability {
-            form: Some(FormElicitationCapability::default()),
-            url: Some(UrlElicitationCapability::default()),
-        }
+        ElicitationCapability::new()
+            .with_form(FormElicitationCapability::new())
+            .with_url(UrlElicitationCapability::new())
     );
 
     let _ = config.features.disable(Feature::AuthElicitation);
@@ -10762,6 +10785,7 @@ default_wait_timeout_ms = 30000
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
 subagent_usage_hint_text = "Subagent guidance."
+subagent_developer_instructions = "  Delegate carefully.  "
 multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
@@ -10803,6 +10827,13 @@ max_concurrent_threads_per_session = 9
     assert_eq!(
         config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
         Some("Subagent guidance.")
+    );
+    assert_eq!(
+        config
+            .multi_agent_v2
+            .subagent_developer_instructions
+            .as_deref(),
+        Some("Delegate carefully.")
     );
     assert_eq!(
         config.multi_agent_v2.multi_agent_mode_hint_text.as_deref(),
@@ -10965,11 +10996,13 @@ fn multi_agent_v2_preserves_empty_mode_hint_override() {
     let config_toml = toml::from_str(
         r#"[features.multi_agent_v2]
 multi_agent_mode_hint_text = ""
+subagent_developer_instructions = "  \t  "
 "#,
     )
     .expect("multi-agent v2 config should parse");
 
     let expected = MultiAgentV2Config {
+        subagent_developer_instructions: Some(String::new()),
         multi_agent_mode_hint_text: Some(String::new()),
         ..resolve_multi_agent_v2_config(&ConfigToml::default())
     };

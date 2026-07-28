@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_connectors::ConnectorRuntimeFetchSource;
+use futures::future::join_all;
 use tracing::Instrument;
 use tracing::instrument;
 use tracing::trace;
@@ -30,6 +32,7 @@ use crate::tools::normalize_tools_for_model_with_prefix;
 const MCP_UI_META_KEY: &str = "ui";
 const MCP_UI_VISIBILITY_META_KEY: &str = "visibility";
 const MCP_UI_MODEL_VISIBILITY: &str = "model";
+const OPTIONAL_MCP_STARTUP_GRACE: Duration = Duration::from_secs(1);
 
 /// Returns whether a tool may be included in model-facing tool declarations.
 ///
@@ -61,7 +64,7 @@ impl McpConnectionSet {
         let mut tools = Vec::new();
         let mut available_server_count = 0;
         let mut unavailable_server_count = 0;
-        for (server_name, view) in &self.servers {
+        let server_results = join_all(self.servers.iter().map(|(server_name, view)| async move {
             view.connection.client.reconnect_failed_startup().await;
             let has_cached_tools = view.connection.client.has_cached_tools();
             let startup_complete = view
@@ -74,7 +77,7 @@ impl McpConnectionSet {
             } else {
                 None
             };
-            let Some(server_tools) = async {
+            let server_tools = async {
                 match catalog_override {
                     Some(tools) => {
                         let tools = filter_tools(tools, &view.tool_filter);
@@ -92,23 +95,34 @@ impl McpConnectionSet {
                 has_cached_tools,
                 startup_complete
             ))
-            .await
-            else {
-                unavailable_server_count += 1;
-                trace!(
-                    server_name = %server_name,
-                    has_cached_tools,
-                    startup_complete,
-                    "MCP server tools unavailable while building tool list"
-                );
-                continue;
-            };
-            available_server_count += 1;
-            tools.extend(
-                server_tools
-                    .into_iter()
-                    .map(|tool| Self::with_server_metadata(tool, &view.metadata)),
-            );
+            .await;
+            match server_tools {
+                Some(server_tools) => Some(
+                    server_tools
+                        .into_iter()
+                        .map(|tool| Self::with_server_metadata(tool, &view.metadata))
+                        .collect::<Vec<_>>(),
+                ),
+                None => {
+                    trace!(
+                        server_name = %server_name,
+                        has_cached_tools,
+                        startup_complete,
+                        "MCP server tools unavailable while building tool list"
+                    );
+                    None
+                }
+            }
+        }))
+        .await;
+        for server_tools in server_results {
+            match server_tools {
+                Some(server_tools) => {
+                    available_server_count += 1;
+                    tools.extend(server_tools);
+                }
+                None => unavailable_server_count += 1,
+            }
         }
         let tools = normalize_tools_for_model_with_prefix(
             tools,
@@ -132,36 +146,74 @@ impl McpConnectionSet {
         self: &Arc<Self>,
         config: Arc<crate::McpConfig>,
         plugins_available: bool,
+        required_servers: &[String],
     ) -> McpBinding {
         let revision = self.tool_catalog_revision.read().await;
         let mut listed_tools = Vec::new();
         let mut clients = std::collections::HashMap::new();
-        for (server_name, view) in &self.servers {
+        let optional_startup_deadline = *self
+            .optional_startup_deadline
+            .get_or_init(|| tokio::time::Instant::now() + OPTIONAL_MCP_STARTUP_GRACE);
+        join_all(self.servers.iter().map(|(server_name, view)| async move {
             if !view
                 .connection
                 .client
                 .startup_complete
                 .load(Ordering::Acquire)
             {
-                if view.connection.client.has_cached_tools() {
-                    if let Some(server_tools) =
-                        view.listed_tools(&self.tool_plugin_provenance).await
+                let required = self.required_servers.binary_search(server_name).is_ok();
+                let has_cached_tools = view.connection.client.has_cached_tools();
+                let must_wait_for_startup = required
+                    || self.is_selected_plugin_mcp_server(server_name)
+                    || required_servers
+                        .iter()
+                        .any(|required| required == server_name)
+                    || (server_name == CODEX_APPS_MCP_SERVER_NAME && !has_cached_tools);
+                if !must_wait_for_startup && has_cached_tools {
+                    return;
+                }
+                if !must_wait_for_startup {
+                    if tokio::time::timeout_at(
+                        optional_startup_deadline,
+                        view.connection.client.client(),
+                    )
+                    .await
+                    .is_err()
                     {
-                        listed_tools.extend(server_tools.into_iter().map(|mut tool| {
-                            if let Some(annotations) = tool.tool.annotations.as_mut() {
-                                annotations.read_only_hint = None;
-                            }
-                            Self::with_server_metadata(tool, &view.metadata)
-                        }));
+                        trace!(server_name = %server_name, "omitting pending optional MCP server");
                     }
-                    continue;
+                    return;
                 }
                 let _ = view.connection.client.client().await;
+            }
+        }))
+        .await;
+        let server_results = join_all(self.servers.iter().map(|(server_name, view)| async move {
+            if !view
+                .connection
+                .client
+                .startup_complete
+                .load(Ordering::Acquire)
+            {
+                if !view.connection.client.has_cached_tools() {
+                    return None;
+                }
+                let server_tools = view.listed_tools(&self.tool_plugin_provenance).await?;
+                let server_tools = server_tools
+                    .into_iter()
+                    .map(|mut tool| {
+                        if let Some(annotations) = tool.tool.annotations.as_mut() {
+                            annotations.read_only_hint = None;
+                        }
+                        Self::with_server_metadata(tool, &view.metadata)
+                    })
+                    .collect::<Vec<_>>();
+                return Some((server_name.clone(), None, server_tools));
             }
             view.connection.client.reconnect_failed_startup().await;
             let Ok(mut client) = view.connection.client.client().await else {
                 trace!(server_name = %server_name, "omitting MCP server without an exact ready client");
-                continue;
+                return None;
             };
             client.tool_timeout = view.tool_timeout;
             let catalog_override = if server_name == CODEX_APPS_MCP_SERVER_NAME {
@@ -179,12 +231,18 @@ impl McpConnectionSet {
                     &self.tool_plugin_provenance,
                 )
             };
-            clients.insert(server_name.clone(), Arc::new(client));
-            listed_tools.extend(
-                server_tools
-                    .into_iter()
-                    .map(|tool| Self::with_server_metadata(tool, &view.metadata)),
-            );
+            let server_tools = server_tools
+                .into_iter()
+                .map(|tool| Self::with_server_metadata(tool, &view.metadata))
+                .collect::<Vec<_>>();
+            Some((server_name.clone(), Some(Arc::new(client)), server_tools))
+        }))
+        .await;
+        for (server_name, client, server_tools) in server_results.into_iter().flatten() {
+            if let Some(client) = client {
+                clients.insert(server_name, client);
+            }
+            listed_tools.extend(server_tools);
         }
         let clients = Arc::new(McpBindingClients::new(clients));
         let listed_tools = normalize_tools_for_model_with_prefix(

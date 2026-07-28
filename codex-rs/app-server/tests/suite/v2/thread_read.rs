@@ -254,7 +254,7 @@ async fn paginated_stored_thread_routes_projected_turns_and_rejects_legacy_histo
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
-            is_pinned: None,
+            section_id: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -955,7 +955,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
                 model_providers: Some(Vec::new()),
                 source_kinds: None,
                 archived: None,
-                is_pinned: None,
+                section_id: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -1273,7 +1273,7 @@ async fn paginated_thread_name_set_is_reflected_in_read_list_and_metadata_resume
         .await?;
 
     // Set a user-facing thread title.
-    let new_name = "Saved user message";
+    let new_name = "Custom saved name";
     let set_id = mcp
         .send_thread_set_name_request(ThreadSetNameParams {
             thread_id: conversation_id.clone(),
@@ -1334,7 +1334,7 @@ async fn paginated_thread_name_set_is_reflected_in_read_list_and_metadata_resume
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
             archived: None,
-            is_pinned: None,
+            section_id: None,
             cwd: None,
             use_state_db_only: true,
             search_term: None,

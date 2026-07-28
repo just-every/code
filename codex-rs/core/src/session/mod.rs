@@ -3024,6 +3024,20 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
     ) -> CodexResult<Arc<StepContext>> {
+        self.capture_step_context_with_required_mcp_servers(
+            turn_context,
+            cancellation_token,
+            /*required_servers*/ &[],
+        )
+        .await
+    }
+
+    pub(crate) async fn capture_step_context_with_required_mcp_servers(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        cancellation_token: &CancellationToken,
+        required_servers: &[String],
+    ) -> CodexResult<Arc<StepContext>> {
         // Keep selections fixed for the turn while allowing their startup work to finish.
         let environments = turn_context.environments.refresh_readiness();
         self.services
@@ -3044,16 +3058,25 @@ impl Session {
             .await;
         let extension_data = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
         extension_data.insert(selected_capability_roots.clone());
-        let mcp = self
-            .mcp_runtime_for_step(turn_context.as_ref(), &selected_capability_roots)
-            .or_cancel(cancellation_token)
-            .await?;
+        let (mcp, prepared_recommendations) = async {
+            tokio::join!(
+                self.mcp_runtime_for_step(
+                    turn_context.as_ref(),
+                    &selected_capability_roots,
+                    required_servers,
+                ),
+                turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
+            )
+        }
+        .or_cancel(cancellation_token)
+        .await?;
         let (mcp_tools, tool_router) = turn::built_tools(
             self.as_ref(),
             turn_context.as_ref(),
             &environments,
             mcp.as_ref(),
             &extension_data,
+            prepared_recommendations,
         )
         .or_cancel(cancellation_token)
         .await?;
@@ -3353,22 +3376,18 @@ impl Session {
         {
             developer_sections.push(developer_instructions.to_string());
         }
-        if turn_context.config.include_skill_instructions {
-            let host_catalog_in_world_state = turn_context
+        if turn_context.config.include_skill_instructions
+            && turn_context
                 .extension_data
                 .get::<HostSkillsCatalogInWorldState>()
-                .is_some();
-            let side_effects = if host_catalog_in_world_state {
-                SkillRenderSideEffects::None
-            } else {
-                SkillRenderSideEffects::ThreadStart {
-                    session_telemetry: &self.services.session_telemetry,
-                }
-            };
+                .is_none()
+        {
             let available_skills = build_available_skills(
                 turn_context.turn_skills.snapshot.outcome(),
                 default_skill_metadata_budget(turn_context.model_info.context_window),
-                side_effects,
+                SkillRenderSideEffects::ThreadStart {
+                    session_telemetry: &self.services.session_telemetry,
+                },
             );
             if let Some(available_skills) = available_skills {
                 let warning_message = available_skills.warning_message.clone();
@@ -3385,9 +3404,7 @@ impl Session {
                     })
                     .await;
                 }
-                if !host_catalog_in_world_state {
-                    developer_sections.push(skills_instructions.render());
-                }
+                developer_sections.push(skills_instructions.render());
             }
         }
         let loaded_plugins = self

@@ -19,6 +19,8 @@ use codex_core::config::find_codex_home;
 use codex_core::config::load_global_mcp_servers;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::HttpClient;
+use codex_exec_server::RouteAwareHttpClient;
 use codex_login::AuthManager;
 use codex_mcp::McpOAuthLoginSupport;
 use codex_mcp::McpRuntimeContext;
@@ -29,10 +31,13 @@ use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_scopes;
 use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_login;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
+
+use crate::plugin_cmd::load_cli_auth_mode;
 
 /// Subcommands:
 /// - `list`   — list configured servers (with `--json`)
@@ -222,6 +227,7 @@ async fn perform_oauth_login_retry_without_scopes(
     oauth_resource: Option<&str>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
+    http_client: Arc<dyn HttpClient>,
 ) -> Result<()> {
     match perform_oauth_login(
         name,
@@ -235,6 +241,7 @@ async fn perform_oauth_login_retry_without_scopes(
         oauth_resource,
         callback_port,
         callback_url,
+        Arc::clone(&http_client),
     )
     .await
     {
@@ -253,6 +260,7 @@ async fn perform_oauth_login_retry_without_scopes(
                 oauth_resource,
                 callback_port,
                 callback_url,
+                http_client,
             )
             .await
         }
@@ -379,7 +387,17 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     println!("Added global MCP server '{name}'.");
 
-    match oauth_login_support(&transport).await {
+    // `mcp add` assigns new servers to the local environment, so its immediate
+    // OAuth discovery uses the local route-aware HTTP client.
+    let http_client: Arc<dyn HttpClient> =
+        Arc::new(RouteAwareHttpClient::new(config.http_client_factory()));
+    let login_support = oauth_login_support(
+        &transport,
+        Arc::clone(&http_client),
+        OAuthDiscoveryTimeout::LOCAL,
+    )
+    .await;
+    match login_support {
         McpOAuthLoginSupport::Supported(oauth_config) => {
             println!("Detected OAuth support. Starting OAuth flow…");
             let resolved_scopes = resolve_oauth_scopes(
@@ -399,6 +417,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
                 oauth_resource.as_deref(),
                 config.mcp_oauth_callback_port,
                 config.mcp_oauth_callback_url.as_deref(),
+                http_client,
             )
             .await?;
             println!("Successfully logged in.");
@@ -445,6 +464,12 @@ async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveAr
     Ok(())
 }
 
+async fn load_mcp_manager(config: &Config) -> McpManager {
+    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    plugins_manager.set_auth_mode(load_cli_auth_mode(config).await);
+    McpManager::new(plugins_manager)
+}
+
 async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs) -> Result<()> {
     let overrides = config_overrides
         .parse_overrides()
@@ -452,9 +477,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
-        config.codex_home.to_path_buf(),
-    )));
+    let mcp_manager = load_mcp_manager(&config).await;
     let mcp_servers = mcp_manager.configured_servers(&config).await;
 
     let LoginArgs { name, scopes } = login_args;
@@ -473,9 +496,18 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
         _ => bail!("OAuth login is only supported for streamable HTTP servers."),
     };
 
+    // Standalone `mcp login` runs OAuth from the local CLI process; execution
+    // environment routing belongs to app-server and session MCP flows.
+    let http_client: Arc<dyn HttpClient> =
+        Arc::new(RouteAwareHttpClient::new(config.http_client_factory()));
     let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
     let discovered_scopes = if explicit_scopes.is_none() && server.scopes.is_none() {
-        discover_supported_scopes(&server.transport).await
+        discover_supported_scopes(
+            &server.transport,
+            Arc::clone(&http_client),
+            OAuthDiscoveryTimeout::LOCAL,
+        )
+        .await
     } else {
         None
     };
@@ -494,6 +526,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
         server.oauth_resource.as_deref(),
         config.mcp_oauth_callback_port,
         config.mcp_oauth_callback_url.as_deref(),
+        http_client,
     )
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
@@ -507,9 +540,7 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
-        config.codex_home.to_path_buf(),
-    )));
+    let mcp_manager = load_mcp_manager(&config).await;
     let mcp_servers = mcp_manager.configured_servers(&config).await;
 
     let LogoutArgs { name } = logout_args;
@@ -544,9 +575,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
-        config.codex_home.to_path_buf(),
-    )));
+    let mcp_manager = load_mcp_manager(&config).await;
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ true).await;
     let auth = auth_manager.auth().await;
@@ -555,17 +584,20 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
 
     let mut entries: Vec<_> = mcp_servers.iter().collect();
     entries.sort_by_key(|(name, _)| *name);
+    // Standalone `mcp list` only discovers auth through local HTTP; it has
+    // never initialized or routed through remote execution environments.
+    let runtime_context = McpRuntimeContext::new(
+        Arc::new(EnvironmentManager::without_environments(
+            config.http_client_factory(),
+        )),
+        config.cwd.to_path_buf(),
+    );
     let auth_statuses = compute_auth_statuses(
         effective_mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         auth.as_ref(),
-        &McpRuntimeContext::new(
-            Arc::new(EnvironmentManager::without_environments(
-                config.http_client_factory(),
-            )),
-            config.cwd.to_path_buf(),
-        ),
+        &runtime_context,
     )
     .await;
 
@@ -810,9 +842,7 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
-    let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
-        config.codex_home.to_path_buf(),
-    )));
+    let mcp_manager = load_mcp_manager(&config).await;
     let mcp_servers = mcp_manager.configured_servers(&config).await;
 
     let Some(server) = mcp_servers.get(&get_args.name) else {

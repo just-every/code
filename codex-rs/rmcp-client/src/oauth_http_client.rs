@@ -7,9 +7,9 @@ use codex_exec_server::HttpClient;
 use codex_exec_server::HttpHeader;
 use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
+use http::HeaderMap;
 use oauth2::HttpRequest;
 use oauth2::HttpResponse;
-use reqwest::header::HeaderMap;
 use rmcp::transport::auth::OAuthHttpClient;
 use rmcp::transport::auth::OAuthHttpClientError;
 use rmcp::transport::auth::OAuthHttpClientFuture;
@@ -70,6 +70,7 @@ impl OAuthHttpClientAdapter {
             headers.remove(name);
         }
         headers.extend(parts.headers);
+
         let headers = headers
             .iter()
             .map(|(name, value)| {

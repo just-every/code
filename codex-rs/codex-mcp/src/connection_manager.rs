@@ -23,6 +23,7 @@ pub use tool_catalog::tool_is_model_visible;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -144,6 +145,7 @@ impl McpServerView {
 pub(crate) struct McpConnectionSet {
     servers: HashMap<String, McpServerView>,
     required_servers: Vec<String>,
+    optional_startup_deadline: OnceLock<tokio::time::Instant>,
     tool_catalog_revision: Arc<RwLock<u64>>,
     codex_apps_tools_override: RwLock<Option<Vec<ToolInfo>>>,
     codex_apps_refresh_lock: Mutex<()>,
@@ -187,6 +189,7 @@ impl McpConnectionSet {
         let codex_home = config.codex_home.clone();
         let prefix_mcp_tool_names = config.prefix_mcp_tool_names;
         let non_prefixed_mcp_tool_servers = config.non_prefixed_mcp_tool_servers.clone();
+        let protocol_mode = config.protocol_mode;
         let client_elicitation_capability = config.client_elicitation_capability.clone();
         let tool_plugin_provenance = crate::mcp::tool_plugin_provenance(&config);
         let auth = auth.as_ref();
@@ -292,6 +295,26 @@ impl McpConnectionSet {
                 client_elicitation_capability.clone(),
                 supports_openai_form_elicitation,
             );
+            let expected_protocol_mode = match &configured_config.transport {
+                McpServerTransportConfig::StreamableHttp { .. } => Some(protocol_mode),
+                McpServerTransportConfig::Stdio { .. }
+                    if protocol_mode == crate::McpProtocolMode::Legacy =>
+                {
+                    Some(crate::McpProtocolMode::Legacy)
+                }
+                McpServerTransportConfig::Stdio { env, .. } => match env
+                    .as_ref()
+                    .and_then(|variables| variables.get("CODEX_MCP_PROTOCOL_VERSION"))
+                {
+                    None => Some(crate::McpProtocolMode::Legacy),
+                    Some(version)
+                        if version == rmcp::model::ProtocolVersion::V_2026_07_28.as_str() =>
+                    {
+                        Some(protocol_mode)
+                    }
+                    Some(_) => None,
+                },
+            };
             if let Some(previous_view) =
                 reusable_previous.and_then(|previous| previous.servers.get(&server_name))
             {
@@ -299,7 +322,10 @@ impl McpConnectionSet {
                 if connection
                     .reusable_client(&connection_identity)
                     .await
-                    .is_some()
+                    .is_some_and(|client| {
+                        expected_protocol_mode
+                            .is_some_and(|expected| client.client.protocol_mode() == expected)
+                    })
                 {
                     servers.insert(
                         server_name.clone(),
@@ -346,6 +372,7 @@ impl McpConnectionSet {
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
                 supports_openai_form_elicitation,
+                protocol_mode,
             );
             servers.insert(
                 server_name.clone(),
@@ -458,6 +485,7 @@ impl McpConnectionSet {
         let manager = Self {
             servers,
             required_servers,
+            optional_startup_deadline: OnceLock::new(),
             tool_catalog_revision: Arc::new(RwLock::new(0)),
             codex_apps_tools_override: RwLock::new(None),
             codex_apps_refresh_lock: Mutex::new(()),
@@ -515,6 +543,7 @@ impl McpConnectionSet {
         Self {
             servers: HashMap::new(),
             required_servers: Vec::new(),
+            optional_startup_deadline: OnceLock::new(),
             tool_catalog_revision: Arc::new(RwLock::new(0)),
             codex_apps_tools_override: RwLock::new(None),
             codex_apps_refresh_lock: Mutex::new(()),

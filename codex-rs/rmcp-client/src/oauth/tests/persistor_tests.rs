@@ -6,6 +6,10 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_exec_server::RouteAwareHttpClient;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
+use http::HeaderMap;
 use keyring::Error as KeyringError;
 use oauth2::AccessToken;
 use oauth2::TokenResponse;
@@ -41,6 +45,7 @@ use crate::oauth::load_oauth_tokens_from_file;
 use crate::oauth::refresh_lock::RefreshCredentialLock;
 use crate::oauth::save_oauth_tokens_to_file;
 use crate::oauth::stored_oauth_credentials;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::startup_error::is_authentication_required_error;
 
 const REFRESH_LOCK_CONTENTION_EVENT_TARGET: &str =
@@ -243,6 +248,39 @@ async fn rejected_refresh_token_requires_reauthorization() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn transient_refresh_failure_does_not_require_reauthorization() -> Result<()> {
+    let (_env, server, initial) = test_context().await?;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains("refresh_token=refresh-token"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "error": "temporarily_unavailable",
+            "error_description": "provider is temporarily unavailable",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let persistor = persistor_for(&initial).await?;
+
+    let error = persistor
+        .refresh_if_needed()
+        .await
+        .expect_err("a transient provider failure should not erase valid credentials");
+    assert!(!is_authentication_required_error(&error));
+    assert!(error.chain().any(|source| matches!(
+        source.downcast_ref::<AuthError>(),
+        Some(AuthError::TokenRefreshFailed(_))
+    )));
+    let stored = load_oauth_tokens_from_file(&initial.server_name, &initial.url)?
+        .expect("a transient refresh failure must preserve durable credentials");
+    assert_tokens_match_without_expiry(&stored, &initial);
+    server.verify().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn caller_cancellation_does_not_cancel_refresh_persistence() -> Result<()> {
     let (_env, server, initial) = test_context().await?;
@@ -364,7 +402,14 @@ async fn test_context() -> Result<(TempCodexHome, MockServer, StoredOAuthTokens)
 async fn authorization_manager_for(
     tokens: &StoredOAuthTokens,
 ) -> Result<Arc<TokioMutex<AuthorizationManager>>> {
-    let mut state = OAuthState::new(tokens.url.clone(), Some(reqwest::Client::new())).await?;
+    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
+        Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+            OutboundProxyPolicy::ReqwestDefault,
+        ))),
+        HeaderMap::new(),
+    ));
+    let mut state =
+        OAuthState::new_with_oauth_http_client(tokens.url.clone(), oauth_http_client).await?;
     state
         .set_credentials(&tokens.client_id, tokens.token_response.0.clone())
         .await?;
@@ -382,6 +427,7 @@ async fn mount_oauth_metadata(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": format!("{}/mcp", server.uri()),
             "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
             "token_endpoint": format!("{}/oauth/token", server.uri()),
             "scopes_supported": ["scope-a", "scope-b"],

@@ -36,8 +36,10 @@ use codex_core_skills::HostSkillsSnapshot;
 use core_test_support::test_codex::local_selections;
 
 use codex_features::Feature;
+use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_http_client::RouteAwareClientPool;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
@@ -2036,6 +2038,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         phase: None,
         internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
             turn_id: Some("compact-turn".to_string()),
+            ..Default::default()
         }),
     };
     let replacement_history = vec![
@@ -5721,6 +5724,11 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
         auth_manager: auth_manager.clone(),
+        openai_file_upload_client_pool: RouteAwareClientPool::new_without_request_logging(
+            config.http_client_factory(),
+            ClientRouteClass::Api,
+        )
+        .with_legacy_custom_ca_fallback(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
@@ -7894,6 +7902,11 @@ where
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
         auth_manager: Arc::clone(&auth_manager),
+        openai_file_upload_client_pool: RouteAwareClientPool::new_without_request_logging(
+            config.http_client_factory(),
+            ClientRouteClass::Api,
+        )
+        .with_legacy_custom_ca_fallback(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
@@ -8083,7 +8096,11 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
         .await
         .expect("a fresh cancellation token cannot be cancelled");
     let rematerialized_old = session
-        .mcp_runtime_for_step(&turn_context, /*selected_capability_roots*/ &[])
+        .mcp_runtime_for_step(
+            &turn_context,
+            /*selected_capability_roots*/ &[],
+            /*required_servers*/ &[],
+        )
         .await;
 
     let configured_servers = codex_mcp::configured_mcp_servers(new_step.mcp.config());
@@ -8178,12 +8195,14 @@ async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
         server_name: "browser-use".to_string(),
         request_id: rmcp::model::NumberOrString::Number(7),
         elicitation: codex_rmcp_client::Elicitation::Mcp(
-            rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
-                meta: Some(rmcp::model::Meta(serde_json::Map::from_iter([
-                    ("codex_approval_kind".to_string(), json!("mcp_tool_call")),
-                    ("codex_request_type".to_string(), json!("approval_request")),
-                    ("tool_name".to_string(), json!("access_browser_origin")),
-                ]))),
+            rmcp::model::ElicitRequestParams::FormElicitationParams {
+                meta: Some(rmcp::model::RequestMetaObject::from(
+                    serde_json::Map::from_iter([
+                        ("codex_approval_kind".to_string(), json!("mcp_tool_call")),
+                        ("codex_request_type".to_string(), json!("approval_request")),
+                        ("tool_name".to_string(), json!("access_browser_origin")),
+                    ]),
+                )),
                 message: "Allow origin?".to_string(),
                 requested_schema: rmcp::model::ElicitationSchema::builder()
                     .build()

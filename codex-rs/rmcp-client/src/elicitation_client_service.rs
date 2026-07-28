@@ -5,8 +5,11 @@ use rmcp::model::ClientInfo;
 use rmcp::model::ClientResult;
 use rmcp::model::CustomRequest;
 use rmcp::model::CustomResult;
+use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
+use rmcp::model::ProtocolVersion;
+use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
 use rmcp::model::ServerNotification;
 use rmcp::model::ServerRequest;
@@ -25,6 +28,7 @@ use crate::rmcp_client::ElicitationResponse;
 use crate::rmcp_client::SendElicitation;
 
 const MCP_PROGRESS_TOKEN_META_KEY: &str = "progressToken";
+const MCP_ELICITATION_CREATE_METHOD: &str = "elicitation/create";
 const OPENAI_FORM_METHOD: &str = "openai/form";
 
 #[derive(Deserialize)]
@@ -92,13 +96,43 @@ impl Service<RoleClient> for ElicitationClientService {
         context: RequestContext<RoleClient>,
     ) -> Result<ClientResult, rmcp::ErrorData> {
         match request {
-            ServerRequest::CreateElicitationRequest(request) => {
+            ServerRequest::ElicitRequest(request) => {
+                let modern_session = context
+                    .peer
+                    .peer_info()
+                    .is_some_and(|info| info.protocol_version >= ProtocolVersion::V_2026_07_28);
                 let response = self
                     .create_elicitation(Elicitation::Mcp(request.params), context)
                     .await?;
-                // RMCP's typed CreateElicitationResult does not model result-level `_meta`.
-                let result = elicitation_response_result(response)?;
-                Ok(ClientResult::CustomResult(result))
+                if modern_session {
+                    Ok(ClientResult::ElicitResult(typed_elicitation_result(
+                        response,
+                    )?))
+                } else {
+                    Ok(ClientResult::CustomResult(elicitation_response_result(
+                        response,
+                    )?))
+                }
+            }
+            ServerRequest::CustomRequest(request)
+                if request.method == MCP_ELICITATION_CREATE_METHOD =>
+            {
+                let modern_session = context
+                    .peer
+                    .peer_info()
+                    .is_some_and(|info| info.protocol_version >= ProtocolVersion::V_2026_07_28);
+                let response = self
+                    .create_elicitation(custom_mcp_elicitation(request)?, context)
+                    .await?;
+                if modern_session {
+                    Ok(ClientResult::ElicitResult(typed_elicitation_result(
+                        response,
+                    )?))
+                } else {
+                    Ok(ClientResult::CustomResult(elicitation_response_result(
+                        response,
+                    )?))
+                }
             }
             ServerRequest::CustomRequest(request)
                 if request.method == OPENAI_FORM_METHOD && self.supports_openai_form =>
@@ -139,6 +173,15 @@ impl Service<RoleClient> for ElicitationClientService {
     }
 }
 
+fn custom_mcp_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::ErrorData> {
+    let raw_params = request
+        .params
+        .ok_or_else(|| rmcp::ErrorData::invalid_params("missing params", None))?;
+    let params: rmcp::model::ElicitRequestParams = serde_json::from_value(raw_params)
+        .map_err(|err| rmcp::ErrorData::invalid_params(err.to_string(), None))?;
+    Ok(Elicitation::Mcp(params))
+}
+
 fn openai_form_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::ErrorData> {
     let params = request
         .params_as::<OpenAiFormRequestParams>()
@@ -151,7 +194,10 @@ fn openai_form_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::
     })
 }
 
-fn restore_context_meta(mut request: Elicitation, mut context_meta: Meta) -> Elicitation {
+fn restore_context_meta(
+    mut request: Elicitation,
+    mut context_meta: RequestMetaObject,
+) -> Elicitation {
     // RMCP lifts JSON-RPC `_meta` into RequestContext before invoking services.
     context_meta.remove(MCP_PROGRESS_TOKEN_META_KEY);
     if context_meta.is_empty() {
@@ -161,14 +207,14 @@ fn restore_context_meta(mut request: Elicitation, mut context_meta: Meta) -> Eli
     match &mut request {
         Elicitation::Mcp(request) => request
             .meta_mut()
-            .get_or_insert_with(Meta::new)
+            .get_or_insert_with(RequestMetaObject::new)
             .extend(context_meta),
         Elicitation::OpenAiForm { meta, .. } => {
             let meta = meta
                 .get_or_insert_with(|| Value::Object(Map::new()))
                 .as_object_mut();
             if let Some(meta) = meta {
-                meta.extend(context_meta.0);
+                meta.extend(context_meta.0.0);
             }
         }
     }
@@ -204,13 +250,36 @@ fn elicitation_response_result(
         .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))
 }
 
+fn typed_elicitation_result(
+    response: ElicitationResponse,
+) -> Result<ElicitResult, rmcp::ErrorData> {
+    let ElicitationResponse {
+        action,
+        content,
+        meta,
+    } = response;
+    let mut result = ElicitResult::new(action);
+    result.content = content;
+    result.meta = match meta {
+        None => None,
+        Some(Value::Object(meta)) => Some(MetaObject::from(meta)),
+        Some(meta) => {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("MCP elicitation response _meta must be an object, got {meta}"),
+                None,
+            ));
+        }
+    };
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
     use rmcp::model::BooleanSchema;
-    use rmcp::model::CreateElicitationRequestParams;
+    use rmcp::model::ElicitRequestParams;
     use rmcp::model::ElicitationSchema;
-    use rmcp::model::PrimitiveSchema;
+    use rmcp::model::PrimitiveSchemaDefinition;
     use serde_json::Value;
     use serde_json::json;
 
@@ -231,6 +300,101 @@ mod tests {
             Elicitation::Mcp(form_request(Some(meta(json!({
                 "persist": ["session", "always"],
             })))))
+        );
+    }
+
+    #[test]
+    fn legacy_sep1034_elicitation_without_mode_preserves_schema_defaults() {
+        let request = json!({
+            "method": "elicitation/create",
+            "params": {
+                "message": "Confirm the default values",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "default": "John Doe"},
+                        "age": {"type": "integer", "default": 30},
+                        "score": {"type": "number", "default": 95.5},
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "inactive"],
+                            "default": "active",
+                        },
+                        "verified": {"type": "boolean", "default": true},
+                    },
+                    "required": [],
+                },
+            },
+        });
+
+        let request = serde_json::from_value::<ServerRequest>(request)
+            .expect("legacy form elicitations must deserialize without a mode");
+        let ServerRequest::ElicitRequest(request) = request else {
+            panic!("legacy elicitation/create must dispatch to the typed handler");
+        };
+        let ElicitRequestParams::FormElicitationParams {
+            requested_schema, ..
+        } = request.params
+        else {
+            panic!("an omitted legacy elicitation mode must default to form");
+        };
+
+        assert_eq!(
+            serde_json::to_value(requested_schema)
+                .expect("legacy schema defaults must remain serializable"),
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "default": "John Doe"},
+                    "age": {"type": "integer", "default": 30},
+                    "score": {"type": "number", "default": 95.5},
+                    "status": {
+                        "type": "string",
+                        "enum": ["active", "inactive"],
+                        "default": "active",
+                    },
+                    "verified": {"type": "boolean", "default": true},
+                },
+                "required": [],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_legacy_custom_elicitation_without_mode() {
+        let request = CustomRequest::new(
+            MCP_ELICITATION_CREATE_METHOD,
+            Some(json!({
+                "message": "Confirm?",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {"type": "boolean"},
+                        "age": {"type": "integer", "minimum": 1, "maximum": 99, "default": 30},
+                    },
+                    "required": ["confirmed"],
+                },
+            })),
+        );
+        let Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
+            requested_schema,
+            ..
+        }) = custom_mcp_elicitation(request)
+            .expect("legacy custom elicitation parameters must deserialize")
+        else {
+            panic!("omitted legacy elicitation mode must default to form");
+        };
+
+        assert_eq!(
+            serde_json::to_value(requested_schema).expect("schema must serialize"),
+            json!({
+                "type": "object",
+                "properties": {
+                    "confirmed": {"type": "boolean"},
+                    "age": {"type": "integer", "minimum": 1, "maximum": 99, "default": 30},
+                },
+                "required": ["confirmed"],
+            })
         );
     }
 
@@ -300,21 +464,55 @@ mod tests {
         );
     }
 
-    fn form_request(meta: Option<Meta>) -> CreateElicitationRequestParams {
-        CreateElicitationRequestParams::FormElicitationParams {
+    #[test]
+    fn typed_elicitation_result_preserves_response_meta() {
+        let result = typed_elicitation_result(ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: Some(json!({ "confirmed": true })),
+            meta: Some(json!({ "persist": "always" })),
+        })
+        .expect("modern elicitation response should serialize");
+
+        assert_eq!(
+            serde_json::to_value(result).expect("typed elicitation result should serialize"),
+            json!({
+                "action": "accept",
+                "content": { "confirmed": true },
+                "_meta": { "persist": "always" },
+            })
+        );
+    }
+
+    #[test]
+    fn typed_elicitation_result_rejects_non_object_meta() {
+        let error = typed_elicitation_result(ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: None,
+            meta: Some(json!(["invalid"])),
+        })
+        .expect_err("modern elicitation metadata must be an object");
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    fn form_request(meta: Option<RequestMetaObject>) -> ElicitRequestParams {
+        ElicitRequestParams::FormElicitationParams {
             meta,
             message: "Confirm?".to_string(),
             requested_schema: ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .required_property(
+                    "confirmed",
+                    PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                )
                 .build()
                 .expect("schema should build"),
         }
     }
 
-    fn meta(value: Value) -> Meta {
+    fn meta(value: Value) -> RequestMetaObject {
         let Value::Object(map) = value else {
             panic!("meta must be an object");
         };
-        Meta(map)
+        RequestMetaObject::from(map)
     }
 }
