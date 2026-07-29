@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.157] - 2026-07-29
+
+- Core: refresh upstream parity while keeping JustEvery customizations. (a2933d65, f2e1a6df)
+- Dependencies: update rusty_v8 to 150.4.0 and remove obsolete Bazel targets. (12b3e880, df326d31)
+- Dependencies: upgrade Ratatui and rmcp for current TUI and MCP foundations. (00cb5c46, a05bcda3)
+- Build: add Bazel unit test targets for Rust binaries. (b9b7c218)
+
 ## [0.6.156] - 2026-07-28
 
 - Core: refresh upstream parity for v0.6.156. (cbca1b32, bde3df6e)
