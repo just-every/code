@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.158] - 2026-07-29
+
+- SDK: update the Python datamodel code generator metadata. (22a65760)
+- Release: refresh CLI and SDK package metadata for v0.6.158. (22a65760)
+
 ## [0.6.156] - 2026-07-28
 
 - Core: refresh upstream parity for v0.6.156. (cbca1b32, bde3df6e)
