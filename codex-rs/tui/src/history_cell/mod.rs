@@ -103,7 +103,6 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;
@@ -257,22 +256,9 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
 
     /// Returns the number of viewport rows for the transcript overlay.
     ///
-    /// Uses the same `Paragraph::line_count` measurement as
-    /// `desired_height`. Contains a workaround for a ratatui bug where
-    /// a single whitespace-only line reports 2 rows instead of 1.
+    /// Uses the same `Paragraph::line_count` measurement as `desired_height`.
     fn desired_transcript_height(&self, width: u16) -> u16 {
         let lines = visible_lines(self.transcript_hyperlink_lines(width));
-        // Workaround: ratatui's line_count returns 2 for a single
-        // whitespace-only line. Clamp to 1 in that case.
-        if let [line] = &lines[..]
-            && line
-                .spans
-                .iter()
-                .all(|s| s.content.chars().all(char::is_whitespace))
-        {
-            return 1;
-        }
-
         Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
             .line_count(width)

@@ -308,6 +308,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                     namespace: None,
                     arguments: "{\"repo\":\"openai/codex\"}".to_string(),
                     call_id: "call-1".to_string(),
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -830,6 +831,7 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             namespace: None,
             arguments: "{\"path\":\"README.md\"}".to_string(),
             call_id: "call-1".to_string(),
+            encrypted_function_args: None,
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCallOutput {
@@ -1476,6 +1478,7 @@ async fn guardian_request_model_for_auto_review(
         .auto_review_model_override = auto_review_model_override;
     let parent_model = turn.model_info.slug.clone();
     let preferred_model = turn.provider.approval_review_preferred_model().to_string();
+    let parent_turn_id = turn.sub_id.clone();
     seed_guardian_parent_history(&session, &turn).await;
 
     let (outcome, analytics_result) = run_guardian_review_session_for_test(
@@ -1500,8 +1503,9 @@ async fn guardian_request_model_for_auto_review(
     };
 
     let request = request_log.single_request();
-    let request_model = request
-        .body_json()
+    let request_body = request.body_json();
+    core_test_support::responses::assert_parent_turn(&request_body, Some(parent_turn_id.as_str()))?;
+    let request_model = request_body
         .get("model")
         .and_then(|value| value.as_str())
         .expect("guardian request should include a model")

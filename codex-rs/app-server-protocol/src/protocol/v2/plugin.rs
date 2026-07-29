@@ -619,6 +619,17 @@ pub enum PluginAvailability {
     DisabledByAdmin,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/", rename_all = "snake_case")]
+pub enum PluginDisabledReason {
+    DisabledByAdmin,
+    PlanNotEligible,
+    RequiredAppUnavailable,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -637,6 +648,10 @@ pub struct PluginSummary {
     pub share_context: Option<PluginShareContext>,
     pub source: PluginSource,
     pub installed: bool,
+    /// Unix timestamp in seconds when the remote plugin was installed, when available.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub installed_at: Option<i64>,
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub install_policy_source: Option<PluginInstallPolicySource>,
@@ -646,6 +661,12 @@ pub struct PluginSummary {
     /// Availability state for installing and using the plugin.
     #[serde(default)]
     pub availability: PluginAvailability,
+    /// Why the remote plugin is unavailable, when provided by plugin-service.
+    #[serde(default)]
+    pub disabled_reason: Option<PluginDisabledReason>,
+    /// Raw plugin-service plan identifiers eligible to install the plugin.
+    #[serde(default)]
+    pub eligible_plan_types: Option<Vec<String>>,
     pub interface: Option<PluginInterface>,
     #[serde(default)]
     pub keywords: Vec<String>,

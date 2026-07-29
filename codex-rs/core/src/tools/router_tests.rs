@@ -7,6 +7,8 @@ use crate::session::tests::make_session_and_context;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::McpHandler;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExposure;
+use crate::tools::registry::override_tool_exposure;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
@@ -37,8 +39,24 @@ use super::ToolCallSource;
 use super::ToolRouter;
 use super::ToolRouterParams;
 use super::extension_tool_executors;
+use super::tool_log_payload;
 
 struct ExtensionEchoContributor;
+
+#[test]
+fn tool_log_payload_redacts_plaintext_multi_agent_messages() {
+    let payload = ToolPayload::Function {
+        arguments: json!({"target": "/root/worker", "message": "secret message"}).to_string(),
+    };
+    assert_eq!(
+        tool_log_payload(&payload, &ToolCallSource::DirectPlaintextMessage),
+        "[plaintext arguments]"
+    );
+    assert_eq!(
+        tool_log_payload(&payload, &ToolCallSource::Direct),
+        payload.log_payload()
+    );
+}
 
 impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
     fn tools(
@@ -135,9 +153,22 @@ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow
                 payload: ToolPayload::Function {
                     arguments: "{}".to_string(),
                 },
+                encrypted_function_args: None,
             })
         })
         .expect("test session should expose a parallel shell-like tool");
+
+    assert_eq!(
+        router.mcp_server_name(&ToolCall {
+            tool_name: ToolName::plain(parallel_tool_name),
+            call_id: "call-local-tool".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+            encrypted_function_args: None,
+        }),
+        None
+    );
 
     assert!(!router.tool_supports_parallel(&ToolCall {
         tool_name: ToolName::namespaced("mcp__server__", parallel_tool_name),
@@ -145,6 +176,7 @@ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },
+        encrypted_function_args: None,
     }));
 
     Ok(())
@@ -159,6 +191,7 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
         name: tool_name.clone(),
         namespace: Some("mcp__codex_apps__calendar".to_string()),
         arguments: "{}".to_string(),
+        encrypted_function_args: Some(Vec::new()),
         call_id: "call-namespace".to_string(),
         internal_chat_message_metadata_passthrough: None,
     })?
@@ -169,6 +202,8 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
         ToolName::namespaced("mcp__codex_apps__calendar", tool_name)
     );
     assert_eq!(call.call_id, "call-namespace");
+    assert_eq!(call.encrypted_function_args, Some(Vec::new()));
+    assert_eq!(call.direct_source(), ToolCallSource::Direct);
     match call.payload {
         ToolPayload::Function { arguments } => {
             assert_eq!(arguments, "{}");
@@ -202,6 +237,7 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
             payload: ToolPayload::Custom {
                 input: "print('hello')".to_string(),
             },
+            encrypted_function_args: None,
         }
     );
 
@@ -226,12 +262,15 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
                     "mcp__echo__",
                     "query_with_delay",
                 )),
-                mcp_runtime(mcp_tool_info(
-                    "hello_echo",
-                    /*supports_parallel_tool_calls*/ false,
-                    "mcp__hello_echo__",
-                    "query_with_delay",
-                )),
+                override_tool_exposure(
+                    mcp_runtime(mcp_tool_info(
+                        "hello_echo",
+                        /*supports_parallel_tool_calls*/ false,
+                        "mcp__hello_echo__",
+                        "query_with_delay",
+                    )),
+                    ToolExposure::DirectModelOnly,
+                ),
             ],
             extension_tool_executors: Vec::new(),
             wait_for_environment_tool_config: None,
@@ -246,8 +285,10 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },
+        encrypted_function_args: None,
     };
     assert!(router.tool_supports_parallel(&call));
+    assert_eq!(router.mcp_server_name(&call), Some("echo"));
 
     let different_server_call = ToolCall {
         tool_name: ToolName::namespaced("mcp__hello_echo__", "query_with_delay"),
@@ -255,8 +296,13 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },
+        encrypted_function_args: None,
     };
     assert!(!router.tool_supports_parallel(&different_server_call));
+    assert_eq!(
+        router.mcp_server_name(&different_server_call),
+        Some("hello_echo")
+    );
 
     Ok(())
 }
@@ -286,6 +332,7 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()> 
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },
+        encrypted_function_args: None,
     }));
 
     Ok(())
@@ -438,6 +485,7 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         namespace: Some("extension/".to_string()),
         arguments: json!({ "message": "hello" }).to_string(),
         call_id: "call-extension".to_string(),
+        encrypted_function_args: None,
         internal_chat_message_metadata_passthrough: None,
     })?
     .expect("function_call should produce a tool call");

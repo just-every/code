@@ -20,10 +20,10 @@ use codex_protocol::account::PlanType;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::parse_command::ParsedCommand;
 use dirs::home_dir;
+use http::StatusCode;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use reqwest::StatusCode;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -350,6 +350,57 @@ fn composite_cell_preserves_child_web_links() {
             destination.to_string(),
         )]
     );
+}
+
+#[test]
+fn empty_mcp_output_preserves_docs_hyperlink() {
+    let destination = "https://developers.openai.com/codex/mcp";
+    let cell: Box<dyn HistoryCell> = Box::new(empty_mcp_output());
+
+    insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 80)).join("\n"), @r"
+    /mcp
+
+    🔌  MCP Tools
+
+      • No MCP servers configured.
+        See the MCP docs to configure them.
+    ");
+
+    let expected_link = vec![crate::terminal_hyperlinks::TerminalHyperlink::web(
+        /*columns*/ 12..20,
+        destination.to_string(),
+    )];
+    assert_eq!(
+        cell.display_hyperlink_lines(/*width*/ 80)[5].hyperlinks,
+        expected_link
+    );
+    assert_eq!(
+        cell.transcript_hyperlink_lines(/*width*/ 80)[5].hyperlinks,
+        expected_link
+    );
+
+    let area = Rect::new(0, 0, 80, 6);
+    let mut buf = Buffer::empty(area);
+    cell.render(area, &mut buf);
+    assert_eq!(
+        (0..39).map(|x| buf[(x, 5)].modifier).collect::<Vec<_>>(),
+        [
+            vec![Modifier::DIM; 12],
+            vec![Modifier::DIM | Modifier::UNDERLINED; 8],
+            vec![Modifier::DIM; 19],
+        ]
+        .concat()
+    );
+    let linked_text = area
+        .positions()
+        .filter_map(|position| {
+            let symbol = buf[position].symbol();
+            symbol
+                .contains(&format!("\x1b]8;;{destination}\x07"))
+                .then(|| crate::terminal_hyperlinks::strip_osc8(symbol))
+        })
+        .collect::<String>();
+    assert_eq!(linked_text, "MCP docs");
 }
 
 #[test]
@@ -729,6 +780,16 @@ fn ps_output_long_command_snapshot() {
         recent_chunks: vec!["searching...".to_string()],
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 36)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn ps_output_halfwidth_sound_marks_snapshot() {
+    let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        command_display: "echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string(),
+        recent_chunks: vec!["output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string()],
+    }]);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 24)).join("\n");
     insta::assert_snapshot!(rendered);
 }
 
@@ -1603,6 +1664,44 @@ fn session_header_indicates_yolo_mode() {
 }
 
 #[test]
+fn session_header_aligns_halfwidth_sound_marks() {
+    let cell: Box<dyn HistoryCell> = Box::new(SessionHeaderHistoryCell::new(
+        "gpt-5-ｶﾞ-ﾊﾟ".to_string(),
+        /*reasoning_effort*/ None,
+        /*show_fast_status*/ false,
+        PathBuf::from("project"),
+        "test",
+    ));
+
+    let width = 80;
+    let height = cell.desired_height(width);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    cell.render(area, &mut buf);
+
+    insta::assert_snapshot!("session_header_halfwidth_sound_marks", format!("{buf:?}"));
+}
+
+#[test]
+fn session_header_truncates_halfwidth_directory() {
+    let cell: Box<dyn HistoryCell> = Box::new(SessionHeaderHistoryCell::new(
+        "gpt-5".to_string(),
+        /*reasoning_effort*/ None,
+        /*show_fast_status*/ false,
+        PathBuf::from("ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ-project"),
+        "test",
+    ));
+
+    let width = 42;
+    let height = cell.desired_height(width);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    cell.render(area, &mut buf);
+
+    insta::assert_snapshot!("session_header_halfwidth_directory", format!("{buf:?}"));
+}
+
+#[test]
 fn yolo_mode_includes_managed_full_access_profiles() {
     let permission_profile: PermissionProfile = PermissionProfile::Managed {
         network: NetworkSandboxPolicy::Enabled,
@@ -2395,6 +2494,26 @@ fn reasoning_summary_block_falls_back_when_summary_is_missing() {
 
     let rendered = render_transcript(cell.as_ref());
     assert_eq!(rendered, vec!["• High level reasoning without closing"]);
+}
+
+#[test]
+fn reasoning_summary_block_displays_title_only_summary() {
+    let cell = new_reasoning_summary_block(
+        vec!["**Confirming backend JSONL source**".to_string()],
+        &test_cwd(),
+    );
+
+    let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
+    insta::assert_snapshot!(
+        rendered_display.join("\n"),
+        @"• Confirming backend JSONL source"
+    );
+
+    let rendered_transcript = render_transcript(cell.as_ref());
+    assert_eq!(
+        rendered_transcript,
+        vec!["• Confirming backend JSONL source"]
+    );
 }
 
 #[test]

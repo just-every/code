@@ -260,6 +260,8 @@ pub enum ThreadSortKey {
     UpdatedAt,
     /// Sort by the thread's product recency timestamp.
     RecencyAt,
+    /// Sort by the thread's persisted position within its section.
+    SectionPosition,
 }
 
 /// The direction to use when listing stored threads.
@@ -567,6 +569,12 @@ pub struct StoredThread {
     pub archived_at: Option<DateTime<Utc>>,
     /// The user-selected section for this thread, if any.
     pub section: Option<codex_state::ThreadSection>,
+    /// The server-owned ordering position within the thread's section.
+    #[serde(default)]
+    pub section_position: Option<i64>,
+    /// The time when the thread most recently entered its current section.
+    #[serde(default)]
+    pub section_entered_at: Option<DateTime<Utc>>,
     /// Working directory captured for the thread.
     pub cwd: PathBuf,
     /// CLI version captured for the thread.
@@ -723,13 +731,6 @@ pub struct ThreadMetadataPatch {
     pub token_usage: Option<TokenUsage>,
     /// First user message observed for this thread.
     pub first_user_message: Option<String>,
-    /// Replacement user-selected section, clear request, or no-op.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "optional_option"
-    )]
-    pub section: ClearableField<String>,
     /// Git metadata patch.
     pub git_info: Option<GitInfoPatch>,
     /// Thread memory behavior.
@@ -806,9 +807,6 @@ impl ThreadMetadataPatch {
         if next.first_user_message.is_some() {
             self.first_user_message = next.first_user_message;
         }
-        if next.section.is_some() {
-            self.section = next.section;
-        }
         if let Some(git_info) = next.git_info {
             self.git_info
                 .get_or_insert_with(GitInfoPatch::default)
@@ -841,7 +839,6 @@ impl ThreadMetadataPatch {
             && self.permission_profile.is_none()
             && self.token_usage.is_none()
             && self.first_user_message.is_none()
-            && self.section.is_none()
             && self.git_info.is_none()
             && self.memory_mode.is_none()
     }
@@ -856,6 +853,17 @@ pub struct UpdateThreadMetadataParams {
     pub patch: ThreadMetadataPatch,
     /// Whether archived threads are eligible.
     pub include_archived: bool,
+}
+
+/// Parameters for moving a thread to, within, or out of a server-ordered section.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveThreadToSectionParams {
+    /// Thread to move.
+    pub thread_id: ThreadId,
+    /// Destination section, or `None` to remove the thread from its section.
+    pub section: Option<String>,
+    /// Existing section member to insert before, or `None` to append.
+    pub before_thread_id: Option<ThreadId>,
 }
 
 /// Parameters for archiving or unarchiving a thread.
@@ -983,7 +991,6 @@ mod tests {
         let mut current = ThreadMetadataPatch {
             name: Some(Some("old name".to_string())),
             preview: Some("old preview".to_string()),
-            section: Some(Some("pinned".to_string())),
             git_info: Some(GitInfoPatch {
                 sha: Some(Some("abc123".to_string())),
                 branch: Some(Some("main".to_string())),
@@ -996,7 +1003,6 @@ mod tests {
             name: Some(None),
             preview: None,
             title: Some("new title".to_string()),
-            section: Some(None),
             git_info: Some(GitInfoPatch {
                 sha: None,
                 branch: Some(Some("feature".to_string())),
@@ -1008,7 +1014,6 @@ mod tests {
         assert_eq!(current.name, Some(None));
         assert_eq!(current.preview.as_deref(), Some("old preview"));
         assert_eq!(current.title.as_deref(), Some("new title"));
-        assert_eq!(current.section, Some(None));
         assert_eq!(
             current.git_info,
             Some(GitInfoPatch {

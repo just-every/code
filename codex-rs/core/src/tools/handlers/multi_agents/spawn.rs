@@ -46,11 +46,12 @@ async fn handle_spawn_agent(
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
-        turn,
+        step_context,
         payload,
         call_id,
         ..
     } = invocation;
+    let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let role_name = args
@@ -70,7 +71,7 @@ async fn handle_spawn_agent(
     }
     session
         .emit_turn_item_started(
-            &turn,
+            turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id.clone(),
                 tool: CollabAgentTool::SpawnAgent,
@@ -127,7 +128,8 @@ async fn handle_spawn_agent(
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
-            environments: Some(turn.environments.to_selections()),
+            parent_turn_id: Some(turn.sub_id.clone()),
+            environments: Some(step_context.environments.to_selections()),
         },
     ))
     .await
@@ -187,7 +189,7 @@ async fn handle_spawn_agent(
         .unwrap_or_default();
     session
         .emit_turn_item_completed(
-            &turn,
+            turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,

@@ -12,18 +12,17 @@
 //! module only handles uploading the files and rewriting the execution-time arguments.
 
 use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use codex_api::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
 use codex_api::upload_openai_file;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::CodexAuth;
-use codex_utils_path_uri::PathUri;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 pub(crate) async fn rewrite_mcp_tool_arguments_for_openai_files(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     arguments_value: Option<JsonValue>,
     openai_file_input_optional_fields: Option<&HashMap<String, Vec<String>>>,
 ) -> Result<Option<JsonValue>, String> {
@@ -45,7 +44,7 @@ pub(crate) async fn rewrite_mcp_tool_arguments_for_openai_files(
             continue;
         };
         let Some(uploaded_value) = rewrite_argument_value_for_openai_files(
-            turn_context,
+            step_context,
             &sess.services.openai_file_upload_client_pool,
             auth.as_ref(),
             field_name,
@@ -67,7 +66,7 @@ pub(crate) async fn rewrite_mcp_tool_arguments_for_openai_files(
 }
 
 async fn rewrite_argument_value_for_openai_files(
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     client_pool: &RouteAwareClientPool,
     auth: Option<&CodexAuth>,
     field_name: &str,
@@ -77,7 +76,7 @@ async fn rewrite_argument_value_for_openai_files(
     match value {
         JsonValue::String(file_path) => {
             let rewritten = build_uploaded_argument_value(
-                turn_context,
+                step_context,
                 client_pool,
                 auth,
                 field_name,
@@ -95,7 +94,7 @@ async fn rewrite_argument_value_for_openai_files(
                     return Ok(None);
                 };
                 let rewritten = build_uploaded_argument_value(
-                    turn_context,
+                    step_context,
                     client_pool,
                     auth,
                     field_name,
@@ -113,7 +112,7 @@ async fn rewrite_argument_value_for_openai_files(
 }
 
 async fn build_uploaded_argument_value(
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     client_pool: &RouteAwareClientPool,
     auth: Option<&CodexAuth>,
     field_name: &str,
@@ -133,19 +132,16 @@ async fn build_uploaded_argument_value(
     if !auth.uses_codex_backend() {
         return Err("ChatGPT auth is required to upload files for Codex Apps tools".to_string());
     }
-    let Some(turn_environment) = turn_context.environments.primary() else {
+    let turn_context = &step_context.turn;
+    let Some(turn_environment) = step_context.environments.primary() else {
         return Err(contextualize_error(
             "no primary turn environment is available".to_string(),
         ));
     };
-    // TODO(anp): Resolve app tool file arguments using the selected environment's native path
-    // convention so uploads can read relative paths from foreign environments.
-    let native_environment_cwd = turn_environment
+    let path_uri = turn_environment
         .cwd()
-        .to_abs_path()
+        .join(file_path)
         .map_err(|error| contextualize_error(error.to_string()))?;
-    let resolved_path = native_environment_cwd.join(file_path);
-    let path_uri = PathUri::from_abs_path(&resolved_path);
     let fs = turn_environment.environment.get_filesystem();
     let metadata = fs
         .get_metadata(&path_uri, /*sandbox*/ None)
@@ -154,13 +150,13 @@ async fn build_uploaded_argument_value(
     if !metadata.is_file {
         return Err(contextualize_error(format!(
             "path `{}` is not a file",
-            resolved_path.display()
+            path_uri.inferred_native_path_string()
         )));
     }
     if metadata.size > OPENAI_FILE_UPLOAD_LIMIT_BYTES {
         return Err(contextualize_error(format!(
             "file `{}` is too large: {} bytes exceeds the limit of {} bytes",
-            resolved_path.display(),
+            path_uri.inferred_native_path_string(),
             metadata.size,
             OPENAI_FILE_UPLOAD_LIMIT_BYTES,
         )));
@@ -169,11 +165,17 @@ async fn build_uploaded_argument_value(
         .read_file_stream(&path_uri, /*sandbox*/ None)
         .await
         .map_err(|error| contextualize_error(error.to_string()))?;
-    let file_name = resolved_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("file")
-        .to_string();
+    let file_name = path_uri
+        .basename()
+        .or_else(|| {
+            path_uri.infer_path_convention().and_then(|convention| {
+                convention
+                    .path_segments(file_path)
+                    .rfind(|segment| !segment.is_empty())
+                    .map(str::to_string)
+            })
+        })
+        .unwrap_or_else(|| "file".to_string());
     let upload_auth = codex_model_provider::auth_provider_from_auth(auth);
     let uploaded = upload_openai_file(
         turn_context.config.chatgpt_base_url.trim_end_matches('/'),
@@ -215,6 +217,7 @@ mod tests {
     use super::*;
     use crate::environment_selection::TurnEnvironmentState;
     use crate::session::tests::make_session_and_context;
+    use crate::session::turn_context::TurnContext;
     use crate::session::turn_context::TurnEnvironment;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use codex_utils_path_uri::PathUri;
@@ -242,13 +245,14 @@ mod tests {
     #[tokio::test]
     async fn openai_file_argument_rewrite_requires_declared_file_params() {
         let (session, turn_context) = make_session_and_context().await;
+        let step_context = StepContext::for_test(Arc::new(turn_context));
         let arguments = Some(serde_json::json!({
             "file": "/tmp/codex-smoke-file.txt"
         }));
 
         let rewritten = rewrite_mcp_tool_arguments_for_openai_files(
             &session,
-            &Arc::new(turn_context),
+            &step_context,
             arguments.clone(),
             /*openai_file_input_optional_fields*/ None,
         )
@@ -259,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_uploaded_argument_value_includes_schema_declared_optional_fields() {
+    async fn build_uploaded_argument_value_uses_environment_that_becomes_ready_during_turn() {
         use wiremock::Mock;
         use wiremock::MockServer;
         use wiremock::ResponseTemplate;
@@ -311,13 +315,40 @@ mod tests {
             .await
             .expect("write local file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
+        let selection = turn_context
+            .environments
+            .primary()
+            .expect("ready primary environment")
+            .selection();
+        let environments = crate::environment_selection::ThreadEnvironments::new(
+            session.services.turn_environments.environment_manager(),
+            crate::shell::default_user_shell(),
+            crate::shell_snapshot::ShellSnapshot::disabled(),
+            Default::default(),
+            /*non_blocking_snapshots*/ true,
+        );
+        environments.update_selections(std::slice::from_ref(&selection));
+        turn_context.environments = environments.snapshot().await;
+        turn_context
+            .environments
+            .starting()
+            .next()
+            .expect("environment should initially be starting")
+            .wait_until_ready()
+            .await
+            .expect("environment should become ready");
+        let step_environments = turn_context.environments.refresh_readiness();
 
         let mut config = (*turn_context.config).clone();
         config.chatgpt_base_url = format!("{}/backend-api", server.uri());
         turn_context.config = Arc::new(config);
+        let mut step_context = StepContext::for_test(Arc::new(turn_context));
+        Arc::get_mut(&mut step_context)
+            .expect("step context should be uniquely owned")
+            .environments = step_environments;
 
         let rewritten = build_uploaded_argument_value(
-            &turn_context,
+            &step_context,
             &session.services.openai_file_upload_client_pool,
             Some(&auth),
             "file",
@@ -349,9 +380,10 @@ mod tests {
         file.set_len(OPENAI_FILE_UPLOAD_LIMIT_BYTES + 1)
             .expect("size sparse file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
+        let step_context = StepContext::for_test(Arc::new(turn_context));
 
         let error = build_uploaded_argument_value(
-            &turn_context,
+            &step_context,
             &session.services.openai_file_upload_client_pool,
             Some(&auth),
             "file",
@@ -423,8 +455,9 @@ mod tests {
         let mut config = (*turn_context.config).clone();
         config.chatgpt_base_url = format!("{}/backend-api", server.uri());
         turn_context.config = Arc::new(config);
+        let step_context = StepContext::for_test(Arc::new(turn_context));
         let rewritten = rewrite_argument_value_for_openai_files(
-            &turn_context,
+            &step_context,
             &session.services.openai_file_upload_client_pool,
             Some(&auth),
             "file",
@@ -535,8 +568,9 @@ mod tests {
         let mut config = (*turn_context.config).clone();
         config.chatgpt_base_url = format!("{}/backend-api", server.uri());
         turn_context.config = Arc::new(config);
+        let step_context = StepContext::for_test(Arc::new(turn_context));
         let rewritten = rewrite_argument_value_for_openai_files(
-            &turn_context,
+            &step_context,
             &session.services.openai_file_upload_client_pool,
             Some(&auth),
             "files",
@@ -567,9 +601,10 @@ mod tests {
         session.services.auth_manager = crate::test_support::auth_manager_from_auth(
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         );
+        let step_context = StepContext::for_test(Arc::new(turn_context));
         let error = rewrite_mcp_tool_arguments_for_openai_files(
             &session,
-            &turn_context,
+            &step_context,
             Some(serde_json::json!({
                 "file": "/definitely/missing/file.csv",
             })),

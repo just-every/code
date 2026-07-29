@@ -120,6 +120,7 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
         namespace: None,
         arguments: "{}".to_string(),
         call_id: call_id.to_string(),
+        encrypted_function_args: None,
         internal_chat_message_metadata_passthrough: None,
     }
 }
@@ -369,6 +370,7 @@ async fn send_input_errors_when_manager_dropped() {
                 text: "hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            /*parent_turn_id*/ None,
         )
         .await
         .expect_err("send_input should fail without a manager");
@@ -483,6 +485,7 @@ async fn send_input_errors_when_thread_missing() {
                 text: "hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            /*parent_turn_id*/ None,
         )
         .await
         .expect_err("send_input should fail for missing thread");
@@ -555,6 +558,7 @@ async fn send_input_submits_user_message() {
                 text: "hello from tests".to_string(),
                 text_elements: Vec::new(),
             }],
+            /*parent_turn_id*/ None,
         )
         .await
         .expect("send_input should succeed");
@@ -598,6 +602,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
             thread_id,
             communication.clone(),
             AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new()),
+            /*parent_turn_id*/ None,
         )
         .await
         .expect("send_inter_agent_communication should succeed");
@@ -729,6 +734,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             spawned_agent.thread_id,
             communication.clone(),
             AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new()),
+            /*parent_turn_id*/ None,
         )
         .await
         .expect("send_inter_agent_communication should succeed after reload");

@@ -5,6 +5,7 @@ use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
 use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_final_assistant_message_sse_response;
+use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::rollout_path;
 use app_test_support::test_absolute_path;
@@ -18,7 +19,13 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSearchResponse;
+use codex_app_server_protocol::ThreadSectionMoveParams;
+use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
@@ -31,10 +38,13 @@ use codex_core::ARCHIVED_SESSIONS_SUBDIR;
 use codex_git_utils::GitSha;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo as CoreGitInfo;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_rollout::append_rollout_item_to_path;
+use codex_rollout::read_session_meta_line;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
@@ -136,7 +146,7 @@ async fn list_threads_for_relation(
             archived: None,
             section_id: None,
             cwd: None,
-            use_state_db_only: false,
+            use_state_db_only: true,
             search_term: None,
             parent_thread_id,
             ancestor_thread_id,
@@ -690,6 +700,14 @@ async fn thread_search_returns_content_matches() -> Result<()> {
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
+    let unsectioned_match = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-02T11-30-00",
+        "2025-01-02T11:30:00Z",
+        "unsectioned needle",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
     let newer_match = create_fake_rollout(
         codex_home.path(),
         "2025-01-02T12-00-00",
@@ -720,8 +738,83 @@ async fn thread_search_returns_content_matches() -> Result<()> {
         .iter()
         .map(|result| result.thread.id.as_str())
         .collect();
-    assert_eq!(ids, vec![newer_match, older_match]);
+    assert_eq!(
+        ids,
+        vec![
+            newer_match.as_str(),
+            unsectioned_match.as_str(),
+            older_match.as_str(),
+        ]
+    );
     assert_eq!(data[0].snippet, "mixed NEEDLE suffix");
+
+    let mut pinned_threads = Vec::new();
+    for thread_id in [&older_match, &newer_match] {
+        let request_id = mcp
+            .send_thread_section_move_request(ThreadSectionMoveParams {
+                thread_id: thread_id.clone(),
+                section_id: Some(codex_state::PINNED_THREAD_SECTION_ID.to_string()),
+                before_thread_id: None,
+            })
+            .await?;
+        let _: ThreadSectionMoveResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+        let request_id = mcp
+            .send_thread_read_request(ThreadReadParams {
+                thread_id: thread_id.clone(),
+                include_turns: false,
+            })
+            .await?;
+        let ThreadReadResponse { thread } =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+        pinned_threads.push(thread);
+    }
+    let [older_pinned, newer_pinned] = pinned_threads.as_slice() else {
+        unreachable!("two matching threads were pinned");
+    };
+
+    let request_id = mcp
+        .send_thread_search_request(codex_app_server_protocol::ThreadSearchParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            source_kinds: None,
+            archived: None,
+            search_term: "needle".to_string(),
+        })
+        .await?;
+    let ThreadSearchResponse {
+        data, next_cursor, ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+
+    let actual = data
+        .iter()
+        .map(|result| {
+            (
+                result.thread.id.as_str(),
+                result.thread.section.clone(),
+                result.thread.section_entered_at,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            (
+                newer_match.as_str(),
+                newer_pinned.section.clone(),
+                newer_pinned.section_entered_at,
+            ),
+            (unsectioned_match.as_str(), None, None),
+            (
+                older_match.as_str(),
+                older_pinned.section.clone(),
+                older_pinned.section_entered_at,
+            ),
+        ]
+    );
+    assert_eq!(next_cursor, None);
 
     Ok(())
 }
@@ -1189,6 +1282,208 @@ async fn thread_list_empty_source_kinds_defaults_to_interactive_only() -> Result
     assert_eq!(ids, vec![cli_id.as_str()]);
     assert_ne!(cli_id, exec_id);
     assert_eq!(data[0].source, SessionSource::Cli);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let cli_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-02-01T09-00-00",
+        "2025-02-01T09:00:00Z",
+        "CLI",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let parent_thread_id = ThreadId::from_string(&cli_id)?;
+    let mut expected = vec![(cli_id.clone(), None, false)];
+    let mut threads_to_resume = vec![cli_id.clone()];
+
+    for (filename_ts, timestamp, version, capability, should_resume) in [
+        (
+            "2025-02-01T10-00-00",
+            "2025-02-01T10:00:00Z",
+            MultiAgentVersion::V1,
+            Some(true),
+            true,
+        ),
+        (
+            "2025-02-01T11-00-00",
+            "2025-02-01T11:00:00Z",
+            MultiAgentVersion::V2,
+            Some(false),
+            true,
+        ),
+        (
+            "2025-02-01T12-00-00",
+            "2025-02-01T12:00:00Z",
+            MultiAgentVersion::V2,
+            None,
+            false,
+        ),
+    ] {
+        let thread_id = create_fake_rollout_with_source(
+            codex_home.path(),
+            filename_ts,
+            timestamp,
+            "Subagent",
+            Some("mock_provider"),
+            /*git_info*/ None,
+            CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )?;
+        let path = rollout_path(codex_home.path(), filename_ts, &thread_id);
+        let mut session_meta = read_session_meta_line(&path).await?;
+        session_meta.meta.multi_agent_version = Some(version);
+        append_rollout_item_to_path(&path, &RolloutItem::SessionMeta(session_meta)).await?;
+        if should_resume {
+            threads_to_resume.push(thread_id.clone());
+        }
+        expected.push((thread_id, capability, !should_resume));
+    }
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    for thread_id in threads_to_resume {
+        let request_id = mcp
+            .send_thread_resume_request(ThreadResumeParams {
+                thread_id,
+                ..Default::default()
+            })
+            .await?;
+        let _: ThreadResumeResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    }
+
+    let response = list_threads(
+        &mut mcp,
+        /*cursor*/ None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        Some(vec![
+            ThreadSourceKind::Cli,
+            ThreadSourceKind::SubAgentThreadSpawn,
+        ]),
+        /*archived*/ None,
+    )
+    .await?;
+    expected.reverse();
+    assert_eq!(
+        response
+            .data
+            .into_iter()
+            .map(|thread| {
+                (
+                    thread.id,
+                    thread.can_accept_direct_input,
+                    matches!(thread.status, ThreadStatus::NotLoaded),
+                )
+            })
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(response.next_cursor, None);
+
+    let request_id = mcp
+        .send_thread_search_request(codex_app_server_protocol::ThreadSearchParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            sort_direction: None,
+            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+            archived: None,
+            search_term: "Subagent".to_string(),
+        })
+        .await?;
+    let response: ThreadSearchResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    let expected_subagents: Vec<_> = expected
+        .into_iter()
+        .filter(|(thread_id, _, _)| thread_id != &cli_id)
+        .collect();
+    assert_eq!(
+        response
+            .data
+            .into_iter()
+            .map(|result| {
+                let thread = result.thread;
+                (
+                    thread.id,
+                    thread.can_accept_direct_input,
+                    matches!(thread.status, ThreadStatus::NotLoaded),
+                )
+            })
+            .collect::<Vec<_>>(),
+        expected_subagents
+    );
+
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".to_string(),
+    )
+    .await?;
+    for (thread_id, _, _) in &expected_subagents {
+        state_db
+            .upsert_thread_spawn_edge(
+                parent_thread_id,
+                ThreadId::from_string(thread_id)?,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await?;
+    }
+    state_db
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await?;
+
+    let response: ThreadListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadList {
+            request_id,
+            params: codex_app_server_protocol::ThreadListParams {
+                cursor: None,
+                limit: Some(10),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(vec!["mock_provider".to_string()]),
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                archived: None,
+                section_id: None,
+                cwd: None,
+                use_state_db_only: true,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(parent_thread_id.to_string()),
+            },
+        })
+        .await?;
+    assert!(
+        response
+            .data
+            .iter()
+            .all(|thread| thread.parent_thread_id.as_deref() == Some(cli_id.as_str()))
+    );
+    assert_eq!(
+        response
+            .data
+            .into_iter()
+            .map(|thread| {
+                (
+                    thread.id,
+                    thread.can_accept_direct_input,
+                    matches!(thread.status, ThreadStatus::NotLoaded),
+                )
+            })
+            .collect::<Vec<_>>(),
+        expected_subagents
+    );
+    assert_eq!(response.next_cursor, None);
 
     Ok(())
 }

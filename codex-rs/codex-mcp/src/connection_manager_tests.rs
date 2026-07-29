@@ -883,6 +883,94 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
     assert_eq!(outstanding.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn cancelled_elicitation_is_removed_without_affecting_other_pending_requests() {
+    let router = ElicitationRequestRouter::default();
+    let manager = ElicitationRequestManager::new(
+        AskForApproval::OnRequest,
+        PermissionProfile::default(),
+        /*reviewer*/ None,
+        /*lifecycle*/ None,
+        router.clone(),
+    );
+    let (tx_event, rx_event) = async_channel::bounded(2);
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
+    let elicitation =
+        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: "Confirm?".to_string(),
+            requested_schema:
+                rmcp::model::ElicitationSchema::builder()
+                    .required_property(
+                        "answer",
+                        rmcp::model::PrimitiveSchemaDefinition::String(
+                            rmcp::model::StringSchema::new(),
+                        ),
+                    )
+                    .build()
+                    .expect("schema should build"),
+        });
+
+    let cancelled = tokio::spawn(sender(NumberOrString::Number(1), elicitation.clone()));
+    let EventMsg::ElicitationRequest(cancelled_request) =
+        rx_event.recv().await.expect("cancelled request event").msg
+    else {
+        panic!("expected elicitation request");
+    };
+    let pending = tokio::spawn(sender(NumberOrString::Number(2), elicitation));
+    let EventMsg::ElicitationRequest(pending_request) =
+        rx_event.recv().await.expect("pending request event").msg
+    else {
+        panic!("expected elicitation request");
+    };
+    let (
+        codex_protocol::mcp::RequestId::String(cancelled_id),
+        codex_protocol::mcp::RequestId::String(pending_id),
+    ) = (cancelled_request.id, pending_request.id)
+    else {
+        panic!("expected Codex-owned string request IDs");
+    };
+
+    cancelled.abort();
+    assert!(
+        cancelled
+            .await
+            .expect_err("cancelled request should be aborted")
+            .is_cancelled()
+    );
+
+    let response = ElicitationResponse {
+        action: ElicitationAction::Accept,
+        content: Some(serde_json::json!({"answer": "yes"})),
+        meta: None,
+    };
+    let error = router
+        .resolve(
+            "server".to_string(),
+            NumberOrString::String(cancelled_id.into()),
+            response.clone(),
+        )
+        .await
+        .expect_err("cancelled request should be removed immediately");
+    assert_eq!(error.to_string(), "elicitation request not found");
+
+    router
+        .resolve(
+            "server".to_string(),
+            NumberOrString::String(pending_id.into()),
+            response.clone(),
+        )
+        .await
+        .expect("another pending request should remain routable");
+    assert_eq!(
+        pending
+            .await
+            .expect("pending request task")
+            .expect("pending request response"),
+        response
+    );
+}
+
 #[test]
 fn test_normalize_tools_short_non_duplicated_names() {
     let tools = vec![
@@ -1783,6 +1871,121 @@ async fn capture_binding_skips_pending_optional_servers_after_one_shared_startup
     )
     .await;
     assert!(binding.is_err(), "explicitly requested servers must wait");
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_binding_shares_optional_startup_grace_across_connection_sets() {
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let cache = McpToolCatalogCache::default();
+    let runtime_context = McpRuntimeContext::new(
+        Arc::new(environment_manager_without_environments()),
+        std::env::temp_dir(),
+    );
+    let server_config: McpServerConfig =
+        serde_json::from_value(serde_json::json!({ "command": "pending-mcp" }))
+            .expect("pending MCP server configuration");
+    let cache_context = cache
+        .context(
+            "pending",
+            &server_config,
+            &runtime_context,
+            /*resolved_environment*/ None,
+            &ElicitationCapability::default(),
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .expect("shared pending MCP catalog");
+
+    let create_connection_set = || {
+        let mut manager = McpConnectionSet::new_uninitialized(
+            &approval_policy,
+            &permission_profile,
+            /*prefix_mcp_tool_names*/ true,
+        );
+        manager.insert_test_client(
+            "pending",
+            AsyncManagedClient {
+                client: futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
+                    .boxed()
+                    .shared(),
+                is_codex_apps_mcp_server: false,
+                cached_server_info: None,
+                codex_apps_tools_cache_context: None,
+                tool_catalog_cache_context: Some(cache_context.clone()),
+                startup_complete: Arc::new(AtomicBool::new(false)),
+                startup_reconnect: None,
+                cancel_token: CancellationToken::new(),
+            },
+        );
+        Arc::new(manager)
+    };
+
+    let first_started = tokio::time::Instant::now();
+    let first = tokio::time::timeout(
+        Duration::from_millis(1500),
+        capture_binding(&create_connection_set()),
+    )
+    .await
+    .expect("the first thread should receive the optional startup grace");
+    assert!(first.tools().is_empty());
+    assert_eq!(first_started.elapsed(), Duration::from_secs(1));
+
+    let second = tokio::time::timeout(
+        Duration::from_millis(1),
+        capture_binding(&create_connection_set()),
+    )
+    .await
+    .expect("the next thread must not restart the same server's startup grace");
+    assert!(second.tools().is_empty());
+
+    cache_context.publish_if_newest(
+        cache_context.begin_fetch(),
+        &[create_test_tool("pending", "cached_tool")],
+    );
+    let deadline_after_publication = tokio::time::Instant::now() + Duration::from_secs(1);
+    assert_eq!(
+        cache_context.optional_startup_deadline(deadline_after_publication),
+        deadline_after_publication,
+        "publishing a catalog must not install a stale startup deadline"
+    );
+    let cached = tokio::time::timeout(
+        Duration::from_millis(1),
+        capture_binding(&create_connection_set()),
+    )
+    .await
+    .expect("cached tools should be immediately available to later threads");
+    assert_eq!(
+        cached
+            .tools()
+            .iter()
+            .map(|tool| tool.callable_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cached_tool"]
+    );
+
+    tokio::time::advance(Duration::from_secs(30 * 60 + 1)).await;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(1),
+            capture_binding(&create_connection_set()),
+        )
+        .await
+        .is_err(),
+        "an expired catalog should receive a fresh startup grace"
+    );
+
+    cache_context.disable();
+    for _ in 0..2 {
+        let started = tokio::time::Instant::now();
+        let binding = tokio::time::timeout(
+            Duration::from_millis(1500),
+            capture_binding(&create_connection_set()),
+        )
+        .await
+        .expect("non-cacheable servers should keep their per-thread startup grace");
+        assert!(binding.tools().is_empty());
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+    }
 }
 
 #[tokio::test]

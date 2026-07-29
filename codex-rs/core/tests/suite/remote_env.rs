@@ -62,6 +62,7 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
@@ -98,6 +99,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -548,6 +550,161 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_executor_promotes_primary_environment_when_startup_completes() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("warmup"),
+                ev_assistant_message("warmup-message", "ready"),
+                ev_completed("warmup"),
+            ]),
+            sse(vec![
+                ev_response_created("before-promotion"),
+                ev_function_call(
+                    "pause-for-environment",
+                    "request_user_input",
+                    &json!({
+                        "questions": [{
+                            "id": "continue",
+                            "header": "Continue",
+                            "question": "Continue after the environment starts?",
+                            "options": [{
+                                "label": "Yes (Recommended)",
+                                "description": "Continue the test."
+                            }, {
+                                "label": "No",
+                                "description": "Stop the test."
+                            }]
+                        }]
+                    })
+                    .to_string(),
+                ),
+                ev_completed("before-promotion"),
+            ]),
+            sse(vec![
+                ev_response_created("after-promotion"),
+                ev_assistant_message("after-promotion-message", "done"),
+                ev_completed("after-promotion"),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_exec_server_url(format!("ws://{}", listener.local_addr()?))
+        .with_config(|config| {
+            config.project_doc_max_bytes = 0;
+            assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
+            assert!(
+                config
+                    .features
+                    .enable(Feature::DefaultModeRequestUserInput)
+                    .is_ok()
+            );
+        });
+    let test = builder.build_with_remote_and_local_env(&server).await?;
+    let local_selection = local(test.config.cwd.clone());
+    let remote_selection = TurnEnvironmentSelection {
+        environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+        cwd: PathUri::from_abs_path(&test.config.cwd),
+        workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
+    };
+
+    test.submit_turn_with_environments(
+        "warm the local environment",
+        Some(vec![local_selection.clone(), remote_selection.clone()]),
+    )
+    .await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "wait for the primary environment".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: ThreadSettingsOverrides {
+                environments: Some(TurnEnvironmentSelections::new(
+                    test.config.cwd.clone(),
+                    vec![remote_selection, local_selection],
+                )),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::RequestUserInput(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+
+    let requests = response_mock.requests();
+    let initial_context = requests[1]
+        .message_input_texts("user")
+        .into_iter()
+        .rfind(|text| text.contains("<environment_context>"))
+        .context("starting environment context")?;
+    assert!(initial_context.contains("<environment id=\"local\" primary=\"true\">"));
+    assert!(initial_context.contains("<environment id=\"remote\" primary=\"false\">"));
+    assert!(initial_context.contains("<status>starting</status>"));
+
+    serve_environment_info(listener).await;
+    test.codex
+        .submit(Op::UserInputAnswer {
+            id: request.turn_id,
+            response: RequestUserInputResponse {
+                answers: HashMap::from([(
+                    "continue".to_string(),
+                    RequestUserInputAnswer {
+                        answers: vec!["Yes (Recommended)".to_string()],
+                    },
+                )]),
+            },
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = response_mock.requests();
+    let updated_context = requests[2]
+        .message_input_texts("user")
+        .into_iter()
+        .rfind(|text| text.contains("<environment_context>"))
+        .context("updated primary environment context")?;
+    assert!(updated_context.contains("<environment id=\"local\" primary=\"false\">"));
+    assert!(updated_context.contains("<environment id=\"remote\" primary=\"true\">"));
+    assert!(updated_context.contains("<shell>zsh</shell>"));
+
+    test.codex.ensure_rollout_materialized().await;
+    test.codex.flush_rollout().await?;
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    let world_state_patch = rollout
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .into_iter()
+        .filter_map(|line| match line.item {
+            RolloutItem::WorldState(item) if !item.full => Some(item.state),
+            _ => None,
+        })
+        .find(|patch| {
+            patch.pointer("/environments/environments/remote/is_primary") == Some(&json!(true))
+        })
+        .context("primary environment World State patch")?;
+    assert_eq!(
+        world_state_patch.pointer("/environments/environments/local/is_primary"),
+        Some(&Value::Null)
+    );
+
+    Ok(())
+}
+
 async fn read_exec_server_json(websocket: &mut WebSocketStream<TcpStream>) -> Value {
     loop {
         match timeout(Duration::from_secs(5), websocket.next())
@@ -632,6 +789,18 @@ async fn serve_environment_with_agents_md(
             .as_str()
             .is_some_and(|path| path.ends_with("/AGENTS.md"));
         let response = match request["method"].as_str() {
+            Some("environment/info") => json!({
+                "id": request["id"],
+                "result": { "shell": { "name": "zsh", "path": "/bin/zsh" } }
+            }),
+            Some("fs/canonicalize") => json!({
+                "id": request["id"],
+                "result": { "path": request["params"]["path"] }
+            }),
+            Some("fs/walk") => json!({
+                "id": request["id"],
+                "result": { "entries": [], "errors": [], "truncated": false }
+            }),
             Some("fs/getMetadata") if is_agents_md => {
                 json!({
                     "id": request["id"],
@@ -805,6 +974,142 @@ async fn deferred_executor_starts_noise_connection_after_registration() -> Resul
             .context("wait output should contain text")?
             .contains("failed to start")
     );
+
+    Ok(())
+}
+
+#[test_case(false, "multi_agent_v1"; "v1")]
+#[test_case(true, "collaboration"; "v2")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
+    multi_agent_v2: bool,
+    namespace: &str,
+) -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let server = start_mock_server().await;
+    let wait_call_id = "wait-for-spawn-environment";
+    let spawn_call_id = "spawn-in-ready-environment";
+    let message = "inspect the ready step environment";
+    let spawn_arguments = if multi_agent_v2 {
+        json!({ "message": message, "task_name": "worker" })
+    } else {
+        json!({ "message": message })
+    }
+    .to_string();
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-wait"),
+                ev_function_call(
+                    wait_call_id,
+                    "wait_for_environment",
+                    &json!({ "environment_id": REMOTE_ENVIRONMENT_ID }).to_string(),
+                ),
+                ev_completed("resp-wait"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-spawn"),
+                ev_function_call_with_namespace(
+                    spawn_call_id,
+                    namespace,
+                    "spawn_agent",
+                    &spawn_arguments,
+                ),
+                ev_completed("resp-spawn"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-done-1"),
+                ev_assistant_message("msg-done-1", "done"),
+                ev_completed("resp-done-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-done-2"),
+                ev_assistant_message("msg-done-2", "done"),
+                ev_completed("resp-done-2"),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_exec_server_url(format!("ws://{}", listener.local_addr()?))
+        .with_config(move |config| {
+            config.project_doc_max_bytes = 0;
+            assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
+            assert!(config.features.enable(Feature::Collab).is_ok());
+            if multi_agent_v2 {
+                assert!(config.features.enable(Feature::MultiAgentV2).is_ok());
+            } else {
+                assert!(config.features.disable(Feature::MultiAgentV2).is_ok());
+            }
+        });
+    let (attach_tx, attach_rx) = tokio::sync::oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let exec_server = tokio::spawn(serve_environment_with_agents_md(
+        listener,
+        "",
+        attach_rx,
+        shutdown_rx,
+    ));
+    let test = timeout(
+        Duration::from_secs(5),
+        builder.build_with_remote_and_local_env(&server),
+    )
+    .await
+    .context("thread startup should not wait for the remote environment")??;
+    let remote_selection = TurnEnvironmentSelection {
+        environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+        cwd: PathUri::from_abs_path(&test.config.cwd),
+        workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
+    };
+    let expected_environments = vec![remote_selection, local(test.config.cwd.clone())];
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "spawn after the environment becomes ready".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: ThreadSettingsOverrides {
+                environments: Some(TurnEnvironmentSelections::new(
+                    test.config.cwd.clone(),
+                    expected_environments.clone(),
+                )),
+                ..Default::default()
+            },
+        })
+        .await?;
+    wait_for_response_request_count(&response_mock, /*expected_count*/ 1).await;
+    attach_tx.send(()).expect("attach remote environment");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    wait_for_response_request_count(&response_mock, /*expected_count*/ 4).await;
+
+    let child_thread_id = timeout(Duration::from_secs(5), created_threads.recv())
+        .await
+        .context("timed out waiting for the subagent thread")??;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    assert_eq!(
+        child_thread.environment_selections().await,
+        expected_environments
+    );
+    assert!(
+        response_mock.requests()[1]
+            .function_call_output_content_and_success(wait_call_id)
+            .is_some(),
+        "the spawn request should follow the ready-environment step"
+    );
+
+    shutdown_tx
+        .send(())
+        .expect("stop remote environment server");
+    exec_server.await?;
 
     Ok(())
 }

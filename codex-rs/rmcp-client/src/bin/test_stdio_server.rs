@@ -20,7 +20,7 @@ use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
@@ -52,6 +52,7 @@ const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA
 const APP_ONLY_CWD_MARKER_FILE_ENV: &str = "MCP_TEST_APP_ONLY_CWD_MARKER_FILE";
 const DYNAMIC_SERVER_METADATA_ENV: &str = "MCP_TEST_DYNAMIC_SERVER_METADATA";
 const INITIALIZE_BARRIER_FILE_ENV: &str = "MCP_TEST_INITIALIZE_BARRIER_FILE";
+const SERVER_INSTRUCTIONS_ENV: &str = "MCP_TEST_SERVER_INSTRUCTIONS";
 
 fn dynamic_server_process_label() -> Option<String> {
     std::env::var_os(DYNAMIC_SERVER_METADATA_ENV)
@@ -92,7 +93,7 @@ impl TestToolServer {
             Arc::new(thread_hint_schema),
         );
         thread_hint_tool.annotations = Some(ToolAnnotations::new().read_only(true));
-        let mut thread_hint_meta = Meta::new();
+        let mut thread_hint_meta = MetaObject::new();
         thread_hint_meta.insert("ui".to_string(), json!({ "visibility": [] }));
         thread_hint_tool.meta = Some(thread_hint_meta);
 
@@ -493,7 +494,7 @@ impl ServerHandler for TestToolServer {
         )]));
 
         let server_info = ServerInfo::new(capabilities);
-        match dynamic_server_process_label() {
+        let server_info = match dynamic_server_process_label() {
             Some(process_label) => server_info
                 .with_server_info(
                     Implementation::new("codex-rmcp-test-server", env!("CARGO_PKG_VERSION"))
@@ -503,6 +504,10 @@ impl ServerHandler for TestToolServer {
             None => {
                 server_info.with_instructions("Use these tools to exercise the rmcp test server.")
             }
+        };
+        match std::env::var(SERVER_INSTRUCTIONS_ENV) {
+            Ok(instructions) => server_info.with_instructions(instructions),
+            Err(_) => server_info,
         }
     }
 
@@ -519,7 +524,7 @@ impl ServerHandler for TestToolServer {
                 && let Some(cwd) = tools.iter_mut().find(|tool| tool.name == "cwd")
             {
                 cwd.meta
-                    .get_or_insert_with(Meta::new)
+                    .get_or_insert_with(MetaObject::new)
                     .insert("ui".to_string(), json!({ "visibility": ["app"] }));
             }
             Ok(ListToolsResult::with_all_items(tools))
@@ -632,7 +637,7 @@ impl ServerHandler for TestToolServer {
                 Ok(Self::structured_result(structured_content))
             }
             "encrypted_output" => {
-                let mut meta = Meta::new();
+                let mut meta = MetaObject::new();
                 meta.insert("codex/encryptedContent".to_string(), json!(true));
                 let mut result = CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text("Lookup completed"),
@@ -724,7 +729,7 @@ impl TestToolServer {
                 content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::ImageOnlyOriginalDetail => {
-                let mut meta = rmcp::model::Meta::new();
+                let mut meta = MetaObject::new();
                 meta.insert(
                     "codex/imageDetail".to_string(),
                     serde_json::json!("original"),

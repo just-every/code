@@ -72,6 +72,7 @@ use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
+use codex_thread_store::MoveThreadToSectionParams;
 use codex_thread_store::PreparedFork;
 use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
@@ -730,6 +731,32 @@ impl ThreadManager {
             })
     }
 
+    /// Moves a persisted thread to, within, or out of a server-ordered section.
+    pub async fn move_thread_to_section(
+        &self,
+        thread_id: ThreadId,
+        section: Option<&str>,
+        before_thread_id: Option<ThreadId>,
+    ) -> CodexResult<()> {
+        if let Ok(thread) = self.get_thread(thread_id).await
+            && thread.config_snapshot().await.ephemeral
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "ephemeral thread does not support section moves: {thread_id}"
+            )));
+        }
+
+        self.state
+            .thread_store
+            .move_thread_to_section(MoveThreadToSectionParams {
+                thread_id,
+                section: section.map(ToOwned::to_owned),
+                before_thread_id,
+            })
+            .await
+            .map_err(|err| thread_store_metadata_update_error(thread_id, err))
+    }
+
     /// List `thread_id` plus all known descendants in its spawn subtree.
     pub async fn list_agent_subtree_thread_ids(
         &self,
@@ -1330,14 +1357,22 @@ impl ThreadManagerState {
     }
 
     /// Send an operation to a thread by ID.
-    pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
+    pub(crate) async fn send_op(
+        &self,
+        thread_id: ThreadId,
+        op: Op,
+        parent_turn_id: Option<String>,
+    ) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
         {
             log.push((thread_id, op.clone()));
         }
-        thread.submit(op).await
+        thread
+            .io
+            .submit_with_trace(op, /*trace*/ None, parent_turn_id)
+            .await
     }
 
     /// Remove a thread from the manager by ID, returning it when present.
@@ -1979,19 +2014,24 @@ fn truncate_before_nth_user_message(
     n: usize,
     snapshot_state: &SnapshotTurnState,
 ) -> InitialHistory {
-    let items = history.get_rollout_items().to_vec();
+    let mut items = match history {
+        InitialHistory::New | InitialHistory::Cleared => Vec::new(),
+        InitialHistory::Resumed(resumed) => Arc::unwrap_or_clone(resumed.history),
+        InitialHistory::Forked(items) => items,
+    };
     let user_positions = truncation::user_message_positions_in_rollout(&items);
     let rolled = if snapshot_state.ends_mid_turn && n >= user_positions.len() {
         if let Some(cut_idx) = snapshot_state
             .active_turn_start_index
             .or_else(|| user_positions.last().copied())
         {
-            items[..cut_idx].to_vec()
+            items.truncate(cut_idx);
+            items
         } else {
             items
         }
     } else {
-        truncation::truncate_rollout_before_nth_user_message_from_start(&items, n)
+        truncation::truncate_rollout_before_nth_user_message_from_start(items, n)
     };
 
     if rolled.is_empty() {
