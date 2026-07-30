@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.160] - 2026-07-30
+
+- Dependencies: patch npm security overrides to pick up fixed transitive packages. (4976a942)
+- Release: refresh package metadata and lockfile for the updated dependency overrides. (4976a942)
+
 ## [0.6.158] - 2026-07-29
 
 - SDK: update the Python datamodel code generator metadata. (22a65760)
