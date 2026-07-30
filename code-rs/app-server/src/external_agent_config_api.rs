@@ -59,6 +59,7 @@ impl ExternalAgentConfigApi {
                     cwd: migration_item.cwd,
                 })
                 .collect(),
+            connectors: Vec::new(),
         })
     }
 

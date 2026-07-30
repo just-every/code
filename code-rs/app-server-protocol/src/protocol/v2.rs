@@ -272,6 +272,7 @@ v2_enum_from_core!(
 
 v2_enum_from_core!(
     pub enum McpAuthStatus from code_protocol::protocol::McpAuthStatus {
+        Unknown,
         Unsupported,
         NotLoggedIn,
         BearerToken,
@@ -636,6 +637,8 @@ pub struct ExternalAgentConfigMigrationItem {
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigDetectResponse {
     pub items: Vec<ExternalAgentConfigMigrationItem>,
+    #[serde(default)]
+    pub connectors: Vec<ExternalAgentDetectedConnectorCandidate>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -661,6 +664,23 @@ pub struct ExternalAgentConfigImportParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ExternalAgentDetectedConnectorSource {
+    RemoteMcpServersConfig,
+    SessionToolUse,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalAgentDetectedConnectorCandidate {
+    pub name: String,
+    pub session_count: u32,
+    pub source: ExternalAgentDetectedConnectorSource,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
