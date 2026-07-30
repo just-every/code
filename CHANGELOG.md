@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.159] - 2026-07-30
+
+- App Server: backport upstream protocol parity for app-server events and responses. (eb8550ac)
+- External agents: expose detected connector candidates and sources in config detection responses. (eb8550ac)
+- MCP: align app-server auth status schemas with upstream protocol changes. (eb8550ac)
+
 ## [0.6.158] - 2026-07-29
 
 - SDK: update the Python datamodel code generator metadata. (22a65760)

@@ -1,11 +1,12 @@
-## @just-every/code v0.6.158
+## @just-every/code v0.6.159
 
-This release refreshes Python SDK generation and package metadata for v0.6.158.
+This release backports upstream app-server protocol parity updates.
 
 ### Changes
 
-- SDK: update the Python datamodel code generator metadata.
-- Release: refresh CLI and SDK package metadata for v0.6.158.
+- App Server: backport upstream protocol parity for app-server events and responses.
+- External agents: expose detected connector candidates and sources in config detection responses.
+- MCP: align app-server auth status schemas with upstream protocol changes.
 
 ### Install
 
@@ -14,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.157...v0.6.158
+Compare: https://github.com/just-every/code/compare/v0.6.158...v0.6.159
