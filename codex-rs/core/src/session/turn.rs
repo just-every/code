@@ -28,7 +28,6 @@ use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
-use crate::mcp_tool_exposure::build_mcp_tool_runtimes;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
@@ -58,11 +57,9 @@ use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
-use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
-use crate::tools::router::extension_tool_executors;
-use crate::tools::spec_plan::search_tool_enabled;
+use crate::tools::spec_plan::build_tool_router;
 use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::record_turn_ttft_metric;
@@ -213,10 +210,11 @@ pub(crate) async fn run_turn(
         Err(err) => return Err(err),
     };
     // Keep the exact model-visible state used by this turn and its inline compactions.
-    let (mut world_state, display_roots) = tokio::join!(
+    let (world_state, display_roots) = tokio::join!(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(first_step_context.as_ref()),
     );
+    let mut world_state = world_state?;
 
     let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,
@@ -328,7 +326,7 @@ pub(crate) async fn run_turn(
 
             world_state = sess
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
-                .await;
+                .await?;
 
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
@@ -1339,6 +1337,7 @@ async fn run_sampling_request(
     let mut retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
+    let mut executed_tool_calls_by_output = HashMap::new();
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
             input
@@ -1347,6 +1346,13 @@ async fn run_sampling_request(
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        let mut prompt_input = prompt_input;
+        if let Some(executed_tool_calls) = sess.services.executed_tool_calls.as_ref()
+            && executed_tool_calls
+                .attach_pending_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output)
+        {
+            codex_protocol::models::bound_executed_tool_calls_for_prompt(&mut prompt_input);
+        }
         let prompt = build_prompt(
             prompt_input,
             router.as_ref(),
@@ -1548,27 +1554,14 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
-    let mcp_tool_runtimes = build_mcp_tool_runtimes(
-        &all_mcp_tools,
-        connectors.as_deref(),
-        &turn_context.config,
-        search_tool_enabled(turn_context),
-    );
-    let tool_router = Arc::new(ToolRouter::from_context(
+    let tool_router = Arc::new(build_tool_router(
+        sess,
         turn_context,
         environments,
         mcp,
-        ToolRouterParams {
-            tool_runtimes: mcp_tool_runtimes,
-            tool_suggest_candidates,
-            extension_tool_executors: extension_tool_executors(sess, step_store),
-            wait_for_environment_tool_config: sess
-                .services
-                .thread_extension_data
-                .get::<crate::WaitForEnvironmentToolConfig>(),
-            dynamic_tools: turn_context.dynamic_tools.as_slice(),
-        },
-        &sess.services.tool_search_handler_cache,
+        connectors.as_deref(),
+        step_store,
+        tool_suggest_candidates.as_ref(),
     ));
     (all_mcp_tools, tool_router)
 }

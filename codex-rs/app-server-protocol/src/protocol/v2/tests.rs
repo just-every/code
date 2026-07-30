@@ -73,6 +73,22 @@ fn test_absolute_path() -> AbsolutePathBuf {
 }
 
 #[test]
+fn external_agent_config_detect_response_defaults_connectors_for_older_servers() {
+    let response = serde_json::from_value::<ExternalAgentConfigDetectResponse>(json!({
+        "items": [],
+    }))
+    .expect("older detect response should deserialize");
+
+    assert_eq!(
+        response,
+        ExternalAgentConfigDetectResponse {
+            items: Vec::new(),
+            connectors: Vec::new(),
+        }
+    );
+}
+
+#[test]
 fn thread_background_terminals_list_response_round_trips_foreign_paths() {
     for (uri, expected_cwd) in [
         ("file:///home/alice/repo", "/home/alice/repo"),
@@ -2409,7 +2425,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
             tools: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
-            auth_status: McpAuthStatus::Unsupported,
+            auth_status: McpAuthStatus::Unknown,
         }],
         next_cursor: None,
     };
@@ -2423,7 +2439,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
                 "tools": {},
                 "resources": [],
                 "resourceTemplates": [],
-                "authStatus": "unsupported",
+                "authStatus": "unknown",
             }],
             "nextCursor": null,
         })
@@ -3144,6 +3160,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         app_name: Some("Calendar".to_string()),
         action_name: Some("create_event".to_string()),
         plugin_id: Some("sample@test".to_string()),
+        read_only_hint: Some(true),
         status: CoreMcpToolCallStatus::InProgress,
         result: None,
         error: None,
@@ -3167,6 +3184,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
             plugin_id: Some("sample@test".to_string()),
+            read_only_hint: Some(true),
             result: None,
             error: None,
             duration_ms: None,
@@ -3184,6 +3202,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         app_name: None,
         action_name: None,
         plugin_id: None,
+        read_only_hint: Some(false),
         status: CoreMcpToolCallStatus::Completed,
         result: Some(CallToolResult {
             content: vec![json!({"type": "text", "text": "ok"})],
@@ -3206,6 +3225,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
+            read_only_hint: Some(false),
             result: Some(Box::new(McpToolCallResult {
                 content: vec![json!({"type": "text", "text": "ok"})],
                 structured_content: Some(json!({"ok": true})),
@@ -3234,6 +3254,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
         }),
         mcp_app_resource_uri: Some("app://connector".to_string()),
         plugin_id: None,
+        read_only_hint: Some(false),
         result: None,
         error: None,
         duration_ms: None,
@@ -3257,6 +3278,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
             },
             "mcpAppResourceUri": "app://connector",
             "pluginId": null,
+            "readOnlyHint": false,
             "result": null,
             "error": null,
             "durationMs": null,

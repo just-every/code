@@ -28,6 +28,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::WarningEvent;
+use codex_sandboxing::record_network_sandbox_violation;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -920,12 +921,25 @@ impl NetworkApprovalService {
                                 .await;
                         }
                     }
-                    {
-                        let mut denied_hosts = self.session_denied_hosts.lock().await;
-                        denied_hosts.remove(&key);
+                    if pending_owner.decision_on_drop == PendingApprovalDecision::AllowForSession {
+                        {
+                            let mut denied_hosts = self.session_denied_hosts.lock().await;
+                            denied_hosts.remove(&key);
+                        }
+                        self.session_approved_hosts.lock().await.insert(key.clone());
+                        PendingApprovalDecision::AllowForSession
+                    } else {
+                        if let Some(owner_call) = owner_call.as_ref() {
+                            self.record_call_outcome(
+                                &owner_call.registration_id,
+                                NetworkApprovalOutcome::DeniedByPolicy(
+                                    policy_denial_message.clone(),
+                                ),
+                            )
+                            .await;
+                        }
+                        PendingApprovalDecision::Deny
                     }
-                    self.session_approved_hosts.lock().await.insert(key.clone());
-                    PendingApprovalDecision::AllowForSession
                 }
                 NetworkPolicyRuleAction::Deny => {
                     match session
@@ -1034,6 +1048,7 @@ pub(crate) fn build_blocked_request_observer(
     Arc::new(move |blocked: BlockedRequest| {
         let network_approval = Arc::clone(&network_approval);
         async move {
+            record_network_sandbox_violation(&blocked);
             network_approval.record_blocked_request(blocked).await;
         }
     })

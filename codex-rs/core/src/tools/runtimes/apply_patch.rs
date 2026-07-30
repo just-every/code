@@ -31,6 +31,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
+use codex_sandboxing::record_filesystem_sandbox_violation;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use std::path::PathBuf;
@@ -91,8 +92,10 @@ impl ApplyPatchRuntime {
             return None;
         }
 
-        let permissions =
-            effective_permission_profile(attempt.permissions, req.additional_permissions.as_ref());
+        let permissions = effective_permission_profile(
+            attempt.exec_server_permissions,
+            req.additional_permissions.as_ref(),
+        );
         Some(FileSystemSandboxContext {
             permissions: permissions.into(),
             cwd: Some(attempt.sandbox_cwd.clone()),
@@ -257,6 +260,7 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             timed_out: false,
         };
         if failed && is_likely_sandbox_denied(attempt.sandbox, &output) {
+            record_filesystem_sandbox_violation(attempt.sandbox, &output);
             return Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
                 output: Box::new(output),
                 network_policy_decision: None,

@@ -1112,11 +1112,9 @@ impl Session {
             current_exec_policy.as_ref(),
             &session_configuration.permission_profile(),
             /*network_policy_decider*/ None,
-            self.services
-                .managed_network_requirements_configured
-                .then(|| {
-                    build_blocked_request_observer(Arc::clone(&self.services.network_approval))
-                }),
+            Some(build_blocked_request_observer(Arc::clone(
+                &self.services.network_approval,
+            ))),
             self.services.managed_network_requirements_configured,
             self.services.network_proxy_audit_metadata.clone(),
         )
@@ -2992,10 +2990,10 @@ impl Session {
         &self,
         previous_world_state: &Arc<WorldState>,
         step_context: &step_context::StepContext,
-    ) -> Arc<WorldState> {
+    ) -> CodexResult<Arc<WorldState>> {
         let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
-        let world_state = Arc::new(self.build_world_state_for_step(step_context).await);
+        let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);
         // Derive the model update and persisted patch from the same two snapshots.
         let previous_snapshot = previous_world_state.snapshot();
         let world_state_snapshot = world_state.snapshot();
@@ -3020,7 +3018,7 @@ impl Session {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
                 .await;
         }
-        world_state
+        Ok(world_state)
     }
 
     /// Captures one request-scoped view of dynamic state.
@@ -3064,10 +3062,37 @@ impl Session {
             .executor_capability_discovery_for_step(
                 &turn_context.config,
                 &ready_selected_capability_roots,
+                &environments,
+                turn_context.windows_sandbox_level,
             )
             .await;
         let extension_data = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
         extension_data.insert(selected_capability_roots.clone());
+        if let Some(discovery) = &executor_capability_discovery {
+            extension_data.insert(discovery.as_ref().clone());
+            if !discovery.sandbox_contexts().is_empty() {
+                extension_data.insert(discovery.sandbox_contexts().clone());
+            }
+        } else if !turn_context
+            .config
+            .permissions
+            .file_system_sandbox_policy()
+            .has_full_disk_read_access()
+        {
+            let sandbox_contexts = environments
+                .turn_environments()
+                .map(|environment| {
+                    (
+                        environment.environment_id.clone(),
+                        turn_context.file_system_sandbox_context(
+                            /*additional_permissions*/ None,
+                            environment,
+                        ),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            extension_data.insert(sandbox_contexts);
+        }
         let (mcp, prepared_recommendations) = async {
             tokio::join!(
                 self.mcp_runtime_for_step(
@@ -3684,7 +3709,7 @@ impl Session {
     pub(crate) async fn record_context_updates_and_set_reference_context_item(
         &self,
         step_context: &StepContext,
-    ) -> Arc<WorldState> {
+    ) -> CodexResult<Arc<WorldState>> {
         let turn_context = step_context.turn.as_ref();
         let reference_context_item = {
             let state = self.state.lock().await;
@@ -3693,7 +3718,7 @@ impl Session {
         let turn_context_item = turn_context.to_turn_context_item();
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
-        let world_state = Arc::new(self.build_world_state_for_step(step_context).await);
+        let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);
         // Full initial context resets the baseline; later turns persist only its changes.
         let (mut context_items, world_state_item) = if should_inject_full_context {
             let context_items = self
@@ -3730,7 +3755,7 @@ impl Session {
         // A snapshot can change without producing model-visible or TurnContext updates.
         let only_world_state_changed = !turn_context_changed && context_items.is_empty();
         if only_world_state_changed && world_state_item.is_none() {
-            return world_state;
+            return Ok(world_state);
         }
         if !context_items.is_empty() {
             self.record_conversation_items(turn_context, &context_items)
@@ -3743,7 +3768,7 @@ impl Session {
         }
         // A snapshot-only change does not require a duplicate TurnContext record.
         if only_world_state_changed {
-            return world_state;
+            return Ok(world_state);
         }
         // Persist one `TurnContextItem` per real user turn so resume/lazy replay can recover the
         // latest durable baseline even when this turn emitted no model-visible context diffs.
@@ -3754,7 +3779,7 @@ impl Session {
         // context items.
         let mut state = self.state.lock().await;
         state.set_reference_context_item(Some(turn_context_item));
-        world_state
+        Ok(world_state)
     }
 
     pub(crate) async fn update_token_usage_info(

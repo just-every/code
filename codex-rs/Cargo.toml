@@ -13,6 +13,7 @@ members = [
     "app-server-daemon",
     "app-server-client",
     "app-server-protocol",
+    "app-server-protocol-noop-macros",
     "app-server-test-client",
     "apply-patch",
     "arg0",
@@ -23,6 +24,7 @@ members = [
     "code-mode",
     "code-mode-host",
     "code-mode-protocol",
+    "code-mode-runtime",
     "codex-home",
     "cloud-config",
     "cloud-tasks",
@@ -152,6 +154,7 @@ codex-app-server-transport = { path = "app-server-transport" }
 codex-app-server-daemon = { path = "app-server-daemon" }
 codex-app-server-client = { path = "app-server-client" }
 codex-app-server-protocol = { path = "app-server-protocol" }
+codex-app-server-protocol-noop-macros = { path = "app-server-protocol-noop-macros" }
 codex-app-server-test-client = { path = "app-server-test-client" }
 codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
@@ -166,6 +169,7 @@ codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
+codex-code-mode-runtime = { path = "code-mode-runtime" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
 codex-websocket-client = { path = "websocket-client" }

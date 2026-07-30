@@ -2,6 +2,7 @@ mod approvals;
 pub(crate) mod code_mode;
 pub(crate) mod context;
 pub(crate) mod events;
+mod executed_tool_calls;
 pub(crate) mod handlers;
 pub(crate) mod hook_names;
 pub(crate) mod hosted_spec;
@@ -26,6 +27,7 @@ use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_text;
+pub(crate) use executed_tool_calls::ExecutedToolCallRecorder;
 pub use router::ToolRouter;
 
 // Telemetry preview limits: keep log events smaller than model budgets.
@@ -61,7 +63,7 @@ pub(crate) fn tool_user_shell_type(
     }
 }
 
-fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
     turn_context.model_info.tool_mode.unwrap_or_else(|| {
         if turn_context.config.features.enabled(Feature::CodeModeOnly) {
             ToolMode::CodeModeOnly
@@ -71,6 +73,18 @@ fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
             ToolMode::Direct
         }
     })
+}
+
+pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+    let requested_tool_mode = requested_tool_mode(turn_context);
+    if !turn_context.code_mode_available
+        && requested_tool_mode == ToolMode::CodeMode
+        && !turn_context.config.code_mode.disable_in_process_fallback
+    {
+        ToolMode::Direct
+    } else {
+        requested_tool_mode
+    }
 }
 
 /// Format the combined exec output for sending back to the model.

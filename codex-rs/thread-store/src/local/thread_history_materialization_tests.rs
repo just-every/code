@@ -17,11 +17,14 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -1362,6 +1365,147 @@ async fn summary_items_use_final_answers_and_ignore_commentary() {
 }
 
 #[tokio::test]
+async fn paginated_projection_accepts_float_rate_limits_and_later_final_answers() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![turn_started("turn-1")],
+        })
+        .await
+        .expect("append projected turn start");
+
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let checkpoint = projection_state(&pool, thread_id).await;
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    let token_count = |primary: Option<f64>, secondary: Option<f64>| {
+        RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+            info: None,
+            rate_limits: Some(RateLimitSnapshot {
+                limit_id: None,
+                limit_name: None,
+                primary: primary.map(|used_percent| RateLimitWindow {
+                    used_percent,
+                    window_minutes: Some(60),
+                    resets_at: Some(1_800_000_000),
+                }),
+                secondary: secondary.map(|used_percent| RateLimitWindow {
+                    used_percent,
+                    window_minutes: Some(10_080),
+                    resets_at: Some(1_800_100_000),
+                }),
+                credits: None,
+                individual_limit: None,
+                spend_control_reached: None,
+                plan_type: None,
+                rate_limit_reached_type: None,
+            }),
+        }))
+    };
+
+    let recorder = store
+        .live_recorders
+        .lock()
+        .await
+        .get(&thread_id)
+        .expect("live recorder")
+        .recorder
+        .clone();
+    recorder
+        .record_canonical_items(&[
+            token_count(Some(0.0), Some(1.0)),
+            completed_item(
+                thread_id,
+                "turn-1",
+                agent_message("final-1", MessagePhase::FinalAnswer),
+            ),
+            token_count(Some(12.5), None),
+            turn_completed("turn-1"),
+        ])
+        .await
+        .expect("queue unprojected history");
+    recorder.flush().await.expect("flush unprojected history");
+    assert_eq!(projection_state(&pool, thread_id).await, checkpoint);
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("project floating-point rate limits");
+
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                turn_started("turn-2"),
+                token_count(None, Some(87.25)),
+                completed_item(
+                    thread_id,
+                    "turn-2",
+                    agent_message("final-2", MessagePhase::FinalAnswer),
+                ),
+                token_count(Some(1e-12), Some(1_000_000.0)),
+                turn_completed("turn-2"),
+            ],
+        })
+        .await
+        .expect("append history after unprojected floating-point rate limits");
+
+    let final_answers = sqlx::query_as::<_, (String, String, String, i64)>(
+        r#"
+SELECT turns.turn_id, items.item_id, turns.status, items.rollout_ordinal
+FROM thread_turns AS turns
+JOIN thread_items AS items
+  ON items.thread_id = turns.thread_id
+ AND items.turn_id = turns.turn_id
+ AND items.item_id = turns.final_agent_item_id
+WHERE turns.thread_id = ?
+ORDER BY turns.rollout_ordinal
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("read projected final answers");
+    assert_eq!(
+        final_answers,
+        vec![
+            (
+                "turn-1".to_string(),
+                "final-1".to_string(),
+                "completed".to_string(),
+                3,
+            ),
+            (
+                "turn-2".to_string(),
+                "final-2".to_string(),
+                "completed".to_string(),
+                8,
+            ),
+        ]
+    );
+
+    let rollout_len = i64::try_from(
+        fs::metadata(rollout_path.as_path())
+            .expect("rollout metadata")
+            .len(),
+    )
+    .expect("rollout length");
+    assert_eq!(projection_state(&pool, thread_id).await, (rollout_len, 11));
+}
+
+#[tokio::test]
 async fn next_write_catches_up_unprojected_durable_suffix() {
     let home = TempDir::new().expect("temp dir");
     let store = projection_store(home.path()).await;
@@ -1567,6 +1711,13 @@ async fn catch_up_rejects_invalid_complete_suffixes_without_advancing_state() {
             "out of order ordinal",
             format!("{}\n", rollout_line(Some(2), turn_started("turn-1"))),
         ),
+        (
+            "gap larger than rejected prefix",
+            format!(
+                "{{not json}}\n{}\n",
+                rollout_line(Some(3), turn_started("turn-1")),
+            ),
+        ),
     ];
     for (name, suffix) in cases {
         let home = TempDir::new().expect("temp dir");
@@ -1707,6 +1858,12 @@ async fn blank_and_rejected_rollout_lines_do_not_poison_projection() {
         .await
         .expect("persist session metadata");
 
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let before = projection_state(&pool, thread_id).await;
     let rollout_path = store
         .live_rollout_path(thread_id)
         .await
@@ -1718,6 +1875,14 @@ async fn blank_and_rejected_rollout_lines_do_not_poison_projection() {
     file.write_all(b"\n \t\r\n{not json}\n\xff\n")
         .expect("append blank and rejected lines");
     file.flush().expect("flush rejected line");
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("leave rejected tail pending");
+    assert_eq!(
+        projection_state(&pool, thread_id).await,
+        (before.0 + 5, before.1)
+    );
+
     let recorder = store
         .live_recorders
         .lock()
@@ -1736,11 +1901,6 @@ async fn blank_and_rejected_rollout_lines_do_not_poison_projection() {
         .await
         .expect("project valid retry after rejected line");
 
-    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
-        home.path().abs(),
-    ))
-    .await
-    .expect("open thread history db");
     let (expected_start_byte_offset, _) =
         rollout_line_byte_offsets(rollout_path.as_path(), /*ordinal*/ 1);
     let start_byte_offset = sqlx::query_scalar::<_, Option<i64>>(
@@ -1752,6 +1912,198 @@ async fn blank_and_rejected_rollout_lines_do_not_poison_projection() {
     .await
     .expect("read projected turn byte offset");
     assert_eq!(start_byte_offset, Some(expected_start_byte_offset));
+    let rollout_len = i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+        .expect("rollout length");
+    assert_eq!(projection_state(&pool, thread_id).await, (rollout_len, 2));
+}
+
+#[tokio::test]
+async fn unprojectable_rollout_lines_wait_for_later_ordinals() {
+    let unknown_line = |ordinal| {
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2025-01-01T00:00:00.000Z\",\"ordinal\":{ordinal},",
+                "\"type\":\"future_item\",\"payload\":{{}}}}"
+            ),
+            ordinal = ordinal
+        )
+    };
+    let cases = [
+        ("unknown payload", unknown_line(1), unknown_line(2)),
+        (
+            "structurally invalid JSON",
+            "{}".to_string(),
+            "null".to_string(),
+        ),
+    ];
+    for (name, pending_line, skipped_line) in cases {
+        let home = TempDir::new().expect("temp dir");
+        let store = projection_store(home.path()).await;
+        let thread_id = ThreadId::default();
+        create_paginated_thread(&store, thread_id).await;
+        store
+            .persist_thread(thread_id)
+            .await
+            .expect("persist session metadata");
+
+        let pool = codex_state::open_thread_history_db(
+            &codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        )
+        .await
+        .expect("open thread history db");
+        let before = projection_state(&pool, thread_id).await;
+        let rollout_path = store
+            .live_rollout_path(thread_id)
+            .await
+            .expect("rollout path");
+        append_suffix(rollout_path.as_path(), format!("{pending_line}\n").as_str());
+
+        super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+            .await
+            .expect("leave unprojectable tail pending");
+        assert_eq!(projection_state(&pool, thread_id).await, before, "{name}");
+
+        append_suffix(
+            rollout_path.as_path(),
+            format!(
+                "{}\n{skipped_line}\n{}\n",
+                rollout_line(Some(1), turn_started("retry-turn")),
+                rollout_line(Some(3), turn_started("turn-1")),
+            )
+            .as_str(),
+        );
+
+        super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+            .await
+            .expect(name);
+
+        let rollout_len =
+            i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+                .expect("rollout length");
+        assert_eq!(
+            projection_state(&pool, thread_id).await,
+            (rollout_len, 4),
+            "{name}"
+        );
+        let turn_ordinals = sqlx::query_as::<_, (String, i64)>(
+            "SELECT turn_id, rollout_ordinal FROM thread_turns WHERE thread_id = ? ORDER BY rollout_ordinal",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read projected turns");
+        assert_eq!(
+            turn_ordinals,
+            vec![("retry-turn".to_string(), 1), ("turn-1".to_string(), 3)],
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn event_timestamps_allow_invalid_rollout_timestamps() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+
+    let invalid_timestamp_line = |ordinal, item| {
+        rollout_line(Some(ordinal), item).replace("2025-01-01T00:00:00.000Z", "not-a-timestamp")
+    };
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    append_suffix(
+        rollout_path.as_path(),
+        format!(
+            "{}\n{}\n",
+            invalid_timestamp_line(1, turn_started("turn-1")),
+            invalid_timestamp_line(
+                2,
+                completed_item(
+                    thread_id,
+                    "turn-1",
+                    agent_message("agent-1", MessagePhase::FinalAnswer),
+                ),
+            ),
+        )
+        .as_str(),
+    );
+
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("project records with event timestamps");
+
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let created_at_ms = sqlx::query_scalar::<_, i64>(
+        "SELECT created_at_ms FROM thread_items WHERE thread_id = ? AND turn_id = ? AND item_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .bind("turn-1")
+    .bind("agent-1")
+    .fetch_one(&pool)
+    .await
+    .expect("read projected item timestamp");
+    assert_eq!(created_at_ms, 0);
+    let rollout_len = i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+        .expect("rollout length");
+    assert_eq!(projection_state(&pool, thread_id).await, (rollout_len, 3));
+}
+
+#[tokio::test]
+async fn malformed_rollout_lines_skip_inferred_ordinal_gaps() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id)
+        .await
+        .expect("persist session metadata");
+
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    append_suffix(
+        rollout_path.as_path(),
+        format!(
+            "{{not json}}\n{}\n",
+            rollout_line(Some(2), turn_started("turn-1"))
+        )
+        .as_str(),
+    );
+
+    super::materialize_to_sqlite(&store, thread_id, rollout_path.as_path())
+        .await
+        .expect("skip malformed gap and project later history");
+
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let rollout_len = i64::try_from(fs::metadata(rollout_path).expect("rollout metadata").len())
+        .expect("rollout length");
+    assert_eq!(projection_state(&pool, thread_id).await, (rollout_len, 3));
+    let turn_ordinal = sqlx::query_scalar::<_, i64>(
+        "SELECT rollout_ordinal FROM thread_turns WHERE thread_id = ? AND turn_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .bind("turn-1")
+    .fetch_one(&pool)
+    .await
+    .expect("read projected turn");
+    assert_eq!(turn_ordinal, 2);
 }
 
 #[tokio::test]

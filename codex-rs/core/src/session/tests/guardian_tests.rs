@@ -540,7 +540,12 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
     turn_context.developer_instructions = Some(guardian_policy.clone());
     let turn_context = Arc::new(turn_context);
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let world_state = Arc::new(session.build_world_state_for_step(&step_context).await);
+    let world_state = Arc::new(
+        session
+            .build_world_state_for_step(&step_context)
+            .await
+            .expect("world state should build"),
+    );
     let initial_context_injection = InitialContextInjection::BeforeLastUserMessage {
         world_state,
         step_context,
@@ -738,7 +743,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         skills_service,
         plugins_manager,
         mcp_manager,
-        code_mode_session_provider: Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+        code_mode_session_provider: Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
         extensions: codex_extension_api::empty_extension_registry(),
         conversation_history: InitialHistory::New,
         requested_history_mode: None,

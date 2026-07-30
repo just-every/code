@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_core_skills::HostSkillsSnapshot;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
+use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
+use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ConfigContributor;
@@ -425,7 +428,12 @@ where
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
-        self.build_skill_tools(session_store, thread_store, /*executor_query*/ None)
+        self.build_skill_tools(
+            session_store,
+            thread_store,
+            /*executor_query*/ None,
+            /*sandbox_contexts*/ None,
+        )
     }
 
     fn tools_for_step(
@@ -450,9 +458,16 @@ where
             include_bundled_skills: false,
             include_orchestrator_skills: false,
             mcp_resources: None,
-            executor_capability_discovery: None,
+            executor_capability_discovery: step_store
+                .get::<ExecutorCapabilityDiscoverySnapshot>()
+                .map(|discovery| discovery.as_ref().clone()),
         });
-        self.build_skill_tools(session_store, thread_store, executor_query)
+        self.build_skill_tools(
+            session_store,
+            thread_store,
+            executor_query,
+            step_store.get::<HashMap<String, FileSystemSandboxContext>>(),
+        )
     }
 }
 
@@ -679,6 +694,7 @@ impl<C> SkillsExtension<C> {
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
         executor_query: Option<SkillListQuery>,
+        sandbox_contexts: Option<Arc<HashMap<String, FileSystemSandboxContext>>>,
     ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
         let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
             return Vec::new();
@@ -697,6 +713,7 @@ impl<C> SkillsExtension<C> {
             thread_state,
             orchestrator_available,
             executor_query,
+            sandbox_contexts,
             Arc::clone(&self.shadow_selection),
         )
     }
@@ -742,6 +759,7 @@ impl<C> SkillsExtension<C> {
                     package: entry.id.clone(),
                     resource: entry.main_prompt.clone(),
                     resolved_executor_roots: Vec::new(),
+                    sandbox: None,
                     host_snapshot,
                     mcp_resources,
                 },

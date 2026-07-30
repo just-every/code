@@ -8,6 +8,8 @@ use super::NetworkPolicyAmendment;
 use super::RequestPermissionProfile;
 use super::UserInput;
 use super::shared::v2_enum_from_core;
+use crate::JsonSchema;
+use crate::TS;
 use crate::protocol::item_builders::command_actions_for_path_uri;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::item_builders::review_output_text;
@@ -44,7 +46,6 @@ use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -52,7 +53,6 @@ use serde_with::serde_as;
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use ts_rs::TS;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -317,6 +317,7 @@ pub enum ThreadItem {
         /// Deprecated: use `appContext.resourceUri` instead.
         mcp_app_resource_uri: Option<String>,
         plugin_id: Option<String>,
+        read_only_hint: Option<bool>,
         result: Option<Box<McpToolCallResult>>,
         error: Option<McpToolCallError>,
         /// The duration of the MCP tool call in milliseconds.
@@ -961,6 +962,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     }),
                     mcp_app_resource_uri: mcp.mcp_app_resource_uri,
                     plugin_id: mcp.plugin_id,
+                    read_only_hint: mcp.read_only_hint,
                     result: mcp.result.map(McpToolCallResult::from).map(Box::new),
                     error: mcp.error.map(McpToolCallError::from),
                     duration_ms,

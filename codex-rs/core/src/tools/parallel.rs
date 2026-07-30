@@ -97,8 +97,22 @@ impl ToolCallRuntime {
         source: ToolCallSource,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
+        if self
+            .step_context
+            .turn
+            .config
+            .features
+            .enabled(codex_features::Feature::ExecutedToolCallMetadata)
+            && let Some(executed_tool_calls) = self.session.services.executed_tool_calls.as_ref()
+        {
+            executed_tool_calls.record_tool_call(
+                &call,
+                &source,
+                super::effective_tool_mode(&self.step_context.turn),
+            );
+        }
         let supports_parallel = self.router.tool_supports_parallel(&call);
-        let mcp_server = self.router.mcp_server_name(&call).map(str::to_owned);
+        let tool_runtime = self.router.tool_runtime(&call);
         let router = Arc::clone(&self.router);
         let session = Arc::clone(&self.session);
         let step_context = Arc::clone(&self.step_context);
@@ -131,13 +145,10 @@ impl ToolCallRuntime {
 
         let mut dispatch_handle: AbortOnDropHandle<Result<AnyToolResult, FunctionCallError>> =
             AbortOnDropHandle::new(tokio::spawn(async move {
-                if let Some(server) = mcp_server {
-                    session.refresh_mcp_if_dirty().await;
-                    session
-                        .services
-                        .mcp_runtime
-                        .wait_for_server_startup(&server)
-                        .await;
+                if let Some(tool_runtime) = tool_runtime
+                    && let Some(readiness) = tool_runtime.wait_until_ready(&session)
+                {
+                    readiness.await;
                 }
 
                 let _guard = if supports_parallel {

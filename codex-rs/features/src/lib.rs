@@ -92,7 +92,9 @@ pub enum Feature {
     SecretAuthStorage,
 
     // Experimental
-    /// Enable JavaScript code mode backed by the in-process V8 runtime.
+    /// Record model-attempted tool calls in internal Responses metadata.
+    ExecutedToolCallMetadata,
+    /// Enable JavaScript code mode backed by the standalone host process.
     CodeMode,
     /// Use a 30-second default yield timeout for code mode exec calls.
     CodeModeBufferedExec,
@@ -887,6 +889,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::JsRepl,
         key: "js_repl",
         stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ExecutedToolCallMetadata,
+        key: "executed_tool_call_metadata",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

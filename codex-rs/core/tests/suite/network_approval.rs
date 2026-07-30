@@ -687,6 +687,85 @@ async fn allowing_network_policy_amendment_persists_context_and_bypasses_prompt(
     not(target_os = "linux"),
     ignore = "requires the trusted Linux proxy bridge"
 )]
+async fn failed_network_policy_amendment_denies_request_and_does_not_approve_host() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses the POSIX/Python network fixture");
+    skip_if_host_windows!(Ok(()));
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let test = managed_network_unified_exec_test(&server).await?;
+    let environments = vec![local(test.config.cwd.clone())];
+    let first_responses = mount_exec_network_turn(
+        &server,
+        "resp-network-failed-amendment-1",
+        "network-failed-amendment-1",
+        network_fetch_args(LOCAL_ENVIRONMENT_ID),
+    )
+    .await?;
+    submit_managed_network_turn(
+        &test,
+        "reject an invalid network policy amendment",
+        environments.clone(),
+        ApprovalsReviewer::User,
+        AskForApproval::OnRequest,
+    )
+    .await?;
+    let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: Some(approval.turn_id),
+            decision: ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment: NetworkPolicyAmendment {
+                    host: "not-the-approved-host.invalid".to_string(),
+                    action: NetworkPolicyRuleAction::Allow,
+                },
+            },
+        })
+        .await?;
+    wait_for_turn_complete(&test).await;
+
+    let denied_output = first_responses
+        .requests()
+        .iter()
+        .find_map(|request| request.function_call_output_text("network-failed-amendment-1"))
+        .context("expected the failed policy amendment to reject the network request")?;
+    assert!(denied_output.contains("blocked by policy"));
+
+    mount_exec_network_turn(
+        &server,
+        "resp-network-failed-amendment-2",
+        "network-failed-amendment-2",
+        network_fetch_args(LOCAL_ENVIRONMENT_ID),
+    )
+    .await?;
+    submit_managed_network_turn(
+        &test,
+        "a failed policy amendment must not approve the host for the session",
+        environments,
+        ApprovalsReviewer::User,
+        AskForApproval::OnRequest,
+    )
+    .await?;
+    let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: Some(approval.turn_id),
+            decision: ReviewDecision::denied("reject the retried network request"),
+        })
+        .await?;
+    wait_for_turn_complete(&test).await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "requires the trusted Linux proxy bridge"
+)]
 async fn unattributed_network_request_uses_active_turn_environment_fallback() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses a raw TCP proxy fixture");
     skip_if_host_windows!(Ok(()));
@@ -1058,6 +1137,225 @@ async fn guardian_receives_exact_trigger_for_single_network_request() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_guardian_network_decisions_are_scoped_to_each_request_and_environment() -> Result<()>
+{
+    skip_if_target_windows!(Ok(()), "uses the POSIX/Python network fixture");
+    skip_if_host_windows!(Ok(()));
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_no_remote_env!(Ok(()));
+
+    let server = start_mock_server().await;
+    let test = managed_network_unified_exec_test(&server).await?;
+    let remote = test.executor_environment().selection().clone();
+    assert_eq!(remote.environment_id, REMOTE_ENVIRONMENT_ID);
+    let session_call_id = "remote-guardian-session-approval";
+    let session_command = remote_network_proxy_request_command("REMOTE_GUARDIAN_SESSION");
+    let session_probe_call_id = "remote-guardian-session-probe";
+    let session_probe_command =
+        remote_network_proxy_request_command("REMOTE_GUARDIAN_SESSION_PROBE");
+
+    let cases = [
+        (
+            "remote-guardian-deny",
+            remote_network_proxy_request_command("REMOTE_GUARDIAN_DENY"),
+            remote.clone(),
+            "The first remote request must be denied.",
+            false,
+        ),
+        (
+            "remote-guardian-allow",
+            remote_network_proxy_request_command("REMOTE_GUARDIAN_ALLOW"),
+            remote.clone(),
+            "This remote request is safe to allow once.",
+            true,
+        ),
+        (
+            "remote-guardian-deny-again",
+            remote_network_proxy_request_command("REMOTE_GUARDIAN_DENY_AGAIN"),
+            remote.clone(),
+            "A previous remote approval must not approve a later request.",
+            false,
+        ),
+        (
+            "local-guardian-deny",
+            remote_network_proxy_request_command("LOCAL_GUARDIAN_DENY"),
+            local(test.cwd.path().abs()),
+            "A remote approval must not approve the local environment.",
+            false,
+        ),
+    ];
+
+    let mut scripted_responses = Vec::with_capacity(cases.len() * 3 + 4);
+    for (call_id, command, _, rationale, approved) in &cases {
+        if *call_id == "local-guardian-deny" {
+            scripted_responses.push(sse(vec![
+                ev_response_created("resp-remote-guardian-session-approval-parent"),
+                ev_function_call(
+                    session_call_id,
+                    "exec_command",
+                    &serde_json::to_string(&network_exec_args(&session_command))?,
+                ),
+                ev_completed("resp-remote-guardian-session-approval-parent"),
+            ]));
+            scripted_responses.push(sse(vec![
+                ev_response_created("resp-remote-guardian-session-approval-done"),
+                ev_assistant_message("msg-remote-guardian-session-approval-done", "done"),
+                ev_completed("resp-remote-guardian-session-approval-done"),
+            ]));
+        }
+        scripted_responses.push(sse(vec![
+            ev_response_created(&format!("resp-{call_id}-parent")),
+            ev_function_call(
+                call_id,
+                "exec_command",
+                &serde_json::to_string(&network_exec_args(command))?,
+            ),
+            ev_completed(&format!("resp-{call_id}-parent")),
+        ]));
+        let assessment = json!({
+            "risk_level": if *approved { "low" } else { "high" },
+            "user_authorization": if *approved { "high" } else { "low" },
+            "outcome": if *approved { "allow" } else { "deny" },
+            "rationale": rationale,
+        });
+        scripted_responses.push(sse(vec![
+            ev_response_created(&format!("resp-{call_id}-guardian")),
+            ev_assistant_message(&format!("msg-{call_id}-guardian"), &assessment.to_string()),
+            ev_completed(&format!("resp-{call_id}-guardian")),
+        ]));
+        scripted_responses.push(sse(vec![
+            ev_response_created(&format!("resp-{call_id}-done")),
+            ev_assistant_message(&format!("msg-{call_id}-done"), "done"),
+            ev_completed(&format!("resp-{call_id}-done")),
+        ]));
+    }
+    scripted_responses.push(sse(vec![
+        ev_response_created("resp-remote-guardian-session-probe-parent"),
+        ev_function_call(
+            session_probe_call_id,
+            "exec_command",
+            &serde_json::to_string(&network_exec_args(&session_probe_command))?,
+        ),
+        ev_completed("resp-remote-guardian-session-probe-parent"),
+    ]));
+    scripted_responses.push(sse(vec![
+        ev_response_created("resp-remote-guardian-session-probe-done"),
+        ev_assistant_message("msg-remote-guardian-session-probe-done", "done"),
+        ev_completed("resp-remote-guardian-session-probe-done"),
+    ]));
+    let responses = mount_sse_sequence(&server, scripted_responses).await;
+
+    for (call_id, _, environment, _, _) in &cases {
+        if *call_id == "local-guardian-deny" {
+            submit_managed_network_turn(
+                &test,
+                "approve the remote destination for this session",
+                vec![remote.clone()],
+                ApprovalsReviewer::User,
+                AskForApproval::OnRequest,
+            )
+            .await?;
+            let approval = expect_network_approval(&test, REMOTE_ENVIRONMENT_ID).await?;
+            test.codex
+                .submit(Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: Some(approval.turn_id),
+                    decision: ReviewDecision::ApprovedForSession,
+                })
+                .await?;
+            tokio::time::timeout(Duration::from_secs(15), wait_for_turn_complete(&test))
+                .await
+                .context("remote session approval should complete")?;
+        }
+        let prompt = format!("review network request {call_id}");
+        submit_managed_network_turn(
+            &test,
+            &prompt,
+            vec![environment.clone()],
+            ApprovalsReviewer::AutoReview,
+            AskForApproval::OnRequest,
+        )
+        .await?;
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            wait_for_completion_without_network_prompt(&test),
+        )
+        .await
+        .with_context(|| format!("Guardian review for {call_id} should complete"))?;
+    }
+    submit_managed_network_turn(
+        &test,
+        "verify the remote session approval remains active",
+        vec![remote],
+        ApprovalsReviewer::User,
+        AskForApproval::OnRequest,
+    )
+    .await?;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        wait_for_completion_without_network_prompt(&test),
+    )
+    .await
+    .context("remote session approval should bypass another network prompt")?;
+
+    let mut expected_actions = Vec::with_capacity(cases.len());
+    for (call_id, command, environment, _, _) in &cases {
+        let cwd = environment
+            .cwd
+            .to_abs_path()
+            .with_context(|| format!("resolve the environment cwd for {call_id}"))?;
+        expected_actions.push(json!({
+            "host": NETWORK_TEST_HOST,
+            "port": 80,
+            "protocol": "http",
+            "target": NETWORK_TEST_TARGET,
+            "tool": "network_access",
+            "trigger": {
+                "callId": call_id,
+                "command": ["/bin/sh", "-c", command],
+                "cwd": cwd,
+                "sandboxPermissions": "use_default",
+                "toolName": "exec_command",
+                "tty": false,
+            },
+        }));
+    }
+    assert_eq!(guardian_network_actions(&responses)?, expected_actions);
+
+    let requests = responses.requests();
+    for (call_id, marker) in [
+        (session_call_id, "REMOTE_GUARDIAN_SESSION:HTTP/1.1 502"),
+        (
+            session_probe_call_id,
+            "REMOTE_GUARDIAN_SESSION_PROBE:HTTP/1.1 502",
+        ),
+    ] {
+        let output = requests
+            .iter()
+            .find_map(|request| request.function_call_output_text(call_id))
+            .with_context(|| format!("expected remote session network output for {call_id}"))?;
+        assert!(output.contains(marker));
+        assert!(!output.contains("rejected"));
+    }
+    for (call_id, _, _, rationale, approved) in &cases {
+        let output = requests
+            .iter()
+            .find_map(|request| request.function_call_output_text(call_id))
+            .with_context(|| format!("expected network tool output for {call_id}"))?;
+        if *approved {
+            assert!(output.contains("REMOTE_GUARDIAN_ALLOW:HTTP/1.1 502"));
+            assert!(!output.contains("rejected"));
+        } else {
+            assert!(output.contains(rationale));
+            assert!(!output.contains("HTTP/1.1 502"));
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approved_network_host_for_one_environment_still_prompts_in_another() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network fixture");
     skip_if_host_windows!(Ok(()));
@@ -1251,6 +1549,13 @@ fn network_exec_args(command: &str) -> Value {
         "login": false,
         "yield_time_ms": 1_000,
     })
+}
+
+fn remote_network_proxy_request_command(marker: &str) -> String {
+    let host = NETWORK_TEST_HOST;
+    format!(
+        "python3 -c \"import os,socket,urllib.parse; proxy = urllib.parse.urlparse(os.environ['HTTP_PROXY']); sock = socket.create_connection((proxy.hostname, proxy.port), timeout=10); sock.sendall(b'GET http://{host} HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n'); print('{marker}:' + sock.makefile('rb').readline().decode(errors='replace'))\""
+    )
 }
 
 async fn submit_managed_network_turn(

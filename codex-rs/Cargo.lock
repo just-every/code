@@ -2137,7 +2137,7 @@ name = "codex-app-server-protocol"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "clap",
+ "codex-app-server-protocol-noop-macros",
  "codex-experimental-api-macros",
  "codex-extension-items",
  "codex-protocol",
@@ -2159,7 +2159,12 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+ "zstd",
 ]
+
+[[package]]
+name = "codex-app-server-protocol-noop-macros"
+version = "0.0.0"
 
 [[package]]
 name = "codex-app-server-test-client"
@@ -2533,17 +2538,15 @@ version = "0.0.0"
 dependencies = [
  "codex-code-mode-protocol",
  "codex-http-client",
+ "codex-install-context",
  "codex-protocol",
  "codex-websocket-client",
- "deno_core_icudata",
  "futures",
  "pretty_assertions",
- "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
- "v8",
 ]
 
 [[package]]
@@ -2555,6 +2558,7 @@ dependencies = [
  "clap",
  "codex-code-mode",
  "codex-code-mode-protocol",
+ "codex-code-mode-runtime",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "futures",
@@ -2578,6 +2582,22 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "codex-code-mode-runtime"
+version = "0.0.0"
+dependencies = [
+ "codex-code-mode-protocol",
+ "codex-protocol",
+ "deno_core_icudata",
+ "futures",
+ "pretty_assertions",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "v8",
 ]
 
 [[package]]
@@ -2774,7 +2794,6 @@ dependencies = [
  "pretty_assertions",
  "rand 0.9.3",
  "regex-lite",
- "reqwest 0.12.28",
  "rmcp",
  "serde",
  "serde_json",
@@ -3733,11 +3752,11 @@ dependencies = [
  "async-stream",
  "bytes",
  "codex-core",
+ "codex-http-client",
  "codex-model-provider-info",
  "futures",
  "memchr",
  "pretty_assertions",
- "reqwest 0.12.28",
  "semver",
  "serde_json",
  "tokio",
@@ -3821,6 +3840,7 @@ dependencies = [
  "codex-async-utils",
  "codex-execpolicy",
  "codex-extension-items",
+ "codex-http-client",
  "codex-network-proxy",
  "codex-utils-absolute-path",
  "codex-utils-image",
@@ -3835,7 +3855,6 @@ dependencies = [
  "landlock",
  "pretty_assertions",
  "quick-xml 0.41.0",
- "reqwest 0.12.28",
  "schemars 0.8.22",
  "seccompiler",
  "serde",

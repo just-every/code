@@ -16,8 +16,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_sandboxing::compatibility_sandbox_policy_for_permission_profile;
-use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
-use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
+use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -116,6 +115,7 @@ pub struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) trace_id: Option<String>,
     pub(crate) realtime_active: bool,
+    pub(crate) code_mode_available: bool,
     pub config: Arc<Config>,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
     pub(crate) model_info: ModelInfo,
@@ -281,6 +281,7 @@ impl TurnContext {
             sub_id: self.sub_id.clone(),
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
+            code_mode_available: self.code_mode_available,
             config: Arc::new(config),
             auth_manager: self.auth_manager.clone(),
             model_info: model_info.clone(),
@@ -335,21 +336,9 @@ impl TurnContext {
         additional_permissions: Option<AdditionalPermissionProfile>,
         environment: &TurnEnvironment,
     ) -> FileSystemSandboxContext {
-        let permission_profile = self.config.permissions.permission_profile();
-        let (base_file_system_sandbox_policy, base_network_sandbox_policy) =
-            permission_profile.to_runtime_permissions();
-        let file_system_sandbox_policy = effective_file_system_sandbox_policy(
-            &base_file_system_sandbox_policy,
+        let permissions = effective_permission_profile(
+            self.config.permissions.permission_profile(),
             additional_permissions.as_ref(),
-        );
-        let network_sandbox_policy = effective_network_sandbox_policy(
-            base_network_sandbox_policy,
-            additional_permissions.as_ref(),
-        );
-        let permissions = PermissionProfile::from_runtime_permissions_with_enforcement(
-            permission_profile.enforcement(),
-            &file_system_sandbox_policy,
-            network_sandbox_policy,
         );
         FileSystemSandboxContext {
             permissions: permissions.into(),
@@ -564,6 +553,7 @@ impl Session {
             sub_id,
             trace_id: current_span_trace_id(),
             realtime_active: false,
+            code_mode_available: true,
             config: per_turn_config,
             auth_manager: auth_manager_for_context,
             model_info,
@@ -811,6 +801,7 @@ impl Session {
             sub_id,
             skills_snapshot,
         );
+        turn_context.code_mode_available = self.services.code_mode_service.is_available();
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
 
@@ -841,6 +832,21 @@ impl Session {
                 }),
             )
             .await;
+        }
+
+        if !tc.code_mode_available
+            && matches!(
+                crate::tools::requested_tool_mode(tc),
+                codex_protocol::openai_models::ToolMode::CodeMode
+                    | codex_protocol::openai_models::ToolMode::CodeModeOnly
+            )
+            && let Some(message) = self
+                .services
+                .code_mode_service
+                .take_unavailable_warning(crate::tools::effective_tool_mode(tc))
+        {
+            self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
+                .await;
         }
 
         if let Some(message) =

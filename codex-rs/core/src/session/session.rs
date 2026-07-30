@@ -996,15 +996,11 @@ impl Session {
             } else {
                 None
             };
-            let blocked_request_observer = if managed_network_requirements_configured {
-                config
-                    .permissions
-                    .network
-                    .as_ref()
-                    .map(|_| build_blocked_request_observer(Arc::clone(&network_approval)))
-            } else {
-                None
-            };
+            let blocked_request_observer = config
+                .permissions
+                .network
+                .as_ref()
+                .map(|_| build_blocked_request_observer(Arc::clone(&network_approval)));
             let network_policy_decider =
                 network_policy_decider_session
                     .as_ref()
@@ -1082,6 +1078,10 @@ impl Session {
                 }).await;
             }
 
+            let executed_tool_calls = config
+                .features
+                .enabled(Feature::ExecutedToolCallMetadata)
+                .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -1159,6 +1159,7 @@ impl Session {
                         session_configuration.parent_thread_id,
                     ),
                 ),
+                executed_tool_calls,
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(
                     Arc::clone(&code_mode_session_provider),
                     &config.features,

@@ -18,6 +18,7 @@ use crate::skills::SkillRenderSideEffects;
 use crate::skills::render::SkillMetadataBudget;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::format_exec_output_str;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolRegistry;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
@@ -74,6 +75,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
+use codex_tools::ToolSpec;
 use codex_utils_path_uri::PathUri;
 use tracing::Span;
 
@@ -815,19 +817,33 @@ async fn preview_session_start_hooks(
     )
 }
 
-fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> ToolCallRuntime {
-    let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let router = Arc::new(ToolRouter::from_context(
+pub(crate) fn tool_runtimes_for_test_step(
+    step_context: &StepContext,
+) -> (Vec<Arc<dyn CoreToolRuntime>>, Vec<ToolSpec>) {
+    let mut tool_runtimes = crate::tools::spec_plan::build_core_tool_runtimes(
         step_context.turn.as_ref(),
         &step_context.environments,
         step_context.mcp.as_ref(),
-        crate::tools::router::ToolRouterParams {
-            tool_suggest_candidates: None,
-            tool_runtimes: Vec::new(),
-            extension_tool_executors: Vec::new(),
-            wait_for_environment_tool_config: None,
-            dynamic_tools: turn_context.dynamic_tools.as_slice(),
-        },
+        /*tool_suggest_candidates*/ None,
+        /*wait_for_environment_tool_config*/ None,
+    );
+    let hosted_specs = crate::tools::spec_plan::append_source_tool_runtimes(
+        step_context.turn.as_ref(),
+        &mut tool_runtimes,
+        Vec::new(),
+        Vec::new(),
+        &step_context.turn.dynamic_tools,
+    );
+    (tool_runtimes, hosted_specs)
+}
+
+fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> ToolCallRuntime {
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
+    let (tool_runtimes, hosted_specs) = tool_runtimes_for_test_step(step_context.as_ref());
+    let router = Arc::new(ToolRouter::from_tools(
+        step_context.turn.as_ref(),
+        tool_runtimes,
+        hosted_specs,
         &Default::default(),
     ));
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -2559,7 +2575,8 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     let initial_context = build_initial_context(&session, &turn_context).await;
     expected.extend(initial_context);
     let history_after_seed = session.clone_history().await;
@@ -2570,7 +2587,8 @@ async fn resumed_history_injects_initial_context_on_first_context_update_only() 
 
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     let history_after_second_seed = session.clone_history().await;
     assert_eq!(
         history_after_seed.raw_items(),
@@ -3192,7 +3210,12 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
         .await
         .expect("a fresh cancellation token cannot be cancelled");
-    let world_state = Arc::new(session.build_world_state_for_step(&step_context).await);
+    let world_state = Arc::new(
+        session
+            .build_world_state_for_step(&step_context)
+            .await
+            .expect("world state should build"),
+    );
 
     session
         .start_new_context_window(&step_context, world_state)
@@ -5556,7 +5579,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         skills_service,
         plugins_manager,
         mcp_manager,
-        Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+        Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
@@ -5600,7 +5623,10 @@ pub(crate) async fn build_world_state_from_turn_context(
     turn_context: &Arc<TurnContext>,
 ) -> WorldState {
     let step_context = StepContext::for_test(Arc::clone(turn_context));
-    session.build_world_state_for_step(&step_context).await
+    session
+        .build_world_state_for_step(&step_context)
+        .await
+        .expect("world state should build")
 }
 
 // todo: use online model info
@@ -5702,6 +5728,10 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     ));
     let network_approval = Arc::new(NetworkApprovalService::default());
     let mcp_runtime = Arc::new(codex_mcp::McpRuntime::empty(config.prefix_mcp_tool_names()));
+    let executed_tool_calls = config
+        .features
+        .enabled(Feature::ExecutedToolCallMetadata)
+        .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -5777,8 +5807,9 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
+        executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
-            Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+            Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
             &config.features,
         ),
         tool_search_handler_cache: Default::default(),
@@ -5954,7 +5985,7 @@ async fn make_session_with_config_and_rx(
         skills_service,
         plugins_manager,
         mcp_manager,
-        Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+        Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
@@ -6064,7 +6095,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         skills_service,
         plugins_manager,
         mcp_manager,
-        Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+        Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
@@ -7885,6 +7916,10 @@ where
     ));
     let network_approval = Arc::new(NetworkApprovalService::default());
     let mcp_runtime = Arc::new(codex_mcp::McpRuntime::empty(config.prefix_mcp_tool_names()));
+    let executed_tool_calls = config
+        .features
+        .enabled(Feature::ExecutedToolCallMetadata)
+        .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -7960,8 +7995,9 @@ where
             /*attestation_provider*/ None,
             config.http_client_factory(),
         ),
+        executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
-            Arc::new(codex_code_mode::InProcessCodeModeSessionProvider),
+            Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
             &config.features,
         ),
         tool_search_handler_cache: Default::default(),
@@ -8690,7 +8726,6 @@ async fn record_context_updates_emits_environment_item_for_time_changes() {
             &session.services.models_manager,
         )
         .await;
-    current_context.current_date = Some("2026-02-27".to_string());
     current_context.timezone = Some("Europe/Berlin".to_string());
 
     let update_items =
@@ -8700,7 +8735,8 @@ async fn record_context_updates_emits_environment_item_for_time_changes() {
         .into_iter()
         .find(|text| text.contains("<environment_context>"))
         .expect("environment update item should be emitted");
-    assert!(environment_update.contains("<current_date>2026-02-27</current_date>"));
+    let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(environment_update.contains(&format!("<current_date>{current_date}</current_date>")));
     assert!(environment_update.contains("<timezone>Europe/Berlin</timezone>"));
 }
 
@@ -8751,13 +8787,15 @@ async fn record_context_update_items(
     let previous_step = StepContext::for_test(previous_context);
     session
         .record_context_updates_and_set_reference_context_item(&previous_step)
-        .await;
+        .await
+        .expect("world state should build");
     let previous_len = session.clone_history().await.raw_items().len();
 
     let current_step = StepContext::for_test(Arc::new(current_context));
     session
         .record_context_updates_and_set_reference_context_item(&current_step)
-        .await;
+        .await
+        .expect("world state should build");
     let history = session.clone_history().await;
     history.raw_items()[previous_len..].to_vec()
 }
@@ -8983,7 +9021,8 @@ async fn record_context_updates_includes_turn_context_fragments_on_steady_state_
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
 
     let history = session.clone_history().await;
     let developer_messages = developer_message_texts(history.raw_items());
@@ -9441,7 +9480,8 @@ async fn record_context_updates_and_set_reference_context_item_injects_full_cont
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     let history = session.clone_history().await;
     let initial_context = build_initial_context(&session, &turn_context).await;
     assert_eq!(
@@ -9477,7 +9517,8 @@ async fn record_context_updates_and_set_reference_context_item_reinjects_full_co
         .await;
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     {
         let mut state = session.state.lock().await;
         state.set_reference_context_item(/*item*/ None);
@@ -9491,7 +9532,8 @@ async fn record_context_updates_and_set_reference_context_item_reinjects_full_co
 
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
 
     let history = session.clone_history().await;
     let mut expected_history = vec![compacted_summary];
@@ -9536,7 +9578,8 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
 
     assert_eq!(
         session.clone_history().await.raw_items().to_vec(),
@@ -9585,7 +9628,8 @@ async fn record_context_updates_and_set_reference_context_item_persists_split_fi
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     session.ensure_rollout_materialized().await;
     session.flush_rollout().await.expect("rollout should flush");
 
@@ -9672,7 +9716,8 @@ async fn record_context_updates_and_set_reference_context_item_persists_full_rei
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
-        .await;
+        .await
+        .expect("world state should build");
     session.ensure_rollout_materialized().await;
     session.flush_rollout().await.expect("rollout should flush");
 
@@ -11087,17 +11132,11 @@ async fn abort_review_task_emits_exited_then_aborted_and_records_history() {
 async fn fatal_tool_error_stops_turn_and_reports_error() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let router = ToolRouter::from_context(
+    let (tool_runtimes, hosted_specs) = tool_runtimes_for_test_step(step_context.as_ref());
+    let router = ToolRouter::from_tools(
         step_context.turn.as_ref(),
-        &step_context.environments,
-        step_context.mcp.as_ref(),
-        crate::tools::router::ToolRouterParams {
-            tool_suggest_candidates: None,
-            tool_runtimes: Vec::new(),
-            extension_tool_executors: Vec::new(),
-            wait_for_environment_tool_config: None,
-            dynamic_tools: turn_context.dynamic_tools.as_slice(),
-        },
+        tool_runtimes,
+        hosted_specs,
         &Default::default(),
     );
     let item = ResponseItem::CustomToolCall {
