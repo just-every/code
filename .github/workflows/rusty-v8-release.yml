@@ -17,6 +17,9 @@ concurrency:
   group: ${{ github.workflow }}::${{ inputs.release_tag || github.run_id }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   metadata:
     runs-on: ubuntu-latest
