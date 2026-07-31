@@ -69,7 +69,7 @@ pub(crate) enum PlanType {
 impl PlanType {
     pub fn as_string(&self) -> String {
         match self {
-            Self::Known(known) => format!("{known:?}").to_lowercase(),
+            Self::Known(known) => known.raw_value().to_string(),
             Self::Unknown(s) => s.clone(),
         }
     }
@@ -84,14 +84,46 @@ impl PlanType {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum KnownPlan {
     Free,
+    Go,
     Plus,
     Pro,
     ProLite,
     Team,
+    #[serde(rename = "self_serve_business_prolite")]
+    SelfServeBusinessProLite,
+    #[serde(rename = "self_serve_business_usage_based")]
+    SelfServeBusinessUsageBased,
     Business,
     Ent26,
+    #[serde(rename = "enterprise_cbp_automation")]
+    EnterpriseCbpAutomation,
+    #[serde(rename = "enterprise_cbp_usage_based")]
+    EnterpriseCbpUsageBased,
+    #[serde(alias = "hc")]
     Enterprise,
+    #[serde(alias = "education")]
     Edu,
+}
+
+impl KnownPlan {
+    fn raw_value(&self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Go => "go",
+            Self::Plus => "plus",
+            Self::Pro => "pro",
+            Self::ProLite => "prolite",
+            Self::Team => "team",
+            Self::SelfServeBusinessProLite => "self_serve_business_prolite",
+            Self::SelfServeBusinessUsageBased => "self_serve_business_usage_based",
+            Self::Business => "business",
+            Self::Ent26 => "ent26",
+            Self::EnterpriseCbpAutomation => "enterprise_cbp_automation",
+            Self::EnterpriseCbpUsageBased => "enterprise_cbp_usage_based",
+            Self::Enterprise => "enterprise",
+            Self::Edu => "edu",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -294,6 +326,45 @@ mod tests {
         let info = parse_id_token(&fake_jwt).expect("should parse");
         let plan = info.chatgpt_plan_type.expect("plan should parse");
         assert_eq!(plan.as_string(), "ent26");
+    }
+
+    #[test]
+    fn enterprise_cbp_plan_types_parse_as_known_plans() {
+        #[derive(Serialize)]
+        struct Header {
+            alg: &'static str,
+            typ: &'static str,
+        }
+        let header = Header {
+            alg: "none",
+            typ: "JWT",
+        };
+
+        fn b64url_no_pad(bytes: &[u8]) -> String {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        }
+
+        for raw_plan in [
+            "self_serve_business_prolite",
+            "self_serve_business_usage_based",
+            "enterprise_cbp_automation",
+            "enterprise_cbp_usage_based",
+        ] {
+            let payload = serde_json::json!({
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": raw_plan
+                }
+            });
+            let header_b64 = b64url_no_pad(&serde_json::to_vec(&header).unwrap());
+            let payload_b64 = b64url_no_pad(&serde_json::to_vec(&payload).unwrap());
+            let signature_b64 = b64url_no_pad(b"sig");
+            let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
+
+            let info = parse_id_token(&fake_jwt).expect("should parse");
+            let plan = info.chatgpt_plan_type.expect("plan should parse");
+            assert_eq!(plan.as_string(), raw_plan);
+        }
     }
 
     #[test]

@@ -12,9 +12,22 @@ pub enum PlanType {
     Go,
     Plus,
     Pro,
+    ProLite,
     Team,
+    #[serde(rename = "self_serve_business_prolite")]
+    #[ts(rename = "self_serve_business_prolite")]
+    SelfServeBusinessProLite,
+    #[serde(rename = "self_serve_business_usage_based")]
+    #[ts(rename = "self_serve_business_usage_based")]
+    SelfServeBusinessUsageBased,
     Business,
     Ent26,
+    #[serde(rename = "enterprise_cbp_automation")]
+    #[ts(rename = "enterprise_cbp_automation")]
+    EnterpriseCbpAutomation,
+    #[serde(rename = "enterprise_cbp_usage_based")]
+    #[ts(rename = "enterprise_cbp_usage_based")]
+    EnterpriseCbpUsageBased,
     Enterprise,
     Edu,
     #[serde(other)]
@@ -35,5 +48,38 @@ mod tests {
             serde_json::from_str::<PlanType>("\"ent26\"").expect("ent26 should deserialize"),
             PlanType::Ent26
         );
+    }
+
+    #[test]
+    fn business_plan_types_use_expected_wire_names() {
+        for (plan_type, wire_name) in [
+            (PlanType::ProLite, "prolite"),
+            (
+                PlanType::SelfServeBusinessProLite,
+                "self_serve_business_prolite",
+            ),
+            (
+                PlanType::SelfServeBusinessUsageBased,
+                "self_serve_business_usage_based",
+            ),
+            (
+                PlanType::EnterpriseCbpAutomation,
+                "enterprise_cbp_automation",
+            ),
+            (
+                PlanType::EnterpriseCbpUsageBased,
+                "enterprise_cbp_usage_based",
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&plan_type).expect("plan should serialize"),
+                format!("\"{wire_name}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<PlanType>(&format!("\"{wire_name}\""))
+                    .expect("plan should deserialize"),
+                plan_type
+            );
+        }
     }
 }

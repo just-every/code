@@ -432,14 +432,23 @@ pub fn login_with_chatgpt_auth_tokens(
     if let Some(plan_type) = chatgpt_plan_type {
         id_token.chatgpt_plan_type = Some(match plan_type.trim().to_ascii_lowercase().as_str() {
             "free" => PlanType::Known(KnownPlan::Free),
+            "go" => PlanType::Known(KnownPlan::Go),
             "plus" => PlanType::Known(KnownPlan::Plus),
             "pro" => PlanType::Known(KnownPlan::Pro),
             "prolite" => PlanType::Known(KnownPlan::ProLite),
             "team" => PlanType::Known(KnownPlan::Team),
+            "self_serve_business_prolite" => PlanType::Known(KnownPlan::SelfServeBusinessProLite),
+            "self_serve_business_usage_based" => {
+                PlanType::Known(KnownPlan::SelfServeBusinessUsageBased)
+            }
             "business" => PlanType::Known(KnownPlan::Business),
             "ent26" => PlanType::Known(KnownPlan::Ent26),
+            "enterprise_cbp_automation" => PlanType::Known(KnownPlan::EnterpriseCbpAutomation),
+            "enterprise_cbp_usage_based" => {
+                PlanType::Known(KnownPlan::EnterpriseCbpUsageBased)
+            }
             "enterprise" => PlanType::Known(KnownPlan::Enterprise),
-            "edu" => PlanType::Known(KnownPlan::Edu),
+            "education" | "edu" => PlanType::Known(KnownPlan::Edu),
             _ => PlanType::Unknown(plan_type.to_string()),
         });
     }
