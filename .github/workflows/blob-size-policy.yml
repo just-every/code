@@ -3,6 +3,9 @@ name: blob-size-policy
 on:
   pull_request: {}
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Blob size policy

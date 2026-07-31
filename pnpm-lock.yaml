@@ -8,7 +8,7 @@ overrides:
   '@babel/core': 7.29.6
   '@modelcontextprotocol/sdk': 1.26.0
   braces: ^3.0.3
-  brace-expansion@1.1.12: 1.1.16
+  brace-expansion@1.1.12: 1.1.17
   brace-expansion@5.0.5: 5.0.8
   esbuild: 0.28.1
   flatted: 3.4.2
@@ -42,20 +42,20 @@ importers:
         version: 3.6.2
     optionalDependencies:
       '@just-every/code-darwin-arm64':
-        specifier: 0.6.158
-        version: 0.6.158
+        specifier: 0.6.160
+        version: 0.6.160
       '@just-every/code-darwin-x64':
-        specifier: 0.6.158
-        version: 0.6.158
+        specifier: 0.6.160
+        version: 0.6.160
       '@just-every/code-linux-arm64-musl':
-        specifier: 0.6.158
-        version: 0.6.158
+        specifier: 0.6.160
+        version: 0.6.160
       '@just-every/code-linux-x64-musl':
-        specifier: 0.6.158
-        version: 0.6.158
+        specifier: 0.6.160
+        version: 0.6.160
       '@just-every/code-win32-x64':
-        specifier: 0.6.158
-        version: 0.6.158
+        specifier: 0.6.160
+        version: 0.6.160
 
   codex-rs/responses-api-proxy/npm: {}
 
@@ -635,28 +635,28 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
-  '@just-every/code-darwin-arm64@0.6.158':
-    resolution: {integrity: sha512-0HTudKrzfS4Q4oT0Ws2KHsfwtRgtjhD6ooR6mkzvprkqRGdxJ4tm/S0lsQaG6cOCjxw+wVqDF2SYK7wR93bUCQ==}
+  '@just-every/code-darwin-arm64@0.6.160':
+    resolution: {integrity: sha512-oRGNzdiqlJ9WU8obQYp6VyBZIOpcNpPVGchrAK7vhiAa6i1PkFLz1P4YOazjQ5mgpP+PXUSMC6mVCL4gD+yfFQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@just-every/code-darwin-x64@0.6.158':
-    resolution: {integrity: sha512-3S8rADkp5ojh5xB0kSEP47J1e9qzOQ6DJqNrQxSyTBqHlMHO/lIb6s18aQpUN9uyVtFWv4J8Ek5a4YHPCiBeUA==}
+  '@just-every/code-darwin-x64@0.6.160':
+    resolution: {integrity: sha512-4wXsJnc4PDmREB48ZsUc5kEQ8VNoRj2Hha3E0lkBq3E0j+ZYZ0EGwSzQq5Z2rogip9pJEVq1EnNfoHk6RxNlfA==}
     cpu: [x64]
     os: [darwin]
 
-  '@just-every/code-linux-arm64-musl@0.6.158':
-    resolution: {integrity: sha512-UFfP/Yo1E1Pu4QMvcaLk8GjOxru2Mwc09KTC1rJ9jTlMLTLEe7NL40yIuOda8Wc5lP2wG2tEfAy7Kqe+WsbcPw==}
+  '@just-every/code-linux-arm64-musl@0.6.160':
+    resolution: {integrity: sha512-SK+NDQzAFUwwFZvBA4F1XRNbKpVqNb7m58NRzs0WSiPbRZwhiVJYrUikooZrPT62FRhp8o/aOHRJt0Wb5O3akA==}
     cpu: [arm64]
     os: [linux]
 
-  '@just-every/code-linux-x64-musl@0.6.158':
-    resolution: {integrity: sha512-+rjITqF4ZdsbJfnNEKqi1w8ILNJwCukupT16Eyr89VCLd+Y9eU09AhZvRenQMtpALrgemlFl0/d1SFGtJyw3zA==}
+  '@just-every/code-linux-x64-musl@0.6.160':
+    resolution: {integrity: sha512-2bEX9txAdSF+trEecPdNWkpbe98YNvD/DditS3ZKsgiihg5d2w9BoJtl0zOf5RXU47OFT9gptCoOHsE6xnhpeA==}
     cpu: [x64]
     os: [linux]
 
-  '@just-every/code-win32-x64@0.6.158':
-    resolution: {integrity: sha512-bdFbFO5/9g0mZmIEq6GJUuqWsxp+5G7hpOKTlCN0xx5xrHq+Uwl8oUUYVOfGTDwSpOP3chirB21+U7gOeEdKiQ==}
+  '@just-every/code-win32-x64@0.6.160':
+    resolution: {integrity: sha512-p2jQa/mjy9rSYrNQGTL9R1FKcOAYsmjZNOjLCQiFMat1ppXmaDZFnjUyJ3tnfqOisGZTFkwwSaa6op5g7wiTRg==}
     cpu: [x64]
     os: [win32]
 
@@ -1029,8 +1029,8 @@ packages:
     resolution: {integrity: sha512-hY/u2lxLrbecMEWSB0IpGzGyDyeoMFQhCvZd2jGFSE5I17Fh01sYUBPCJtkWERw7zrac9+cIghxm/ytJa2X8iA==}
     hasBin: true
 
-  brace-expansion@1.1.16:
-    resolution: {integrity: sha512-IDw48K2/2kRkg9LdJxurvq3lV3aBgq0REY89duEqFRthjlPdXHKMj7EnQOXVckxzgisinf3nHfrcE2FufFLXMw==}
+  brace-expansion@1.1.17:
+    resolution: {integrity: sha512-w+aeW/mkgM4PyRMOJCgi3fOrTm5Q8QY1OSfn2TO2iuDj3ezIHqejmuxbjfPrqUkgqRew1iqkyAn0tr0ZwHD9+w==}
 
   brace-expansion@5.0.8:
     resolution: {integrity: sha512-JZyDyq3D4AUifKTPOB7DELf6XsB3WdPuNxCtob1vFXPsSXhdAiHBWJ/tJ8HAc9aH84BK+5JFZLNkJKx3G9kzQg==}
@@ -2857,19 +2857,19 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@just-every/code-darwin-arm64@0.6.158':
+  '@just-every/code-darwin-arm64@0.6.160':
     optional: true
 
-  '@just-every/code-darwin-x64@0.6.158':
+  '@just-every/code-darwin-x64@0.6.160':
     optional: true
 
-  '@just-every/code-linux-arm64-musl@0.6.158':
+  '@just-every/code-linux-arm64-musl@0.6.160':
     optional: true
 
-  '@just-every/code-linux-x64-musl@0.6.158':
+  '@just-every/code-linux-x64-musl@0.6.160':
     optional: true
 
-  '@just-every/code-win32-x64@0.6.158':
+  '@just-every/code-win32-x64@0.6.160':
     optional: true
 
   '@nodelib/fs.scandir@2.1.5':
@@ -3234,7 +3234,7 @@ snapshots:
 
   baseline-browser-mapping@2.8.9: {}
 
-  brace-expansion@1.1.16:
+  brace-expansion@1.1.17:
     dependencies:
       balanced-match: 1.0.2
       concat-map: 0.0.1
@@ -4132,7 +4132,7 @@ snapshots:
 
   minimatch@3.1.4:
     dependencies:
-      brace-expansion: 1.1.16
+      brace-expansion: 1.1.17
 
   minimatch@9.0.7:
     dependencies:

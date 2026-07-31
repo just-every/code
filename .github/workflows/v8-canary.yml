@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'main' }}
 
+permissions:
+  contents: read
+
 jobs:
   metadata:
     runs-on: ubuntu-latest
