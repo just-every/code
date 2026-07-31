@@ -80,7 +80,6 @@ use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
-use codex_mcp::ToolInfo;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
@@ -150,7 +149,6 @@ const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_tok
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    turn_extension_data: Arc<codex_extension_api::ExtensionData>,
     input: Vec<TurnInput>,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
@@ -345,7 +343,7 @@ pub(crate) async fn run_turn(
             run_sampling_request(
                 Arc::clone(&sess),
                 Arc::clone(&step_context),
-                Arc::clone(&turn_extension_data),
+                Arc::clone(&turn_context.extension_data),
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 &responses_metadata,
@@ -743,9 +741,9 @@ async fn build_skills_and_plugins(
         // Plugin mentions need raw MCP/app inventory even when app tools
         // are normally hidden so we can describe the plugin's currently
         // usable capabilities for this turn.
-        step_context.mcp.tools().to_vec()
+        step_context.mcp.tools()
     } else {
-        Vec::new()
+        &[]
     };
     let available_connectors = if turn_context.apps_enabled() {
         let connectors = codex_connectors::merge::merge_plugin_connectors_with_accessible(
@@ -753,7 +751,7 @@ async fn build_skills_and_plugins(
                 .connector_ids()
                 .iter()
                 .map(|connector_id| connector_id.0.clone()),
-            connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
+            connectors::accessible_connectors_from_mcp_tools(mcp_tools),
         );
         connectors::with_app_enabled_state(connectors, &turn_context.config)
     } else {
@@ -810,8 +808,7 @@ async fn build_skills_and_plugins(
         &available_connectors,
         &skill_name_counts_lower,
     );
-    let plugin_items =
-        build_plugin_injections(mentioned_plugins, &mcp_tools, &available_connectors);
+    let plugin_items = build_plugin_injections(mentioned_plugins, mcp_tools, &available_connectors);
     let mut explicitly_enabled_connectors = collect_explicit_app_ids(user_input);
     explicitly_enabled_connectors.extend(skill_connector_ids);
     let connector_names_by_id = available_connectors
@@ -1322,7 +1319,6 @@ async fn run_sampling_request(
     let base_instructions = sess.get_base_instructions().await;
 
     let tool_runtime = ToolCallRuntime::new(
-        Arc::clone(&router),
         Arc::clone(&sess),
         Arc::clone(&step_context),
         Arc::clone(&turn_diff_tracker),
@@ -1330,7 +1326,6 @@ async fn run_sampling_request(
     let _code_mode_worker = sess.services.code_mode_service.start_turn_worker(
         &sess,
         Arc::clone(&step_context),
-        Arc::clone(&router),
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
@@ -1472,13 +1467,13 @@ pub(crate) async fn built_tools(
     mcp: &codex_mcp::McpBinding,
     step_store: &ExtensionData,
     prepared_recommendations: PreparedToolRecommendations,
-) -> (Vec<ToolInfo>, Arc<ToolRouter>) {
-    let all_mcp_tools = mcp.tools().to_vec();
+) -> Arc<ToolRouter> {
+    let all_mcp_tools = mcp.tools();
     let connector_snapshot = mcp.config().connector_snapshot.clone();
 
     let apps_enabled = turn_context.apps_enabled();
     let accessible_connectors =
-        apps_enabled.then(|| connectors::accessible_connectors_from_mcp_tools(&all_mcp_tools));
+        apps_enabled.then(|| connectors::accessible_connectors_from_mcp_tools(all_mcp_tools));
     let accessible_connectors_with_enabled_state =
         accessible_connectors.as_ref().map(|connectors| {
             connectors::with_app_enabled_state(connectors.clone(), &turn_context.config)
@@ -1554,7 +1549,7 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
-    let tool_router = Arc::new(build_tool_router(
+    Arc::new(build_tool_router(
         sess,
         turn_context,
         environments,
@@ -1562,8 +1557,7 @@ pub(crate) async fn built_tools(
         connectors.as_deref(),
         step_store,
         tool_suggest_candidates.as_ref(),
-    ));
-    (all_mcp_tools, tool_router)
+    ))
 }
 
 #[derive(Debug)]

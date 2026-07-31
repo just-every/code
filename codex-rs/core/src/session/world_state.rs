@@ -129,11 +129,15 @@ impl Session {
                     .enabled(Feature::RequestPermissionsTool),
             ));
         }
-        if turn_context.config.include_collaboration_mode_instructions
-            && let Some(collaboration_mode) =
-                CollaborationModeState::from_collaboration_mode(&turn_context.collaboration_mode())
-        {
-            world_state.add_section(collaboration_mode);
+        if turn_context.config.include_collaboration_mode_instructions {
+            world_state.add_section(CollaborationModeState::from_collaboration_mode(
+                &turn_context.collaboration_mode(),
+                turn_context
+                    .model_info
+                    .model_messages
+                    .as_ref()
+                    .and_then(|messages| messages.collaboration_modes.as_ref()),
+            ));
         }
         if turn_context.config.include_environment_context {
             let current_date = self
@@ -164,7 +168,7 @@ impl Session {
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
                 connectors::with_app_enabled_state(
-                    connectors::accessible_connectors_from_mcp_tools(&step_context.mcp_tools),
+                    connectors::accessible_connectors_from_mcp_tools(step_context.mcp.tools()),
                     &turn_context.config,
                 )
                 .into_iter()

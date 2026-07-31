@@ -5,7 +5,6 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
-use codex_core_skills::render_available_skills_body;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::take_bytes_at_char_boundary;
@@ -13,6 +12,7 @@ use codex_utils_string::take_bytes_at_char_boundary;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillSourceKind;
+use crate::catalog_prompt::render_available_skills_body;
 use crate::fragments::AvailableSkillsInstructions;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
@@ -440,6 +440,7 @@ struct RenderedCatalog {
 pub(crate) struct AvailableSkillsRender {
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
+    preserve_empty_fragment: bool,
     pub(crate) report: SkillRenderReport,
 }
 
@@ -448,7 +449,7 @@ impl AvailableSkillsRender {
         self,
         include_skills_usage_instructions: bool,
     ) -> Option<AvailableSkillsInstructions> {
-        (!self.skill_lines.is_empty()).then(|| {
+        (self.preserve_empty_fragment || !self.skill_lines.is_empty()).then(|| {
             AvailableSkillsInstructions::from_skill_lines(
                 self.skill_root_lines,
                 self.skill_lines,
@@ -501,6 +502,7 @@ pub(crate) fn render_available_skills(
     Some(AvailableSkillsRender {
         skill_root_lines: selected.skill_root_lines,
         skill_lines: selected.skill_lines,
+        preserve_empty_fragment: policy == SkillCatalogRenderPolicy::CoreCompatible,
         report: selected.report,
     })
 }
@@ -615,6 +617,7 @@ fn render_combined_group(
     AvailableSkillsRender {
         skill_root_lines,
         skill_lines: lines.into_iter().map(|rendered| rendered.line).collect(),
+        preserve_empty_fragment: false,
         report: SkillRenderReport {
             total_count: skill_lines.len(),
             included_count: skill_lines.len().saturating_sub(omitted_count),
@@ -889,7 +892,10 @@ fn build_alias_plan(
     let mut alias_root_by_display_root = HashMap::new();
     let mut alias_roots = Vec::new();
     let mut seen = HashSet::new();
-    for entry in entries {
+    let mut alias_ordered_entries = entries.to_vec();
+    alias_ordered_entries
+        .sort_by_key(|entry| entry.display_path_root_order().unwrap_or(usize::MAX));
+    for entry in alias_ordered_entries {
         if entry.authority.kind != SkillSourceKind::Host {
             continue;
         }

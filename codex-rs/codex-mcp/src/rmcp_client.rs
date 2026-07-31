@@ -30,6 +30,7 @@ use crate::pagination::collect_paginated;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
+use crate::server::has_explicit_http_authorization;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
 use crate::tool_catalog_cache::McpToolCatalogFetchTicket;
 use crate::tools::ToolInfo;
@@ -39,6 +40,7 @@ use async_channel::Sender;
 use codex_api::SharedAuthProvider;
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
+use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
@@ -995,9 +997,18 @@ async fn make_rmcp_client(
     protocol_mode: McpProtocolMode,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
+    if matches!(config.auth, McpServerAuth::ChatGpt)
+        && !config.is_local_environment()
+        && !has_explicit_http_authorization(&config)
+    {
+        return Err(StartupOutcomeError::from(anyhow!(
+            "executor-owned MCP server `{server_name}` cannot use hosted ChatGPT authentication; configure executor-owned credentials instead"
+        )));
+    }
     let resolved_environment =
         resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
     let is_local_environment = config.is_local_environment();
+    let oauth_credential_name = config.oauth_credential_name(server_name);
     let McpServerConfig { transport, .. } = config;
 
     match transport {
@@ -1063,7 +1074,7 @@ async fn make_rmcp_client(
                     Err(error) => return Err(error.into()),
                 };
             RmcpClient::new_streamable_http_client_with_protocol_mode(
-                server_name,
+                oauth_credential_name.as_ref(),
                 &url,
                 resolved_bearer_token,
                 http_headers,

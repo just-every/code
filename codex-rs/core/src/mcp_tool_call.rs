@@ -140,16 +140,7 @@ pub(crate) async fn handle_mcp_tool_call(
         arguments: arguments_value.clone(),
     };
 
-    sess.refresh_mcp_if_dirty().await;
-    let current_binding = sess
-        .services
-        .mcp_runtime
-        .current_binding_for_call(&server)
-        .await;
-    let Some(prepared_call) = current_binding
-        .as_ref()
-        .and_then(|binding| binding.prepare_call(&server, &tool_name))
-    else {
+    let Some(prepared_call) = sess.prepare_mcp_call(&server, &tool_name).await else {
         let item_metadata =
             McpToolCallItemMetadata::from_tool_metadata(&server, /*metadata*/ None);
         let result = notify_mcp_tool_call_skip(
@@ -220,7 +211,7 @@ pub(crate) async fn handle_mcp_tool_call(
                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
         };
     }
-    sess.register_mcp_tool_approval_metadata(turn_context, &call_id, metadata.clone())
+    sess.register_mcp_tool_approval_metadata(turn_context, &call_id, &invocation, metadata.clone())
         .await;
     notify_mcp_tool_call_started(
         sess.as_ref(),
@@ -1056,7 +1047,7 @@ impl McpToolApprovalPolicy {
 #[derive(Clone)]
 pub(crate) struct McpToolApprovalMetadata {
     annotations: Option<ToolAnnotations>,
-    connector_id: Option<String>,
+    pub(crate) connector_id: Option<String>,
     link_id: Option<String>,
     connector_name: Option<String>,
     connector_description: Option<String>,
@@ -1074,6 +1065,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         call_id: &str,
+        invocation: &McpInvocation,
         metadata: McpToolApprovalMetadata,
     ) {
         let Some(turn_state) = self
@@ -1083,17 +1075,18 @@ impl Session {
         else {
             return;
         };
-        turn_state
-            .lock()
-            .await
-            .insert_mcp_tool_approval_metadata(call_id.to_string(), metadata);
+        turn_state.lock().await.insert_mcp_tool_approval_metadata(
+            call_id.to_string(),
+            (invocation.server == CODEX_APPS_MCP_SERVER_NAME).then(|| invocation.clone()),
+            metadata,
+        );
     }
 
     pub(crate) async fn mcp_tool_approval_metadata(
         &self,
         sub_id: &str,
         call_id: &str,
-    ) -> Option<McpToolApprovalMetadata> {
+    ) -> Option<(Option<McpInvocation>, McpToolApprovalMetadata)> {
         let turn_state = self
             .input_queue
             .turn_state_for_sub_id(&self.active_turn, sub_id)

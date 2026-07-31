@@ -54,6 +54,7 @@ fn model_with_approval_messages(
             never: None,
             unless_trusted: None,
         }),
+        collaboration_modes: None,
         auto_review: None,
         permissions: None,
         token_budget: None,
@@ -70,6 +71,7 @@ fn model_with_permission_messages(
         instructions_template: None,
         instructions_variables: None,
         approvals: None,
+        collaboration_modes: None,
         auto_review: None,
         permissions: Some(permissions),
         token_budget: None,
@@ -223,6 +225,7 @@ async fn catalog_non_on_request_approval_messages_are_sent_in_initial_permission
             instructions_template: None,
             instructions_variables: None,
             approvals: Some(approvals),
+            collaboration_modes: None,
             auto_review: None,
             permissions: None,
             token_budget: None,
@@ -628,12 +631,6 @@ async fn resume_replays_permissions_messages() -> Result<()> {
         config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     });
     let initial = builder.build(&server).await?;
-    let rollout_path = initial
-        .session_configured
-        .rollout_path
-        .clone()
-        .expect("rollout path");
-    let home = initial.home.clone();
 
     initial
         .codex
@@ -674,7 +671,7 @@ async fn resume_replays_permissions_messages() -> Result<()> {
         .await?;
     wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let resumed = builder.resume(&server, home, rollout_path).await?;
+    let resumed = builder.restart(&server, &initial).await?;
     resumed
         .codex
         .submit(Op::UserInput {
@@ -733,7 +730,6 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
         .rollout_path
         .clone()
         .expect("rollout path");
-    let home = initial.home.clone();
 
     initial
         .codex
@@ -780,7 +776,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
     builder = builder.with_config(|config| {
         config.permissions.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
     });
-    let resumed = builder.resume(&server, home, rollout_path.clone()).await?;
+    let resumed = builder.restart(&server, &initial).await?;
     resumed
         .codex
         .submit(Op::UserInput {

@@ -2,10 +2,23 @@ use super::*;
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillPackageId;
 use crate::catalog::SkillResourceId;
-use codex_core_skills::render_available_skills_body;
+use crate::provider::HostSkillProvider;
+use crate::provider::SkillListQuery;
+use crate::provider::SkillProvider;
+use codex_core_skills::HostSkillsSnapshot;
+use codex_core_skills::loader::SkillRoot;
+use codex_core_skills::loader::load_skills_from_roots;
+use codex_exec_server::LOCAL_FS;
 use codex_extension_api::ContextualUserFragment;
 use codex_protocol::protocol::SkillScope;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+use tokio::sync::Semaphore;
+
+use crate::catalog_prompt::render_available_skills_body;
 
 fn entry(name: &str, description: &str, short_description: Option<&str>) -> SkillCatalogEntry {
     entry_with_path(
@@ -266,6 +279,89 @@ fn path_aliases_retain_every_skill_under_budget_pressure() {
     assert!(!body.contains("additional skills omitted"));
 }
 
+#[tokio::test]
+async fn host_alias_roots_follow_core_discovery_order() -> Result<(), Box<dyn std::error::Error>> {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let parent = std::env::temp_dir().join(format!(
+        "codex-skills-extension-alias-order-{}-{unique}",
+        std::process::id()
+    ));
+    let user_root_path = parent.join("user-root");
+    let system_root_path = parent.join("system-root");
+    for (root, name) in [
+        (&user_root_path, "user-skill"),
+        (&system_root_path, "system-skill"),
+    ] {
+        let skill_dir = root.join(name);
+        std::fs::create_dir_all(&skill_dir)?;
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n"),
+        )?;
+    }
+    let user_root = AbsolutePathBuf::try_from(std::fs::canonicalize(&user_root_path)?)?;
+    let system_root = AbsolutePathBuf::try_from(std::fs::canonicalize(&system_root_path)?)?;
+    let outcome = load_skills_from_roots(
+        [
+            SkillRoot {
+                path: user_root.clone(),
+                scope: SkillScope::User,
+                file_system: Arc::clone(&LOCAL_FS),
+                plugin_identity: None,
+                plugin_namespace: None,
+                plugin_root: None,
+                discovery_mode: Default::default(),
+            },
+            SkillRoot {
+                path: system_root.clone(),
+                scope: SkillScope::System,
+                file_system: Arc::clone(&LOCAL_FS),
+                plugin_identity: None,
+                plugin_namespace: None,
+                plugin_root: None,
+                discovery_mode: Default::default(),
+            },
+        ],
+        /*plugin_skill_snapshots*/ None,
+        Arc::new(Semaphore::new(2)),
+    )
+    .await;
+    let catalog = HostSkillProvider::new()
+        .list(SkillListQuery {
+            turn_id: "turn-1".to_string(),
+            executor_roots: Vec::new(),
+            resolved_executor_roots: Vec::new(),
+            host_snapshot: Some(Arc::new(HostSkillsSnapshot::new(Arc::new(outcome)))),
+            include_host_skills: true,
+            include_bundled_skills: false,
+            include_orchestrator_skills: false,
+            mcp_resources: None,
+            executor_capability_discovery: None,
+        })
+        .await?;
+    let mut entries = catalog.entries.iter().collect::<Vec<_>>();
+    SkillCatalogRenderPolicy::CoreCompatible.order_entries(&mut entries);
+    let actual = build_alias_plan(&entries, SkillMetadataBudget::Characters(usize::MAX))
+        .expect("alias plan should build")
+        .skill_root_lines;
+    std::fs::remove_dir_all(parent)?;
+
+    assert_eq!(
+        actual,
+        vec![
+            format!(
+                "- `r0` = `{}`",
+                user_root.to_string_lossy().replace('\\', "/")
+            ),
+            format!(
+                "- `r1` = `{}`",
+                system_root.to_string_lossy().replace('\\', "/")
+            ),
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn mixed_catalogs_keep_absolute_authority_aware_rendering_under_budget_pressure() {
     let root = "/Users/test/.codex/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix";
@@ -386,6 +482,10 @@ fn mixed_catalog_reserves_executor_omission_marker_by_omitting_host_first() {
             "- e1: (environment resource: skill://executor/one)".to_string(),
             "- 1 additional skill omitted from this bounded skills list.".to_string(),
         ]
+    );
+    assert!(
+        host.into_fragment(/*include_skills_usage_instructions*/ false)
+            .is_none()
     );
 }
 
@@ -630,10 +730,11 @@ fn catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget() 
     )
     .expect("core-compatible report should render");
     assert_eq!(core_render.report, expected_report);
-    assert_eq!(
-        core_render.into_fragment(/*include_skills_usage_instructions*/ false),
-        None
-    );
+    let core_fragment = core_render
+        .into_fragment(/*include_skills_usage_instructions*/ false)
+        .expect("core-compatible rendering should preserve an empty skills fragment");
+    assert!(core_fragment.body().contains("## Skills"));
+    assert!(!core_fragment.body().contains("- oversized:"));
     let render = render_available_skills(
         &catalog,
         SkillCatalogRenderPolicy::ExtensionCompatible,
