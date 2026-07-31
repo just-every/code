@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.162] - 2026-07-31
+
+- Release: refresh CLI package metadata for v0.6.162. (0f44eddf)
+- Release: keep npm package entries aligned for the published release. (0f44eddf)
+
 ## [0.6.160] - 2026-07-30
 
 - Dependencies: patch npm security overrides to pick up fixed transitive packages. (4976a942)

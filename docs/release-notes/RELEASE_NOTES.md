@@ -1,17 +1,17 @@
-## @just-every/code v0.6.160
+## @just-every/code v0.6.162
 
-This release updates npm dependency security overrides and refreshes release package metadata.
+This release refreshes package metadata for the v0.6.162 publish.
 
 ### Changes
 
-- Dependencies: patch npm security overrides to pick up fixed transitive packages.
-- Release: refresh package metadata and lockfile for the updated dependency overrides.
+- Release: refresh CLI package metadata for v0.6.162.
+- Release: keep npm package entries aligned for the published release.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.159...v0.6.160
+Compare: https://github.com/just-every/code/compare/v0.6.161...v0.6.162
