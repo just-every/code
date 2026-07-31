@@ -1,17 +1,18 @@
-## @just-every/code v0.6.160
+## @just-every/code v0.6.161
 
-This release updates npm dependency security overrides and refreshes release package metadata.
+This release improves enterprise plan handling and refreshes upstream parity for code mode.
 
 ### Changes
 
-- Dependencies: patch npm security overrides to pick up fixed transitive packages.
-- Release: refresh package metadata and lockfile for the updated dependency overrides.
+- Core: recognize enterprise automation plan types across auth and account token data.
+- App Server: expose enterprise automation plan metadata in generated protocol schemas.
+- Core: refresh upstream parity, including sandboxed V8 support for code mode.
 
 ### Install
 
-```sh
+```bash
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.159...v0.6.160
+Compare: https://github.com/just-every/code/compare/v0.6.160...v0.6.161

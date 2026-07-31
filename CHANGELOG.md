@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.161] - 2026-07-31
+
+- Core: recognize enterprise automation plan types across auth and account token data. (366b7ac6)
+- App Server: expose enterprise automation plan metadata in generated protocol schemas. (366b7ac6)
+- Core: refresh upstream parity, including sandboxed V8 support for code mode. (4da2e7bb, 2e32d958)
+
 ## [0.6.160] - 2026-07-30
 
 - Dependencies: patch npm security overrides to pick up fixed transitive packages. (4976a942)
