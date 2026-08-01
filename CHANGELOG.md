@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.164] - 2026-08-01
+
+- Docs: document OmniRoute provider setup in the configuration guide. (48c8b41c, 8fbc8dab)
+- Release: refresh CLI package metadata for v0.6.164. (48c8b41c)
+
 ## [0.6.162] - 2026-07-31
 
 - Release: refresh CLI package metadata for v0.6.162. (0f44eddf)
