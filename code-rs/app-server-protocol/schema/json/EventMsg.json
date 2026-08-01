@@ -1625,6 +1625,7 @@
         {
           "properties": {
             "autoResolutionMs": {
+              "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
               "format": "uint64",
               "minimum": 0.0,
               "type": [
@@ -1635,6 +1636,9 @@
             "call_id": {
               "description": "Responses API call id for the associated tool call, if available.",
               "type": "string"
+            },
+            "isBlocking": {
+              "type": "boolean"
             },
             "questions": {
               "items": {
@@ -1657,6 +1661,7 @@
           },
           "required": [
             "call_id",
+            "isBlocking",
             "questions",
             "type"
           ],
@@ -6887,6 +6892,7 @@
     {
       "properties": {
         "autoResolutionMs": {
+          "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
@@ -6897,6 +6903,9 @@
         "call_id": {
           "description": "Responses API call id for the associated tool call, if available.",
           "type": "string"
+        },
+        "isBlocking": {
+          "type": "boolean"
         },
         "questions": {
           "items": {
@@ -6919,6 +6928,7 @@
       },
       "required": [
         "call_id",
+        "isBlocking",
         "questions",
         "type"
       ],

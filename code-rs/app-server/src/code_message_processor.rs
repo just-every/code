@@ -1597,6 +1597,7 @@ async fn apply_bespoke_event_handling(
                         }),
                     })
                     .collect(),
+                is_blocking: request.is_blocking,
                 auto_resolution_ms: request.auto_resolution_ms,
             };
             let value = serde_json::to_value(&params).unwrap_or_default();

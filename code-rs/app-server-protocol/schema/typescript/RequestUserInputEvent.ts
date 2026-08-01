@@ -12,4 +12,8 @@ call_id: string,
  * Turn ID that this request belongs to.
  * Uses `#[serde(default)]` for backwards compatibility.
  */
-turn_id: string, questions: Array<RequestUserInputQuestion>, autoResolutionMs: bigint | null, };
+turn_id: string, questions: Array<RequestUserInputQuestion>, isBlocking: boolean, 
+/**
+ * @deprecated Use `isBlocking` to decide whether the request should block.
+ */
+autoResolutionMs: bigint | null, };
