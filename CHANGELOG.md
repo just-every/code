@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.163] - 2026-08-01
+
+- Protocol: restore request_user_input blocking schema parity across app-server events and generated schemas. (84fee4d3)
+- Core: carry blocking request_user_input behavior through streaming tool requests. (84fee4d3)
+
 ## [0.6.162] - 2026-07-31
 
 - Release: refresh CLI package metadata for v0.6.162. (0f44eddf)
