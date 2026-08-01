@@ -6025,12 +6025,16 @@
       "properties": {
         "autoResolutionMs": {
           "default": null,
+          "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
             "integer",
             "null"
           ]
+        },
+        "isBlocking": {
+          "type": "boolean"
         },
         "itemId": {
           "type": "string"
@@ -6049,6 +6053,7 @@
         }
       },
       "required": [
+        "isBlocking",
         "itemId",
         "questions",
         "threadId",
@@ -14777,6 +14782,39 @@
         ],
         "title": "PluginReadResponse",
         "type": "object"
+      },
+      "PluginSearchResult": {
+        "properties": {
+          "marketplaceName": {
+            "type": "string"
+          },
+          "marketplacePath": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plugin": {
+            "$ref": "#/definitions/v2/PluginSummary"
+          }
+        },
+        "required": [
+          "marketplaceName",
+          "plugin"
+        ],
+        "type": "object"
+      },
+      "PluginSearchScope": {
+        "enum": [
+          "global",
+          "workspace",
+          "personal"
+        ],
+        "type": "string"
       },
       "PluginShareCheckoutParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",

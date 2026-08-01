@@ -1075,6 +1075,7 @@ impl TurnRequestProcessor {
             thread.as_ref(),
             Op::RealtimeConversationStart(ConversationStartParams {
                 client_managed_handoffs: params.client_managed_handoffs.unwrap_or(false),
+                delegation_ack_filler: params.delegation_ack_filler,
                 flush_transcript_tail_on_session_end: params
                     .flush_transcript_tail_on_session_end
                     .unwrap_or(false),
@@ -1095,6 +1096,8 @@ impl TurnRequestProcessor {
                         role: item.role,
                     })
                     .collect(),
+                realtime_start_instructions: params.realtime_start_instructions,
+                realtime_end_instructions: params.realtime_end_instructions,
                 prompt: params.prompt,
                 realtime_session_id: params.realtime_session_id,
                 transport: params.transport.map(|transport| match transport {

@@ -98,6 +98,7 @@ async fn run_startup_hooks_review_app(
         app_event_tx.clone(),
         &keymap,
     );
+    let mut chord_matcher = crate::keymap::KeyChordMatcher::default();
     draw_view(tui, &view)?;
 
     let tui_events = tui.event_stream();
@@ -107,8 +108,21 @@ async fn run_startup_hooks_review_app(
         let Some(event) = tui_events.next().await else {
             return Ok(StartupHooksReviewOutcome::Continue);
         };
+        tui.screen_size_for_event(&event)?;
         match event {
             TuiEvent::Key(key_event) => {
+                let key_event = match chord_matcher.advance(
+                    key_event,
+                    &keymap.chords,
+                    crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::List),
+                    tokio::time::Instant::now(),
+                ) {
+                    crate::keymap::KeyChordMatch::PassThrough => key_event,
+                    crate::keymap::KeyChordMatch::Completed(dispatch_event) => dispatch_event,
+                    crate::keymap::KeyChordMatch::Pending(_)
+                    | crate::keymap::KeyChordMatch::Cancelled
+                    | crate::keymap::KeyChordMatch::Ignored => continue,
+                };
                 if matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     view.handle_key_event(key_event);
                 }
@@ -167,7 +181,7 @@ async fn run_startup_hooks_review_app(
                 }
             }
             TuiEvent::Paste(_) => {}
-            TuiEvent::Draw | TuiEvent::Resize => draw_view(tui, &view)?,
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => draw_view(tui, &view)?,
         }
     }
 }
