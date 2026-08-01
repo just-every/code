@@ -84,6 +84,38 @@ wire_api = "responses"  # or "chat" if your proxy only supports chat-completions
 requires_openai_auth = false
 ```
 
+### OmniRoute gateway
+
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute) exposes OpenAI-compatible
+`/v1/chat/completions` and `/v1/responses` endpoints. Configure it as a custom
+provider so Code sends the OmniRoute API key in a Bearer header and does not try
+to use ChatGPT authentication:
+
+```toml
+model = "auto"
+model_provider = "omniroute"
+
+[model_providers.omniroute]
+name = "OmniRoute"
+base_url = "http://127.0.0.1:20128/v1"
+env_key = "OMNIROUTE_API_KEY"
+wire_api = "responses" # Use "chat" when targeting /v1/chat/completions.
+requires_openai_auth = false
+```
+
+Start Code with `OMNIROUTE_API_KEY` set in the environment. The `base_url` is
+the `/v1` root because Code appends `/responses` or `/chat/completions` for the
+selected `wire_api`. With OmniRoute, `auto` (and other `auto/*` model IDs) lets
+the gateway choose a connected model; replace it with a concrete model ID when
+you need deterministic routing.
+
+Code's remote model discovery is limited to its ChatGPT backend, so custom
+providers such as OmniRoute do not populate the model picker from `/v1/models`.
+Set `model` explicitly in `config.toml` or pass `--model` when using a custom
+provider. Function tools and streamed responses use the selected OpenAI wire
+protocol; provider-specific request fields still depend on the gateway's
+compatibility layer.
+
 It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
 
 ```toml
