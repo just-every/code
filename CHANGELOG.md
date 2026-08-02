@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.165] - 2026-08-02
+
+- Core: refresh upstream parity through the latest upstream/main merge. (b96c750a, 4bf479d)
+- Release: adopt remote workflow updates while preserving fork release metadata. (bdb36770)
+
 ## [0.6.164] - 2026-08-01
 
 - Docs: document OmniRoute provider setup in the configuration guide. (48c8b41c, 8fbc8dab)
