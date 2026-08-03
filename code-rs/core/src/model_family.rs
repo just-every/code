@@ -209,7 +209,10 @@ fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
         return family;
     };
 
-    family.base_instructions = model_info.base_instructions.clone();
+    let upstream_instructions = model_info.get_model_instructions(/*personality*/ None);
+    if !upstream_instructions.trim().is_empty() {
+        family.base_instructions = upstream_instructions;
+    }
     family.context_window = model_info
         .resolved_context_window()
         .and_then(|limit| u64::try_from(limit).ok());

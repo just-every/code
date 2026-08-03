@@ -468,6 +468,7 @@ mod tests {
             base_instructions: String::new(),
             model_messages: None,
             include_skills_usage_instructions: false,
+            include_plugin_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,

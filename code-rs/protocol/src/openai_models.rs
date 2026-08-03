@@ -373,11 +373,14 @@ pub struct ModelInfo {
     pub default_service_tier: Option<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
+    #[serde(default)]
     pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
     pub include_skills_usage_instructions: bool,
+    #[serde(default)]
+    pub include_plugin_usage_instructions: bool,
     /// Whether the model accepts the Responses API `reasoning.summary` parameter.
     ///
     /// Upstream renamed this manifest field from `supports_reasoning_summaries`.
@@ -467,6 +470,9 @@ impl ModelInfo {
         if let Some(model_messages) = &self.model_messages
             && let Some(template) = &model_messages.instructions_template
         {
+            if model_messages.instructions_variables.is_none() {
+                return template.clone();
+            }
             // if we have a template, always use it
             let personality_message = model_messages
                 .get_personality_message(personality)
@@ -735,6 +741,7 @@ mod tests {
             base_instructions: "base".to_string(),
             model_messages: spec,
             include_skills_usage_instructions: false,
+            include_plugin_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
