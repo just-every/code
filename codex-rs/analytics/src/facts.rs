@@ -45,6 +45,50 @@ pub struct TrackEventsContext {
     pub product_client_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeModeToolCallFact {
+    CellStarted {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: String,
+    },
+    ChildStarted {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: String,
+    },
+    CellClosed {
+        thread_id: String,
+        turn_id: String,
+        cell_id: String,
+    },
+    SamplingResponseCompleted {
+        thread_id: String,
+        turn_id: String,
+        response_id: String,
+        tool_call_ids: Vec<String>,
+    },
+    Completed {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: Option<String>,
+        tool_name: String,
+        started_at_ms: u64,
+        completed_at_ms: u64,
+        status: CodeModeToolCallStatus,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeModeToolCallStatus {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
 pub fn build_track_events_context(
     model_slug: String,
     thread_id: String,
@@ -445,6 +489,7 @@ pub(crate) enum AnalyticsFact {
 }
 
 pub(crate) enum CustomAnalyticsFact {
+    CodeModeToolCall(CodeModeToolCallFact),
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
     Goal(Box<CodexGoalEvent>),

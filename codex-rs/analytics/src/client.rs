@@ -141,6 +141,9 @@ impl AnalyticsEventsQueue {
                 let input = match input {
                     AnalyticsEventsQueueMessage::Fact(input) => *input,
                     AnalyticsEventsQueueMessage::Flush(done_tx) => {
+                        let mut events = Vec::new();
+                        reducer.flush(&mut events);
+                        send_track_events(&auth_manager, &destination, events).await;
                         let _ = done_tx.send(());
                         continue;
                     }
@@ -285,6 +288,12 @@ impl AnalyticsEventsClient {
     pub fn track_subagent_thread_started(&self, input: SubAgentThreadStartedInput) {
         self.record_fact(AnalyticsFact::Custom(
             CustomAnalyticsFact::SubAgentThreadStarted(input),
+        ));
+    }
+
+    pub fn track_code_mode_tool_call(&self, input: crate::facts::CodeModeToolCallFact) {
+        self.record_fact(AnalyticsFact::Custom(
+            CustomAnalyticsFact::CodeModeToolCall(input),
         ));
     }
 
@@ -607,7 +616,8 @@ impl AnalyticsEventsClient {
     pub fn track_notification(&self, notification: &ServerNotification) {
         if !matches!(
             notification,
-            ServerNotification::TurnStarted(_)
+            ServerNotification::ThreadClosed(_)
+                | ServerNotification::TurnStarted(_)
                 | ServerNotification::TurnCompleted(_)
                 | ServerNotification::TurnDiffUpdated(_)
                 | ServerNotification::ItemStarted(_)
