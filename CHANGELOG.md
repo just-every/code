@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.168] - 2026-08-04
+
+- MCP: canonicalize legacy session headers for conformance compatibility. (b0d6dca9)
+- Dependencies: remediate brace-expansion security alerts in package metadata. (22666e8f)
+
 ## [0.6.166] - 2026-08-03
 
 - Core: backport upstream model message catalog parity for model instructions and plugin usage metadata. (1f31374)

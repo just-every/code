@@ -1,16 +1,17 @@
-## @just-every/code v0.6.166
+## @just-every/code v0.6.168
 
-This release brings upstream model message catalog parity into Code.
+This release improves MCP conformance compatibility and updates dependency metadata for security remediation.
 
 ### Changes
 
-- Core: backport upstream model message catalog parity for model instructions and plugin usage metadata.
+- MCP: canonicalize legacy session headers for conformance compatibility.
+- Dependencies: remediate brace-expansion security alerts in package metadata.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.165...v0.6.166
+Compare: https://github.com/just-every/code/compare/v0.6.167...v0.6.168
