@@ -1321,6 +1321,20 @@ def test_legacy_http_mints_and_terminates_session() -> None:
         assert response.status == 200
 
 
+def test_legacy_http_rejects_malformed_session_id() -> None:
+    with running_http_server(LEGACY_VERSION) as address:
+        status, headers, body = post_json(
+            address,
+            request("tools/list", request_id=2, params={}),
+            {"Mcp-Session-Id": "not-a-legacy-session-id"},
+        )
+
+        assert status == 400
+        assert "mcp-session-id" not in headers
+        assert body is not None
+        assert body["error"]["message"] == "Missing or unknown Mcp-Session-Id"
+
+
 def test_shipping_legacy_http_negotiates_and_retains_a_real_legacy_session() -> None:
     with running_http_server(SHIPPING_LEGACY_VERSION) as address:
         status, headers, body = post_json(
