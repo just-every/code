@@ -78,6 +78,7 @@ RESOURCE_URIS = (
 class ConnectionState:
     initialize_seen: bool = False
     initialized: bool = False
+    session_id: str | None = None
 
 
 @dataclass
@@ -90,6 +91,12 @@ class ResponsePlan:
 
 class HeaderValidationError(ValueError):
     pass
+
+
+def _is_legacy_session_id(value: str | None) -> bool:
+    if value is None or len(value) != 32:
+        return False
+    return all(char in "0123456789abcdef" for char in value)
 
 
 def _error_response(
@@ -1545,19 +1552,15 @@ class FixtureRequestHandler(BaseHTTPRequestHandler):
     ) -> tuple[ConnectionState | None, dict[str, str]]:
         method = message.get("method")
         if method == "initialize":
-            state = ConnectionState()
             session_id = uuid.uuid4().hex
+            state = ConnectionState(session_id=session_id)
             with self.server.sessions_lock:
                 self.server.sessions[session_id] = state
             return state, {"Mcp-Session-Id": session_id}
         if method == "server/discover":
             return ConnectionState(), {}
         session_id = self.headers.get("Mcp-Session-Id")
-        with self.server.sessions_lock:
-            state = (
-                self.server.sessions.get(session_id) if session_id is not None else None
-            )
-        if state is None:
+        if not _is_legacy_session_id(session_id):
             self._send_json_error(
                 message.get("id"),
                 HTTPStatus.BAD_REQUEST,
@@ -1565,7 +1568,17 @@ class FixtureRequestHandler(BaseHTTPRequestHandler):
                 "Missing or unknown Mcp-Session-Id",
             )
             return None, {}
-        return state, {"Mcp-Session-Id": session_id}
+        with self.server.sessions_lock:
+            state = self.server.sessions.get(session_id)
+        if state is None or state.session_id is None:
+            self._send_json_error(
+                message.get("id"),
+                HTTPStatus.BAD_REQUEST,
+                INVALID_REQUEST,
+                "Missing or unknown Mcp-Session-Id",
+            )
+            return None, {}
+        return state, {"Mcp-Session-Id": state.session_id}
 
     def _origin_is_allowed(self) -> bool:
         origin = self.headers.get("Origin")
