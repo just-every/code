@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.167] - 2026-08-04
+
+- MCP: add conformance regression gates for client behavior and review regressions. (61dc1d97)
+- Release: parallelize R2 asset publishing with DotSlash for faster release uploads. (2a16af82)
+- CI: grant the blob size policy job read access to repository contents. (ceaa8188)
+
 ## [0.6.166] - 2026-08-03
 
 - Core: backport upstream model message catalog parity for model instructions and plugin usage metadata. (1f31374)
