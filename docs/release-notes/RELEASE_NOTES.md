@@ -1,11 +1,10 @@
-## @just-every/code v0.6.165
+## @just-every/code v0.6.166
 
-This release refreshes upstream parity and keeps release workflow metadata aligned.
+This release brings upstream model message catalog parity into Code.
 
 ### Changes
 
-- Core: refresh upstream parity through the latest upstream/main merge.
-- Release: adopt remote workflow updates while preserving fork release metadata.
+- Core: backport upstream model message catalog parity for model instructions and plugin usage metadata.
 
 ### Install
 
@@ -14,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.164...v0.6.165
+Compare: https://github.com/just-every/code/compare/v0.6.165...v0.6.166

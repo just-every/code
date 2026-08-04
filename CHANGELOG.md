@@ -7,6 +7,10 @@
 
 - (none)
 
+## [0.6.166] - 2026-08-03
+
+- Core: backport upstream model message catalog parity for model instructions and plugin usage metadata. (1f31374)
+
 ## [0.6.165] - 2026-08-02
 
 - Core: refresh upstream parity through the latest upstream/main merge. (b96c750a, 4bf479d)
