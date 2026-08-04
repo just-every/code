@@ -67,8 +67,7 @@ impl Session {
             .primary()
             .and_then(|environment| environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let mut config = Self::build_per_turn_config(&session_configuration, cwd);
-        config.permissions.approval_policy = session_configuration.approval_policy.clone();
+        let config = Self::build_per_turn_config(&session_configuration, cwd);
 
         McpDesiredState {
             config: Arc::new(config),
@@ -90,8 +89,7 @@ impl Session {
     ) -> anyhow::Result<()> {
         let cwd = AbsolutePathBuf::from_absolute_path(local_stdio_fallback_cwd)
             .unwrap_or_else(|_| session_configuration.cwd().clone());
-        let mut config = Self::build_per_turn_config(session_configuration, cwd);
-        config.permissions.approval_policy = session_configuration.approval_policy.clone();
+        let config = Self::build_per_turn_config(session_configuration, cwd);
         let desired = McpDesiredState {
             config: Arc::new(config),
             auth,
@@ -140,10 +138,6 @@ impl Session {
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) -> McpRuntimeInput {
         let auth = desired.auth.clone();
-        let supports_openai_form_elicitation = self
-            .services
-            .supports_openai_form_elicitation
-            .load(std::sync::atomic::Ordering::Acquire);
         let McpRuntimeProjection {
             mut config,
             plugins_available,
@@ -188,7 +182,7 @@ impl Session {
             codex_apps_tools_cache: self.services.mcp_manager.codex_apps_tools_cache(),
             tool_catalog_cache: self.services.mcp_manager.tool_catalog_cache(),
             codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
-            supports_openai_form_elicitation,
+            client_mcp_extensions: self.services.client_mcp_extensions.clone(),
             auth,
             codex_apps_auth_manager,
             elicitation_reviewer,

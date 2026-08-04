@@ -10,7 +10,6 @@ pub use codex_connectors::AppInfo;
 pub use codex_connectors::AppMetadata;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
-use codex_connectors::app_is_enabled;
 use codex_connectors::apps_config_from_layer_stack;
 use codex_connectors::connector_runtime_context_key;
 use codex_exec_server::EnvironmentManager;
@@ -39,6 +38,7 @@ use codex_mcp::ToolInfo;
 use codex_mcp::ToolPluginProvenance;
 use codex_mcp::effective_mcp_servers;
 use codex_mcp::tool_plugin_provenance;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::PermissionProfile;
 
 const CONNECTORS_READY_TIMEOUT_ON_EMPTY_TOOLS: Duration = Duration::from_secs(30);
@@ -259,7 +259,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
         codex_apps_tools_cache: mcp_manager.codex_apps_tools_cache(),
         tool_catalog_cache: mcp_manager.tool_catalog_cache(),
         codex_apps_tools_cache_key: connector_runtime_context_key(auth.as_ref()),
-        supports_openai_form_elicitation: false,
+        client_mcp_extensions: ClientMcpExtensions::default(),
         auth: auth.clone(),
         codex_apps_auth_manager,
         elicitation_reviewer: None,
@@ -487,32 +487,6 @@ fn accessible_connectors_for_app_list_from_mcp_tools(mcp_tools: &[ToolInfo]) -> 
             != Some(true)
     });
     collect_accessible_connectors_from_mcp_tools(non_synthetic_tools)
-}
-
-pub fn with_app_enabled_state(mut connectors: Vec<AppInfo>, config: &Config) -> Vec<AppInfo> {
-    let user_apps_config = apps_config_from_layer_stack(&config.config_layer_stack);
-    let requirements_apps_config = config.config_layer_stack.requirements_toml().apps.as_ref();
-    if user_apps_config.is_none() && requirements_apps_config.is_none() {
-        return connectors;
-    }
-
-    for connector in &mut connectors {
-        if let Some(apps_config) = user_apps_config.as_ref()
-            && (apps_config.default.is_some()
-                || apps_config.apps.contains_key(connector.id.as_str()))
-        {
-            connector.is_enabled = app_is_enabled(apps_config, Some(connector.id.as_str()));
-        }
-
-        if requirements_apps_config
-            .and_then(|apps| apps.apps.get(connector.id.as_str()))
-            .is_some_and(|app| app.enabled == Some(false))
-        {
-            connector.is_enabled = false;
-        }
-    }
-
-    connectors
 }
 
 pub fn with_app_plugin_sources(

@@ -6,8 +6,13 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
+use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -15,6 +20,9 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
+use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -84,6 +92,7 @@ impl ToolPlanProbe {
                         .iter()
                         .map(|tool| match tool {
                             ResponsesApiNamespaceTool::Function(tool) => tool.name.clone(),
+                            ResponsesApiNamespaceTool::Custom(tool) => tool.name.clone(),
                         })
                         .collect::<Vec<_>>(),
                 )),
@@ -662,6 +671,70 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
 }
 
 #[tokio::test]
+async fn login_shell_parameter_follows_selected_environment() {
+    for (tool_name, guardian) in [
+        ("shell_command", false),
+        ("exec_command", false),
+        ("exec_command", true),
+    ] {
+        for allow_login_shell in [false, true] {
+            let plan = probe(|turn| {
+                set_feature(turn, Feature::ShellTool, /*enabled*/ true);
+                set_feature(turn, Feature::UnifiedExec, tool_name == "exec_command");
+                set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+                turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+                update_config(turn, |config| {
+                    config.permissions.allow_login_shell = !allow_login_shell;
+                });
+                let TurnEnvironmentState::Ready(environment) = turn
+                    .environments
+                    .environments
+                    .first_mut()
+                    .expect("primary environment")
+                else {
+                    panic!("primary environment should be ready");
+                };
+                environment.config.allow_login_shell = allow_login_shell;
+                if guardian {
+                    turn.session_source = codex_protocol::protocol::SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::Other(
+                            crate::guardian::GUARDIAN_REVIEWER_NAME.to_string(),
+                        ),
+                    );
+                }
+            })
+            .await;
+
+            assert_eq!(
+                has_parameter(plan.visible_spec(tool_name), "login"),
+                allow_login_shell
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn login_shell_parameter_is_available_when_any_environment_allows_it() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+        update_config(turn, |config| {
+            config.permissions.allow_login_shell = false;
+        });
+        duplicate_primary_environment(turn);
+        for (index, environment) in turn.environments.environments.iter_mut().enumerate() {
+            let TurnEnvironmentState::Ready(environment) = environment else {
+                panic!("environment should be ready");
+            };
+            environment.config.allow_login_shell = index == 1;
+        }
+    })
+    .await;
+
+    assert!(has_parameter(plan.visible_spec("exec_command"), "login"));
+}
+
+#[tokio::test]
 async fn shell_command_is_not_registered_without_a_single_local_environment() {
     let remote_environment = probe(|turn| {
         set_feature(turn, Feature::ShellTool, /*enabled*/ true);
@@ -836,6 +909,9 @@ async fn zsh_fork_unified_exec_keeps_shell_parameter_when_remote_environment_ava
                     remote_cwd,
                     Vec::new(),
                     /*shell*/ None,
+                    crate::session::turn_context::EnvironmentConfig {
+                        allow_login_shell: true,
+                    },
                 ),
             ));
     })
@@ -1599,7 +1675,9 @@ async fn code_mode_only_exposes_configured_dynamic_namespace_directly() {
     let ToolSpec::Namespace(namespace) = plan.visible_spec("direct_only") else {
         panic!("expected direct-only namespace spec");
     };
-    let ResponsesApiNamespaceTool::Function(tool) = &namespace.tools[0];
+    let ResponsesApiNamespaceTool::Function(tool) = &namespace.tools[0] else {
+        panic!("expected direct-only namespace function tool");
+    };
     assert_eq!(tool.defer_loading, None);
     let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
         panic!("expected code mode exec tool");
@@ -1982,6 +2060,51 @@ async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_bedrock_workers_only_delegate_when_model_supports_v2() {
+    for (model, model_multi_agent_version, supports_delegation) in [
+        (
+            AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID,
+            Some(MultiAgentVersion::V2),
+            true,
+        ),
+        (
+            AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID,
+            Some(MultiAgentVersion::V1),
+            false,
+        ),
+        (AMAZON_BEDROCK_GPT_5_5_MODEL_ID, None, false),
+    ] {
+        let plan = probe(|turn| {
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            update_config(turn, |config| {
+                config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+            });
+            use_bedrock_provider(turn);
+            turn.model_info.slug = model.to_string();
+            turn.model_info.multi_agent_version = model_multi_agent_version;
+            turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+                agent_nickname: None,
+                agent_role: None,
+            });
+        })
+        .await;
+
+        let spawn_agent_name = ToolName::namespaced("agents", "spawn_agent").to_string();
+        let followup_task_name = ToolName::namespaced("agents", "followup_task").to_string();
+        if supports_delegation {
+            plan.assert_visible_contains(&["agents"]);
+            plan.assert_registered_contains(&[&spawn_agent_name, &followup_task_name]);
+        } else {
+            plan.assert_visible_lacks(&["agents"]);
+            plan.assert_registered_lacks(&[&spawn_agent_name, &followup_task_name]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
     let plan = probe(|turn| {
         set_features(
@@ -2219,10 +2342,30 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     .await;
     standalone_web_search.assert_visible_lacks(&["web_search"]);
 
-    let unsupported_provider = probe(|turn| {
-        set_web_search_mode(turn, WebSearchMode::Live);
+    let bedrock_cached_web_search = probe(|turn| {
         use_bedrock_provider(turn);
+        turn.model_info.web_search_tool_type = WebSearchToolType::Text;
     })
     .await;
-    unsupported_provider.assert_visible_lacks(&["web_search"]);
+    assert_eq!(
+        bedrock_cached_web_search.visible_spec("web_search"),
+        &ToolSpec::WebSearch {
+            external_web_access: Some(false),
+            indexed_web_access: None,
+            filters: None,
+            user_location: None,
+            search_context_size: None,
+            search_content_types: None,
+        }
+    );
+
+    let bedrock_with_standalone_web_search = probe(|turn| {
+        set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+        set_web_search_mode(turn, WebSearchMode::Cached);
+        use_bedrock_provider(turn);
+        turn.model_info.web_search_tool_type = WebSearchToolType::Text;
+    })
+    .await;
+    bedrock_with_standalone_web_search.assert_visible_contains(&["web_search"]);
+    bedrock_with_standalone_web_search.assert_visible_lacks(&["web"]);
 }

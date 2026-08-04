@@ -9,7 +9,6 @@ use crate::sandboxing::SandboxPermissions;
 use crate::session::turn_context::TurnContext;
 use crate::tools::flat_tool_name;
 use crate::tools::sandboxing::ApprovalCtx;
-use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
 use codex_config::types::ApprovalsReviewer;
@@ -188,23 +187,25 @@ impl ApprovalResolution {
     }
 }
 
-pub(super) async fn resolve_tool_apporval<Rq, Out, T>(
+pub(super) async fn resolve_tool_approval<Rq, Out, T>(
     tool: &mut T,
     req: &Rq,
-    permission_request_run_id: &str,
     ctx: ApprovalCtx<'_>,
-    tool_ctx: &ToolCtx,
     reviewer: ApprovalReviewer,
-    otel: &codex_otel::SessionTelemetry,
 ) -> Result<ReviewDecision, ToolError>
 where
     T: ToolRuntime<Rq, Out>,
 {
     if let Some(permission_request) = tool.permission_request_payload(req) {
+        let permission_request_run_id = ctx
+            .reasons
+            .retry
+            .as_ref()
+            .map(|_| format!("{}:retry", ctx.call_id));
         match run_permission_request_hooks(
             ctx.session,
             ctx.turn,
-            permission_request_run_id,
+            permission_request_run_id.as_deref().unwrap_or(ctx.call_id),
             permission_request,
         )
         .await
@@ -214,7 +215,7 @@ where
                     decision: ReviewDecision::Approved,
                     source: ApprovalResolutionSource::Hook,
                 };
-                record_resolution(otel, tool_ctx, &resolution);
+                record_resolution(&ctx, &resolution);
                 return resolution.into_tool_result();
             }
             Some(PermissionRequestDecision::Deny { message }) => {
@@ -222,7 +223,7 @@ where
                     decision: ReviewDecision::denied(message),
                     source: ApprovalResolutionSource::Hook,
                 };
-                record_resolution(otel, tool_ctx, &resolution);
+                record_resolution(&ctx, &resolution);
                 return resolution.into_tool_result();
             }
             None => {}
@@ -245,7 +246,7 @@ where
                         ),
                         source: ApprovalResolutionSource::Guardian,
                     };
-                    record_resolution(otel, tool_ctx, &resolution);
+                    record_resolution(&ctx, &resolution);
                     return resolution.into_tool_result();
                 }
             };
@@ -254,7 +255,7 @@ where
                 ctx.turn,
                 review_id,
                 action,
-                ctx.retry_reason.clone(),
+                ctx.reasons.clone(),
             )
             .await
         }
@@ -268,24 +269,20 @@ where
         decision: resolution,
         source,
     };
-    record_resolution(otel, tool_ctx, &resolution);
+    record_resolution(&ctx, &resolution);
     resolution.into_tool_result()
 }
 
-fn record_resolution(
-    otel: &codex_otel::SessionTelemetry,
-    tool_ctx: &ToolCtx,
-    resolution: &ApprovalResolution,
-) {
+fn record_resolution(ctx: &ApprovalCtx<'_>, resolution: &ApprovalResolution) {
     let source = match resolution.source {
         ApprovalResolutionSource::Hook => ToolDecisionSource::Config,
         ApprovalResolutionSource::Guardian => ToolDecisionSource::AutomatedReviewer,
         ApprovalResolutionSource::User => ToolDecisionSource::User,
     };
-    let tool_name = flat_tool_name(&tool_ctx.tool_name);
-    otel.tool_decision(
+    let tool_name = flat_tool_name(ctx.tool_name);
+    ctx.turn.session_telemetry.tool_decision(
         tool_name.as_ref(),
-        &tool_ctx.call_id,
+        ctx.call_id,
         &resolution.decision,
         source,
     );

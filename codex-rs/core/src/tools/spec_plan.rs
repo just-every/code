@@ -1,6 +1,5 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
-use crate::connectors::AppInfo;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::mcp_tool_exposure::append_mcp_tools;
 use crate::session::session::Session;
@@ -119,7 +118,7 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     environments: &TurnEnvironmentSnapshot,
     mcp: &codex_mcp::McpBinding,
-    connectors: Option<&[AppInfo]>,
+    apps_enabled: bool,
     step_store: &ExtensionData,
     tool_suggest_candidates: Option<&crate::tools::router::ToolSuggestCandidates>,
 ) -> ToolRouter {
@@ -147,8 +146,8 @@ pub(crate) fn build_tool_router(
     } else {
         let registered_mcp_tools = append_mcp_tools(
             mcp.tools(),
-            connectors,
             &turn_context.config,
+            apps_enabled,
             search_tool_enabled(turn_context),
             &mut registry,
         );
@@ -482,7 +481,10 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
             next_thread_spawn_depth(&turn_context.session_source),
             turn_context.config.agent_max_depth,
         ),
-        MultiAgentVersion::V2 => true,
+        MultiAgentVersion::V2 => {
+            turn_context.session_source.get_agent_path().is_none()
+                || turn_context.model_info.multi_agent_version == Some(MultiAgentVersion::V2)
+        }
     }
 }
 
@@ -713,11 +715,16 @@ fn merge_into_namespaces(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
             continue;
         };
 
-        namespace.tools.sort_by(|left, right| match (left, right) {
-            (
-                ResponsesApiNamespaceTool::Function(left),
-                ResponsesApiNamespaceTool::Function(right),
-            ) => left.name.cmp(&right.name),
+        namespace.tools.sort_by(|left, right| {
+            let left_name = match left {
+                ResponsesApiNamespaceTool::Function(tool) => &tool.name,
+                ResponsesApiNamespaceTool::Custom(tool) => &tool.name,
+            };
+            let right_name = match right {
+                ResponsesApiNamespaceTool::Function(tool) => &tool.name,
+                ResponsesApiNamespaceTool::Custom(tool) => &tool.name,
+            };
+            left_name.cmp(right_name)
         });
 
         if namespace.description.trim().is_empty() {
@@ -760,7 +767,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
         if environment_mode.has_environment() {
             let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
             registry.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
-                allow_login_shell: turn_context.config.permissions.allow_login_shell,
+                allow_login_shell: any_environment_allows_login_shell(context.environments),
                 exec_permission_approvals_enabled: false,
                 include_environment_id,
                 include_shell_parameter: unified_exec_should_include_shell_parameter(
@@ -769,12 +776,14 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                 ),
             }));
             registry.add(WriteStdinHandler);
-            registry.add(ViewImageHandler::new(ViewImageToolOptions {
-                can_request_original_image_detail: can_request_original_image_detail(
-                    &turn_context.model_info,
-                ),
-                include_environment_id,
-            }));
+            if turn_context.config.features.enabled(Feature::ViewImage) {
+                registry.add(ViewImageHandler::new(ViewImageToolOptions {
+                    can_request_original_image_detail: can_request_original_image_detail(
+                        &turn_context.model_info,
+                    ),
+                    include_environment_id,
+                }));
+            }
         }
         return;
     }
@@ -800,6 +809,12 @@ fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironm
     ToolEnvironmentMode::from_count(environments.turn_environments().count())
 }
 
+fn any_environment_allows_login_shell(environments: &TurnEnvironmentSnapshot) -> bool {
+    environments
+        .turn_environments()
+        .any(|environment| environment.config.allow_login_shell)
+}
+
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
@@ -809,7 +824,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         return;
     }
 
-    let allow_login_shell = turn_context.config.permissions.allow_login_shell;
+    let allow_login_shell = any_environment_allows_login_shell(context.environments);
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let supports_shell_command = context.environments.single_local_environment().is_some();
@@ -956,7 +971,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(TestSyncHandler);
     }
 
-    if environment_mode.has_environment() {
+    if environment_mode.has_environment() && features.enabled(Feature::ViewImage) {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(

@@ -185,8 +185,10 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
         let command = req.command.clone();
         let environment_id = Some(req.turn_environment.environment_id.clone());
         let reason = ctx
-            .retry_reason
+            .reasons
+            .retry
             .clone()
+            .or_else(|| ctx.reasons.approval.clone())
             .or_else(|| req.justification.clone());
         Box::pin(async move {
             let native_cwd = match req.cwd.to_abs_path() {
@@ -549,6 +551,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
 mod tests {
     use super::*;
     use crate::exec::DEFAULT_EXEC_COMMAND_TIMEOUT_MS;
+    use crate::session::turn_context::EnvironmentConfig;
     use crate::tools::sandboxing::ToolRuntime;
     use codex_exec_server::Environment;
     use codex_exec_server::LOCAL_ENVIRONMENT_ID;
@@ -566,6 +569,9 @@ mod tests {
             cwd,
             Vec::new(),
             /*shell*/ None,
+            EnvironmentConfig {
+                allow_login_shell: true,
+            },
         )
     }
 

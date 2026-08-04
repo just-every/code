@@ -426,58 +426,6 @@ async fn openai_form_capability_is_not_advertised_by_default() -> anyhow::Result
     assert_openai_form_capability_advertisement(/*expected*/ false).await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn openai_form_capability_updates_for_loaded_thread() -> anyhow::Result<()> {
-    skip_if_wine_exec!(
-        Ok(()),
-        "requires a Windows test_stdio_server in the Wine-exec environment"
-    );
-
-    let server = start_mock_server().await;
-    let server_name = "capabilities";
-    let command = stdio_server_bin()?;
-    let fixture = test_codex()
-        .with_config(move |config| {
-            insert_mcp_server(
-                config,
-                server_name,
-                stdio_transport(command, /*env*/ None, Vec::new()),
-                TestMcpServerOptions::default(),
-            );
-        })
-        .build(&server)
-        .await?;
-    wait_for_mcp_server(&fixture.codex, server_name).await?;
-
-    let unsupported = call_structured_tool(
-        &server,
-        &fixture,
-        server_name,
-        "client_capabilities",
-        "call-client-capabilities-unsupported",
-    )
-    .await?;
-    assert_eq!(
-        unsupported,
-        json!({ "supportsOpenaiFormElicitation": false })
-    );
-
-    fixture
-        .codex
-        .set_openai_form_elicitation_support(/*supported*/ true)
-        .await?;
-    let supported = call_structured_tool(
-        &server,
-        &fixture,
-        server_name,
-        "client_capabilities",
-        "call-client-capabilities-supported",
-    )
-    .await?;
-    assert_eq!(supported, json!({ "supportsOpenaiFormElicitation": true }));
-    Ok(())
-}
-
 async fn assert_openai_form_capability_advertisement(expected: bool) -> anyhow::Result<()> {
     skip_if_wine_exec!(
         Ok(()),
@@ -545,7 +493,7 @@ fn assert_cwd_tool_output(structured: &Value, expected_cwd: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow::Result<()> {
+async fn mcp_namespace_instructions_are_preserved_without_hiding_tools() -> anyhow::Result<()> {
     skip_if_wine_exec!(
         Ok(()),
         "requires a Windows test_stdio_server in the Wine-exec environment"
@@ -553,8 +501,8 @@ async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let expected_description = "é".repeat(499);
-    let instructions = format!("{expected_description}🦀keep the valid MCP server");
+    let expected_description = format!("{}🦀keep the valid MCP server", "é".repeat(499));
+    let instructions = expected_description.clone();
     let response = mount_sse_once(
         &server,
         responses::sse(vec![
@@ -614,7 +562,7 @@ async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow
     );
     assert!(
         responses::namespace_child_tool(&body, "mcp__bounded", "echo").is_some(),
-        "bounding the namespace must not hide a valid MCP tool"
+        "preserving the namespace must not hide a valid MCP tool"
     );
     Ok(())
 }
@@ -672,8 +620,8 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     .await;
 
     let expected_env_value = "propagated-env";
-    let expected_description = "é".repeat(499);
-    let instructions = format!("{expected_description}🦀keep the complete MCP metadata");
+    let expected_description = format!("{}🦀keep the complete MCP metadata", "é".repeat(499));
+    let instructions = expected_description.clone();
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
     let fixture = test_codex()
@@ -769,7 +717,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
         "the complete tool search description must remain bounded"
     );
     assert!(search_description.contains(&format!("- rmcp: {expected_description}")));
-    assert!(!search_description.contains("🦀keep the complete MCP metadata"));
+    assert!(search_description.contains("🦀keep the complete MCP metadata"));
 
     let search_output = call_mock
         .single_request()

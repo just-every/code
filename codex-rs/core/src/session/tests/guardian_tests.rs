@@ -92,7 +92,8 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
 
     let (mut session, mut turn_context_raw) = make_session_and_context().await;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
-    turn_context_raw
+    Arc::make_mut(&mut turn_context_raw.config)
+        .permissions
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("test setup should allow updating approval policy");
@@ -180,7 +181,8 @@ async fn request_permissions_guardian_review_stops_when_cancelled() {
     let (mut session, mut turn_context, rx_event) = make_session_and_context_with_rx().await;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
     let turn_context_raw = Arc::get_mut(&mut turn_context).expect("single turn context ref");
-    turn_context_raw
+    Arc::make_mut(&mut turn_context_raw.config)
+        .permissions
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("test setup should allow updating approval policy");
@@ -293,7 +295,8 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
     .await;
 
     let (mut session, mut turn_context_raw) = make_session_and_context().await;
-    turn_context_raw
+    Arc::make_mut(&mut turn_context_raw.config)
+        .permissions
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("test setup should allow updating approval policy");
@@ -301,7 +304,6 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
         .features
         .enable(Feature::ExecPermissionApprovals)
         .expect("test setup should allow enabling request permissions");
-    turn_context_raw.permission_profile = codex_protocol::models::PermissionProfile::Disabled;
     let mut config = (*turn_context_raw.config).clone();
     config
         .permissions
@@ -412,11 +414,11 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
         )
         .await;
 
-    turn_context_raw
+    Arc::make_mut(&mut turn_context_raw.config)
+        .permissions
         .approval_policy
         .set(AskForApproval::Never)
         .expect("test setup should allow updating approval policy");
-    turn_context_raw.permission_profile = codex_protocol::models::PermissionProfile::Disabled;
     let mut config = (*turn_context_raw.config).clone();
     config
         .permissions
@@ -476,7 +478,8 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
 #[tokio::test]
 async fn guardian_allows_unified_exec_additional_permissions_requests_past_policy_validation() {
     let (mut session, mut turn_context_raw) = make_session_and_context().await;
-    turn_context_raw
+    Arc::make_mut(&mut turn_context_raw.config)
+        .permissions
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("test setup should allow updating approval policy");
@@ -722,7 +725,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         config.model_provider.clone(),
     );
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
-    let skills_service = Arc::new(SkillsService::new(
+    let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
         /*bundled_skills_enabled*/ true,
     ));
@@ -765,7 +768,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         parent_trace: None,
         environment_selections: Vec::new(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
-        supports_openai_form_elicitation: false,
+        client_mcp_extensions: ClientMcpExtensions::default(),
         analytics_events_client: None,
         thread_store,
         attestation_provider: None,

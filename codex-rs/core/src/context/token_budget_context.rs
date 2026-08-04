@@ -1,4 +1,6 @@
 use super::ContextualUserFragment;
+use codex_features::TokenBudgetMode;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::CONTEXT_WINDOW_CLOSE_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG;
@@ -9,6 +11,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenBudgetContext {
     thread_id: ThreadId,
+    agent_path: AgentPath,
+    mode: TokenBudgetMode,
     first_window_id: Uuid,
     previous_window_id: Option<Uuid>,
     window_id: Uuid,
@@ -18,6 +22,8 @@ pub(crate) struct TokenBudgetContext {
 impl TokenBudgetContext {
     pub(crate) fn new(
         thread_id: ThreadId,
+        agent_path: AgentPath,
+        mode: TokenBudgetMode,
         first_window_id: Uuid,
         previous_window_id: Option<Uuid>,
         window_id: Uuid,
@@ -25,6 +31,8 @@ impl TokenBudgetContext {
     ) -> Self {
         Self {
             thread_id,
+            agent_path,
+            mode,
             first_window_id,
             previous_window_id,
             window_id,
@@ -47,11 +55,14 @@ impl ContextualUserFragment for TokenBudgetContext {
     }
 
     fn body(&self) -> String {
-        let thread_id = self.thread_id;
+        let identity = match self.mode {
+            TokenBudgetMode::Thread => format!("Thread id: {}", self.thread_id),
+            TokenBudgetMode::Name => format!("Agent name: {}", self.agent_path),
+        };
         let first_window_id = self.first_window_id;
         let window_id = self.window_id;
         let mut lines = vec![
-            format!("Thread id: {thread_id}"),
+            identity,
             format!("First context window id: {first_window_id}"),
             format!("Current context window id: {window_id}"),
         ];

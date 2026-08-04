@@ -47,7 +47,7 @@ const SIBLING_FOLLOWUP_TASK: &str = "verify the surviving worker";
 const INTERRUPT_PROMPT: &str = "release the interrupted worker";
 const SIBLING_NAME: &str = "survivor";
 const ROLE_NAME: &str = "durable_worker";
-const ROLE_MODEL: &str = "gpt-5.4";
+const ROLE_MODEL: &str = "gpt-5.6-sol";
 const ROLE_MODEL_PROVIDER_ID: &str = "mock";
 const ROLE_DEVELOPER_INSTRUCTIONS: &str = "Keep the durable worker role configuration.";
 const SUBAGENT_DEVELOPER_INSTRUCTIONS: &str = "Use the default durable worker instructions.";
@@ -310,6 +310,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     assert!(initial_child_request.requests().iter().any(|request| {
         request.body_contains_text(INITIAL_TASK)
             && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
+            && request.body_contains_text("<permission_profile type=\"disabled\">")
             && !request.body_contains_text(SUBAGENT_DEVELOPER_INSTRUCTIONS)
     }));
     let initial_worker_config = worker_thread.config_snapshot().await;
@@ -492,6 +493,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     assert!(followup_child_request.requests().iter().any(|request| {
         request.body_contains_text(FOLLOWUP_TASK)
             && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
+            && request.body_contains_text("<permission_profile type=\"disabled\">")
             && !request.body_contains_text(SUBAGENT_DEVELOPER_INSTRUCTIONS)
     }));
     let requests = server

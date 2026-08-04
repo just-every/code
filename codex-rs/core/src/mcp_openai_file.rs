@@ -217,6 +217,7 @@ mod tests {
     use super::*;
     use crate::environment_selection::TurnEnvironmentState;
     use crate::session::tests::make_session_and_context;
+    use crate::session::turn_context::EnvironmentConfig;
     use crate::session::turn_context::TurnContext;
     use crate::session::turn_context::TurnEnvironment;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -228,7 +229,6 @@ mod tests {
 
     fn set_primary_environment_cwd(turn_context: &mut TurnContext, cwd: &Path) {
         let cwd = AbsolutePathBuf::try_from(cwd).expect("absolute path");
-        turn_context.permission_profile = codex_protocol::models::PermissionProfile::Disabled;
         let TurnEnvironmentState::Ready(primary) = &mut turn_context.environments.environments[0]
         else {
             panic!("expected ready primary environment");
@@ -239,6 +239,7 @@ mod tests {
             PathUri::from_abs_path(&cwd),
             Vec::new(),
             primary.shell.clone(),
+            primary.config.clone(),
         );
     }
 
@@ -323,6 +324,9 @@ mod tests {
         let environments = crate::environment_selection::ThreadEnvironments::new(
             session.services.turn_environments.environment_manager(),
             crate::shell::default_user_shell(),
+            EnvironmentConfig {
+                allow_login_shell: turn_context.config.permissions.allow_login_shell,
+            },
             crate::shell_snapshot::ShellSnapshot::disabled(),
             Default::default(),
             /*non_blocking_snapshots*/ true,

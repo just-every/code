@@ -9,6 +9,7 @@ use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::WebSearchToolType;
 
 const GPT_5_BEDROCK_CONTEXT_WINDOW: i64 = 272_000;
 const GPT_5_6_SOL_OPENAI_MODEL_ID: &str = "gpt-5.6-sol";
@@ -18,7 +19,7 @@ const GPT_5_5_OPENAI_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_4_OPENAI_MODEL_ID: &str = "gpt-5.4";
 
 pub(crate) fn static_model_catalog() -> ModelsResponse {
-    with_default_only_service_tier(ModelsResponse {
+    normalize_bedrock_catalog(ModelsResponse {
         models: vec![
             gpt_5_6_bedrock_model(
                 GPT_5_6_SOL_OPENAI_MODEL_ID,
@@ -54,12 +55,14 @@ pub(crate) fn static_model_catalog() -> ModelsResponse {
     })
 }
 
-pub(crate) fn with_default_only_service_tier(mut catalog: ModelsResponse) -> ModelsResponse {
+pub(crate) fn normalize_bedrock_catalog(mut catalog: ModelsResponse) -> ModelsResponse {
     for model in &mut catalog.models {
         // Amazon Bedrock currently only supports the implicit "default" tier for GPT models.
         model.additional_speed_tiers.clear();
         model.service_tiers.clear();
         model.default_service_tier = None;
+        // Bedrock rejects the `search_content_types` field used by multimodal search.
+        model.web_search_tool_type = WebSearchToolType::Text;
     }
     catalog
 }
@@ -97,6 +100,7 @@ fn gpt_5_6_bedrock_model(
     );
     model.description = openai_model.description;
     model.default_reasoning_level = openai_model.default_reasoning_level;
+    model.multi_agent_version = openai_model.multi_agent_version;
     model
         .supported_reasoning_levels
         .push(ReasoningEffortPreset {
@@ -148,13 +152,37 @@ mod tests {
 
         for model in catalog.models {
             assert_eq!(
-                (model.context_window, model.max_context_window),
+                (
+                    model.context_window,
+                    model.max_context_window,
+                    model.web_search_tool_type,
+                ),
                 (
                     Some(GPT_5_BEDROCK_CONTEXT_WINDOW),
-                    Some(GPT_5_BEDROCK_CONTEXT_WINDOW)
+                    Some(GPT_5_BEDROCK_CONTEXT_WINDOW),
+                    WebSearchToolType::Text,
                 )
             );
         }
+    }
+
+    #[test]
+    fn configured_bedrock_catalogs_normalize_unsupported_model_capabilities() {
+        let model = bundled_openai_model(GPT_5_4_OPENAI_MODEL_ID);
+        let mut expected = model.clone();
+        expected.additional_speed_tiers.clear();
+        expected.service_tiers.clear();
+        expected.default_service_tier = None;
+        expected.web_search_tool_type = WebSearchToolType::Text;
+
+        assert_eq!(
+            normalize_bedrock_catalog(ModelsResponse {
+                models: vec![model],
+            }),
+            ModelsResponse {
+                models: vec![expected],
+            }
+        );
     }
 
     #[test]
@@ -210,6 +238,7 @@ mod tests {
             expected.display_name = display_name.to_string();
             expected.description = openai_model.description;
             expected.default_reasoning_level = openai_model.default_reasoning_level;
+            expected.multi_agent_version = openai_model.multi_agent_version;
             expected.priority = priority;
             expected
                 .supported_reasoning_levels

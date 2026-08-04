@@ -116,12 +116,19 @@ where
     decision
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ApprovalRequestReasons {
+    pub(crate) approval: Option<String>,
+    pub(crate) retry: Option<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ApprovalCtx<'a> {
     pub session: &'a Arc<Session>,
     pub turn: &'a Arc<TurnContext>,
     pub call_id: &'a str,
-    pub retry_reason: Option<String>,
+    pub tool_name: &'a ToolName,
+    pub reasons: ApprovalRequestReasons,
     pub network_approval_context: Option<NetworkApprovalContext>,
 }
 

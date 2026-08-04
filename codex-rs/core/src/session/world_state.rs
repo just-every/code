@@ -7,6 +7,7 @@ use crate::context::ApprovalPromptContext;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::CollaborationModeState;
+use crate::context::world_state::CompactPermissionsState;
 use crate::context::world_state::ContextWindowGuidanceState;
 use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
@@ -18,6 +19,7 @@ use crate::context::world_state::PluginsInstructionsState;
 use crate::context::world_state::RealtimeState;
 use crate::context::world_state::ToolsState;
 use crate::context::world_state::WorldState;
+use codex_connectors::AppToolPolicyEvaluator;
 use codex_extension_api::WorldStateContributionInput;
 use codex_features::Feature;
 use codex_protocol::error::CodexErr;
@@ -117,7 +119,7 @@ impl Session {
             let exec_policy = self.services.exec_policy.current();
             world_state.add_section(PermissionsState::new(
                 &permission_profile,
-                turn_context.approval_policy.value(),
+                turn_context.approval_policy(),
                 ApprovalPromptContext::new(
                     turn_context.config.approvals_reviewer,
                     model_messages.and_then(|messages| messages.approvals.as_ref()),
@@ -135,6 +137,9 @@ impl Session {
                     .features
                     .enabled(Feature::RequestPermissionsTool),
             ));
+        } else {
+            let exec_policy = self.services.exec_policy.current();
+            world_state.add_section(CompactPermissionsState::new(exec_policy.as_ref()));
         }
         if turn_context.config.include_collaboration_mode_instructions {
             world_state.add_section(CollaborationModeState::from_collaboration_mode(
@@ -174,12 +179,12 @@ impl Session {
         ));
         let apps_available =
             if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
-                connectors::with_app_enabled_state(
-                    connectors::accessible_connectors_from_mcp_tools(step_context.mcp.tools()),
-                    &turn_context.config,
-                )
-                .into_iter()
-                .any(|connector| connector.is_accessible && connector.is_enabled)
+                AppToolPolicyEvaluator::new(&turn_context.config.config_layer_stack)
+                    .apply_app_enabled_state(connectors::accessible_connectors_from_mcp_tools(
+                        step_context.mcp.tools(),
+                    ))
+                    .into_iter()
+                    .any(|connector| connector.is_accessible && connector.is_enabled)
             } else {
                 false
             };
