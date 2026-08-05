@@ -5,6 +5,7 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_core_skills::MAX_SKILL_PROMPT_BYTES;
 use codex_protocol::protocol::SkillScope;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::take_bytes_at_char_boundary;
@@ -17,7 +18,6 @@ use crate::fragments::AvailableSkillsInstructions;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
 const SKILL_METADATA_CONTEXT_WINDOW_PERCENT: usize = 2;
-const MAX_MAIN_PROMPT_BYTES: usize = 8_000;
 const MAX_CATALOG_SKILL_DESCRIPTION_CHARS: usize = 1_024;
 const TRUNCATED_SKILL_DESCRIPTION_SUFFIX: &str = "...";
 const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 100;
@@ -444,6 +444,13 @@ pub(crate) struct AvailableSkillsRender {
     pub(crate) report: SkillRenderReport,
 }
 
+#[derive(Default)]
+pub(crate) struct RenderedSkillCatalogs {
+    pub(crate) executor: Option<AvailableSkillsRender>,
+    pub(crate) orchestrator: Option<AvailableSkillsRender>,
+    pub(crate) host: Option<AvailableSkillsRender>,
+}
+
 impl AvailableSkillsRender {
     pub(crate) fn into_fragment(
         self,
@@ -508,91 +515,143 @@ pub(crate) fn render_available_skills(
 }
 
 pub(crate) fn render_combined_available_skills(
-    host_catalog: &SkillCatalog,
     executor_catalog: &SkillCatalog,
+    orchestrator_catalog: &SkillCatalog,
+    host_catalog: &SkillCatalog,
     budget: SkillMetadataBudget,
-) -> (Option<AvailableSkillsRender>, Option<AvailableSkillsRender>) {
-    let mut host_entries = host_catalog
-        .entries
-        .iter()
-        .filter(|entry| entry.is_model_visible())
-        .collect::<Vec<_>>();
+) -> RenderedSkillCatalogs {
     let mut executor_entries = executor_catalog
         .entries
         .iter()
         .filter(|entry| entry.is_model_visible())
         .collect::<Vec<_>>();
-    SkillCatalogRenderPolicy::CoreCompatible.order_entries(&mut host_entries);
+    let mut orchestrator_entries = orchestrator_catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.is_model_visible())
+        .collect::<Vec<_>>();
+    let mut host_entries = host_catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.is_model_visible())
+        .collect::<Vec<_>>();
     SkillCatalogRenderPolicy::ExtensionCompatible.order_entries(&mut executor_entries);
-    if host_entries.is_empty() || executor_entries.is_empty() {
-        return (
-            render_available_skills(
-                host_catalog,
-                SkillCatalogRenderPolicy::CoreCompatible,
-                budget,
-            ),
-            render_available_skills(
+    SkillCatalogRenderPolicy::ExtensionCompatible.order_entries(&mut orchestrator_entries);
+    SkillCatalogRenderPolicy::CoreCompatible.order_entries(&mut host_entries);
+    let nonempty_catalog_count = [
+        !executor_entries.is_empty(),
+        !orchestrator_entries.is_empty(),
+        !host_entries.is_empty(),
+    ]
+    .into_iter()
+    .filter(|nonempty| *nonempty)
+    .count();
+    if nonempty_catalog_count <= 1 {
+        return RenderedSkillCatalogs {
+            executor: render_available_skills(
                 executor_catalog,
                 SkillCatalogRenderPolicy::ExtensionCompatible,
                 budget,
             ),
-        );
+            orchestrator: render_available_skills(
+                orchestrator_catalog,
+                SkillCatalogRenderPolicy::ExtensionCompatible,
+                budget,
+            ),
+            host: render_available_skills(
+                host_catalog,
+                SkillCatalogRenderPolicy::CoreCompatible,
+                budget,
+            ),
+        };
     }
 
     let absolute = render_combined_lines(
-        host_entries
-            .iter()
-            .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::CoreCompatible))
-            .collect(),
         executor_entries
             .iter()
             .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
+            .collect(),
+        orchestrator_entries
+            .iter()
+            .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
+            .collect(),
+        host_entries
+            .iter()
+            .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::CoreCompatible))
             .collect(),
         budget,
         Vec::new(),
     );
     let selected = if combined_catalog_fully_rendered(&absolute) {
         absolute
-    } else if let Some(aliased) =
-        build_aliased_combined_catalog(&host_entries, &executor_entries, budget)
-        && combined_render_is_better(&aliased, &absolute, budget)
+    } else if let Some(aliased) = build_aliased_combined_catalog(
+        &executor_entries,
+        &orchestrator_entries,
+        &host_entries,
+        budget,
+    ) && combined_render_is_better(&aliased, &absolute, budget)
     {
         aliased
     } else {
         absolute
     };
 
-    (Some(selected.host), Some(selected.executor))
+    RenderedSkillCatalogs {
+        executor: Some(selected.executor),
+        orchestrator: Some(selected.orchestrator),
+        host: Some(selected.host),
+    }
 }
 
 struct CombinedAvailableSkillsRender {
-    host: AvailableSkillsRender,
     executor: AvailableSkillsRender,
+    orchestrator: AvailableSkillsRender,
+    host: AvailableSkillsRender,
 }
 
 fn render_combined_lines(
-    host_lines: Vec<SkillLine<'_>>,
     executor_lines: Vec<SkillLine<'_>>,
+    orchestrator_lines: Vec<SkillLine<'_>>,
+    host_lines: Vec<SkillLine<'_>>,
     budget: SkillMetadataBudget,
     host_skill_root_lines: Vec<String>,
 ) -> CombinedAvailableSkillsRender {
-    let executor_count = executor_lines.len();
+    let executor_end = executor_lines.len();
+    let orchestrator_end = executor_end.saturating_add(orchestrator_lines.len());
     let mut lines = executor_lines;
+    lines.extend(orchestrator_lines);
     lines.extend(host_lines);
     let mut allocations = allocate_skill_lines(&lines, budget);
-    let executor_omission_marker =
-        reserve_executor_omission_marker(&lines, executor_count, budget, &mut allocations);
+    let omission_marker = reserve_non_host_omission_marker(
+        &lines,
+        executor_end,
+        orchestrator_end,
+        budget,
+        &mut allocations,
+    );
+    let (executor_omission_marker, orchestrator_omission_marker) =
+        if executor_end == orchestrator_end {
+            (omission_marker, None)
+        } else {
+            (None, omission_marker)
+        };
 
     CombinedAvailableSkillsRender {
         executor: render_combined_group(
-            &lines[..executor_count],
-            &allocations[..executor_count],
+            &lines[..executor_end],
+            &allocations[..executor_end],
             Vec::new(),
             executor_omission_marker,
         ),
+        orchestrator: render_combined_group(
+            &lines[executor_end..orchestrator_end],
+            &allocations[executor_end..orchestrator_end],
+            Vec::new(),
+            orchestrator_omission_marker,
+        ),
         host: render_combined_group(
-            &lines[executor_count..],
-            &allocations[executor_count..],
+            &lines[orchestrator_end..],
+            &allocations[orchestrator_end..],
             host_skill_root_lines,
             /*omission_marker*/ None,
         ),
@@ -629,8 +688,9 @@ fn render_combined_group(
 }
 
 fn build_aliased_combined_catalog(
-    host_entries: &[&SkillCatalogEntry],
     executor_entries: &[&SkillCatalogEntry],
+    orchestrator_entries: &[&SkillCatalogEntry],
+    host_entries: &[&SkillCatalogEntry],
     budget: SkillMetadataBudget,
 ) -> Option<CombinedAvailableSkillsRender> {
     let plan = build_alias_plan(host_entries, budget)?;
@@ -643,6 +703,14 @@ fn build_aliased_combined_catalog(
         SkillMetadataBudget::Tokens(_) => SkillMetadataBudget::Tokens(adjusted_limit),
         SkillMetadataBudget::Characters(_) => SkillMetadataBudget::Characters(adjusted_limit),
     };
+    let executor_lines = executor_entries
+        .iter()
+        .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
+        .collect();
+    let orchestrator_lines = orchestrator_entries
+        .iter()
+        .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
+        .collect();
     let host_lines = host_entries
         .iter()
         .map(|entry| {
@@ -653,23 +721,21 @@ fn build_aliased_combined_catalog(
             )
         })
         .collect();
-    let executor_lines = executor_entries
-        .iter()
-        .map(|entry| SkillLine::new(entry, SkillCatalogRenderPolicy::ExtensionCompatible))
-        .collect();
     Some(render_combined_lines(
-        host_lines,
         executor_lines,
+        orchestrator_lines,
+        host_lines,
         adjusted_budget,
         plan.skill_root_lines,
     ))
 }
 
 fn combined_catalog_fully_rendered(rendered: &CombinedAvailableSkillsRender) -> bool {
-    rendered.host.report.omitted_count == 0
-        && rendered.host.report.truncated_description_chars == 0
-        && rendered.executor.report.omitted_count == 0
-        && rendered.executor.report.truncated_description_chars == 0
+    [&rendered.executor, &rendered.orchestrator, &rendered.host]
+        .into_iter()
+        .all(|catalog| {
+            catalog.report.omitted_count == 0 && catalog.report.truncated_description_chars == 0
+        })
 }
 
 fn combined_render_is_better(
@@ -677,27 +743,23 @@ fn combined_render_is_better(
     current: &CombinedAvailableSkillsRender,
     budget: SkillMetadataBudget,
 ) -> bool {
-    if candidate.executor.report.included_count != current.executor.report.included_count {
-        return candidate.executor.report.included_count > current.executor.report.included_count;
-    }
-
-    let included_count = |rendered: &CombinedAvailableSkillsRender| {
-        rendered
-            .host
-            .report
-            .included_count
-            .saturating_add(rendered.executor.report.included_count)
+    let priority = |rendered: &CombinedAvailableSkillsRender| {
+        (
+            rendered.executor.report.included_count,
+            rendered.orchestrator.report.included_count,
+            rendered.host.report.included_count,
+        )
     };
-    if included_count(candidate) != included_count(current) {
-        return included_count(candidate) > included_count(current);
+    if priority(candidate) != priority(current) {
+        return priority(candidate) > priority(current);
     }
 
     let truncated_chars = |rendered: &CombinedAvailableSkillsRender| {
-        rendered
-            .host
-            .report
-            .truncated_description_chars
-            .saturating_add(rendered.executor.report.truncated_description_chars)
+        [&rendered.executor, &rendered.orchestrator, &rendered.host]
+            .into_iter()
+            .fold(0usize, |total, catalog| {
+                total.saturating_add(catalog.report.truncated_description_chars)
+            })
     };
     if truncated_chars(candidate) != truncated_chars(current) {
         return truncated_chars(candidate) < truncated_chars(current);
@@ -711,7 +773,7 @@ fn combined_available_skills_cost(
     budget: SkillMetadataBudget,
     rendered: &CombinedAvailableSkillsRender,
 ) -> usize {
-    [&rendered.host, &rendered.executor]
+    [&rendered.executor, &rendered.orchestrator, &rendered.host]
         .into_iter()
         .fold(0usize, |used, catalog| {
             let root_cost = if !catalog.skill_root_lines.is_empty() {
@@ -728,14 +790,15 @@ fn combined_available_skills_cost(
         })
 }
 
-fn reserve_executor_omission_marker(
+fn reserve_non_host_omission_marker(
     skill_lines: &[SkillLine<'_>],
-    executor_count: usize,
+    executor_end: usize,
+    orchestrator_end: usize,
     budget: SkillMetadataBudget,
     allocations: &mut [SkillLineAllocation],
 ) -> Option<String> {
     loop {
-        let omitted_count = allocations[..executor_count]
+        let omitted_count = allocations[..orchestrator_end]
             .iter()
             .filter(|allocation| matches!(allocation, SkillLineAllocation::Omitted))
             .count();
@@ -749,9 +812,10 @@ fn reserve_executor_omission_marker(
             return Some(marker);
         }
 
-        let index = (executor_count..allocations.len())
+        let index = (orchestrator_end..allocations.len())
             .rev()
-            .chain((0..executor_count).rev())
+            .chain((executor_end..orchestrator_end).rev())
+            .chain((0..executor_end).rev())
             .find(|index| {
                 matches!(
                     allocations[*index],
@@ -1083,7 +1147,7 @@ pub(crate) fn truncate_catalog_skill_description(description: &str) -> Cow<'_, s
 }
 
 pub(crate) fn truncate_main_prompt_contents(contents: &str) -> (String, bool) {
-    truncate_utf8_to_bytes(contents, MAX_MAIN_PROMPT_BYTES)
+    truncate_utf8_to_bytes(contents, MAX_SKILL_PROMPT_BYTES)
 }
 
 pub(crate) fn truncate_utf8_to_bytes(contents: &str, max_bytes: usize) -> (String, bool) {

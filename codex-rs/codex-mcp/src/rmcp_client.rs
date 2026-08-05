@@ -59,6 +59,7 @@ use codex_rmcp_client::LocalStdioServerLauncher;
 use codex_rmcp_client::McpProtocolMode;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StdioServerLauncher;
+use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::ToolWithConnectorId;
 use codex_rmcp_client::is_authentication_required_error;
 use futures::future::BoxFuture;
@@ -489,6 +490,24 @@ impl AsyncManagedClient {
             return Ok(client);
         }
         self.client.clone().await
+    }
+
+    pub(crate) fn ready_transport(&self) -> Option<Arc<RmcpClient>> {
+        let recovered = self.startup_reconnect.as_ref().and_then(|reconnect| {
+            reconnect
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current_client
+                .as_ref()
+                .map(|client| Arc::clone(&client.client))
+        });
+        recovered.or_else(|| {
+            self.client
+                .peek()
+                .and_then(|result| result.as_ref().ok())
+                .map(|client| Arc::clone(&client.client))
+        })
     }
 
     pub(crate) async fn reconnect_failed_startup(&self) {
@@ -1084,7 +1103,12 @@ async fn make_rmcp_client(
                     Ok(token) => token,
                     Err(error) => return Err(error.into()),
                 };
-            RmcpClient::new_streamable_http_client_with_protocol_mode(
+            let redirect_mode = if server.is_agent_plugin() {
+                StreamableHttpRedirectMode::AgentPluginV1
+            } else {
+                StreamableHttpRedirectMode::Legacy
+            };
+            RmcpClient::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
                 oauth_credential_name.as_ref(),
                 &url,
                 resolved_bearer_token,
@@ -1095,6 +1119,7 @@ async fn make_rmcp_client(
                 http_client,
                 runtime_auth_provider,
                 protocol_mode,
+                redirect_mode,
             )
             .await
             .map_err(StartupOutcomeError::from)

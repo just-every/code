@@ -210,6 +210,8 @@ pub struct ModelPreset {
     pub display_name: String,
     /// Short human description shown in UIs.
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_specialty: Option<String>,
     /// Reasoning effort applied when none is explicitly chosen.
     pub default_reasoning_effort: ReasoningEffort,
     /// Supported reasoning effort options.
@@ -392,6 +394,8 @@ pub struct ModelInfo {
     pub include_skills_usage_instructions: bool,
     #[serde(default)]
     pub include_plugin_usage_instructions: bool,
+    #[serde(default = "default_true")]
+    pub include_apps_usage_instructions: bool,
     /// Whether the model accepts the Responses API `reasoning.summary` parameter.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub supports_reasoning_summary_parameter: bool,
@@ -438,6 +442,8 @@ pub struct ModelInfo {
     pub use_responses_lite: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_review_model_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_specialty: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -721,6 +727,7 @@ impl From<ModelInfo> for ModelPreset {
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),
+            model_specialty: info.model_specialty,
             default_reasoning_effort: info
                 .default_reasoning_level
                 .unwrap_or(ReasoningEffort::None),
@@ -826,6 +833,7 @@ mod tests {
             model_messages: spec,
             include_skills_usage_instructions: false,
             include_plugin_usage_instructions: false,
+            include_apps_usage_instructions: false,
             supports_reasoning_summary_parameter: true,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
@@ -846,6 +854,7 @@ mod tests {
             supports_search_tool: false,
             use_responses_lite: false,
             auto_review_model_override: None,
+            model_specialty: None,
             tool_mode: None,
             multi_agent_version: None,
         }
@@ -1418,6 +1427,7 @@ mod tests {
         );
         assert!(!model.include_skills_usage_instructions);
         assert!(!model.include_plugin_usage_instructions);
+        assert!(model.include_apps_usage_instructions);
         assert!(model.supports_reasoning_summary_parameter);
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
@@ -1426,6 +1436,16 @@ mod tests {
         assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
+    }
+
+    #[test]
+    fn model_info_preserves_explicit_apps_guidance_opt_out() {
+        let value = serde_json::to_value(test_model(/*spec*/ None))
+            .expect("serialize model info with explicit apps guidance opt-out");
+        assert_eq!(value["include_apps_usage_instructions"], false);
+
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+        assert!(!model.include_apps_usage_instructions);
     }
 
     #[test]

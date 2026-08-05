@@ -29,6 +29,7 @@ pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSn
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EnvironmentConfig {
     pub(crate) allow_login_shell: bool,
+    pub(crate) permission_profile: PermissionProfileSnapshot,
 }
 
 #[derive(Clone)]
@@ -78,6 +79,25 @@ impl TurnEnvironment {
 
     pub(crate) fn workspace_roots(&self) -> &[PathUri] {
         &self.workspace_roots
+    }
+
+    pub(crate) fn permission_profile(&self) -> &PermissionProfile {
+        self.config.permission_profile.permission_profile()
+    }
+
+    pub(crate) fn active_permission_profile(&self) -> Option<ActivePermissionProfile> {
+        self.config.permission_profile.active_permission_profile()
+    }
+
+    pub(crate) fn permission_profile_with_workspace_roots(&self) -> PermissionProfile {
+        let workspace_roots = self
+            .workspace_roots()
+            .iter()
+            .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
+            .collect::<Vec<_>>();
+        self.permission_profile()
+            .clone()
+            .materialize_project_roots_with_workspace_roots(&workspace_roots)
     }
 
     pub(crate) fn selection(&self) -> TurnEnvironmentSelection {
@@ -332,7 +352,7 @@ impl TurnContext {
         environment: &TurnEnvironment,
     ) -> FileSystemSandboxContext {
         let permissions = effective_permission_profile(
-            self.config.permissions.permission_profile(),
+            environment.permission_profile(),
             additional_permissions.as_ref(),
         );
         FileSystemSandboxContext {
@@ -611,10 +631,16 @@ impl Session {
                     });
                     let new_config = notify_config_contributors
                         .then(|| Self::build_effective_session_config(&next));
+                    let environment_config = next.environment_config();
                     if updates.environments.is_some() {
                         self.services
                             .turn_environments
-                            .update_selections(next.environment_selections());
+                            .update_selections(next.environment_selections(), &environment_config);
+                    } else if state.session_configuration.environment_config() != environment_config
+                    {
+                        self.services
+                            .turn_environments
+                            .update_environment_configs(&environment_config);
                     }
                     if mcp_inputs_changed {
                         self.mark_mcp_runtime_dirty();

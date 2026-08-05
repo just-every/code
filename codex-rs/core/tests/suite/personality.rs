@@ -648,6 +648,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         }),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
         supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -669,6 +670,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: None,
+        model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
     };
@@ -769,6 +771,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         }),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
         supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -790,6 +793,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: None,
+        model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
     };

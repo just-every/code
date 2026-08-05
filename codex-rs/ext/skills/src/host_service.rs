@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::Weak;
 
 use codex_config::ConfigLayerStack;
 use codex_exec_server::ExecutorFileSystem;
@@ -9,6 +12,7 @@ use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::PluginIdentity;
 use codex_utils_plugins::PluginSkillRoot;
+use tokio::sync::OnceCell;
 use tokio::sync::Semaphore;
 use tracing::info;
 use tracing::instrument;
@@ -25,7 +29,6 @@ use codex_core_skills::loader::MAX_CONCURRENT_ROOT_SCANS;
 use codex_core_skills::loader::SkillRoot;
 use codex_core_skills::loader::load_skills_from_roots;
 use codex_skills::install_system_skills;
-use codex_skills::system_cache_root_dir;
 
 use crate::host_roots::resolve_skill_roots;
 
@@ -72,7 +75,7 @@ pub struct HostSkillsService {
     restriction_product: Option<Product>,
     extra_roots: RwLock<Vec<AbsolutePathBuf>>,
     cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, HostSkillsSnapshot>>,
-    cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, HostSkillsSnapshot>>,
+    cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, Arc<OnceCell<HostSkillsSnapshot>>>>,
     // Shared across cwds so root scheduling cannot multiply per-root I/O fanout.
     root_scan_slots: Arc<Semaphore>,
 }
@@ -95,12 +98,10 @@ impl HostSkillsService {
             cache_by_config: RwLock::new(HashMap::new()),
             root_scan_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
         };
-        if !bundled_skills_enabled {
-            // The loader caches bundled skills under `skills/.system`. Clearing that directory is
-            // best-effort cleanup; root selection still enforces the config even if removal fails.
-            let _ = std::fs::remove_dir_all(system_cache_root_dir(&service.codex_home));
-        } else if let Err(err) = install_system_skills(&service.codex_home) {
-            tracing::error!("failed to install system skills: {err}");
+        // The cache is shared by every process using this CODEX_HOME. Disabled services filter
+        // system roots when loading rather than mutating shared state.
+        if bundled_skills_enabled {
+            service.ensure_system_skills_installed();
         }
         service
     }
@@ -135,21 +136,23 @@ impl HostSkillsService {
     ) -> HostSkillsSnapshot {
         let roots = self.skill_roots_for_config(input, fs).await;
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let cache_key = config_skills_cache_key(&roots, &skill_config_rules);
+        let cache_key = config_skills_cache_key(
+            &roots,
+            &skill_config_rules,
+            input.plugin_skill_snapshots.as_ref(),
+        );
         if let Some(snapshot) = self.cached_snapshot_for_config(&cache_key) {
             return snapshot;
         }
 
-        let snapshot = HostSkillsSnapshot::new(Arc::new(
-            self.build_skill_outcome(input, roots, &skill_config_rules)
-                .await,
-        ));
-        let mut cache = self
-            .cache_by_config
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.insert(cache_key, snapshot.clone());
-        snapshot
+        self.snapshot_for_skill_roots(
+            input,
+            roots,
+            &skill_config_rules,
+            cache_key,
+            /*force_reload*/ false,
+        )
+        .await
     }
 
     pub async fn skill_roots_for_config(
@@ -157,6 +160,9 @@ impl HostSkillsService {
         input: &HostSkillsLoadInput,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> Vec<SkillRoot> {
+        if input.bundled_skills_enabled {
+            self.ensure_system_skills_installed();
+        }
         let mut roots = resolve_skill_roots(
             fs,
             &input.config_layer_stack,
@@ -177,8 +183,13 @@ impl HostSkillsService {
         force_reload: bool,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> HostSkillsSnapshot {
+        let bundled_skills_enabled = bundled_skills_enabled_from_stack(&input.config_layer_stack);
+        if bundled_skills_enabled {
+            self.ensure_system_skills_installed();
+        }
         let use_cwd_cache = fs.is_some();
-        if use_cwd_cache
+        let cache_snapshot_by_cwd = use_cwd_cache && input.effective_skill_roots.is_empty();
+        if cache_snapshot_by_cwd
             && !force_reload
             && let Some(snapshot) = self.cached_snapshot_for_cwd(&input.cwd)
         {
@@ -193,15 +204,31 @@ impl HostSkillsService {
             self.extra_roots(),
         )
         .await;
-        if !bundled_skills_enabled_from_stack(&input.config_layer_stack) {
+        if !bundled_skills_enabled {
             roots.retain(|root| root.scope != SkillScope::System);
         }
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
-        let snapshot = HostSkillsSnapshot::new(Arc::new(
-            self.build_skill_outcome(input, roots, &skill_config_rules)
-                .await,
-        ));
-        if use_cwd_cache {
+        let snapshot = if use_cwd_cache {
+            let cache_key = config_skills_cache_key(
+                &roots,
+                &skill_config_rules,
+                input.plugin_skill_snapshots.as_ref(),
+            );
+            self.snapshot_for_skill_roots(
+                input,
+                roots,
+                &skill_config_rules,
+                cache_key,
+                force_reload,
+            )
+            .await
+        } else {
+            HostSkillsSnapshot::new(Arc::new(
+                self.build_skill_outcome(input, roots, &skill_config_rules)
+                    .await,
+            ))
+        };
+        if cache_snapshot_by_cwd {
             let mut cache = self
                 .cache_by_cwd
                 .write()
@@ -209,6 +236,43 @@ impl HostSkillsService {
             cache.insert(input.cwd.clone(), snapshot.clone());
         }
         snapshot
+    }
+
+    async fn snapshot_for_skill_roots(
+        &self,
+        input: &HostSkillsLoadInput,
+        roots: Vec<SkillRoot>,
+        skill_config_rules: &SkillConfigRules,
+        cache_key: ConfigSkillsCacheKey,
+        force_reload: bool,
+    ) -> HostSkillsSnapshot {
+        let snapshot_cell = {
+            let mut cache = self
+                .cache_by_config
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if force_reload {
+                let snapshot_cell = Arc::new(OnceCell::new());
+                cache.insert(cache_key, Arc::clone(&snapshot_cell));
+                snapshot_cell
+            } else {
+                Arc::clone(
+                    cache
+                        .entry(cache_key)
+                        .or_insert_with(|| Arc::new(OnceCell::new())),
+                )
+            }
+        };
+
+        snapshot_cell
+            .get_or_init(|| async {
+                HostSkillsSnapshot::new(Arc::new(
+                    self.build_skill_outcome(input, roots, skill_config_rules)
+                        .await,
+                ))
+            })
+            .await
+            .clone()
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -267,8 +331,15 @@ impl HostSkillsService {
         cache_key: &ConfigSkillsCacheKey,
     ) -> Option<HostSkillsSnapshot> {
         match self.cache_by_config.read() {
-            Ok(cache) => cache.get(cache_key).cloned(),
-            Err(err) => err.into_inner().get(cache_key).cloned(),
+            Ok(cache) => cache
+                .get(cache_key)
+                .and_then(|snapshot| snapshot.get())
+                .cloned(),
+            Err(err) => err
+                .into_inner()
+                .get(cache_key)
+                .and_then(|snapshot| snapshot.get())
+                .cloned(),
         }
     }
 
@@ -278,12 +349,19 @@ impl HostSkillsService {
             Err(err) => err.into_inner().clone(),
         }
     }
+
+    fn ensure_system_skills_installed(&self) {
+        if let Err(err) = install_system_skills(&self.codex_home) {
+            tracing::error!("failed to install system skills: {err}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ConfigSkillsCacheKey {
     roots: Vec<ConfigSkillRootCacheKey>,
     skill_config_rules: SkillConfigRules,
+    plugin_skill_snapshots: Option<PluginSkillSnapshots>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -292,6 +370,24 @@ struct ConfigSkillRootCacheKey {
     scope_rank: u8,
     plugin_identity: Option<PluginIdentity>,
     plugin_namespace: Option<String>,
+    file_system: FileSystemIdentity,
+}
+
+#[derive(Debug, Clone)]
+struct FileSystemIdentity(Weak<dyn ExecutorFileSystem>);
+
+impl PartialEq for FileSystemIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FileSystemIdentity {}
+
+impl Hash for FileSystemIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.0.as_ptr() as *const ()).hash(state);
+    }
 }
 
 pub fn bundled_skills_enabled_from_stack(
@@ -319,6 +415,7 @@ pub fn bundled_skills_enabled_from_stack(
 fn config_skills_cache_key(
     roots: &[SkillRoot],
     skill_config_rules: &SkillConfigRules,
+    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
 ) -> ConfigSkillsCacheKey {
     ConfigSkillsCacheKey {
         roots: roots
@@ -335,10 +432,14 @@ fn config_skills_cache_key(
                     scope_rank,
                     plugin_identity: root.plugin_identity.clone(),
                     plugin_namespace: root.plugin_namespace.clone(),
+                    file_system: FileSystemIdentity(Arc::downgrade(&root.file_system)),
                 }
             })
             .collect(),
         skill_config_rules: skill_config_rules.clone(),
+        plugin_skill_snapshots: plugin_skill_snapshots
+            .filter(|_| roots.iter().any(|root| root.plugin_identity.is_some()))
+            .cloned(),
     }
 }
 

@@ -1,6 +1,9 @@
 use super::*;
+use crate::config::PermissionProfileSnapshot;
 use crate::session::turn_context::EnvironmentConfig;
+use crate::tools::approvals::ApprovalCacheKey;
 use codex_exec_server::Environment;
+use codex_protocol::models::PermissionProfile;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -19,6 +22,9 @@ async fn approval_key_uses_path_uri_and_includes_environment_id() {
             /*shell*/ None,
             EnvironmentConfig {
                 allow_login_shell: true,
+                permission_profile: PermissionProfileSnapshot::legacy(
+                    PermissionProfile::read_only(),
+                ),
             },
         ),
         shell_type: None,
@@ -40,19 +46,25 @@ async fn approval_key_uses_path_uri_and_includes_environment_id() {
         },
     };
     let runtime = ShellRuntime::for_shell_command(ShellRuntimeBackend::ShellCommandClassic);
-    let original_key = runtime.approval_keys(&request);
+    let original_key = runtime
+        .approval_action(&request, "call-1")
+        .expect("build approval action")
+        .cache_keys();
     assert_eq!(
         original_key,
-        vec![ApprovalKey {
+        vec![ApprovalCacheKey::Shell(ApprovalKey {
             environment_id: "remote".to_string(),
             command: request.command.clone(),
             cwd: PathUri::from_abs_path(&cwd),
             sandbox_permissions: request.sandbox_permissions,
             additional_permissions: request.additional_permissions.clone(),
-        }]
+        })]
     );
     request.turn_environment.environment_id = "other".to_string();
-    let other_key = runtime.approval_keys(&request);
+    let other_key = runtime
+        .approval_action(&request, "call-1")
+        .expect("build approval action")
+        .cache_keys();
 
     assert_ne!(original_key, other_key);
 }

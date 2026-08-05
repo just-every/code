@@ -13,14 +13,14 @@ use crate::Cli;
 use crate::app_server_session::AppServerSession;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
+use crate::legacy_core::config::bootstrap_auth_config;
 use crate::legacy_core::config::load_config_toml_with_layer_stack;
-use crate::legacy_core::config::resolve_bootstrap_auth_keyring_backend_kind;
-use crate::legacy_core::config::resolve_bootstrap_http_client_factory;
 use crate::legacy_core::config::resolve_oss_provider;
 use crate::legacy_core::config::resolve_profile_v2_config_path;
+use crate::named_session_lookup::NamedSessionCandidates;
+use crate::named_session_lookup::SessionCollection;
+use crate::named_session_lookup::SessionNameLookupMode;
 use codex_app_server_protocol::Thread as AppServerThread;
-use codex_app_server_protocol::ThreadListParams;
-use codex_app_server_protocol::ThreadSortKey;
 use codex_arg0::Arg0DispatchPaths;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
@@ -28,7 +28,6 @@ use codex_config::ConfigLoadOptions;
 use codex_config::LoaderOverrides;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
-use codex_login::AuthRouteConfig;
 use codex_protocol::ThreadId;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_home_dir::find_codex_home;
@@ -180,10 +179,9 @@ async fn lookup_session_by_exact_name(
     name: &str,
     archived: bool,
 ) -> Result<Option<AppServerThread>> {
-    let uses_remote_workspace = app_server.uses_remote_workspace();
     // Remote workspaces stay on their existing server-side path. Local workspaces trust SQLite
     // names, then scan and repair only after a miss or an unusable rollout path.
-    let lookup_modes = if uses_remote_workspace {
+    let lookup_modes = if app_server.uses_remote_workspace() {
         &[SessionNameLookupMode::ScanAndRepair][..]
     } else {
         &[
@@ -192,85 +190,29 @@ async fn lookup_session_by_exact_name(
         ][..]
     };
     for &lookup_mode in lookup_modes {
-        // Only the embedded server can safely use SQLite's recency cursor. Daemons may predate
-        // that sort key, and filesystem repair must paginate in the scanner's mtime order.
-        let sort_key = if lookup_mode == SessionNameLookupMode::StateDbOnly
-            && app_server.uses_embedded_app_server()
-        {
-            ThreadSortKey::RecencyAt
-        } else {
-            ThreadSortKey::UpdatedAt
-        };
         // Search is the fast path, but legacy stores attach renamed titles after filtering.
         for search_term in [Some(name), None] {
-            let mut cursor = None;
-            loop {
-                let response = app_server
-                    .thread_list(ThreadListParams {
-                        cursor: cursor.clone(),
-                        limit: Some(100),
-                        sort_key: Some(sort_key),
-                        sort_direction: None,
-                        model_providers: None,
-                        source_kinds: Some(super::resume_source_kinds(
-                            /*include_non_interactive*/ false,
-                        )),
-                        archived: Some(archived),
-                        section_id: None,
-                        parent_thread_id: None,
-                        ancestor_thread_id: None,
-                        cwd: None,
-                        use_state_db_only: lookup_mode == SessionNameLookupMode::StateDbOnly,
-                        search_term: search_term.map(str::to_string),
-                    })
-                    .await
-                    .wrap_err("failed to list sessions while resolving session name")?;
-
-                for thread in response
-                    .data
-                    .into_iter()
-                    .filter(|thread| thread.name.as_deref() == Some(name))
-                {
-                    if !uses_remote_workspace {
-                        // The action still requires a real rollout in the requested collection.
-                        let thread_id = ThreadId::from_string(&thread.id).wrap_err_with(|| {
-                            format!("app server returned invalid session id `{}`", thread.id)
-                        })?;
-                        let expected_root = codex_home.join(if archived {
-                            codex_rollout::ARCHIVED_SESSIONS_SUBDIR
-                        } else {
-                            codex_rollout::SESSIONS_SUBDIR
-                        });
-                        let valid_rollout = if let Some(path) = thread.path.as_deref()
-                            && let Some(path) = codex_rollout::existing_rollout_path(path).await
-                            && path.starts_with(expected_root)
-                            && let Ok(session_meta) =
-                                codex_rollout::read_session_meta_line(path.as_path()).await
-                        {
-                            session_meta.meta.id == thread_id
-                        } else {
-                            false
-                        };
-                        if !valid_rollout {
-                            continue;
-                        }
-                    }
-                    return Ok(Some(thread));
-                }
-                let Some(next_cursor) = response.next_cursor else {
-                    break;
-                };
-                cursor = Some(next_cursor);
+            let mut candidates = NamedSessionCandidates::new(
+                name,
+                codex_home,
+                if archived {
+                    SessionCollection::Archived
+                } else {
+                    SessionCollection::Active
+                },
+                lookup_mode,
+                search_term,
+            );
+            if let Some(candidate) = candidates
+                .next(app_server)
+                .await
+                .wrap_err("failed to list sessions while resolving session name")?
+            {
+                return Ok(Some(candidate.thread));
             }
         }
     }
     Ok(None)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SessionNameLookupMode {
-    StateDbOnly,
-    ScanAndRepair,
 }
 
 fn session_target_from_app_server_thread(thread: AppServerThread) -> Result<ResolvedSessionTarget> {
@@ -340,7 +282,7 @@ async fn start_app_server_for_archive_command(
         &cli_kv_overrides,
         &launch_loader_overrides,
         strict_config,
-        cli.bypass_hook_trust,
+        cli.bypass_hook_trust || cli.psp,
     );
     let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
         super::maybe_probe_default_daemon_socket(codex_home.as_path()).await
@@ -380,6 +322,7 @@ async fn start_app_server_for_archive_command(
         ));
         loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
+    loader_overrides.ignore_login_requirements = app_server_target.uses_remote_workspace();
 
     let bootstrap_config = load_config_toml_with_layer_stack(
         codex_home.as_path(),
@@ -394,31 +337,12 @@ async fn start_app_server_for_archive_command(
     .await
     .wrap_err("failed to load config.toml")?;
     let config_toml = &bootstrap_config.config_toml;
-    let chatgpt_base_url = config_toml
-        .chatgpt_base_url
-        .clone()
-        .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string());
-    let http_client_factory = resolve_bootstrap_http_client_factory(
-        config_toml,
-        bootstrap_config
-            .config_layer_stack
-            .requirements()
-            .feature_requirements
-            .as_ref(),
-    )?;
-    let environment_manager = Arc::new(
-        prepared_environment_manager
-            .build(Some(local_runtime_paths), http_client_factory.clone())
-            .wrap_err("failed to initialize environment manager")?,
-    );
-    let auth_route_config = AuthRouteConfig::from_http_client_factory(http_client_factory);
     let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-        codex_home.to_path_buf(),
+        app_server_target.auth_config_for_cloud_loader(bootstrap_auth_config(
+            codex_home.as_path(),
+            &bootstrap_config,
+        )?),
         /*enable_codex_api_key_env*/ false,
-        config_toml.cli_auth_credentials_store.unwrap_or_default(),
-        resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
-        chatgpt_base_url,
-        auth_route_config,
     )
     .await;
 
@@ -449,6 +373,7 @@ async fn start_app_server_for_archive_command(
             main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
             show_raw_agent_reasoning: cli.oss.then_some(true),
             bypass_hook_trust: cli.bypass_hook_trust.then_some(true),
+            psp: Some(cli.psp),
             ..Default::default()
         })
         .loader_overrides(loader_overrides.clone())
@@ -457,6 +382,11 @@ async fn start_app_server_for_archive_command(
         .build()
         .await
         .wrap_err("failed to load configuration")?;
+    let environment_manager = Arc::new(
+        prepared_environment_manager
+            .build(Some(local_runtime_paths), config.http_client_factory())
+            .wrap_err("failed to initialize environment manager")?,
+    );
     let state_db = super::init_state_db_for_app_server_target(&config, &app_server_target)
         .await
         .wrap_err("failed to initialize state database")?;

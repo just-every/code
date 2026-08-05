@@ -620,7 +620,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     .await;
 
     let expected_env_value = "propagated-env";
-    let expected_description = format!("{}🦀keep the complete MCP metadata", "é".repeat(499));
+    let expected_description = format!("{}🦀keep the complete MCP metadata", "é".repeat(11_000));
     let instructions = expected_description.clone();
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
@@ -713,7 +713,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
         .and_then(|tool| tool.get("description").and_then(Value::as_str))
         .expect("the model should receive a tool search description");
     assert!(
-        search_description.len() < 5 * 1024,
+        search_description.len() < 513 * 1024,
         "the complete tool search description must remain bounded"
     );
     assert!(search_description.contains(&format!("- rmcp: {expected_description}")));
@@ -2210,6 +2210,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 model_messages: None,
                 include_skills_usage_instructions: false,
                 include_plugin_usage_instructions: false,
+                include_apps_usage_instructions: false,
                 supports_reasoning_summary_parameter: true,
                 default_reasoning_summary: ReasoningSummary::Auto,
                 support_verbosity: false,
@@ -2231,6 +2232,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 supports_search_tool: false,
                 use_responses_lite: false,
                 auto_review_model_override: None,
+                model_specialty: None,
                 tool_mode: None,
                 multi_agent_version: None,
             }],
