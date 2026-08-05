@@ -219,7 +219,8 @@ fn should_store_responses(
     provider: &ModelProviderInfo,
     request_family: &ModelFamily,
 ) -> bool {
-    prompt.store || provider.is_azure_responses_endpoint() || request_family.use_responses_lite
+    provider.is_azure_responses_endpoint()
+        || (!request_family.use_responses_lite && prompt.store)
 }
 
 fn is_server_overloaded_error(error: &Error) -> bool {
@@ -3302,16 +3303,27 @@ mod tests {
     }
 
     #[test]
-    fn responses_storage_forces_store_for_required_providers() {
-        let prompt = Prompt::default();
+    fn responses_lite_disables_storage() {
+        let mut prompt = Prompt::default();
         let mut family = derive_default_model_family("gpt-test");
         let provider = responses_test_provider("openai", WireApi::Responses);
 
         family.use_responses_lite = true;
-        assert!(should_store_responses(&prompt, &provider, &family));
+        assert!(!should_store_responses(&prompt, &provider, &family));
 
-        family.use_responses_lite = false;
+        prompt.store = true;
+        assert!(!should_store_responses(&prompt, &provider, &family));
+    }
+
+    #[test]
+    fn responses_storage_is_forced_for_azure_provider() {
+        let prompt = Prompt::default();
+        let mut family = derive_default_model_family("gpt-test");
         let azure_provider = responses_test_provider("azure", WireApi::Responses);
+
+        assert!(should_store_responses(&prompt, &azure_provider, &family));
+
+        family.use_responses_lite = true;
         assert!(should_store_responses(&prompt, &azure_provider, &family));
     }
 
