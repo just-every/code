@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.169] - 2026-08-05
+
+- Core: disable storage for Responses Lite requests and preserve namespace tool serialization. (0724cfbf, 83fdc2e5, b87bf703)
+- Release: use Azure Key Vault for macOS notarization workflows. (0c07c7ee)
+- Release: add Fence auditing to the blob size workflow. (e1f39b5f)
+
 ## [0.6.168] - 2026-08-04
 
 - MCP: canonicalize legacy session headers for conformance compatibility. (b0d6dca9)

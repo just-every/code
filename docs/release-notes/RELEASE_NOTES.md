@@ -1,17 +1,18 @@
-## @just-every/code v0.6.168
+## @just-every/code v0.6.169
 
-This release improves MCP conformance compatibility and updates dependency metadata for security remediation.
+This release improves Responses Lite handling and release workflow reliability.
 
 ### Changes
 
-- MCP: canonicalize legacy session headers for conformance compatibility.
-- Dependencies: remediate brace-expansion security alerts in package metadata.
+- Core: disable storage for Responses Lite requests and preserve namespace tool serialization.
+- Release: use Azure Key Vault for macOS notarization workflows.
+- Release: add Fence auditing to the blob size workflow.
 
 ### Install
 
-```
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.167...v0.6.168
+Compare: https://github.com/just-every/code/compare/v0.6.168...v0.6.169
