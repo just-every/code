@@ -22,6 +22,8 @@ use crate::tool_apply_patch::{
 };
 // apply_patch tools are not currently surfaced; keep imports out to avoid warnings.
 
+const DEFAULT_FUNCTION_NAMESPACE: &str = "functions";
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiTool {
     pub(crate) name: String,
@@ -45,10 +47,16 @@ pub struct ResponsesApiNamespace {
 pub enum ResponsesApiNamespaceTool {
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
 }
 
 fn default_namespace_description(namespace_name: &str) -> String {
-    format!("Tools in the {namespace_name} namespace.")
+    if namespace_name == DEFAULT_FUNCTION_NAMESPACE {
+        String::new()
+    } else {
+        format!("Tools in the {namespace_name} namespace.")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1184,6 +1192,56 @@ pub fn create_tools_json_for_responses_api(
 
     Ok(tools_json)
 }
+
+pub fn create_tools_json_for_responses_lite(
+    tools: &[OpenAiTool],
+) -> crate::error::Result<Vec<serde_json::Value>> {
+    let mut functions = ResponsesApiNamespace {
+        name: DEFAULT_FUNCTION_NAMESPACE.to_string(),
+        description: default_namespace_description(DEFAULT_FUNCTION_NAMESPACE),
+        tools: Vec::new(),
+    };
+    let mut functions_index = None;
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        match tool {
+            OpenAiTool::Function(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Function(tool.clone()));
+            }
+            OpenAiTool::Freeform(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Custom(tool.clone()));
+            }
+            OpenAiTool::Namespace(namespace) if namespace.name == DEFAULT_FUNCTION_NAMESPACE => {
+                if !namespace.description.trim().is_empty() {
+                    functions.description = namespace.description.clone();
+                }
+                functions.tools.extend(namespace.tools.clone());
+            }
+            tool => {
+                tools_json.push(serde_json::to_value(tool)?);
+                continue;
+            }
+        }
+        functions_index.get_or_insert(tools_json.len());
+    }
+
+    if let Some(functions_index) = functions_index
+        && !functions.tools.is_empty()
+    {
+        tools_json.insert(
+            functions_index,
+            serde_json::to_value(OpenAiTool::Namespace(functions))?,
+        );
+    }
+
+    Ok(tools_json)
+}
+
 /// Returns JSON values that are compatible with Function Calling in the
 /// Chat Completions API:
 /// https://platform.openai.com/docs/guides/function-calling?api-mode=chat

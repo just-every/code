@@ -71,6 +71,7 @@ use crate::model_family::{find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_tools::create_tools_json_for_responses_api;
+use crate::openai_tools::create_tools_json_for_responses_lite;
 use crate::openai_tools::ConfigShellToolType;
 use crate::openai_tools::ToolsConfig;
 use crate::protocol::RateLimitSnapshotEvent;
@@ -731,7 +732,11 @@ impl ModelClient {
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
-        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = if request_family.use_responses_lite {
+            create_tools_json_for_responses_lite(&prompt.tools)?
+        } else {
+            create_tools_json_for_responses_api(&prompt.tools)?
+        };
         if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
                 tool.get("type")
@@ -1214,7 +1219,11 @@ impl ModelClient {
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
-        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = if request_family.use_responses_lite {
+            create_tools_json_for_responses_lite(&prompt.tools)?
+        } else {
+            create_tools_json_for_responses_api(&prompt.tools)?
+        };
         if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
                 tool.get("type")
