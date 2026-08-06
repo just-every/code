@@ -4927,6 +4927,7 @@ async fn handle_image_generation_call(
             status,
             revised_prompt,
             result,
+            transparent_background: None,
             saved_path,
         }),
         order,

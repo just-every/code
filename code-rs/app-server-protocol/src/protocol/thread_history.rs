@@ -149,6 +149,7 @@ impl ThreadHistoryBuilder {
             status: payload.status.clone(),
             revised_prompt: payload.revised_prompt.clone(),
             result: payload.result.clone(),
+            transparent_background: payload.transparent_background,
             saved_path: payload.saved_path.clone(),
         });
     }
@@ -585,4 +586,3 @@ mod tests {
         assert_eq!(turns, Vec::<Turn>::new());
     }
 }
-

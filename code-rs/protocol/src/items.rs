@@ -92,6 +92,9 @@ pub struct ImageGenerationItem {
     pub result: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub transparent_background: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub saved_path: Option<AbsolutePathBuf>,
 }
 
@@ -259,6 +262,7 @@ impl ImageGenerationItem {
             status: self.status.clone(),
             revised_prompt: self.revised_prompt.clone(),
             result: self.result.clone(),
+            transparent_background: self.transparent_background,
             saved_path: self.saved_path.clone(),
         })
     }

@@ -14128,6 +14128,7 @@ impl ChatWidget<'_> {
                 status,
                 revised_prompt: _,
                 result: _,
+                transparent_background: _,
                 saved_path,
             }) => {
                 let ok = match event.order.as_ref() {
