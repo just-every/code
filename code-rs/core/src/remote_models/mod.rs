@@ -455,6 +455,7 @@ mod tests {
             display_name: slug.to_string(),
             description: None,
             default_reasoning_level: None,
+            model_specialty: None,
             supported_reasoning_levels: Vec::new(),
             shell_type: ConfigShellToolType::Default,
             visibility: ModelVisibility::None,

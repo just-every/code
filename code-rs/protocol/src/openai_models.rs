@@ -32,6 +32,8 @@ use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+/// Backend model-catalog specialty identifying cybersecurity-focused models.
+pub const MODEL_SPECIALTY_CYBER: &str = "cyber";
 pub const SPEED_TIER_FAST: &str = "fast";
 
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
@@ -206,6 +208,8 @@ pub struct ModelPreset {
     pub display_name: String,
     /// Short human description shown in UIs.
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_specialty: Option<String>,
     /// Reasoning effort applied when none is explicitly chosen.
     pub default_reasoning_effort: ReasoningEffort,
     /// Supported reasoning effort options.
@@ -360,6 +364,8 @@ pub struct ModelInfo {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning_level: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_specialty: Option<String>,
     pub supported_reasoning_levels: Vec<ReasoningEffortPreset>,
     pub shell_type: ConfigShellToolType,
     pub visibility: ModelVisibility,
@@ -586,6 +592,7 @@ impl From<ModelInfo> for ModelPreset {
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),
+            model_specialty: info.model_specialty,
             default_reasoning_effort: info
                 .default_reasoning_level
                 .unwrap_or(ReasoningEffort::None),
@@ -728,6 +735,7 @@ mod tests {
             display_name: "Test Model".to_string(),
             description: None,
             default_reasoning_level: None,
+            model_specialty: None,
             supported_reasoning_levels: vec![],
             shell_type: ConfigShellToolType::ShellCommand,
             visibility: ModelVisibility::List,
@@ -1013,6 +1021,7 @@ mod tests {
         assert!(!model.supports_image_detail_original);
         assert!(!model.supports_search_tool);
         assert!(!model.use_responses_lite);
+        assert_eq!(model.model_specialty, None);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert_eq!(model.tool_mode, None);
     }
@@ -1094,6 +1103,19 @@ mod tests {
             })
         );
         assert!(preset.supports_fast_mode());
+    }
+
+    #[test]
+    fn model_preset_preserves_model_specialty() {
+        let preset = ModelPreset::from(ModelInfo {
+            model_specialty: Some(MODEL_SPECIALTY_CYBER.to_string()),
+            ..test_model(None)
+        });
+
+        assert_eq!(
+            preset.model_specialty.as_deref(),
+            Some(MODEL_SPECIALTY_CYBER)
+        );
     }
 
     #[test]
