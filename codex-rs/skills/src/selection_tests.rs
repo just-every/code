@@ -5,7 +5,27 @@ use codex_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Arc;
+
+#[derive(Default)]
+struct TestLookup {
+    skills: Vec<SkillMetadata>,
+    disabled_paths: HashSet<AbsolutePathBuf>,
+    skill_discovery_path_by_path: HashMap<AbsolutePathBuf, AbsolutePathBuf>,
+}
+
+impl ExplicitSkillLookup for TestLookup {
+    fn skills(&self) -> &[SkillMetadata] {
+        &self.skills
+    }
+
+    fn disabled_paths(&self) -> &HashSet<AbsolutePathBuf> {
+        &self.disabled_paths
+    }
+
+    fn skill_discovery_path_for_path(&self, path: &AbsolutePathBuf) -> Option<&AbsolutePathBuf> {
+        self.skill_discovery_path_by_path.get(path)
+    }
+}
 
 fn make_skill(name: &str, path: &str) -> SkillMetadata {
     SkillMetadata {
@@ -22,26 +42,6 @@ fn make_skill(name: &str, path: &str) -> SkillMetadata {
     }
 }
 
-#[test]
-fn skill_prompt_contents_are_bounded_at_utf8_boundaries() {
-    let contents = format!("{}é", "a".repeat(MAX_SKILL_PROMPT_BYTES - 1));
-
-    let (bounded, truncated) = bounded_skill_prompt_contents(&contents);
-
-    assert_eq!(bounded.len(), MAX_SKILL_PROMPT_BYTES - 1);
-    assert_eq!(truncated, true);
-}
-
-fn set<'a>(items: &'a [&'a str]) -> HashSet<&'a str> {
-    items.iter().copied().collect()
-}
-
-fn assert_mentions(text: &str, expected_names: &[&str], expected_paths: &[&str]) {
-    let mentions = extract_tool_mentions(text);
-    assert_eq!(mentions.names, set(expected_names));
-    assert_eq!(mentions.paths, set(expected_paths));
-}
-
 fn linked_skill_mention(name: &str, unix_path: &str) -> String {
     format!("[${name}]({})", test_path_buf(unix_path).display())
 }
@@ -52,7 +52,7 @@ fn collect_mentions(
     disabled_paths: &HashSet<AbsolutePathBuf>,
     connector_slug_counts: &HashMap<String, usize>,
 ) -> Vec<SkillMetadata> {
-    let loaded_skills = SkillLoadOutcome {
+    let loaded_skills = TestLookup {
         skills: skills.to_vec(),
         disabled_paths: disabled_paths.clone(),
         ..Default::default()
@@ -60,105 +60,15 @@ fn collect_mentions(
     collect_explicit_skill_mentions(inputs, &loaded_skills, connector_slug_counts)
 }
 
-fn skill_outcome_with_discovery_path(
-    skill: SkillMetadata,
-    discovery_path: &str,
-) -> SkillLoadOutcome {
-    SkillLoadOutcome {
-        skill_discovery_path_by_path: Arc::new(HashMap::from([(
+fn skill_outcome_with_discovery_path(skill: SkillMetadata, discovery_path: &str) -> TestLookup {
+    TestLookup {
+        skill_discovery_path_by_path: HashMap::from([(
             skill.path_to_skills_md.clone(),
             test_path_buf(discovery_path).abs(),
-        )])),
+        )]),
         skills: vec![skill],
         ..Default::default()
     }
-}
-
-#[test]
-fn text_mentions_skill_requires_exact_boundary() {
-    assert_eq!(
-        true,
-        text_mentions_skill("use $notion-research-doc please", "notion-research-doc")
-    );
-    assert_eq!(
-        true,
-        text_mentions_skill("($notion-research-doc)", "notion-research-doc")
-    );
-    assert_eq!(
-        true,
-        text_mentions_skill("$notion-research-doc.", "notion-research-doc")
-    );
-    assert_eq!(
-        false,
-        text_mentions_skill("$notion-research-docs", "notion-research-doc")
-    );
-    assert_eq!(
-        false,
-        text_mentions_skill("$notion-research-doc_extra", "notion-research-doc")
-    );
-}
-
-#[test]
-fn text_mentions_skill_handles_end_boundary_and_near_misses() {
-    assert_eq!(true, text_mentions_skill("$alpha-skill", "alpha-skill"));
-    assert_eq!(false, text_mentions_skill("$alpha-skillx", "alpha-skill"));
-    assert_eq!(
-        true,
-        text_mentions_skill("$alpha-skillx and later $alpha-skill ", "alpha-skill")
-    );
-}
-
-#[test]
-fn text_mentions_skill_handles_many_dollars_without_looping() {
-    let prefix = "$".repeat(256);
-    let text = format!("{prefix} not-a-mention");
-    assert_eq!(false, text_mentions_skill(&text, "alpha-skill"));
-}
-
-#[test]
-fn extract_tool_mentions_handles_plain_and_linked_mentions() {
-    assert_mentions(
-        "use $alpha and [$beta](/tmp/beta)",
-        &["alpha", "beta"],
-        &["/tmp/beta"],
-    );
-}
-
-#[test]
-fn extract_tool_mentions_skips_common_env_vars() {
-    assert_mentions("use $PATH and $alpha", &["alpha"], &[]);
-    assert_mentions("use [$HOME](/tmp/skill)", &[], &[]);
-    assert_mentions("use $XDG_CONFIG_HOME and $beta", &["beta"], &[]);
-}
-
-#[test]
-fn extract_tool_mentions_requires_link_syntax() {
-    assert_mentions("[beta](/tmp/beta)", &[], &[]);
-    assert_mentions("[$beta] /tmp/beta", &["beta"], &[]);
-    assert_mentions("[$beta]()", &["beta"], &[]);
-}
-
-#[test]
-fn extract_tool_mentions_trims_linked_paths_and_allows_spacing() {
-    assert_mentions("use [$beta]   ( /tmp/beta )", &["beta"], &["/tmp/beta"]);
-}
-
-#[test]
-fn extract_tool_mentions_stops_at_non_name_chars() {
-    assert_mentions(
-        "use $alpha.skill and $beta_extra",
-        &["alpha", "beta_extra"],
-        &[],
-    );
-}
-
-#[test]
-fn extract_tool_mentions_keeps_plugin_skill_namespaces() {
-    assert_mentions(
-        "use $slack:search and $alpha",
-        &["alpha", "slack:search"],
-        &[],
-    );
 }
 
 #[test]

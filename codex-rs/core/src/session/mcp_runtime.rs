@@ -8,6 +8,7 @@ use super::session::SessionConfiguration;
 use super::*;
 use crate::mcp::McpRuntimeProjection;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 
@@ -16,6 +17,7 @@ pub(super) struct McpDesiredState {
     pub(super) auth: Option<CodexAuth>,
     pub(super) submit_id: String,
     pub(super) originator: String,
+    pub(super) session_source: SessionSource,
     pub(super) environments: TurnEnvironmentSnapshot,
     pub(super) windows_sandbox_level: WindowsSandboxLevel,
 }
@@ -74,6 +76,7 @@ impl Session {
             auth,
             submit_id: self.next_internal_sub_id(),
             originator: session_configuration.originator.clone(),
+            session_source: session_configuration.session_source.clone(),
             environments,
             windows_sandbox_level: session_configuration.windows_sandbox_level,
         }
@@ -95,6 +98,7 @@ impl Session {
             auth,
             submit_id: INITIAL_SUBMIT_ID.to_owned(),
             originator: session_configuration.originator.clone(),
+            session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             windows_sandbox_level: session_configuration.windows_sandbox_level,
         };
@@ -171,6 +175,11 @@ impl Session {
                 .then(|| Arc::clone(&self.services.auth_manager));
 
         McpRuntimeInput {
+            startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
+                McpStartupPolicy::LazyWhenCached
+            } else {
+                McpStartupPolicy::Eager
+            },
             config: mcp_config,
             plugins_available,
             ready_selected_capability_roots: ready_selected_capability_roots.to_vec(),

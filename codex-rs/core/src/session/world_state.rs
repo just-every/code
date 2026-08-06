@@ -13,6 +13,7 @@ use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
 use crate::context::world_state::ModelInstructionsState;
 use crate::context::world_state::MultiAgentModeState;
+use crate::context::world_state::MultiAgentUsageHintState;
 use crate::context::world_state::PermissionsState;
 use crate::context::world_state::PersonalityState;
 use crate::context::world_state::PluginsInstructionsState;
@@ -36,19 +37,27 @@ impl Session {
             selected_capability_root_count = step_context.selected_capability_roots.len(),
             "building step world state"
         );
-        let (previous_model, previous_context, base_instructions) = {
-            let state = self.state.lock().await;
-            (
-                state
-                    .previous_turn_settings()
-                    .map(|previous| previous.model),
-                state.reference_context_item(),
-                state.session_configuration.base_instructions.clone(),
-            )
-        };
         let model_instructions = turn_context
             .model_info
             .get_model_instructions(turn_context.personality);
+        let (previous_model, previous_context, base_instructions) = {
+            let state = self.state.lock().await;
+            let base_instructions = state.session_configuration.base_instructions.clone();
+            (
+                state
+                    .previous_turn_settings()
+                    .map(|previous| previous.model)
+                    .or_else(|| {
+                        state
+                            .base_instructions_model
+                            .as_ref()
+                            .filter(|_| base_instructions != model_instructions)
+                            .cloned()
+                    }),
+                state.reference_context_item(),
+                base_instructions,
+            )
+        };
         let personality_is_baked = turn_context.model_info.supports_personality()
             && base_instructions == model_instructions;
         let environment_subagents = if turn_context.config.include_environment_context {
@@ -79,7 +88,8 @@ impl Session {
                 turn_context.personality,
                 previous_context
                     .as_ref()
-                    .map(|previous| previous.model.as_str()),
+                    .map(|previous| previous.model.as_str())
+                    .or(previous_model.as_deref()),
                 previous_context
                     .as_ref()
                     .and_then(|previous| previous.personality),
@@ -252,9 +262,17 @@ impl Session {
                 world_state.add_extension_section(section);
             }
         }
-        world_state.add_section(MultiAgentModeState::new(
+        let mut multi_agent_mode = MultiAgentModeState::new(
             super::multi_agents::effective_multi_agent_mode(turn_context),
-        ));
+        );
+        if let Some(usage_hint_text) =
+            super::multi_agents::usage_hint_text(turn_context, &turn_context.session_source)
+        {
+            let usage_hint = MultiAgentUsageHintState::new(usage_hint_text);
+            multi_agent_mode = multi_agent_mode.with_usage_hint(&usage_hint);
+            world_state.add_section(usage_hint);
+        }
+        world_state.add_section(multi_agent_mode);
         Ok(world_state)
     }
 }

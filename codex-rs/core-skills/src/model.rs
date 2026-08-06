@@ -102,31 +102,50 @@ impl SkillLoadOutcome {
         self.file_systems_by_skill_path
             .get(&skill.path_to_skills_md)
     }
-}
 
-/// Immutable snapshot of host-owned skills and the filesystem mapping needed
-/// to read each skill through the environment that discovered it.
-#[derive(Debug, Clone)]
-pub struct HostSkillsSnapshot {
-    outcome: Arc<SkillLoadOutcome>,
-}
-
-impl HostSkillsSnapshot {
-    pub fn new(outcome: Arc<SkillLoadOutcome>) -> Self {
-        Self { outcome }
+    /// Builds the legacy aggregate from independently loaded roots.
+    ///
+    /// This is a temporary migration boundary while host root loading moves to the skills
+    /// extension. It deliberately reuses the existing merge, precedence, and deduplication logic.
+    pub fn from_root_snapshots(snapshots: Vec<crate::loader::SkillRootSnapshot>) -> Self {
+        crate::root_loader::merge_skill_root_snapshots(snapshots)
     }
 
-    pub fn outcome(&self) -> &SkillLoadOutcome {
-        self.outcome.as_ref()
-    }
-
+    /// Reads one loaded skill through the filesystem that discovered it.
     pub async fn read_skill_text(&self, skill: &SkillMetadata) -> io::Result<String> {
         let fs = self
-            .outcome
             .file_system_for_skill(skill)
             .unwrap_or_else(|| Arc::clone(&LOCAL_FS));
         let path = PathUri::from_abs_path(&skill.path_to_skills_md);
         fs.read_file_text(&path, /*sandbox*/ None).await
+    }
+}
+
+impl codex_skills::ImplicitSkillLookup for SkillLoadOutcome {
+    fn implicit_skill_for_scripts_dir(&self, path: &AbsolutePathBuf) -> Option<&SkillMetadata> {
+        self.implicit_skills_by_scripts_dir.get(path)
+    }
+
+    fn implicit_skill_for_doc_path(&self, path: &AbsolutePathBuf) -> Option<&SkillMetadata> {
+        self.implicit_skills_by_doc_path.get(path)
+    }
+}
+
+impl codex_skills::ExplicitSkillLookup for SkillLoadOutcome {
+    fn skills(&self) -> &[SkillMetadata] {
+        &self.skills
+    }
+
+    fn disabled_paths(&self) -> &HashSet<AbsolutePathBuf> {
+        &self.disabled_paths
+    }
+
+    fn skill_discovery_path_for_path(&self, path: &AbsolutePathBuf) -> Option<&AbsolutePathBuf> {
+        SkillLoadOutcome::skill_discovery_path_for_path(self, path)
+    }
+
+    fn is_skill_enabled(&self, skill: &SkillMetadata) -> bool {
+        SkillLoadOutcome::is_skill_enabled(self, skill)
     }
 }
 

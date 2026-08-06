@@ -92,6 +92,8 @@ use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::router::ToolCallSource;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use crate::user_message_admission::PendingUserMessageAdmissionState;
+use crate::user_message_admission::UserMessageAdmissionError;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::permissions_toml::FilesystemPermissionToml;
@@ -5579,6 +5581,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -5747,6 +5750,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
+        mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -5993,6 +5997,7 @@ async fn make_session_with_config_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -6106,6 +6111,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
+        model_info,
         Arc::new(ExecPolicyManager::default()),
         tx_event,
         agent_status_tx,
@@ -7963,6 +7969,7 @@ where
         .then(|| Arc::new(crate::state::ExecutedToolCallRecorder::default()));
     let services = SessionServices {
         mcp_runtime,
+        mcp_handler_cache: Default::default(),
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -8178,6 +8185,18 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
         .capture_step_context(next_turn, &CancellationToken::new())
         .await
         .expect("a fresh cancellation token cannot be cancelled");
+    assert!(
+        !Arc::ptr_eq(&old_step.mcp, &new_step.mcp),
+        "publishing a new MCP runtime must invalidate cached bindings"
+    );
+    let refreshed_old_step = session
+        .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+        .await
+        .expect("capture an existing turn after its MCP runtime is republished");
+    assert!(
+        Arc::ptr_eq(&new_step.mcp, &refreshed_old_step.mcp),
+        "existing turns should reuse the newly published immutable MCP binding"
+    );
     let rematerialized_old = session
         .mcp_runtime_for_step(
             &turn_context,
@@ -8215,12 +8234,17 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
 async fn refreshed_mcp_binding_captures_current_approval_authority() {
     let (session, old_turn) = make_session_and_context().await;
     let session = Arc::new(session);
+    let old_turn = Arc::new(old_turn);
     let previous_policy = old_turn.approval_policy();
     assert_ne!(previous_policy, AskForApproval::Never);
     assert_eq!(
         old_turn.config.permissions.approval_policy.value(),
         previous_policy
     );
+    let old_step = session
+        .capture_step_context(Arc::clone(&old_turn), &CancellationToken::new())
+        .await
+        .expect("capture initial sampling step");
 
     session
         .update_settings(SessionSettingsUpdate {
@@ -8239,6 +8263,18 @@ async fn refreshed_mcp_binding_captures_current_approval_authority() {
         .current_binding()
         .await
         .expect("refreshed runtime should be available");
+    assert!(
+        !Arc::ptr_eq(&old_step.mcp, &binding),
+        "changed approval authority must invalidate the cached MCP binding"
+    );
+    let refreshed_step = session
+        .capture_step_context(Arc::clone(&old_turn), &CancellationToken::new())
+        .await
+        .expect("capture existing turn after its approval authority changes");
+    assert!(
+        Arc::ptr_eq(&binding, &refreshed_step.mcp),
+        "existing turns must use the MCP binding with current approval authority"
+    );
     let config = binding.config();
     assert_eq!(
         (
@@ -9866,6 +9902,83 @@ async fn attach_in_memory_thread_store(
 }
 
 #[tokio::test]
+async fn failed_user_message_persistence_stops_turn_processing() {
+    let (mut session, turn_context, _events) = make_session_and_context_with_rx().await;
+    open_thread_persistence(
+        Arc::get_mut(&mut session).unwrap_or_else(|| panic!("session should be uniquely owned")),
+    )
+    .await;
+    session
+        .services
+        .live_thread
+        .as_ref()
+        .unwrap_or_else(|| panic!("session should have a live thread"))
+        .shutdown()
+        .await
+        .unwrap_or_else(|error| panic!("live thread should shut down: {error}"));
+
+    let client_id = "persistence-failure".to_string();
+    let (_pending_admission, admission) = session.pending_user_message_admissions.register(
+        turn_context.sub_id.clone(),
+        Some(client_id.clone()),
+        PendingUserMessageAdmissionState::WaitingForAdmission,
+    );
+    let failed_queued_prompt = vec![UserInput::Text {
+        text: "message with a failed rollout flush".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let later_steer = vec![UserInput::Text {
+        text: "later ordinary steer".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let later_response = user_message("later response item");
+    let later_mailbox = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "later mailbox message".to_string(),
+        /*trigger_turn*/ false,
+    );
+    let input = [
+        TurnInput::UserInput {
+            content: failed_queued_prompt,
+            client_id: Some(client_id),
+        },
+        TurnInput::UserInput {
+            content: later_steer.clone(),
+            client_id: None,
+        },
+        TurnInput::ResponseItem(later_response.clone()),
+        TurnInput::InterAgentCommunication(later_mailbox.clone()),
+    ];
+
+    assert!(
+        super::turn::run_hooks_and_record_inputs(&session, &turn_context, &input).await,
+        "a rollout flush failure should stop turn processing"
+    );
+    assert!(matches!(
+        admission.await,
+        Ok(Err(UserMessageAdmissionError::PersistenceFailed(_)))
+    ));
+    assert!(turn_context.terminal_error.lock().await.is_some());
+
+    let mut expected_suffix = vec![
+        session.response_item_from_user_input(later_steer),
+        later_response,
+        later_mailbox.to_model_input_item(),
+    ];
+    for item in &mut expected_suffix {
+        item.set_turn_id_if_missing(&turn_context.sub_id);
+    }
+    let history = session.clone_history().await;
+    let history_items = strip_response_item_ids(history.raw_items());
+    assert!(
+        history_items.ends_with(&strip_response_item_ids(&expected_suffix)),
+        "later steer, response, and mailbox inputs should survive the failed queued message"
+    );
+}
+
+#[tokio::test]
 async fn hook_transcript_path_does_not_persist_non_local_thread_store() {
     let (mut session, _) = make_session_and_context().await;
     let store = attach_in_memory_thread_store(&mut session).await;
@@ -10461,7 +10574,9 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
         )
         .await;
 
-    session.emit_thread_idle_lifecycle_if_idle().await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
 }
@@ -10960,7 +11075,7 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
                     text: "follow up".to_string(),
                     text_elements: Vec::new(),
                 }],
-                client_id: None
+                client_id: None,
             },
             TurnInput::InterAgentCommunication(communication),
         ],
@@ -11018,7 +11133,7 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
                     text: "follow up".to_string(),
                     text_elements: Vec::new(),
                 }],
-                client_id: None
+                client_id: None,
             },
             TurnInput::InterAgentCommunication(communication),
         ],
