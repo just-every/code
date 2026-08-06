@@ -2801,6 +2801,7 @@ pub enum ThreadItem {
         status: String,
         revised_prompt: Option<String>,
         result: String,
+        transparent_background: Option<bool>,
         saved_path: Option<AbsolutePathBuf>,
     },
     #[serde(rename_all = "camelCase")]
@@ -2887,6 +2888,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 status: image.status,
                 revised_prompt: image.revised_prompt,
                 result: image.result,
+                transparent_background: image.transparent_background,
                 saved_path: image.saved_path,
             },
             CoreTurnItem::ContextCompaction(compaction) => {
