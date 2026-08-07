@@ -27,6 +27,22 @@ use which::which;
 
 use super::CONFIG_TOML_FILE;
 
+fn ensure_table_path<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> &'a mut TomlTable {
+    let mut table = doc.as_table_mut();
+    for key in path {
+        let item = table
+            .entry(key)
+            .or_insert_with(|| TomlItem::Table(TomlTable::new()));
+        if !item.is_table() {
+            *item = TomlItem::Table(TomlTable::new());
+        }
+        table = item
+            .as_table_mut()
+            .expect("item was just initialized as a table");
+    }
+    table
+}
+
 pub fn load_config_as_toml(code_home: &Path) -> std::io::Result<TomlValue> {
     load_config_as_toml_blocking(code_home, LoaderOverrides::default())
 }
@@ -399,19 +415,15 @@ pub fn set_tui_theme_name(code_home: &Path, theme: ThemeName) -> anyhow::Result<
 
     // Migrate the legacy `tui.theme = "..."` syntax-theme setting into the
     // current table before persisting the application theme selection.
-    if !doc["tui"]["theme"].is_table() {
-        doc["tui"]["theme"] = TomlItem::Table(TomlTable::new());
-    }
+    let theme_tbl = ensure_table_path(&mut doc, &["tui", "theme"]);
 
     // Write `[tui.theme].name = "…"`
-    doc["tui"]["theme"]["name"] = toml_edit::value(theme_str);
+    theme_tbl["name"] = toml_edit::value(theme_str);
     // When switching away from the Custom theme, clear any lingering custom
     // overrides so built-in themes render true to spec on next startup.
     if theme != ThemeName::Custom {
-        if let Some(tbl) = doc["tui"]["theme"].as_table_mut() {
-            tbl.remove("label");
-            tbl.remove("colors");
-        }
+        theme_tbl.remove("label");
+        theme_tbl.remove("colors");
     }
 
     // ensure code_home exists
@@ -553,24 +565,28 @@ pub fn set_custom_theme(
         Err(e) => return Err(e.into()),
     };
 
-    // Optionally activate custom theme and persist label
-    if set_active {
-        doc["tui"]["theme"]["name"] = toml_edit::value("custom");
-    }
-    doc["tui"]["theme"]["label"] = toml_edit::value(label);
-    if let Some(d) = is_dark { doc["tui"]["theme"]["is_dark"] = toml_edit::value(d); }
+    let theme_tbl = ensure_table_path(&mut doc, &["tui", "theme"]);
 
-    // Ensure colors table exists and write provided keys
+    // Optionally activate custom theme and persist label.
+    if set_active {
+        theme_tbl["name"] = toml_edit::value("custom");
+    }
+    theme_tbl["label"] = toml_edit::value(label);
+    if let Some(d) = is_dark {
+        theme_tbl["is_dark"] = toml_edit::value(d);
+    }
+
+    // Ensure colors table exists and write provided keys.
     {
-        use toml_edit::Item as It;
-        if !doc["tui"]["theme"].is_table() {
-            doc["tui"]["theme"] = It::Table(toml_edit::Table::new());
+        let colors_item = theme_tbl
+            .entry("colors")
+            .or_insert_with(|| TomlItem::Table(TomlTable::new()));
+        if !colors_item.is_table() {
+            *colors_item = TomlItem::Table(TomlTable::new());
         }
-        let theme_tbl = doc["tui"]["theme"].as_table_mut().unwrap();
-        if !theme_tbl.contains_key("colors") {
-            theme_tbl.insert("colors", It::Table(toml_edit::Table::new()));
-        }
-    let colors_tbl = theme_tbl["colors"].as_table_mut().unwrap();
+        let colors_tbl = colors_item
+            .as_table_mut()
+            .expect("colors item was just initialized as a table");
         macro_rules! set_opt {
             ($key:ident) => {
                 if let Some(ref v) = colors.$key { colors_tbl.insert(stringify!($key), toml_edit::value(v.clone())); }

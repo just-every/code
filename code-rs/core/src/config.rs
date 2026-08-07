@@ -1877,6 +1877,7 @@ mod tests {
     use crate::config_types::McpServerTransportConfig;
     use crate::config_types::Notifications;
     use crate::config_types::ThemeConfig;
+    use crate::config_types::ThemeColors;
     use crate::config_types::ThemeName;
 
     use super::*;
@@ -1991,6 +1992,66 @@ theme = "catppuccin-mocha"
         );
         assert!(!serialized.contains("catppuccin-mocha"));
         assert!(serialized.contains("name = \"dark-carbon-night\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn persist_theme_creates_missing_tui_theme_table() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+
+        set_tui_theme_name(code_home.path(), ThemeName::LightGlacier)?;
+
+        let serialized = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let config: ConfigToml = toml::from_str(&serialized)?;
+        assert_eq!(
+            config
+                .tui
+                .expect("tui configuration should deserialize")
+                .theme
+                .name,
+            ThemeName::LightGlacier
+        );
+        assert!(serialized.contains("name = \"light-glacier\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn persist_custom_theme_migrates_legacy_string_setting() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+        let config_path = code_home.path().join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_path,
+            r#"
+[tui]
+theme = "catppuccin-mocha"
+"#,
+        )?;
+
+        let colors = ThemeColors {
+            primary: Some("#123456".to_string()),
+            ..ThemeColors::default()
+        };
+        set_custom_theme(
+            code_home.path(),
+            "Windows Regression",
+            &colors,
+            true,
+            Some(false),
+        )?;
+
+        let serialized = std::fs::read_to_string(config_path)?;
+        let config: ConfigToml = toml::from_str(&serialized)?;
+        let theme = config
+            .tui
+            .expect("tui configuration should deserialize")
+            .theme;
+        assert_eq!(theme.name, ThemeName::Custom);
+        assert_eq!(theme.label, Some("Windows Regression".to_string()));
+        assert_eq!(theme.colors.primary, Some("#123456".to_string()));
+        assert_eq!(theme.is_dark, Some(false));
+        assert!(!serialized.contains("catppuccin-mocha"));
 
         Ok(())
     }
