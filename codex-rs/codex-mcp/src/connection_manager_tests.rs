@@ -116,6 +116,7 @@ impl McpConnectionSet {
                     identity: None,
                     client,
                     startup_trigger: None,
+                    _diagnostics_guard: LIVE_CONNECTIONS.track(),
                 }),
                 metadata: McpServerMetadata {
                     environment_id: String::new(),
@@ -3305,15 +3306,33 @@ fn mcp_init_error_display_prompts_for_github_pat() {
 #[test]
 fn mcp_init_error_display_prompts_for_login_when_auth_required() {
     let server_name = "example";
-    let err: StartupOutcomeError = anyhow::anyhow!("Auth required for server").into();
-
-    let display = mcp_init_error_display(server_name, /*config*/ None, &err);
-
     let expected = format!(
         "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
     );
+    let executor_config: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://example.com/mcp",
+        "environment_id": "executor-1",
+    }))
+    .expect("executor MCP configuration should deserialize");
 
-    assert_eq!(expected, display);
+    for error in [
+        anyhow::anyhow!("Auth required for server").into(),
+        StartupOutcomeError::Failed {
+            error: "OAuth refresh token was rejected: invalid_grant".to_string(),
+            is_authentication_required: true,
+        },
+    ] {
+        let display = mcp_init_error_display(server_name, /*config*/ None, &error);
+        assert_eq!(expected, display);
+
+        let executor_display = mcp_init_error_display(server_name, Some(&executor_config), &error);
+        assert_eq!(
+            format!(
+                "The {server_name} MCP server is not logged in. Use your client's MCP OAuth sign-in flow."
+            ),
+            executor_display
+        );
+    }
 }
 
 #[test]
@@ -3340,7 +3359,12 @@ fn mcp_startup_failure_reason_requires_existing_oauth_and_auth_failure() {
         ),
         (Some(McpAuthState::Unsupported), true, None),
         (Some(McpAuthState::BearerToken), true, None),
-        (Some(McpAuthState::OAuth), true, None),
+        (
+            Some(McpAuthState::OAuth),
+            true,
+            Some(McpStartupFailureReason::ReauthenticationRequired),
+        ),
+        (Some(McpAuthState::OAuth), false, None),
         (None, true, None),
     ] {
         let error = StartupOutcomeError::Failed {
@@ -3485,6 +3509,7 @@ async fn manager_with_reusable_ready_server(
                 identity: Some(reusable_server_identity(config, runtime_context)),
                 client: create_ready_async_managed_client(tools).await,
                 startup_trigger: None,
+                _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
             tool_filter: ToolFilter::from_config(config),
@@ -3618,6 +3643,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
                     cancel_token: CancellationToken::new(),
                 },
                 startup_trigger: None,
+                _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
             metadata: McpServerMetadata::from(&server),
             tool_filter: ToolFilter::from_config(&config),
@@ -3925,6 +3951,7 @@ async fn reconciliation_replaces_closed_connections() -> anyhow::Result<()> {
             cancel_token: CancellationToken::new(),
         },
         startup_trigger: None,
+        _diagnostics_guard: LIVE_CONNECTIONS.track(),
     });
 
     assert!(!client.is_closed().await);

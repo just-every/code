@@ -34,6 +34,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::PermissionProfile;
@@ -2989,7 +2990,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
+async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config
@@ -3001,7 +3002,9 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
     config.multi_agent_v2.default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
-    let Err(err) = WaitAgentHandlerV2::default()
+    tokio::time::pause();
+    let started_at = tokio::time::Instant::now();
+    let output = WaitAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3009,13 +3012,28 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
             function_payload(json!({"timeout_ms": 1})),
         ))
         .await
-    else {
-        panic!("timeout below configured minimum should be rejected");
-    };
-    assert_eq!(
-        err,
-        FunctionCallError::RespondToModel("timeout_ms must be at least 50".to_string())
+        .expect("wait_agent should succeed");
+    let elapsed = started_at.elapsed();
+    tokio::time::resume();
+
+    assert!(
+        elapsed >= Duration::from_millis(/*millis*/ 50)
+            && elapsed <= Duration::from_millis(/*millis*/ 51),
+        "wait_agent should time out at the configured minimum: {elapsed:?}"
     );
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message:
+                "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
+                    .to_string(),
+            timed_out: true,
+        }
+    );
+    assert_eq!(success, None);
 }
 
 #[tokio::test]
@@ -4425,6 +4443,9 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let (_session, mut turn) = make_session_and_context().await;
     let base_instructions = BaseInstructions {
         text: "base".to_string(),
+        provenance: Some(BaseInstructionsProvenance::Model {
+            model: turn.model_info.slug.clone(),
+        }),
     };
     turn.developer_instructions = Some("dev".to_string());
     let mut config = (*turn.config).clone();
@@ -4469,6 +4490,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let config = build_agent_spawn_config(&base_instructions, &turn, turn.environments.primary())
         .expect("spawn config");
     let mut expected = (*turn.config).clone();
+    expected.base_instructions_provenance = base_instructions.provenance.clone();
     expected.base_instructions = Some(base_instructions.text);
     expected.model = Some(turn.model_info.slug.clone());
     expected.model_provider = turn.provider.info().clone();
@@ -4496,6 +4518,9 @@ async fn build_agent_resume_config_clears_base_instructions() {
     let (_session, mut turn) = make_session_and_context().await;
     let mut base_config = (*turn.config).clone();
     base_config.base_instructions = Some("caller-base".to_string());
+    base_config.base_instructions_provenance = Some(BaseInstructionsProvenance::Model {
+        model: turn.model_info.slug.clone(),
+    });
     turn.config = Arc::new(base_config);
     Arc::make_mut(&mut turn.config)
         .permissions
@@ -4524,6 +4549,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
 
     let mut expected = (*turn.config).clone();
     expected.base_instructions = None;
+    expected.base_instructions_provenance = None;
     expected.model = Some(turn.model_info.slug.clone());
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort.clone();

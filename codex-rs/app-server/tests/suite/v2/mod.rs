@@ -47,6 +47,7 @@ mod memory_reset;
 mod model_list;
 mod model_provider_capabilities_read;
 mod multi_agent_v2_developer_instructions;
+mod otel;
 mod output_schema;
 mod permission_profile_list;
 mod plan_item;
@@ -73,6 +74,7 @@ mod safety_check_downgrade;
 #[cfg(not(target_os = "windows"))]
 mod selected_capability_stack;
 mod selected_environment;
+mod server_diagnostics;
 #[cfg(not(target_os = "windows"))]
 mod session_end;
 mod skills_list;

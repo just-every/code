@@ -13,6 +13,7 @@ use codex_features::RolloutBudgetConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_features::ToolRegistryConfigToml;
 use codex_protocol::ThreadId;
+use codex_protocol::models::BaseInstructionsProvenance;
 
 use crate::config::Config;
 use crate::config_lock::ConfigLockReplayOptions;
@@ -25,6 +26,7 @@ use super::SessionConfiguration;
 
 pub(crate) async fn validate_config_lock_if_configured(
     session_configuration: &SessionConfiguration,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
 ) -> anyhow::Result<()> {
     if session_configuration.session_source.is_non_root_agent() {
         return Ok(());
@@ -36,7 +38,10 @@ pub(crate) async fn validate_config_lock_if_configured(
     else {
         return Ok(());
     };
-    let actual = session_configuration.to_config_lockfile_toml()?;
+    let mut actual = session_configuration.to_config_lockfile_toml()?;
+    if actual.config.instructions.is_some() {
+        actual.base_instructions_provenance = base_instructions_provenance.cloned();
+    }
     let config = session_configuration.original_config_do_not_use.as_ref();
     let options = ConfigLockReplayOptions {
         allow_codex_version_mismatch: config.config_lock_allow_codex_version_mismatch,
@@ -49,13 +54,17 @@ pub(crate) async fn validate_config_lock_if_configured(
 pub(crate) async fn export_config_lock_if_configured(
     session_configuration: &SessionConfiguration,
     conversation_id: ThreadId,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
 ) -> anyhow::Result<()> {
     let config = session_configuration.original_config_do_not_use.as_ref();
     let Some(export_dir) = config.config_lock_export_dir.as_ref() else {
         return Ok(());
     };
 
-    let lock = session_configuration.to_config_lockfile_toml()?;
+    let mut lock = session_configuration.to_config_lockfile_toml()?;
+    if lock.config.instructions.is_some() {
+        lock.base_instructions_provenance = base_instructions_provenance.cloned();
+    }
     let lock = toml::to_string_pretty(&lock).context("failed to serialize config lock")?;
     let path = export_dir.join(format!("{conversation_id}.config.lock.toml"));
 
@@ -154,9 +163,15 @@ fn save_config_resolved_fields(
         .features
         .get_or_insert_with(FeaturesToml::default);
     features.materialize_resolved_enabled(config.features.get());
-    if config.tool_registry.error_on_tool_collisions || features.tool_registry.is_some() {
+    if config.tool_registry.error_on_tool_collisions
+        || config.tool_registry.turn_metadata_includes_tool_info
+        || features.tool_registry.is_some()
+    {
         features.tool_registry = Some(ToolRegistryConfigToml {
             error_on_tool_collisions: Some(config.tool_registry.error_on_tool_collisions),
+            turn_metadata_includes_tool_info: Some(
+                config.tool_registry.turn_metadata_includes_tool_info,
+            ),
         });
     }
     let mut multi_agent_v2: MultiAgentV2ConfigToml =
@@ -269,10 +284,10 @@ mod tests {
         let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
         let mut config = (*sc.original_config_do_not_use).clone();
         config.tool_registry.error_on_tool_collisions = true;
+        config.tool_registry.turn_metadata_includes_tool_info = true;
         config.multi_agent_v2.subagent_developer_instructions =
             Some("Locked subagent developer instructions.".to_string());
         config.token_budget = Some(crate::config::TokenBudgetConfig {
-            mode: codex_features::TokenBudgetMode::Thread,
             reminder_threshold_tokens: Some(16_000),
             reminder_message_template: "Locked reminder: {n_remaining} tokens.".to_string(),
             guidance_message: Some("Locked context-window guidance.".to_string()),
@@ -330,6 +345,7 @@ mod tests {
             features.tool_registry,
             Some(ToolRegistryConfigToml {
                 error_on_tool_collisions: Some(true),
+                turn_metadata_includes_tool_info: Some(true),
             })
         );
         let feature_entries = features.entries();
@@ -372,7 +388,6 @@ mod tests {
             features.token_budget,
             Some(FeatureToml::Config(TokenBudgetConfigToml {
                 enabled: Some(true),
-                mode: Some(codex_features::TokenBudgetMode::Thread),
                 reminder_threshold_tokens: Some(16_000),
                 reminder_message_template: Some(
                     "Locked reminder: {n_remaining} tokens.".to_string()

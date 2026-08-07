@@ -103,6 +103,7 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelInfo;
@@ -1263,6 +1264,7 @@ impl Session {
         let state = self.state.lock().await;
         BaseInstructions {
             text: state.session_configuration.base_instructions.clone(),
+            provenance: state.base_instructions_provenance.clone(),
         }
     }
 
@@ -3542,18 +3544,11 @@ impl Session {
                         .join("\n");
                     (!text.is_empty()).then_some(text)
                 });
-            developer_sections.push(
+            separate_developer_sections.push(
                 crate::context::TokenBudgetContext::new(
-                    self.thread_id(),
                     session_source
                         .get_agent_path()
                         .unwrap_or_else(codex_protocol::AgentPath::root),
-                    turn_context
-                        .config
-                        .token_budget
-                        .as_ref()
-                        .map(|config| config.mode)
-                        .unwrap_or_default(),
                     auto_compact_window_ids.first_window_id,
                     auto_compact_window_ids.previous_window_id,
                     auto_compact_window_ids.window_id,

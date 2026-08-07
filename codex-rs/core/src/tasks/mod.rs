@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_diagnostics::Gauge;
 use codex_extension_api::ThreadIdleCause;
 use futures::future::BoxFuture;
 use tokio::select;
@@ -63,6 +64,7 @@ pub(crate) use user_shell::execute_user_shell_command;
 
 const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
+static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
@@ -421,6 +423,7 @@ impl Session {
             cancellation_token,
             turn_context: Arc::clone(&turn_context),
             _agent_execution_guard: agent_execution_guard,
+            _diagnostics_guard: ACTIVE_TURNS.track(),
             _timer: timer,
         };
         turn.task = Some(running_task);
@@ -876,6 +879,18 @@ impl Session {
             .complete_task_end(&sub_id);
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
+        if reason == TurnAbortReason::Interrupted
+            && task
+                .turn_context
+                .config
+                .features
+                .enabled(Feature::CodeModeInterrupt)
+        {
+            self.services
+                .code_mode_service
+                .interrupt_active_cells()
+                .await;
+        }
         task.turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();

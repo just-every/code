@@ -1,6 +1,5 @@
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::app_mcp_routing::apps_route_available;
-use crate::command_migration::migrated_command_skills_root;
 use crate::is_openai_curated_marketplace_name;
 use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestFormat;
@@ -23,18 +22,14 @@ use crate::store::plugin_version_for_source;
 use crate::store::plugin_version_for_source_with_fallback_manifest;
 use codex_config::ConfigLayerStack;
 use codex_config::HooksFile;
+use codex_config::SkillConfigRules;
+use codex_config::skill_config_rules_from_stack;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_config::types::PluginConfig;
 use codex_config::types::PluginMcpServerConfig;
 use codex_connectors::parse_plugin_app_config;
 use codex_connectors::parse_plugin_app_config_value;
-use codex_core_skills::PluginSkillSnapshots;
-use codex_core_skills::config_rules::resolve_disabled_skill_paths;
-use codex_core_skills::config_rules::skill_config_rules_from_stack;
-use codex_core_skills::loader::SkillRoot;
-use codex_core_skills::loader::load_skills_from_roots;
-use codex_exec_server::LOCAL_FS;
 use codex_mcp::parse_agent_plugin_mcp_config;
 use codex_mcp::parse_plugin_mcp_config;
 use codex_plugin::AppDeclaration;
@@ -46,22 +41,23 @@ use codex_plugin::PluginIdError;
 use codex_plugin::app_connector_ids_from_declarations;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::Product;
-use codex_protocol::protocol::SkillScope;
-use codex_skills::SkillConfigRules;
 use codex_skills::SkillMetadata;
+use codex_skills::SkillRootLoadRequest;
+use codex_skills::SkillRootLoader;
+use codex_skills::SkillRootSnapshots;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::PluginIdentity;
+use codex_utils_plugins::PluginSkillRoot;
 use codex_utils_plugins::SkillDiscoveryMode;
 use codex_utils_plugins::find_plugin_manifest_path;
+use codex_utils_plugins::migrated_command_skills_root;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::sync::Semaphore;
 use tracing::instrument;
 use tracing::warn;
 
@@ -91,9 +87,9 @@ enum PluginLoadScope<'a> {
     AllCapabilities {
         restriction_product: Option<Product>,
         skill_config_rules: &'a SkillConfigRules,
-        plugin_skill_snapshots: Option<&'a PluginSkillSnapshots>,
+        plugin_skill_snapshots: Option<&'a SkillRootSnapshots<PluginSkillRoot>>,
         remote_plugin_id_resolver: &'a RemotePluginIdResolver,
-        root_scan_slots: Arc<Semaphore>,
+        skill_root_loader: &'a dyn SkillRootLoader<PluginSkillRoot>,
     },
     HooksOnly,
 }
@@ -134,10 +130,10 @@ pub(crate) async fn load_plugins_from_layer_stack(
     config_layer_stack: &ConfigLayerStack,
     remote_installed_plugins_snapshot: RemoteInstalledPluginsSnapshot,
     store: &PluginStore,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
+    plugin_skill_snapshots: Option<&SkillRootSnapshots<PluginSkillRoot>>,
     restriction_product: Option<Product>,
     remote_global_catalog_active: bool,
-    root_scan_slots: Arc<Semaphore>,
+    skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
 ) -> Vec<LoadedPlugin<McpServerConfig>> {
     let skill_config_rules = skill_config_rules_from_stack(config_layer_stack);
     let RemoteInstalledPluginsSnapshot {
@@ -154,7 +150,7 @@ pub(crate) async fn load_plugins_from_layer_stack(
             skill_config_rules: &skill_config_rules,
             plugin_skill_snapshots,
             remote_plugin_id_resolver: &remote_plugin_id_resolver,
-            root_scan_slots,
+            skill_root_loader,
         },
     )
     .await
@@ -897,7 +893,7 @@ async fn load_plugin(
             skill_config_rules,
             plugin_skill_snapshots,
             remote_plugin_id_resolver: _,
-            root_scan_slots,
+            skill_root_loader,
         } => {
             loaded_plugin.manifest_name = Some(manifest.display_name().to_string());
             loaded_plugin.manifest_description = manifest.description.clone();
@@ -914,7 +910,7 @@ async fn load_plugin(
                 loaded_manifest.format,
                 *restriction_product,
                 *plugin_skill_snapshots,
-                Arc::clone(root_scan_slots),
+                *skill_root_loader,
             )
             .await
             .resolve(skill_config_rules);
@@ -979,12 +975,20 @@ impl PluginSkillInventory {
     pub(crate) fn has_enabled_skills(&self, skill_config_rules: &SkillConfigRules) -> bool {
         contains_enabled_skill(
             &self.skills,
-            &resolve_disabled_skill_paths(&self.skills, skill_config_rules),
+            &skill_config_rules.resolve_disabled_paths(
+                self.skills
+                    .iter()
+                    .map(|skill| (skill.name.as_str(), &skill.path_to_skills_md)),
+            ),
         )
     }
 
     pub(crate) fn resolve(self, skill_config_rules: &SkillConfigRules) -> ResolvedPluginSkills {
-        let disabled_skill_paths = resolve_disabled_skill_paths(&self.skills, skill_config_rules);
+        let disabled_skill_paths = skill_config_rules.resolve_disabled_paths(
+            self.skills
+                .iter()
+                .map(|skill| (skill.name.as_str(), &skill.path_to_skills_md)),
+        );
         ResolvedPluginSkills {
             skills: self.skills,
             disabled_skill_paths,
@@ -1015,61 +1019,14 @@ fn contains_enabled_skill(
         .any(|skill| !disabled_skill_paths.contains(&skill.path_to_skills_md))
 }
 
-pub async fn load_plugin_skills(
-    plugin_root: &AbsolutePathBuf,
-    plugin_id: &PluginId,
-    manifest: &PluginManifest,
-    restriction_product: Option<Product>,
-    skill_config_rules: &SkillConfigRules,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
-    root_scan_slots: Arc<Semaphore>,
-) -> ResolvedPluginSkills {
-    let plugin_identity = PluginIdentity {
-        plugin_id: plugin_id.as_key(),
-        remote_plugin_id: None,
-    };
-    load_plugin_skills_with_identity(
-        plugin_root,
-        &plugin_identity,
-        manifest,
-        restriction_product,
-        skill_config_rules,
-        plugin_skill_snapshots,
-        root_scan_slots,
-    )
-    .await
-}
-
-pub(crate) async fn load_plugin_skills_with_identity(
-    plugin_root: &AbsolutePathBuf,
-    plugin_identity: &PluginIdentity,
-    manifest: &PluginManifest,
-    restriction_product: Option<Product>,
-    skill_config_rules: &SkillConfigRules,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
-    root_scan_slots: Arc<Semaphore>,
-) -> ResolvedPluginSkills {
-    load_plugin_skill_inventory(
-        plugin_root,
-        plugin_identity,
-        manifest,
-        PluginManifestFormat::Legacy,
-        restriction_product,
-        plugin_skill_snapshots,
-        root_scan_slots,
-    )
-    .await
-    .resolve(skill_config_rules)
-}
-
 pub(crate) async fn load_plugin_skill_inventory(
     plugin_root: &AbsolutePathBuf,
     plugin_identity: &PluginIdentity,
     manifest: &PluginManifest,
     manifest_format: PluginManifestFormat,
     restriction_product: Option<Product>,
-    plugin_skill_snapshots: Option<&PluginSkillSnapshots>,
-    root_scan_slots: Arc<Semaphore>,
+    plugin_skill_snapshots: Option<&SkillRootSnapshots<PluginSkillRoot>>,
+    skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
 ) -> PluginSkillInventory {
     let discovery_mode = match manifest_format {
         PluginManifestFormat::Legacy => SkillDiscoveryMode::Recursive,
@@ -1077,50 +1034,26 @@ pub(crate) async fn load_plugin_skill_inventory(
     };
     let roots = plugin_skill_roots(plugin_root, &manifest.paths, manifest_format)
         .into_iter()
-        .map(|path| SkillRoot {
+        .map(|path| PluginSkillRoot {
             path,
-            scope: SkillScope::User,
-            file_system: Arc::clone(&LOCAL_FS),
-            plugin_identity: Some(plugin_identity.clone()),
-            plugin_namespace: Some(manifest.name.clone()),
-            plugin_root: Some(plugin_root.clone()),
+            plugin_identity: plugin_identity.clone(),
+            plugin_namespace: manifest.name.clone(),
+            plugin_root: plugin_root.clone(),
             discovery_mode,
         })
-        .collect::<Vec<_>>();
-    let outcome = load_skills_from_roots(roots, plugin_skill_snapshots, root_scan_slots).await;
-    let had_errors = !outcome.errors.is_empty();
-    let migrated_command_skills = migrated_command_skills_root(plugin_root);
-    let migrated_command_skills = fs::canonicalize(migrated_command_skills.as_path())
-        .ok()
-        .and_then(|path| AbsolutePathBuf::from_absolute_path_checked(path).ok())
-        .unwrap_or(migrated_command_skills);
-    let skills = outcome
-        .skills
-        .into_iter()
-        .filter(|skill| skill.matches_product_restriction_for_product(restriction_product))
-        .collect::<Vec<_>>();
-    let native_skill_names = skills
-        .iter()
-        .filter(|skill| {
-            !skill
-                .path_to_skills_md
-                .as_path()
-                .starts_with(migrated_command_skills.as_path())
+        .collect();
+    let outcome = skill_root_loader
+        .load_roots(SkillRootLoadRequest {
+            roots,
+            restriction_product,
+            snapshots: plugin_skill_snapshots.cloned(),
         })
-        .map(|skill| skill.name.clone())
-        .collect::<HashSet<_>>();
-    let skills = skills
-        .into_iter()
-        .filter(|skill| {
-            !skill
-                .path_to_skills_md
-                .as_path()
-                .starts_with(migrated_command_skills.as_path())
-                || !native_skill_names.contains(&skill.name)
-        })
-        .collect::<Vec<_>>();
+        .await;
 
-    PluginSkillInventory { skills, had_errors }
+    PluginSkillInventory {
+        skills: outcome.skills,
+        had_errors: !outcome.errors.is_empty(),
+    }
 }
 
 fn plugin_skill_roots(
@@ -1378,6 +1311,7 @@ async fn load_apps_from_paths(
 pub async fn plugin_capability_summary_from_root(
     plugin_id: &PluginId,
     plugin_root: &AbsolutePathBuf,
+    skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
 ) -> Option<PluginCapabilitySummary> {
     let loaded_manifest = load_plugin_manifest_with_format(plugin_root.as_path())?;
     let manifest_format = loaded_manifest.format;
@@ -1400,7 +1334,7 @@ pub async fn plugin_capability_summary_from_root(
                 manifest_format,
                 /*restriction_product*/ None,
                 /*plugin_skill_snapshots*/ None,
-                Arc::new(Semaphore::new(1)),
+                skill_root_loader,
             )
             .await
             .skills

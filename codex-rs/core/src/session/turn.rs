@@ -37,6 +37,7 @@ use crate::plugins::build_plugin_injections;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_retry::ResponsesStreamRequest;
+use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
@@ -880,18 +881,14 @@ async fn build_extension_turn_input_items(
         return Some(Vec::new());
     }
 
-    let environments = turn_context
+    let environments = step_context
         .environments
         .turn_environments()
         .enumerate()
-        .filter_map(|(index, environment)| {
-            // TODO(anp): Migrate extension turn-input environments to PathUri so foreign cwd
-            // values are not omitted from extension context.
-            Some(TurnInputEnvironment {
-                environment_id: environment.environment_id.clone(),
-                cwd: environment.cwd().to_abs_path().ok()?.into_path_buf(),
-                is_primary: index == 0,
-            })
+        .map(|(index, environment)| TurnInputEnvironment {
+            environment_id: environment.environment_id.clone(),
+            cwd: environment.cwd().clone(),
+            is_primary: index == 0,
         })
         .collect::<Vec<_>>();
 
@@ -1340,7 +1337,7 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    let mut retries = 0;
+    let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
@@ -1406,7 +1403,7 @@ async fn run_sampling_request(
         }
 
         handle_retryable_response_stream_error(
-            &mut retries,
+            &mut retry_state,
             max_retries,
             err,
             client_session,

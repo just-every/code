@@ -30,7 +30,6 @@ pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
-pub use feature_configs::TokenBudgetMode;
 pub use feature_configs::ToolRegistryConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
@@ -100,10 +99,12 @@ pub enum Feature {
     ExecutedToolCallMetadata,
     /// Enable JavaScript code mode backed by the standalone host process.
     CodeMode,
-    /// Use a 30-second default yield timeout for code mode exec calls.
+    /// Removed compatibility flag for the configurable code-mode exec yield timeout.
     CodeModeBufferedExec,
     /// Run JavaScript code mode in the standalone host process.
     CodeModeHost,
+    /// Terminate active code mode cells when their turn is interrupted.
+    CodeModeInterrupt,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
     CodeModeOnly,
     /// Use the single unified PTY-backed exec tool.
@@ -148,6 +149,8 @@ pub enum Feature {
     ExternalAgentMemoryImport,
     /// Compress cold local thread-store rollout files.
     LocalThreadStoreCompression,
+    /// Migrate legacy local rollout files to paginated history in the background.
+    BackgroundPaginatedRolloutMigration,
     /// Enable the Chronicle sidecar for passive screen-context memories.
     Chronicle,
     /// Compress request bodies (zstd) when sending streaming requests to codex-backend.
@@ -923,7 +926,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodeModeBufferedExec,
         key: "code_mode_buffered_exec",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -931,6 +934,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "code_mode_host",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::CodeModeInterrupt,
+        key: "code_mode_interrupt",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CodeModeOnly,
@@ -1007,6 +1016,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::LocalThreadStoreCompression,
         key: "local_thread_store_compression",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::BackgroundPaginatedRolloutMigration,
+        key: "background_paginated_rollout_migration",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

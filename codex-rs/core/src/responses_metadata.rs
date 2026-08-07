@@ -7,7 +7,6 @@ use codex_analytics::CompactionReason;
 use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
 use codex_protocol::ThreadId;
-use codex_protocol::ToolName;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -31,7 +30,9 @@ pub(crate) const TURN_ID_KEY: &str = "turn_id";
 pub(crate) const WINDOW_ID_KEY: &str = "window_id";
 pub(crate) const REQUEST_KIND_KEY: &str = "request_kind";
 pub(crate) const COMPACTION_KEY: &str = "compaction";
-pub(crate) const CODE_MODE_TOOL_NAMES_KEY: &str = "code_mode_tool_names";
+// Keep the removed inventory reserved so callers cannot reintroduce oversized metadata.
+pub(crate) const LEGACY_CODE_MODE_TOOL_NAMES_KEY: &str = "code_mode_tool_names";
+pub(crate) const TOOL_NAMESPACES_INFO_KEY: &str = "tool_namespaces_info";
 pub(crate) const TURN_STARTED_AT_UNIX_MS_KEY: &str = "turn_started_at_unix_ms";
 
 pub(crate) const FORKED_FROM_THREAD_ID_KEY: &str = "forked_from_thread_id";
@@ -57,7 +58,8 @@ const RESERVED_METADATA_KEYS: &[&str] = &[
     X_OPENAI_SUBAGENT_HEADER,
     REQUEST_KIND_KEY,
     COMPACTION_KEY,
-    CODE_MODE_TOOL_NAMES_KEY,
+    LEGACY_CODE_MODE_TOOL_NAMES_KEY,
+    TOOL_NAMESPACES_INFO_KEY,
     TURN_STARTED_AT_UNIX_MS_KEY,
     FORKED_FROM_THREAD_ID_KEY,
     PARENT_THREAD_ID_KEY,
@@ -149,6 +151,34 @@ pub(crate) struct TurnMetadataWorkspace {
     pub(crate) has_changes: Option<bool>,
 }
 
+/// Model-visible namespaces indexed by their effective Responses Lite names.
+pub(crate) type TurnToolNamespacesInfo = BTreeMap<String, TurnToolNamespaceInfo>;
+
+/// The model-visible functions belonging to one effective namespace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct TurnToolNamespaceInfo {
+    pub(crate) name: String,
+    pub(crate) functions: BTreeMap<String, TurnToolFunctionInfo>,
+}
+
+/// The effective per-turn exposure of one model-visible function.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct TurnToolFunctionInfo {
+    pub(crate) name: String,
+    pub(crate) direct: bool,
+    pub(crate) code_mode_name: Option<String>,
+    pub(crate) deferred: bool,
+    pub(crate) source: TurnToolSource,
+}
+
+/// The owner responsible for dispatching one effective tool function.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum TurnToolSource {
+    Harness,
+    Mcp { server_name: String },
+}
+
 /// Caller-owned snapshot of Codex metadata sent to ResponsesAPI.
 ///
 /// The full Codex turn metadata blob is transported canonically as
@@ -161,6 +191,7 @@ pub struct CodexResponsesMetadata {
     pub(crate) session_id: String,
     pub(crate) thread_id: String,
     pub(crate) turn_id: Option<String>,
+    pub(crate) routing_hint: Option<HeaderValue>,
     pub(crate) window_id: String,
     pub(crate) request_kind: Option<CodexResponsesRequestKind>,
     pub(crate) forked_from_thread_id: Option<ThreadId>,
@@ -171,7 +202,7 @@ pub struct CodexResponsesMetadata {
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) sandbox: Option<String>,
     pub(crate) workspaces: BTreeMap<String, TurnMetadataWorkspace>,
-    pub(crate) code_mode_tool_names: Option<BTreeMap<String, ToolName>>,
+    pub(crate) tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     pub(crate) turn_started_at_unix_ms: Option<i64>,
     pub(crate) extra: BTreeMap<String, String>,
 }
@@ -188,6 +219,7 @@ impl CodexResponsesMetadata {
             session_id,
             thread_id,
             turn_id: None,
+            routing_hint: None,
             window_id,
             request_kind: None,
             forked_from_thread_id: None,
@@ -198,7 +230,7 @@ impl CodexResponsesMetadata {
             thread_source: None,
             sandbox: None,
             workspaces: BTreeMap::new(),
-            code_mode_tool_names: None,
+            tool_namespaces_info: None,
             turn_started_at_unix_ms: None,
             extra: BTreeMap::new(),
         }
@@ -255,11 +287,11 @@ impl CodexResponsesMetadata {
     pub(crate) fn compatibility_headers(&self) -> ApiHeaderMap {
         let mut headers = ApiHeaderMap::new();
         insert_header(&mut headers, X_CODEX_WINDOW_ID_HEADER, &self.window_id);
-        // Direct x-codex-turn-metadata is compatibility output. Keep the unbounded Code Mode
-        // mapping in client_metadata only so HTTP and WebSocket headers remain bounded.
+        // Direct x-codex-turn-metadata is compatibility output. Keep the unbounded tool inventory
+        // in client_metadata only so HTTP and WebSocket compatibility headers remain bounded.
         if self.has_turn_metadata()
             && let Ok(turn_metadata_json) = to_ascii_json_string(&CodexTurnMetadataPayload {
-                code_mode_tool_names: None,
+                tool_namespaces_info: None,
                 ..self.turn_metadata_payload()
             })
         {
@@ -308,7 +340,7 @@ impl CodexResponsesMetadata {
             thread_source: self.thread_source.as_ref(),
             sandbox: self.sandbox.as_deref(),
             workspaces: non_empty_workspaces(&self.workspaces),
-            code_mode_tool_names: self.code_mode_tool_names.as_ref(),
+            tool_namespaces_info: self.tool_namespaces_info.as_ref(),
             turn_started_at_unix_ms: self.turn_started_at_unix_ms,
             compaction,
             // responsesapi_client_metadata enriches the Codex turn metadata blob, not literal
@@ -401,7 +433,7 @@ struct CodexTurnMetadataPayload<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspaces: Option<&'a BTreeMap<String, TurnMetadataWorkspace>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    code_mode_tool_names: Option<&'a BTreeMap<String, ToolName>>,
+    tool_namespaces_info: Option<&'a TurnToolNamespacesInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_started_at_unix_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

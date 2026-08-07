@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use codex_config::SkillConfigRules;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginCapabilitySummary;
 use codex_plugin::PluginId;
@@ -10,8 +11,9 @@ use codex_plugin::app_connector_ids_from_declarations;
 use codex_plugin::prompt_safe_plugin_description;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::Product;
-use codex_skills::SkillConfigRules;
+use codex_skills::SkillRootLoader;
 use codex_utils_plugins::PluginIdentity;
+use codex_utils_plugins::PluginSkillRoot;
 use tokio::sync::Semaphore;
 
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
@@ -122,7 +124,7 @@ impl ToolSuggestMetadataCache {
         marketplace_name: &str,
         plugin: &ConfiguredMarketplacePlugin,
         restriction_product: Option<Product>,
-        root_scan_slots: Arc<Semaphore>,
+        skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
     ) -> Result<Arc<ToolSuggestMetadataFragment>, MarketplaceError> {
         let artifact = PluginArtifactIdentity {
             plugin_id: plugin.id.clone(),
@@ -147,7 +149,7 @@ impl ToolSuggestMetadataCache {
                 marketplace_name,
                 plugin,
                 restriction_product,
-                Arc::clone(&root_scan_slots),
+                skill_root_loader,
             )
             .await;
             if self.cache_entry_if_current(generation, artifact.clone(), entry.clone()) {
@@ -197,7 +199,7 @@ async fn load_plugin_metadata(
     marketplace_name: &str,
     plugin: &ConfiguredMarketplacePlugin,
     restriction_product: Option<Product>,
-    root_scan_slots: Arc<Semaphore>,
+    skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
 ) -> ToolSuggestMetadataEntry {
     let plugin_id = PluginId::new(plugin.name.clone(), marketplace_name.to_string()).map_err(
         |err| match err {
@@ -235,7 +237,7 @@ async fn load_plugin_metadata(
         loaded_manifest.format,
         restriction_product,
         /*plugin_skill_snapshots*/ None,
-        root_scan_slots,
+        skill_root_loader,
     )
     .await;
     let mut mcp_server_names =

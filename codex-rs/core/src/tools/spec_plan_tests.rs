@@ -41,6 +41,8 @@ use crate::WaitForEnvironmentToolConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::responses_metadata::TurnToolFunctionInfo;
+use crate::responses_metadata::TurnToolSource;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::mcp_config_for_test;
@@ -1208,6 +1210,140 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
 }
 
 #[tokio::test]
+async fn tool_namespaces_info_is_opt_in_and_tracks_mcp_exposure() {
+    for enabled in [false, true] {
+        let mut metadata_state = None;
+        probe_with(
+            |turn| {
+                update_config(turn, |config| {
+                    config.tool_registry.turn_metadata_includes_tool_info = enabled;
+                });
+                set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+                turn.model_info.supports_search_tool = true;
+                turn.model_info.use_responses_lite = true;
+                metadata_state = Some(Arc::clone(&turn.turn_metadata_state));
+            },
+            ToolPlanInputs {
+                tool_runtimes: vec![
+                    mcp_runtime("registry", "mcp__registry", "direct", ToolExposure::Direct),
+                    mcp_runtime(
+                        "registry",
+                        "mcp__registry",
+                        "deferred",
+                        ToolExposure::Deferred,
+                    ),
+                ],
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+
+        let metadata = metadata_state
+            .expect("tool planning should capture the turn metadata")
+            .to_responses_metadata(
+                "installation".to_string(),
+                "window".to_string(),
+                CodexResponsesRequestKind::Turn,
+            );
+        let Some(namespaces) = metadata.tool_namespaces_info else {
+            assert!(!enabled, "opted-in tool planning should publish namespaces");
+            continue;
+        };
+        assert!(enabled, "tool namespaces require opt-in");
+
+        let namespace = namespaces
+            .get("mcp__registry")
+            .expect("MCP namespace should be included");
+        assert_eq!(namespace.name, "mcp__registry");
+        assert_eq!(
+            namespace.functions.get("direct"),
+            Some(&TurnToolFunctionInfo {
+                name: "direct".to_string(),
+                direct: true,
+                code_mode_name: Some("mcp__registry__direct".to_string()),
+                deferred: false,
+                source: TurnToolSource::Mcp {
+                    server_name: "registry".to_string(),
+                },
+            })
+        );
+        assert_eq!(
+            namespace.functions.get("deferred"),
+            Some(&TurnToolFunctionInfo {
+                name: "deferred".to_string(),
+                direct: false,
+                code_mode_name: Some("mcp__registry__deferred".to_string()),
+                deferred: true,
+                source: TurnToolSource::Mcp {
+                    server_name: "registry".to_string(),
+                },
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn strict_namespace_ownership_requires_tool_namespace_inventory_opt_in() {
+    for (enabled, second_exposure) in [
+        (false, ToolExposure::Direct),
+        (true, ToolExposure::Direct),
+        (true, ToolExposure::Hidden),
+    ] {
+        let (_session, mut turn) = make_session_and_context().await;
+        update_config(&mut turn, |config| {
+            config.tool_registry.error_on_tool_collisions = true;
+            config.tool_registry.turn_metadata_includes_tool_info = enabled;
+        });
+        turn.model_info.use_responses_lite = true;
+        let step_context = StepContext::for_test(Arc::new(turn));
+        let mut registry = build_core_tool_registry(
+            step_context.turn.as_ref(),
+            &step_context.environments,
+            step_context.mcp.as_ref(),
+            /*tool_suggest_candidates*/ None,
+            /*wait_for_environment_tool_config*/ None,
+        );
+        let runtimes = [
+            ("first", "lookup", ToolExposure::Direct),
+            ("second", "list", second_exposure),
+        ]
+        .into_iter()
+        .map(|(server_name, tool_name, exposure)| {
+            let mut tool = mcp_tool(server_name, "shared", tool_name);
+            tool.namespace_description = Some("Shared tools.".to_string());
+            RegisteredTool {
+                runtime: Arc::new(McpHandler::new(tool).expect("MCP tool spec should build")),
+                exposure,
+            }
+        })
+        .collect();
+        let hosted_specs = append_source_tools(
+            step_context.turn.as_ref(),
+            &mut registry,
+            runtimes,
+            Vec::new(),
+            &[],
+        );
+        let result = super::finalize_tool_router(
+            step_context.turn.as_ref(),
+            registry,
+            hosted_specs,
+            &Default::default(),
+        );
+
+        if enabled && second_exposure != ToolExposure::Hidden {
+            let error = result.err().expect("mixed namespace ownership should fail");
+            assert!(matches!(
+                error.details(),
+                CodexErrorDetails::ToolCollision(name) if name == "shared"
+            ));
+        } else {
+            assert!(result.is_ok(), "existing strict behavior should not change");
+        }
+    }
+}
+
+#[tokio::test]
 async fn unified_tool_runtimes_preserve_source_order_and_collision_priority() {
     let plan = probe_with(
         |turn| {
@@ -1560,6 +1696,9 @@ async fn code_mode_uses_the_first_normalized_tool_identity() {
         let mut metadata_state = None;
         let plan = probe_with(
             |turn| {
+                update_config(turn, |config| {
+                    config.tool_registry.turn_metadata_includes_tool_info = true;
+                });
                 set_feature(turn, Feature::CodeMode, /*enabled*/ true);
                 if code_mode_only {
                     set_feature(turn, Feature::CodeModeOnly, /*enabled*/ true);
@@ -1605,15 +1744,23 @@ async fn code_mode_uses_the_first_normalized_tool_identity() {
                 "window".to_string(),
                 CodexResponsesRequestKind::Turn,
             );
-        let code_mode_tool_names = metadata
-            .code_mode_tool_names
+        let tool_namespaces = metadata
+            .tool_namespaces_info
             .as_ref()
-            .expect("Responses Lite should receive the supported code-mode tools");
+            .expect("opted-in Responses Lite should receive the supported tools");
         assert_eq!(
-            code_mode_tool_names.get("normalized_alias__lookup"),
-            Some(&winner_name),
+            tool_namespaces["normalized-alias"].functions["lookup"]
+                .code_mode_name
+                .as_deref(),
+            Some("normalized_alias__lookup"),
         );
-        assert!(!code_mode_tool_names.contains_key(codex_tools::TOOL_SEARCH_TOOL_NAME));
+        assert!(
+            tool_namespaces
+                .get("normalized_alias")
+                .and_then(|namespace| namespace.functions.get("lookup"))
+                .and_then(|function| function.code_mode_name.as_ref())
+                .is_none()
+        );
 
         if !code_mode_only && !shadow_is_deferred {
             let ToolSpec::Namespace(namespace) = plan.visible_spec("normalized_alias") else {
@@ -1948,17 +2095,28 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 }
 
 #[tokio::test]
-async fn code_mode_buffered_exec_updates_exec_description() {
-    let plan = probe(|turn| {
-        set_features(turn, &[Feature::CodeMode, Feature::CodeModeBufferedExec]);
-    })
-    .await;
+async fn code_mode_config_updates_exec_description() {
+    for (configured_yield_time_ms, expected_yield_time_ms) in
+        [(None, 30_000), (Some(10_000), 10_000)]
+    {
+        let plan = probe(|turn| {
+            set_features(turn, &[Feature::CodeMode]);
+            if let Some(yield_time_ms) = configured_yield_time_ms {
+                update_config(turn, |config| {
+                    config.code_mode.default_exec_yield_time_ms = yield_time_ms;
+                });
+            }
+        })
+        .await;
 
-    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
-        panic!("expected code mode exec tool");
-    };
-    assert!(exec.description.contains("Defaults to 30000 ms."));
-    assert!(!exec.description.contains("Defaults to 10000 ms."));
+        let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+            panic!("expected code mode exec tool");
+        };
+        assert!(
+            exec.description
+                .contains(&format!("Defaults to {expected_yield_time_ms} ms."))
+        );
+    }
 }
 
 #[tokio::test]

@@ -257,10 +257,20 @@ impl TestAppServer {
             }
         }
 
-        let mut process = cmd
-            .kill_on_drop(true)
-            .spawn()
-            .context("codex-mcp-server proc should start")?;
+        cmd.kill_on_drop(true);
+        let mut retries = 0;
+        let mut process = loop {
+            let process = cmd.spawn();
+            if !process
+                .as_ref()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::ExecutableFileBusy)
+                || retries == 2
+            {
+                break process.context("codex-mcp-server proc should start")?;
+            }
+            retries += 1;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         let stdin = process
             .stdin
             .take()
@@ -2022,7 +2032,12 @@ impl TestAppServerBuilder {
         {
             // Bazel keeps binary targets in separate package directories.
             // Recreate the installed sibling layout without a path override.
-            let install_dir = TempDir::new()?;
+            // Prefer Bazel's TEST_TMPDIR so staging can share a filesystem with
+            // the binaries and avoid expensive cross-filesystem copies.
+            let install_dir = match std::env::var_os("TEST_TMPDIR") {
+                Some(test_tmpdir) => TempDir::new_in(test_tmpdir)?,
+                None => TempDir::new()?,
+            };
             let staged_program = install_dir.path().join(
                 program
                     .file_name()

@@ -11,6 +11,7 @@ use crate::context::TurnAborted;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
+use crate::plugins::plugins_manager_for_config;
 use crate::session::step_context::StepContext;
 use crate::shell::default_user_shell;
 use crate::shell_snapshot::ShellSnapshot;
@@ -2646,6 +2647,7 @@ async fn recompute_token_usage_uses_session_base_instructions() {
     let history = session.clone_history().await;
     let session_base_instructions = BaseInstructions {
         text: override_instructions,
+        provenance: None,
     };
     let expected_tokens = history
         .estimate_token_count_with_base_instructions(&session_base_instructions)
@@ -5567,7 +5569,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
 
     let (tx_event, _rx_event) = async_channel::unbounded();
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(&config));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -5736,7 +5738,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             .expect("primary environment")
             .environment,
     );
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(&config));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -5827,7 +5829,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
-            &config.features,
+            &config.code_mode,
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
@@ -5982,7 +5984,7 @@ async fn make_session_with_config_and_rx(
 
     let (tx_event, rx_event) = async_channel::unbounded();
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(&config));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -6096,7 +6098,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
 
     let (tx_event, rx_event) = async_channel::unbounded();
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(&config));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -7955,7 +7957,7 @@ where
             .expect("primary environment")
             .environment,
     );
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(&config));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -8046,7 +8048,7 @@ where
         executed_tool_calls,
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
-            &config.features,
+            &config.code_mode,
         ),
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&turn_environments),
@@ -9299,10 +9301,7 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
         Arc::get_mut(&mut turn_context).expect("thread settings should not be shared");
     turn_context_mut.session_source = session_source;
     let config = Arc::make_mut(&mut turn_context_mut.config);
-    config.token_budget = Some(crate::config::TokenBudgetConfig {
-        mode: codex_features::TokenBudgetMode::Name,
-        ..crate::config::TokenBudgetConfig::default()
-    });
+    config.token_budget = Some(crate::config::TokenBudgetConfig::default());
     config
         .features
         .enable(Feature::TokenBudget)

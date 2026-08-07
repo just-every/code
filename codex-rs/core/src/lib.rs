@@ -74,6 +74,7 @@ pub use mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 pub use mention_syntax::TOOL_MENTION_SIGIL;
 pub use utils::path_utils;
 pub(crate) mod plugins;
+pub use plugins::plugins_manager_for_config;
 #[doc(hidden)]
 pub(crate) mod prompt_debug;
 #[doc(hidden)]
@@ -184,6 +185,7 @@ pub use attestation::GenerateAttestationFuture;
 pub use client::ModelClient;
 pub use client::ModelClientSession;
 pub use client::X_CODEX_INSTALLATION_ID_HEADER;
+pub use client::X_CODEX_ROUTING_HINT_HEADER;
 pub use client::X_CODEX_TURN_METADATA_HEADER;
 pub use client_common::Prompt;
 pub use client_common::ResponseEvent;

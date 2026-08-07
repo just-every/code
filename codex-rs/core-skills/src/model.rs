@@ -6,20 +6,14 @@ use std::sync::Arc;
 
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
-use codex_protocol::protocol::Product;
 pub use codex_skills::SkillDependencies;
+pub use codex_skills::SkillError;
 pub use codex_skills::SkillInterface;
 pub use codex_skills::SkillMetadata;
 pub use codex_skills::SkillPolicy;
 pub use codex_skills::SkillToolDependency;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillError {
-    pub path: AbsolutePathBuf,
-    pub message: String,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillLoadOutcome {
@@ -36,6 +30,28 @@ pub struct SkillLoadOutcome {
 }
 
 impl SkillLoadOutcome {
+    /// Builds an already-composed outcome while retaining the filesystem that supplied each skill.
+    pub fn from_parts(
+        skills: Vec<SkillMetadata>,
+        errors: Vec<SkillError>,
+        skill_roots: Vec<AbsolutePathBuf>,
+        skill_root_by_path: HashMap<AbsolutePathBuf, AbsolutePathBuf>,
+        skill_discovery_path_by_path: HashMap<AbsolutePathBuf, AbsolutePathBuf>,
+        agent_plugin_skill_paths: HashSet<AbsolutePathBuf>,
+        file_systems_by_skill_path: HashMap<AbsolutePathBuf, Arc<dyn ExecutorFileSystem>>,
+    ) -> Self {
+        Self {
+            skills,
+            errors,
+            skill_roots,
+            skill_root_by_path: Arc::new(skill_root_by_path),
+            skill_discovery_path_by_path: Arc::new(skill_discovery_path_by_path),
+            agent_plugin_skill_paths,
+            file_systems_by_skill_path: SkillFileSystemsByPath::new(file_systems_by_skill_path),
+            ..Self::default()
+        }
+    }
+
     pub fn is_skill_enabled(&self, skill: &SkillMetadata) -> bool {
         !self.disabled_paths.contains(&skill.path_to_skills_md)
     }
@@ -103,14 +119,6 @@ impl SkillLoadOutcome {
             .get(&skill.path_to_skills_md)
     }
 
-    /// Builds the legacy aggregate from independently loaded roots.
-    ///
-    /// This is a temporary migration boundary while host root loading moves to the skills
-    /// extension. It deliberately reuses the existing merge, precedence, and deduplication logic.
-    pub fn from_root_snapshots(snapshots: Vec<crate::loader::SkillRootSnapshot>) -> Self {
-        crate::root_loader::merge_skill_root_snapshots(snapshots)
-    }
-
     /// Reads one loaded skill through the filesystem that discovered it.
     pub async fn read_skill_text(&self, skill: &SkillMetadata) -> io::Result<String> {
         let fs = self
@@ -164,16 +172,6 @@ impl SkillFileSystemsByPath {
     fn get(&self, path: &AbsolutePathBuf) -> Option<Arc<dyn ExecutorFileSystem>> {
         self.values.get(path).map(Arc::clone)
     }
-
-    fn retain_paths(&mut self, paths: &HashSet<AbsolutePathBuf>) {
-        self.values = Arc::new(
-            self.values
-                .iter()
-                .filter(|(path, _)| paths.contains(*path))
-                .map(|(path, fs)| (path.clone(), Arc::clone(fs)))
-                .collect(),
-        );
-    }
 }
 
 impl fmt::Debug for SkillFileSystemsByPath {
@@ -182,62 +180,4 @@ impl fmt::Debug for SkillFileSystemsByPath {
             .field("len", &self.values.len())
             .finish()
     }
-}
-
-pub fn filter_skill_load_outcome_for_product(
-    mut outcome: SkillLoadOutcome,
-    restriction_product: Option<Product>,
-) -> SkillLoadOutcome {
-    outcome
-        .skills
-        .retain(|skill| skill.matches_product_restriction_for_product(restriction_product));
-    let retained_paths: HashSet<AbsolutePathBuf> = outcome
-        .skills
-        .iter()
-        .map(|skill| skill.path_to_skills_md.clone())
-        .collect();
-    outcome
-        .file_systems_by_skill_path
-        .retain_paths(&retained_paths);
-    outcome.skill_root_by_path = Arc::new(
-        outcome
-            .skill_root_by_path
-            .iter()
-            .filter(|(path, _)| retained_paths.contains(*path))
-            .map(|(path, root)| (path.clone(), root.clone()))
-            .collect(),
-    );
-    outcome.skill_discovery_path_by_path = Arc::new(
-        outcome
-            .skill_discovery_path_by_path
-            .iter()
-            .filter(|(path, _)| retained_paths.contains(*path))
-            .map(|(path, discovery_path)| (path.clone(), discovery_path.clone()))
-            .collect(),
-    );
-    outcome
-        .agent_plugin_skill_paths
-        .retain(|path| retained_paths.contains(path));
-    let retained_roots: HashSet<AbsolutePathBuf> =
-        outcome.skill_root_by_path.values().cloned().collect();
-    outcome
-        .skill_roots
-        .retain(|root| retained_roots.contains(root));
-    outcome.implicit_skills_by_scripts_dir = Arc::new(
-        outcome
-            .implicit_skills_by_scripts_dir
-            .iter()
-            .filter(|(_, skill)| skill.matches_product_restriction_for_product(restriction_product))
-            .map(|(path, skill)| (path.clone(), skill.clone()))
-            .collect(),
-    );
-    outcome.implicit_skills_by_doc_path = Arc::new(
-        outcome
-            .implicit_skills_by_doc_path
-            .iter()
-            .filter(|(_, skill)| skill.matches_product_restriction_for_product(restriction_product))
-            .map(|(path, skill)| (path.clone(), skill.clone()))
-            .collect(),
-    );
-    outcome
 }

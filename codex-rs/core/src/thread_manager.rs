@@ -107,6 +107,11 @@ static FORCE_TEST_THREAD_MANAGER_BEHAVIOR: AtomicBool = AtomicBool::new(false);
 
 type CapturedOps = Vec<(ThreadId, Op)>;
 type SharedCapturedOps = Arc<std::sync::Mutex<CapturedOps>>;
+pub(crate) type ThreadIdGenerator = Arc<dyn Fn() -> ThreadId + Send + Sync>;
+
+pub(crate) fn default_thread_id_generator() -> ThreadIdGenerator {
+    Arc::new(ThreadId::new)
+}
 
 pub(crate) fn set_thread_manager_test_mode_for_tests(enabled: bool) {
     FORCE_TEST_THREAD_MANAGER_BEHAVIOR.store(enabled, Ordering::Relaxed);
@@ -311,6 +316,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
     thread_created_tx: broadcast::Sender<ThreadId>,
+    thread_id_generator: ThreadIdGenerator,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
     environment_manager: Arc<EnvironmentManager>,
@@ -349,16 +355,32 @@ pub fn thread_store_from_config(
 ) -> Arc<dyn ThreadStore> {
     match &config.experimental_thread_store {
         ThreadStoreConfig::Local => {
-            if config
+            let compression_enabled = config
                 .features
-                .enabled(Feature::LocalThreadStoreCompression)
-            {
-                codex_rollout::spawn_rollout_compression_worker(config.codex_home.to_path_buf());
-            }
-            Arc::new(LocalThreadStore::new(
+                .enabled(Feature::LocalThreadStoreCompression);
+            let background_migration_enabled = config
+                .features
+                .enabled(Feature::BackgroundPaginatedRolloutMigration);
+            let has_state_db = state_db.is_some();
+            let store = Arc::new(LocalThreadStore::new(
                 LocalThreadStoreConfig::from_config(config),
                 state_db,
-            ))
+            ));
+            if has_state_db && background_migration_enabled {
+                let startup_store = Arc::clone(&store);
+                let codex_home = config.codex_home.to_path_buf();
+                tokio::spawn(async move {
+                    if let Err(err) = startup_store.migrate_rollouts_on_startup().await {
+                        warn!("failed to migrate legacy rollouts on startup: {err}");
+                    }
+                    if compression_enabled {
+                        codex_rollout::spawn_rollout_compression_worker(codex_home);
+                    }
+                });
+            } else if compression_enabled {
+                codex_rollout::spawn_rollout_compression_worker(config.codex_home.to_path_buf());
+            }
+            store
         }
         ThreadStoreConfig::InMemory { id } => InMemoryThreadStore::for_id(id),
     }
@@ -394,20 +416,21 @@ impl ThreadManager {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
+        let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
+            codex_home.clone(),
+            config.bundled_skills_enabled(),
+            restriction_product,
+        ));
         let plugins_manager = Arc::new(PluginsManager::new_with_options(
             codex_home.to_path_buf(),
             restriction_product,
             auth_manager.get_api_auth_mode(),
+            skills_service.clone(),
         ));
         let mcp_manager = Arc::new(McpManager::new_with_extensions(
             Arc::clone(&plugins_manager),
             Arc::clone(&extensions),
             codex_apps_tools_cache,
-        ));
-        let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
-            codex_home,
-            config.bundled_skills_enabled(),
-            restriction_product,
         ));
         let code_mode_session_provider: Arc<dyn CodeModeSessionProvider> =
             if config.features.enabled(Feature::CodeModeHost)
@@ -421,6 +444,7 @@ impl ThreadManager {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
+                thread_id_generator: default_thread_id_generator(),
                 models_manager,
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -443,6 +467,18 @@ impl ThreadManager {
             }),
             _test_codex_home_guard: None,
         }
+    }
+
+    /// Generate every new thread identifier with the caller-provided factory.
+    pub fn with_thread_id_generator(
+        mut self,
+        generator: impl Fn() -> ThreadId + Send + Sync + 'static,
+    ) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("thread ID generator must be set before thread manager is shared");
+        };
+        state.thread_id_generator = Arc::new(generator);
+        self
     }
 
     /// Replaces the process-wide provider before this manager is shared with threads.
@@ -527,17 +563,18 @@ impl ThreadManager {
         };
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let restriction_product = SessionSource::Exec.restriction_product();
-        let plugins_manager = Arc::new(PluginsManager::new_with_options(
-            codex_home.clone(),
-            restriction_product,
-            auth_manager.get_api_auth_mode(),
-        ));
-        let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
         let skills_service = Arc::new(HostSkillsService::new_with_restriction_product(
             absolute_codex_home.clone(),
             /*bundled_skills_enabled*/ true,
             restriction_product,
         ));
+        let plugins_manager = Arc::new(PluginsManager::new_with_options(
+            codex_home.clone(),
+            restriction_product,
+            auth_manager.get_api_auth_mode(),
+            skills_service.clone(),
+        ));
+        let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
         // This test constructor has no Config input. Tests that need a non-local
         // process store should construct ThreadManager::new with an explicit store.
         let thread_store: Arc<dyn ThreadStore> = Arc::new(LocalThreadStore::new(
@@ -553,6 +590,7 @@ impl ThreadManager {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
+                thread_id_generator: default_thread_id_generator(),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
                 environment_manager,
@@ -1181,11 +1219,19 @@ impl ThreadManager {
     }
 
     pub(crate) fn agent_control(&self) -> AgentControl {
-        AgentControl::new(Arc::downgrade(&self.state), /*rollout_budget*/ None)
+        AgentControl::new(
+            Arc::downgrade(&self.state),
+            self.state.thread_id_generator.clone(),
+            /*rollout_budget*/ None,
+        )
     }
 
     fn agent_control_for_config(&self, config: &Config) -> AgentControl {
-        AgentControl::new(Arc::downgrade(&self.state), config.rollout_budget.clone())
+        AgentControl::new(
+            Arc::downgrade(&self.state),
+            self.state.thread_id_generator.clone(),
+            config.rollout_budget.clone(),
+        )
     }
 
     #[cfg(test)]
