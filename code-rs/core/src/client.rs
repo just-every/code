@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::AuthManager;
+use crate::CodexAuth;
 use crate::RefreshTokenError;
 use crate::account_usage;
 use crate::auth;
@@ -108,6 +109,7 @@ fn preferred_ws_version_from_env() -> ResponsesWebsocketVersion {
 // be replayed on every subsequent request within the same turn (retries,
 // continuations, websocket reconnects).
 const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+const X_CODEX_ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
 const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
@@ -436,6 +438,29 @@ impl ModelClient {
 
     fn current_window_id(&self, session_id: Uuid) -> String {
         format!("{session_id}:0")
+    }
+
+    fn build_routing_hint_header(
+        &self,
+        auth: Option<&CodexAuth>,
+        model: &str,
+        service_tier: Option<&str>,
+    ) -> Option<HeaderValue> {
+        if !auth.is_some_and(CodexAuth::uses_codex_backend)
+            || self.config.model_provider_id != "openai"
+            || !self.provider.requires_openai_auth
+            || self.provider.env_key.is_some()
+            || self.provider.experimental_bearer_token.is_some()
+            || self.provider.auth.is_some()
+        {
+            return None;
+        }
+
+        let routing_hint = match service_tier {
+            Some(tier) => format!("model={model};tier={tier}"),
+            None => format!("model={model}"),
+        };
+        HeaderValue::from_str(&routing_hint).ok()
     }
 
     fn responses_client_metadata(&self, session_id: Uuid) -> BTreeMap<String, String> {
@@ -826,6 +851,11 @@ impl ModelClient {
                 include.push("codex-lite".to_string());
             }
 
+            let service_tier = self
+                .config
+                .service_tier
+                .map(|service_tier| service_tier.request_value().to_string());
+
             let payload = ResponsesApiRequest {
                 model: model_slug,
                 instructions,
@@ -839,10 +869,7 @@ impl ModelClient {
                 store,
                 stream: true,
                 include,
-                service_tier: self
-                    .config
-                    .service_tier
-                    .map(|service_tier| service_tier.request_value().to_string()),
+                service_tier: service_tier.clone(),
                 prompt_cache_key: Some(session_id_str.clone()),
                 client_metadata: Some(self.responses_client_metadata(session_id)),
             };
@@ -895,6 +922,11 @@ impl ModelClient {
                 )
                 .await?;
             req_builder = self.apply_requested_model_headers(req_builder, request_model);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), request_model, service_tier.as_deref())
+            {
+                req_builder = req_builder.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             let has_beta_header = req_builder
                 .try_clone()
@@ -1340,6 +1372,11 @@ impl ModelClient {
 
             let text = text_template.clone();
 
+            let service_tier = self
+                .config
+                .service_tier
+                .map(|service_tier| service_tier.request_value().to_string());
+
             let payload = ResponsesApiRequest {
                 model: model_slug,
                 instructions,
@@ -1353,10 +1390,7 @@ impl ModelClient {
                 store,
                 stream: true,
                 include,
-                service_tier: self
-                    .config
-                    .service_tier
-                    .map(|service_tier| service_tier.request_value().to_string()),
+                service_tier: service_tier.clone(),
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
                 client_metadata: Some(self.responses_client_metadata(session_id)),
@@ -1404,6 +1438,11 @@ impl ModelClient {
                 .create_request_builder_with_auth(&self.client, &auth)
                 .await?;
             req_builder = self.apply_requested_model_headers(req_builder, request_model);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), request_model, service_tier.as_deref())
+            {
+                req_builder = req_builder.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             let has_beta_header = req_builder
                 .try_clone()
@@ -2043,7 +2082,7 @@ impl ModelClient {
                 model: model_slug,
                 input: &prompt.input,
                 instructions: instructions.clone(),
-                service_tier,
+                service_tier: service_tier.clone(),
                 prompt_cache_key: Some(session_id_str.as_str()),
             };
             let payload_json = serde_json::to_value(&payload)?;
@@ -2052,6 +2091,11 @@ impl ModelClient {
                 .create_compact_request_builder_with_auth(&self.client, &auth)
                 .await?;
             request = self.apply_requested_model_headers(request, model_slug);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), model_slug, service_tier.as_deref())
+            {
+                request = request.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             // Ensure Responses API beta header is present for compact calls. Mirror the
             // streaming path: use the public "responses=v1" header for the public OpenAI

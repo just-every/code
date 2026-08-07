@@ -163,7 +163,10 @@ impl RolloutRecorder {
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         source,
                         model_provider: None,
-                        base_instructions: instructions.map(|text| BaseInstructions { text }),
+                        base_instructions: instructions.map(|text| BaseInstructions {
+                            text,
+                            provenance: None,
+                        }),
                         dynamic_tools: None,
                     }),
                 )

@@ -197,6 +197,16 @@ pub struct ModelServiceTier {
     pub description: String,
 }
 
+/// Multi-agent runtime supported by a model.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum MultiAgentVersion {
+    Disabled,
+    V1,
+    V2,
+}
+
 /// Metadata describing a Codex-supported model.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct ModelPreset {
@@ -232,6 +242,11 @@ pub struct ModelPreset {
     pub upgrade: Option<ModelUpgrade>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
+    /// Multi-agent backend selected when this model starts a new thread.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub multi_agent_version: Option<MultiAgentVersion>,
     /// Availability NUX shown when this preset becomes accessible to the user.
     pub availability_nux: Option<ModelAvailabilityNux>,
     /// whether this model is supported in the api
@@ -441,6 +456,12 @@ pub struct ModelInfo {
     /// When true, this model should use websocket transport even when websocket features are off.
     #[serde(default)]
     pub prefer_websockets: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_model_selector"
+    )]
+    pub multi_agent_version: Option<MultiAgentVersion>,
     /// Internal-only marker set by core when a model slug resolved to fallback metadata.
     #[serde(default, skip_serializing, skip_deserializing)]
     #[schemars(skip)]
@@ -614,6 +635,7 @@ impl From<ModelInfo> for ModelPreset {
                 migration_markdown: Some(upgrade.migration_markdown.clone()),
             }),
             show_in_picker: info.visibility == ModelVisibility::List,
+            multi_agent_version: info.multi_agent_version,
             availability_nux: info.availability_nux,
             supported_in_api: info.supported_in_api,
             input_modalities: info.input_modalities,
@@ -770,6 +792,7 @@ mod tests {
             use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
+            multi_agent_version: None,
             used_fallback_model_metadata: false,
         }
     }

@@ -490,6 +490,7 @@ mod tests {
             use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
+            multi_agent_version: None,
             used_fallback_model_metadata: false,
         }
     }

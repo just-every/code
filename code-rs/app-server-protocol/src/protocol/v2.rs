@@ -32,6 +32,7 @@ use code_protocol::models::MacOsPreferencesValue as CoreMacOsPreferencesValue;
 use code_protocol::models::PermissionProfile as CorePermissionProfile;
 use code_protocol::models::ResponseItem;
 use code_protocol::openai_models::InputModality;
+use code_protocol::openai_models::MultiAgentVersion;
 use code_protocol::openai_models::ReasoningEffort;
 use code_protocol::openai_models::default_input_modalities;
 use code_protocol::parse_command::ParsedCommand as CoreParsedCommand;
@@ -1363,6 +1364,8 @@ pub struct Model {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_personality: bool,
+    /// Multi-agent runtime declared by this model, when available.
+    pub multi_agent_version: Option<MultiAgentVersion>,
     // Only one model should be marked as default.
     pub is_default: bool,
 }
