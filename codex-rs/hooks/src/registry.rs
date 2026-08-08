@@ -1,11 +1,7 @@
-use codex_config::ConfigLayerStack;
-use codex_plugin::PluginHookSource;
-use std::time::Duration;
-use tokio::process::Command;
-
 use crate::engine::ClaudeHooksEngine;
 use crate::engine::CommandShell;
 use crate::engine::HookListEntry;
+use crate::engine::command_runner::CommandHookRuntime;
 use crate::events::compact::PostCompactRequest;
 use crate::events::compact::PreCompactOutcome;
 use crate::events::compact::PreCompactRequest;
@@ -28,6 +24,13 @@ use crate::types::Hook;
 use crate::types::HookEvent;
 use crate::types::HookPayload;
 use crate::types::HookResponse;
+use async_channel::Receiver;
+use codex_config::ConfigLayerStack;
+use codex_plugin::PluginHookSource;
+use codex_protocol::ThreadId;
+use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
+use std::time::Duration;
+use tokio::process::Command;
 
 #[derive(Default, Clone)]
 pub struct HooksConfig {
@@ -53,35 +56,57 @@ pub struct Hooks {
     engine: ClaudeHooksEngine,
 }
 
-impl Default for Hooks {
-    fn default() -> Self {
-        Self::new(HooksConfig::default())
-    }
-}
-
 impl Hooks {
-    pub fn new(config: HooksConfig) -> Self {
+    /// Bind this session's hook runtime and output files to its thread.
+    pub fn new(
+        config: HooksConfig,
+        thread_id: ThreadId,
+    ) -> (Self, Receiver<codex_protocol::protocol::HookCompletedEvent>) {
+        let (result_sender, result_receiver) = async_channel::unbounded();
+        let hooks = Self::from_config(config, |shell| {
+            CommandHookRuntime::new(shell, thread_id, result_sender)
+        });
+        (hooks, result_receiver)
+    }
+
+    /// Preserve in-flight background hooks while applying a refreshed configuration.
+    pub fn reconfigured(&self, config: HooksConfig) -> Self {
+        Self::from_config(config, |shell| {
+            self.engine.command_runtime.reconfigured(shell)
+        })
+    }
+
+    fn from_config(
+        config: HooksConfig,
+        build_runtime: impl FnOnce(CommandShell) -> CommandHookRuntime,
+    ) -> Self {
         let after_agent = config
             .legacy_notify_argv
             .filter(|argv| !argv.is_empty() && !argv[0].is_empty())
             .map(crate::notify_hook)
             .into_iter()
             .collect();
+        let command_runtime = build_runtime(CommandShell {
+            program: config.shell_program.unwrap_or_default(),
+            args: config.shell_args,
+        });
         let engine = ClaudeHooksEngine::new(
             config.feature_enabled,
             config.bypass_hook_trust,
             config.config_layer_stack.as_ref(),
             config.plugin_hook_sources,
             config.plugin_hook_load_warnings,
-            CommandShell {
-                program: config.shell_program.unwrap_or_default(),
-                args: config.shell_args,
-            },
+            command_runtime,
         );
         Self {
             after_agent,
             engine,
         }
+    }
+
+    /// Abort and join outstanding async hooks during session shutdown.
+    pub async fn shutdown(&self) {
+        self.engine.command_runtime.shutdown().await;
     }
 
     pub fn startup_warnings(&self) -> &[String] {
@@ -247,5 +272,6 @@ pub fn command_from_argv(argv: &[String]) -> Option<Command> {
     }
     let mut command = Command::new(program);
     command.args(args);
+    scrub_non_inheritable_env_vars(command.as_std_mut());
     Some(command)
 }

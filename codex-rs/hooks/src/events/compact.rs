@@ -10,8 +10,8 @@ use codex_protocol::protocol::HookRunSummary;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use super::common;
-use crate::engine::CommandShell;
 use crate::engine::ConfiguredHandler;
+use crate::engine::command_runner::CommandHookRuntime;
 use crate::engine::command_runner::CommandRunResult;
 use crate::engine::dispatcher;
 use crate::engine::output_parser;
@@ -71,7 +71,7 @@ pub(crate) fn preview_pre(
 
 pub(crate) async fn run_pre(
     handlers: &[ConfiguredHandler],
-    shell: &CommandShell,
+    runtime: &CommandHookRuntime,
     request: PreCompactRequest,
 ) -> PreCompactOutcome {
     let matched = dispatcher::select_handlers(
@@ -103,7 +103,7 @@ pub(crate) async fn run_pre(
     };
 
     let results = dispatcher::execute_handlers(
-        shell,
+        runtime,
         matched,
         input_json,
         request.cwd.as_path(),
@@ -153,7 +153,7 @@ pub(crate) fn preview_post(
 
 pub(crate) async fn run_post(
     handlers: &[ConfiguredHandler],
-    shell: &CommandShell,
+    runtime: &CommandHookRuntime,
     request: PostCompactRequest,
 ) -> StatelessHookOutcome {
     let matched = dispatcher::select_handlers(
@@ -185,7 +185,7 @@ pub(crate) async fn run_post(
     };
 
     let results = dispatcher::execute_handlers(
-        shell,
+        runtime,
         matched,
         input_json,
         request.cwd.as_path(),
@@ -230,86 +230,13 @@ fn parse_pre_completed(
     run_result: CommandRunResult,
     turn_id: Option<String>,
 ) -> dispatcher::ParsedHandler<CompactHandlerData> {
-    let mut entries = Vec::new();
-    let mut status = HookRunStatus::Completed;
-    let mut should_stop = false;
-    let mut stop_reason = None;
-
-    match run_result.error.as_deref() {
-        Some(error) => {
-            status = HookRunStatus::Failed;
-            entries.push(HookOutputEntry {
-                kind: HookOutputEntryKind::Error,
-                text: error.to_string(),
-            });
-        }
-        None => match run_result.exit_code {
-            Some(0) => {
-                let trimmed_stdout = run_result.stdout.trim();
-                if trimmed_stdout.is_empty() {
-                } else if let Some(parsed) = output_parser::parse_pre_compact(&run_result.stdout) {
-                    if let Some(system_message) = parsed.universal.system_message {
-                        entries.push(HookOutputEntry {
-                            kind: HookOutputEntryKind::Warning,
-                            text: system_message,
-                        });
-                    }
-                    let _ = parsed.universal.suppress_output;
-                    if !parsed.universal.continue_processing {
-                        status = HookRunStatus::Stopped;
-                        should_stop = true;
-                        stop_reason = parsed.universal.stop_reason.clone();
-                        entries.push(HookOutputEntry {
-                            kind: HookOutputEntryKind::Stop,
-                            text: parsed
-                                .universal
-                                .stop_reason
-                                .unwrap_or_else(|| "PreCompact hook stopped execution".to_string()),
-                        });
-                    } else if let Some(invalid_reason) = parsed.invalid_reason {
-                        status = HookRunStatus::Failed;
-                        entries.push(HookOutputEntry {
-                            kind: HookOutputEntryKind::Error,
-                            text: invalid_reason,
-                        });
-                    }
-                } else if output_parser::looks_like_json(&run_result.stdout) {
-                    status = HookRunStatus::Failed;
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: "hook returned invalid PreCompact hook JSON output".to_string(),
-                    });
-                }
-            }
-            Some(code) => {
-                status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: common::trimmed_non_empty(&run_result.stderr)
-                        .unwrap_or_else(|| format!("hook exited with code {code}")),
-                });
-            }
-            None => {
-                status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: "hook process terminated without an exit code".to_string(),
-                });
-            }
-        },
-    }
-
-    dispatcher::ParsedHandler {
-        completed: HookCompletedEvent {
-            turn_id,
-            run: dispatcher::completed_summary(handler, &run_result, status, entries),
-        },
-        data: CompactHandlerData {
-            should_stop,
-            stop_reason,
-        },
-        completion_order: 0,
-    }
+    parse_completed(
+        handler,
+        run_result,
+        turn_id,
+        "PreCompact",
+        output_parser::parse_pre_compact,
+    )
 }
 
 fn parse_post_completed(
@@ -358,23 +285,24 @@ fn parse_completed(
                         });
                     }
                     let _ = parsed.universal.suppress_output;
-                    if !parsed.universal.continue_processing {
-                        status = HookRunStatus::Stopped;
-                        should_stop = true;
-                        stop_reason = parsed.universal.stop_reason.clone();
-                        entries.push(HookOutputEntry {
-                            kind: HookOutputEntryKind::Stop,
-                            text: parsed
-                                .universal
-                                .stop_reason
-                                .unwrap_or_else(|| format!("{event_label} hook stopped execution")),
-                        });
-                    } else if let Some(invalid_reason) = parsed.invalid_reason {
-                        status = HookRunStatus::Failed;
-                        entries.push(HookOutputEntry {
-                            kind: HookOutputEntryKind::Error,
-                            text: invalid_reason,
-                        });
+                    if handler.can_apply_control_effects() {
+                        if !parsed.universal.continue_processing {
+                            status = HookRunStatus::Stopped;
+                            should_stop = true;
+                            stop_reason = parsed.universal.stop_reason.clone();
+                            entries.push(HookOutputEntry {
+                                kind: HookOutputEntryKind::Stop,
+                                text: parsed.universal.stop_reason.unwrap_or_else(|| {
+                                    format!("{event_label} hook stopped execution")
+                                }),
+                            });
+                        } else if let Some(invalid_reason) = parsed.invalid_reason {
+                            status = HookRunStatus::Failed;
+                            entries.push(HookOutputEntry {
+                                kind: HookOutputEntryKind::Error,
+                                text: invalid_reason,
+                            });
+                        }
                     }
                 } else if output_parser::looks_like_json(&run_result.stdout) {
                     status = HookRunStatus::Failed;
@@ -436,7 +364,8 @@ mod tests {
 
     #[test]
     fn pre_compact_input_includes_lifecycle_metadata() {
-        let input_json = pre_command_input_json(&pre_request()).expect("serialize command input");
+        let request = pre_request();
+        let input_json = pre_command_input_json(&request).expect("serialize command input");
         let input: serde_json::Value =
             serde_json::from_str(&input_json).expect("parse command input");
 
@@ -456,7 +385,8 @@ mod tests {
 
     #[test]
     fn post_compact_input_includes_lifecycle_metadata() {
-        let input_json = post_command_input_json(&post_request()).expect("serialize command input");
+        let request = post_request();
+        let input_json = post_command_input_json(&request).expect("serialize command input");
         let input: serde_json::Value =
             serde_json::from_str(&input_json).expect("parse command input");
 
@@ -596,6 +526,7 @@ mod tests {
     fn handler(event_name: HookEventName) -> ConfiguredHandler {
         ConfiguredHandler {
             event_name,
+            execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
             matcher: None,
             command: "python3 compact_hook.py".to_string(),
             timeout_sec: 5,

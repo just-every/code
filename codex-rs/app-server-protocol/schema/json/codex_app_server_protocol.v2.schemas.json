@@ -1244,6 +1244,29 @@
       ],
       "type": "string"
     },
+    "AutoReviewRequirements": {
+      "properties": {
+        "ignoreRules": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "requiredOnModels": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "BrowserUseRequirements": {
       "properties": {
         "disableAutoReview": {
@@ -4956,6 +4979,16 @@
             "null"
           ]
         },
+        "autoReview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AutoReviewRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "browserUse": {
           "anyOf": [
             {
@@ -8036,6 +8069,14 @@
         },
         "eventName": {
           "$ref": "#/definitions/HookEventName"
+        },
+        "executionMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/HookExecutionMode"
+            }
+          ],
+          "default": "sync"
         },
         "handlerType": {
           "$ref": "#/definitions/HookHandlerType"

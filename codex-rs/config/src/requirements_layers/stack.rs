@@ -12,6 +12,7 @@
 //!   active managed-dir conflicts.
 //! - `permissions.filesystem.deny_read` is a high-priority-first union across
 //!   layers.
+//! - `auto_review.required_on_models` is a high-priority-first union across layers.
 
 use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
@@ -27,6 +28,7 @@ use super::hooks::HookDirectoryField;
 use super::hooks::HookMergeState;
 use super::layer::ComposableRequirementsLayer;
 use super::layer::RequirementsLayerEntry;
+use super::models::AutoReviewModelsMergeState;
 use super::permissions::DenyReadMergeState;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -165,6 +167,7 @@ impl RequirementsLayerStack {
         let mut hooks = HookMergeState::new(hook_directory_field);
         let mut hooks_output = None;
         let mut deny_read = DenyReadMergeState::default();
+        let mut auto_review_models = AutoReviewModelsMergeState::default();
         // Regular TOML fields are folded low-to-high like config. These custom
         // fields append or union values, so process them high-to-low to keep
         // priority order visible in the output.
@@ -177,10 +180,12 @@ impl RequirementsLayerStack {
                 &layer.source,
             )?;
             deny_read.merge(domain_fields.permissions.clone(), &layer.source);
+            auto_review_models.merge(domain_fields.auto_review.clone(), &layer.source);
         }
         output.rules = rules;
         output.hooks = hooks_output;
         deny_read.apply_to(&mut output.permissions);
+        auto_review_models.apply_to(&mut output.auto_review);
 
         let output_is_empty = output.clone().into_toml().is_empty();
         Ok((!output_is_empty).then_some(output))
@@ -237,6 +242,7 @@ fn populate_merged_regular_fields_with_sources(
         enforce_residency,
         network,
         permissions,
+        auto_review,
         models,
         guardian_policy_config,
     } = requirements;
@@ -267,6 +273,7 @@ fn populate_merged_regular_fields_with_sources(
     set_sourced!(allow_managed_hooks_only, &["allow_managed_hooks_only"]);
     set_sourced!(allow_appshots, &["allow_appshots"]);
     set_sourced!(allow_remote_control, &["allow_remote_control"]);
+    set_sourced!(auto_review, &["auto_review"]);
     set_sourced!(computer_use, &["computer_use"]);
     set_sourced!(browser_use, &["browser_use"]);
     set_sourced!(windows, &["windows"]);
