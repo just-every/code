@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.170] - 2026-08-08
+
+- Core: align protocol, routing, and executor environment behavior with upstream parity. (1c2456c5, 1f76b0d8)
+- App Server: expose code-mode host gRPC protocol schemas and generated v2 response metadata. (8073dbb2, 1c2456c5)
+- Models: include image generation and model specialty metadata in protocol responses. (00910569, b12b3416, c5544178)
+- Core: persist theme tables safely when writing configuration. (35d00428)
+- Dependencies: update js-yaml to 4.3.1. (7d594248)
+
 ## [0.6.169] - 2026-08-05
 
 - Core: disable storage for Responses Lite requests and preserve namespace tool serialization. (0724cfbf, 83fdc2e5, b87bf703)
