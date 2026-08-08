@@ -1925,6 +1925,12 @@
             "status": {
               "type": "string"
             },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "image_generation_end"
@@ -7045,6 +7051,12 @@
             "status": {
               "type": "string"
             },
+            "transparentBackground": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "imageGeneration"
@@ -7630,6 +7642,12 @@
             },
             "status": {
               "type": "string"
+            },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "type": {
               "enum": [

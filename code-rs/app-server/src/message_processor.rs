@@ -346,6 +346,7 @@ impl MessageProcessor {
                         allowed_web_search_modes: None,
                         enforce_residency: None,
                         network: None,
+                        auto_review: None,
                     }),
                     Ok(None) => None,
                     Err(err) => {

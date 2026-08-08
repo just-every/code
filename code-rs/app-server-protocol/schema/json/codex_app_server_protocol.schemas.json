@@ -3438,6 +3438,12 @@
             "status": {
               "type": "string"
             },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "image_generation_end"
@@ -10178,6 +10184,12 @@
             "status": {
               "type": "string"
             },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "ImageGeneration"
@@ -11007,6 +11019,29 @@
             "type": "string"
           }
         ]
+      },
+      "AutoReviewRequirements": {
+        "properties": {
+          "ignoreRules": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "requiredOnModels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "ByteRange": {
         "properties": {
@@ -12030,6 +12065,16 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "autoReview": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AutoReviewRequirements"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "enforceResidency": {
@@ -13568,6 +13613,17 @@
           "model": {
             "type": "string"
           },
+          "multiAgentVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/MultiAgentVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Multi-agent runtime declared by this model, when available."
+          },
           "supportedReasoningEfforts": {
             "items": {
               "$ref": "#/definitions/v2/ReasoningEffortOption"
@@ -13699,6 +13755,15 @@
           "model"
         ],
         "type": "object"
+      },
+      "MultiAgentVersion": {
+        "description": "Multi-agent runtime supported by a model.",
+        "enum": [
+          "disabled",
+          "v1",
+          "v2"
+        ],
+        "type": "string"
       },
       "NetworkAccess": {
         "enum": [
@@ -16467,6 +16532,12 @@
               },
               "status": {
                 "type": "string"
+              },
+              "transparentBackground": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "type": {
                 "enum": [

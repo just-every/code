@@ -51,6 +51,29 @@
         }
       ]
     },
+    "AutoReviewRequirements": {
+      "properties": {
+        "ignoreRules": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "requiredOnModels": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ConfigRequirements": {
       "properties": {
         "allowedApprovalPolicies": {
@@ -78,6 +101,16 @@
           "type": [
             "array",
             "null"
+          ]
+        },
+        "autoReview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AutoReviewRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "enforceResidency": {

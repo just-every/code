@@ -63,6 +63,17 @@
         "model": {
           "type": "string"
         },
+        "multiAgentVersion": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MultiAgentVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Multi-agent runtime declared by this model, when available."
+        },
         "supportedReasoningEfforts": {
           "items": {
             "$ref": "#/definitions/ReasoningEffortOption"
@@ -141,6 +152,15 @@
         "model"
       ],
       "type": "object"
+    },
+    "MultiAgentVersion": {
+      "description": "Multi-agent runtime supported by a model.",
+      "enum": [
+        "disabled",
+        "v1",
+        "v2"
+      ],
+      "type": "string"
     },
     "ReasoningEffort": {
       "description": "A non-empty reasoning effort value advertised by the model.",

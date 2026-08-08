@@ -132,6 +132,7 @@ export type { McpToolCallBeginEvent } from "./McpToolCallBeginEvent";
 export type { McpToolCallEndEvent } from "./McpToolCallEndEvent";
 export type { MessagePhase } from "./MessagePhase";
 export type { ModeKind } from "./ModeKind";
+export type { MultiAgentVersion } from "./MultiAgentVersion";
 export type { NetworkAccess } from "./NetworkAccess";
 export type { NetworkApprovalContext } from "./NetworkApprovalContext";
 export type { NetworkApprovalProtocol } from "./NetworkApprovalProtocol";
