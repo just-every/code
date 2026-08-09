@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.171] - 2026-08-09
+
+- Core: refresh upstream Codex history for parity with mainline updates. (31023043)
+- Core: align the codex-rs mirror with upstream/main. (69cdd9b7)
+
 ## [0.6.170] - 2026-08-08
 
 - Core: align protocol, routing, and executor environment behavior with upstream parity. (1c2456c5, 1f76b0d8)
