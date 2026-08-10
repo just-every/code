@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.172] - 2026-08-10
+
+- Core: backport upstream shell environment parity for command execution. (66d98380)
+- Core: align apply_patch behavior with upstream patch handling. (66d98380)
+
 ## [0.6.171] - 2026-08-09
 
 - Core: refresh upstream Codex history for parity with mainline updates. (31023043)
