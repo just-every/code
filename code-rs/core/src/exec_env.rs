@@ -3,7 +3,9 @@ use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyInherit;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use uuid::Uuid;
 
+pub const CODEX_SESSION_ID_ENV_VAR: &str = "CODEX_SESSION_ID";
 pub const OPENAI_FEDERATION_RULE_ID_ENV_VAR: &str = "OPENAI_FEDERATION_RULE_ID";
 pub const OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR: &str = "OPENAI_IDENTITY_TOKEN_FILE";
 
@@ -27,6 +29,11 @@ pub fn is_non_inheritable_env_var(name: &str) -> bool {
 /// for [`ShellEnvironmentPolicy`].
 pub fn create_env(policy: &ShellEnvironmentPolicy) -> HashMap<String, String> {
     populate_env(std::env::vars(), policy)
+}
+
+/// Exposes the shared session identity to model-reachable shell commands.
+pub(crate) fn inject_session_id_env(env: &mut HashMap<String, String>, session_id: Uuid) {
+    env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
 }
 
 fn populate_env<I>(vars: I, policy: &ShellEnvironmentPolicy) -> HashMap<String, String>
@@ -182,6 +189,27 @@ mod tests {
         };
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn inject_session_id_env_overrides_policy_filtering() {
+        let session_id = Uuid::new_v4();
+        let mut env = populate_env(
+            make_vars(&[("PATH", "/usr/bin")]),
+            &ShellEnvironmentPolicy {
+                ignore_default_excludes: true,
+                include_only: vec![EnvironmentVariablePattern::new_case_insensitive("PATH")],
+                ..Default::default()
+            },
+        );
+
+        inject_session_id_env(&mut env, session_id);
+        let expected = session_id.to_string();
+
+        assert_eq!(
+            env.get(CODEX_SESSION_ID_ENV_VAR).map(String::as_str),
+            Some(expected.as_str())
+        );
     }
 
     #[test]

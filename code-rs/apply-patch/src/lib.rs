@@ -357,6 +357,15 @@ pub fn maybe_parse_apply_patch_verified(argv: &[String], cwd: &Path) -> MaybeApp
             let mut changes = HashMap::new();
             for hunk in hunks {
                 let path = hunk.resolve_path(&effective_cwd);
+                if changes.contains_key(&path) {
+                    return MaybeApplyPatchVerified::CorrectnessError(
+                        ParseError::InvalidPatchError(format!(
+                            "multiple operations target {}",
+                            path.display()
+                        ))
+                        .into(),
+                    );
+                }
                 match hunk {
                     Hunk::AddFile { contents, .. } => {
                         changes.insert(path, ApplyPatchFileChange::Add { content: contents });
@@ -1838,6 +1847,37 @@ g
                 patch: argv[1].clone(),
                 cwd: session_dir.path().to_path_buf(),
             })
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_rejects_duplicate_resolved_paths() {
+        let session_dir = tempdir().unwrap();
+        fs::write(session_dir.path().join("target.txt"), "one\ntwo\n").unwrap();
+
+        let argv = vec![
+            "apply_patch".to_string(),
+            r#"*** Begin Patch
+*** Update File: target.txt
+@@
+-one
++ONE
+*** Update File: target.txt
+@@
+-two
++TWO
+*** End Patch"#
+                .to_string(),
+        ];
+
+        assert_eq!(
+            maybe_parse_apply_patch_verified(&argv, session_dir.path()),
+            MaybeApplyPatchVerified::CorrectnessError(ApplyPatchError::ParseError(
+                ParseError::InvalidPatchError(format!(
+                    "multiple operations target {}",
+                    session_dir.path().join("target.txt").display()
+                ))
+            ))
         );
     }
 
