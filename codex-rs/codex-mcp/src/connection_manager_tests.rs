@@ -3,6 +3,8 @@ use crate::McpBinding;
 use crate::elicitation::ElicitationLifecycle;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationRequestRouter;
+use crate::elicitation::ElicitationReviewRequest;
+use crate::elicitation::ElicitationReviewer;
 use crate::elicitation::elicitation_is_rejected_by_policy;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::CODEX_APPS_RECONNECT_INITIAL_BACKOFF;
@@ -36,6 +38,7 @@ use codex_exec_server_test_support::environment_manager_without_environments;
 use codex_login::AuthHeaders;
 use codex_login::CodexAuth;
 use codex_protocol::ToolName;
+use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::models::PermissionProfile;
@@ -75,6 +78,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 use tokio::io::DuplexStream;
 use tokio::sync::Notify;
@@ -88,6 +92,7 @@ impl McpConnectionSet {
     ) -> Self {
         Self {
             servers: HashMap::new(),
+            protocol_mode: crate::McpProtocolMode::Legacy,
             required_servers: Vec::new(),
             optional_startup_deadline: OnceLock::new(),
             tool_catalog_revision: Arc::new(RwLock::new(0)),
@@ -718,6 +723,364 @@ async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fiel
             content: None,
             meta: None,
         }
+    );
+}
+
+fn full_access_form_input_enabled_router() -> ElicitationRequestRouter {
+    let router = ElicitationRequestRouter::default();
+    router.enable_full_access_form_input();
+    router
+}
+
+fn elicitation_meta(value: serde_json::Value) -> Option<rmcp::model::RequestMetaObject> {
+    let serde_json::Value::Object(map) = value else {
+        panic!("elicitation metadata must be an object");
+    };
+    Some(rmcp::model::RequestMetaObject::from(map))
+}
+
+fn requested_user_input_schema() -> rmcp::model::ElicitationSchema {
+    rmcp::model::ElicitationSchema::builder()
+        .required_property(
+            "message",
+            rmcp::model::PrimitiveSchemaDefinition::String(rmcp::model::StringSchema::new()),
+        )
+        .build()
+        .expect("schema should build")
+}
+
+#[derive(Default)]
+struct DecliningElicitationReviewer {
+    review_count: AtomicUsize,
+}
+
+impl ElicitationReviewer for DecliningElicitationReviewer {
+    fn review(
+        &self,
+        _request: ElicitationReviewRequest,
+    ) -> BoxFuture<'static, anyhow::Result<Option<ElicitationResponse>>> {
+        self.review_count.fetch_add(1, Ordering::SeqCst);
+        async {
+            Ok(Some(ElicitationResponse {
+                action: ElicitationAction::Decline,
+                content: None,
+                meta: None,
+            }))
+        }
+        .boxed()
+    }
+}
+
+async fn assert_elicitation_declined_with_reviewer_calls(
+    approval_policy: AskForApproval,
+    server_name: &str,
+    elicitation: ElicitRequestParams,
+    expected_reviewer_calls: usize,
+) {
+    let reviewer = Arc::new(DecliningElicitationReviewer::default());
+    let manager = ElicitationRequestManager::new(
+        approval_policy,
+        PermissionProfile::Disabled,
+        Some(reviewer.clone()),
+        /*lifecycle*/ None,
+        full_access_form_input_enabled_router(),
+    );
+    let (tx_event, rx_event) = async_channel::bounded(1);
+    let sender = manager.make_sender(server_name.to_string(), Some(tx_event));
+
+    let response = tokio::select! {
+        biased;
+        event = rx_event.recv() => {
+            panic!("elicitation unexpectedly reached the user: {event:?}");
+        }
+        response = sender(
+            NumberOrString::Number(1),
+            codex_rmcp_client::Elicitation::Mcp(elicitation),
+        ) => response.expect("elicitation should be declined"),
+    };
+
+    assert_eq!(
+        response,
+        ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+            meta: None,
+        },
+    );
+    assert_eq!(
+        reviewer.review_count.load(Ordering::SeqCst),
+        expected_reviewer_calls
+    );
+    assert!(rx_event.try_recv().is_err());
+}
+
+async fn assert_requested_user_input_is_declined(
+    approval_policy: AskForApproval,
+    permission_profile: PermissionProfile,
+    router: ElicitationRequestRouter,
+) {
+    let manager = ElicitationRequestManager::new(
+        approval_policy,
+        permission_profile,
+        /*reviewer*/ None,
+        /*lifecycle*/ None,
+        router,
+    );
+    let (tx_event, rx_event) = async_channel::bounded(1);
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
+
+    let response = tokio::select! {
+        biased;
+        event = rx_event.recv() => {
+            panic!("user-input form unexpectedly reached the user: {event:?}");
+        }
+        response = sender(
+            NumberOrString::Number(1),
+            codex_rmcp_client::Elicitation::Mcp(
+                ElicitRequestParams::FormElicitationParams {
+                    meta: None,
+                    message: "What should I say?".to_string(),
+                    requested_schema: requested_user_input_schema(),
+                },
+            ),
+        ) => response.expect("restricted user-input request should decline"),
+    };
+
+    assert_eq!(
+        response,
+        ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+            meta: None,
+        },
+    );
+    assert!(rx_event.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn disabled_permissions_do_not_surface_user_input_when_auto_denied() {
+    let router = full_access_form_input_enabled_router();
+    router.set_auto_deny(/*auto_deny*/ true);
+    assert_requested_user_input_is_declined(
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+        router,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn plugin_tool_suggestion_elicitations_are_declined_before_review() {
+    assert_elicitation_declined_with_reviewer_calls(
+        AskForApproval::OnRequest,
+        "server",
+        ElicitRequestParams::FormElicitationParams {
+            meta: elicitation_meta(serde_json::json!({
+                "codex_approval_kind": "tool_suggestion",
+            })),
+            message: "Install this app?".to_string(),
+            requested_schema: rmcp::model::ElicitationSchema::builder()
+                .build()
+                .expect("schema should build"),
+        },
+        /*expected_reviewer_calls*/ 0,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn disabled_permissions_surface_requested_user_input_without_metadata() {
+    assert_disabled_permissions_surface_requested_user_input(/*meta*/ None).await;
+}
+
+#[tokio::test]
+async fn disabled_permissions_surface_requested_user_input_with_non_codex_approval_metadata() {
+    assert_disabled_permissions_surface_requested_user_input(elicitation_meta(serde_json::json!({
+        "origin": "https://example.com",
+        "persist": "always",
+    })))
+    .await;
+}
+
+async fn assert_disabled_permissions_surface_requested_user_input(
+    meta: Option<rmcp::model::RequestMetaObject>,
+) {
+    let router = full_access_form_input_enabled_router();
+    let reviewer = Arc::new(DecliningElicitationReviewer::default());
+    let manager = ElicitationRequestManager::new(
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+        Some(reviewer.clone()),
+        /*lifecycle*/ None,
+        router.clone(),
+    );
+    let (tx_event, rx_event) = async_channel::bounded(1);
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
+    let requested_schema = requested_user_input_schema();
+    let mut pending = tokio::spawn(sender(
+        NumberOrString::Number(1),
+        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
+            meta: meta.clone(),
+            message: "What should I say?".to_string(),
+            requested_schema: requested_schema.clone(),
+        }),
+    ));
+    let request = tokio::select! {
+        event = rx_event.recv() => {
+            let EventMsg::ElicitationRequest(request) = event.expect("user-input event").msg else {
+                panic!("expected MCP user-input elicitation");
+            };
+            request
+        }
+        response = &mut pending => {
+            panic!("user input resolved without reaching the user: {response:?}");
+        }
+    };
+
+    assert_eq!(
+        request.request,
+        ElicitationRequest::Form {
+            meta: meta
+                .map(serde_json::to_value)
+                .transpose()
+                .expect("user-input metadata should serialize"),
+            message: "What should I say?".to_string(),
+            requested_schema: serde_json::to_value(requested_schema)
+                .expect("schema should serialize"),
+        },
+    );
+    assert_eq!(request.server_name, "server");
+    assert_eq!(reviewer.review_count.load(Ordering::SeqCst), 0);
+
+    let codex_protocol::mcp::RequestId::String(request_id) = request.id else {
+        panic!("expected Codex-owned string request ID");
+    };
+    let user_response = ElicitationResponse {
+        action: ElicitationAction::Accept,
+        content: Some(serde_json::json!({ "message": "The actual user response." })),
+        meta: None,
+    };
+    router
+        .resolve(
+            "server".to_string(),
+            NumberOrString::String(request_id.into()),
+            user_response.clone(),
+        )
+        .await
+        .expect("actual user response should resolve the elicitation");
+    assert_eq!(
+        pending
+            .await
+            .expect("user-input task should complete")
+            .expect("user input should resolve"),
+        user_response,
+    );
+}
+
+#[tokio::test]
+async fn disabled_permissions_decline_requested_user_input_with_approval_metadata() {
+    assert_elicitation_declined_with_reviewer_calls(
+        AskForApproval::Never,
+        "node_repl",
+        ElicitRequestParams::FormElicitationParams {
+            meta: elicitation_meta(serde_json::json!({
+                "codex_approval_kind": "mcp_tool_call",
+                "connector_id": "browser-use",
+                "tool_name": "access_browser_origin",
+            })),
+            message: "Allow Browser Use to access this website?".to_string(),
+            requested_schema:
+                rmcp::model::ElicitationSchema::builder()
+                    .required_property(
+                        "confirmation",
+                        rmcp::model::PrimitiveSchemaDefinition::String(
+                            rmcp::model::StringSchema::new(),
+                        ),
+                    )
+                    .build()
+                    .expect("schema should build"),
+        },
+        /*expected_reviewer_calls*/ 0,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn restricted_never_policy_does_not_surface_requested_user_input() {
+    assert_requested_user_input_is_declined(
+        AskForApproval::Never,
+        PermissionProfile::default(),
+        full_access_form_input_enabled_router(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn granular_policy_does_not_surface_requested_user_input() {
+    assert_requested_user_input_is_declined(
+        AskForApproval::Granular(GranularApprovalConfig {
+            sandbox_approval: true,
+            rules: true,
+            skill_approval: true,
+            request_permissions: true,
+            mcp_elicitations: false,
+        }),
+        PermissionProfile::Disabled,
+        full_access_form_input_enabled_router(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn on_request_approval_forms_remain_with_the_reviewer() {
+    assert_elicitation_declined_with_reviewer_calls(
+        AskForApproval::OnRequest,
+        "server",
+        ElicitRequestParams::FormElicitationParams {
+            meta: elicitation_meta(serde_json::json!({
+                "codex_request_type": "approval_request",
+                "codex_approval_kind": "mcp_tool_call",
+                "tool_name": "test_tool",
+            })),
+            message: "Approve this action?".to_string(),
+            requested_schema: rmcp::model::ElicitationSchema::builder()
+                .build()
+                .expect("schema should build"),
+        },
+        /*expected_reviewer_calls*/ 1,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn disabled_permissions_decline_user_input_without_an_event_channel() {
+    let manager = ElicitationRequestManager::new(
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+        /*reviewer*/ None,
+        /*lifecycle*/ None,
+        full_access_form_input_enabled_router(),
+    );
+    let sender = manager.make_sender("server".to_string(), /*tx_event*/ None);
+
+    let response = sender(
+        NumberOrString::Number(1),
+        codex_rmcp_client::Elicitation::Mcp(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: "What should I say?".to_string(),
+            requested_schema: requested_user_input_schema(),
+        }),
+    )
+    .await
+    .expect("headless user-input request should decline");
+
+    assert_eq!(
+        response,
+        ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+            meta: None,
+        },
     );
 }
 
@@ -3034,6 +3397,7 @@ async fn executor_owned_chatgpt_mcp_accepts_only_safe_explicit_authorization() -
                 /*codex_apps_cache_identity*/ None,
                 ElicitationCapability::default(),
                 ClientMcpExtensions::default(),
+                /*previous_identity*/ None,
             )
         };
         let direct_keyring_identity = connection_identity(AuthKeyringBackendKind::Direct);
@@ -3486,6 +3850,7 @@ fn reusable_server_identity(
         /*codex_apps_cache_identity*/ None,
         ElicitationCapability::default(),
         ClientMcpExtensions::default(),
+        /*previous_identity*/ None,
     )
 }
 
@@ -3708,6 +4073,74 @@ async fn reconciliation_reuses_an_unchanged_ready_server() {
         model_tool_names(&reconciled.list_all_tools().await),
         HashSet::from([ToolName::namespaced("mcp__docs", "search")])
     );
+}
+
+#[tokio::test]
+async fn reconciliation_retries_non_oauth_authentication_failures() {
+    let runtime_context = reusable_server_runtime_context();
+    let config = reusable_server_config("http://127.0.0.1:1");
+    let mut previous =
+        manager_with_reusable_ready_server(&config, &runtime_context, Vec::new()).await;
+    let connection =
+        Arc::get_mut(&mut previous.servers.get_mut("docs").expect("server").connection)
+            .expect("test server has one connection owner");
+    connection.client.client = futures::future::ready(Err(StartupOutcomeError::Failed {
+        error: "bearer token rejected".to_string(),
+        is_authentication_required: true,
+    }))
+    .boxed()
+    .shared();
+
+    let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
+
+    assert!(!previous.shares_test_connection_with(&reconciled, "docs"));
+}
+
+#[test]
+fn connection_identity_uses_effective_authorization_headers() {
+    let runtime_context = reusable_server_runtime_context();
+    let missing_env_var = format!("CODEX_TEST_UNSET_MCP_AUTHORIZATION_{}", std::process::id());
+    assert!(std::env::var_os(&missing_env_var).is_none());
+
+    for (static_header, environment_header, has_authorization) in [
+        (Some("Bearer configured-token"), None, true),
+        (Some("invalid\nheader"), None, false),
+        (None, Some("PATH"), true),
+        (None, Some(missing_env_var.as_str()), false),
+    ] {
+        let mut config = reusable_server_config("http://127.0.0.1:1");
+        config.transport = McpServerTransportConfig::StreamableHttp {
+            url: "http://127.0.0.1:1".to_string(),
+            bearer_token_env_var: None,
+            http_headers: static_header
+                .map(|value| HashMap::from([("aUtHoRiZaTiOn".to_string(), value.to_string())])),
+            env_http_headers: environment_header
+                .map(|value| HashMap::from([("aUtHoRiZaTiOn".to_string(), value.to_string())])),
+        };
+        let server = EffectiveMcpServer::configured(config);
+        let identity = |keyring_backend_kind| {
+            McpServerConnectionIdentity::new(
+                "docs",
+                &server,
+                OAuthCredentialsStoreMode::File,
+                keyring_backend_kind,
+                &Ok(None),
+                &runtime_context,
+                /*runtime_auth_provider*/ None,
+                /*auth*/ None,
+                /*codex_apps_cache_identity*/ None,
+                ElicitationCapability::default(),
+                ClientMcpExtensions::default(),
+                /*previous_identity*/ None,
+            )
+        };
+
+        assert_eq!(
+            identity(AuthKeyringBackendKind::Direct)
+                .has_same_connection_config(&identity(AuthKeyringBackendKind::Secrets)),
+            has_authorization,
+        );
+    }
 }
 
 #[tokio::test]
@@ -4021,6 +4454,7 @@ async fn connection_identity_distinguishes_accounts_with_the_same_token() -> any
             /*codex_apps_cache_identity*/ None,
             ElicitationCapability::default(),
             ClientMcpExtensions::default(),
+            /*previous_identity*/ None,
         )
     };
 
@@ -4072,6 +4506,7 @@ async fn connection_identity_distinguishes_agent_account_runtime_and_task() -> a
             /*codex_apps_cache_identity*/ None,
             ElicitationCapability::default(),
             ClientMcpExtensions::default(),
+            /*previous_identity*/ None,
         )
     };
     let previous_identity = connection_identity(&previous_auth);

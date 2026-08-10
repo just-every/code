@@ -1134,6 +1134,7 @@ pub(super) async fn fetch_plugin_install(
             params: PluginInstallParams {
                 marketplace_path,
                 remote_marketplace_name,
+                install_attempt_id: None,
                 plugin_name,
             },
         })
@@ -1442,6 +1443,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 name: "docs".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::from([(
                     "list".to_string(),
@@ -1462,6 +1464,7 @@ mod tests {
             },
             McpServerStatus {
                 name: "disabled".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::new(),
                 resources: Vec::new(),

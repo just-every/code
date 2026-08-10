@@ -35,6 +35,9 @@ use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::UserInstructionsProvider;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
+use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
@@ -49,14 +52,12 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ResumedHistory;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -1585,10 +1586,15 @@ impl ThreadManagerState {
         } = options;
         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
         let thread_source = initial_history.get_resumed_thread_source();
+        let environments = inherited_environments
+            .as_ref()
+            .filter(|_| initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2))
+            .map(TurnEnvironmentSnapshot::to_selections);
         let options = StartThreadOptions {
             initial_history,
             session_source: Some(session_source),
             thread_source,
+            environments,
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
@@ -1758,7 +1764,7 @@ impl ThreadManagerState {
             session_source,
             forked_from_thread_id,
             parent_thread_id,
-            thread_source,
+            thread_source: thread_source.clone(),
             originator,
             agent_control,
             dynamic_tools,
@@ -1781,6 +1787,17 @@ impl ThreadManagerState {
                 codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         }))
         .await?;
+        // Enable Full Access form input only after session startup so a required MCP server cannot
+        // block startup while waiting for form input.
+        if session
+            .services
+            .client_mcp_extensions
+            .contains(OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID)
+            && matches!(thread_source.as_ref(), Some(ThreadSource::User))
+            && !tracked_session_source.is_non_root_agent()
+        {
+            session.services.mcp_runtime.enable_full_access_form_input();
+        }
         let new_thread = self
             .finalize_thread_spawn(session, io, tracked_session_source)
             .await?;

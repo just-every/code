@@ -25,6 +25,8 @@ use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::AppSummary;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
+use codex_app_server_protocol::ListMcpServerStatusParams;
+use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallParams;
@@ -32,6 +34,7 @@ use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use core_test_support::stdio_server_bin;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use pretty_assertions::assert_eq;
@@ -66,6 +69,7 @@ use wiremock::matchers::query_param;
 // starts, which is noticeably slower on Windows CI.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const REMOTE_PLUGIN_ID: &str = "plugins~Plugin_00000000000000000000000000000000";
+const INSTALL_ATTEMPT_ID: &str = "94c79f7b-cceb-4415-9a3e-b51b2f718d43";
 const TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS: &str =
     "CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS";
 
@@ -112,6 +116,7 @@ async fn plugin_install_rejects_missing_install_source() -> Result<()> {
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: None,
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -146,6 +151,7 @@ async fn plugin_install_rejects_multiple_install_sources() -> Result<()> {
                 codex_home.path().join("marketplace.json"),
             )?),
             remote_marketplace_name: Some("openai-curated-remote".to_string()),
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -184,6 +190,7 @@ plugins = false
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: None,
             remote_marketplace_name: Some("openai-curated-remote".to_string()),
+            install_attempt_id: None,
             plugin_name: "plugins~Plugin_22222222222222222222222222222222".to_string(),
         })
         .await?;
@@ -268,6 +275,10 @@ async fn plugin_install_writes_remote_plugin_to_cloud_and_cache() -> Result<()> 
         /*expected_count*/ 1,
     )
     .await?;
+    assert_eq!(
+        wait_for_remote_plugin_install_request_body(&server, REMOTE_PLUGIN_ID).await?,
+        Vec::<u8>::new()
+    );
     wait_for_remote_plugin_request_count(
         &server,
         "GET",
@@ -535,6 +546,7 @@ async fn plugin_install_rejects_invalid_remote_plugin_name() -> Result<()> {
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: None,
             remote_marketplace_name: Some("openai-curated-remote".to_string()),
+            install_attempt_id: None,
             plugin_name: "linear/../../oops".to_string(),
         })
         .await?;
@@ -840,6 +852,7 @@ async fn plugin_install_rejects_when_workspace_codex_plugins_disabled() -> Resul
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -874,6 +887,7 @@ async fn plugin_install_returns_invalid_request_for_missing_marketplace_file() -
                 codex_home.path().join("missing-marketplace.json"),
             )?),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "missing-plugin".to_string(),
         })
         .await?;
@@ -916,6 +930,7 @@ async fn plugin_install_tracks_analytics_when_marketplace_file_cannot_be_read() 
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(AbsolutePathBuf::try_from(marketplace_path)?),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -974,6 +989,7 @@ async fn plugin_install_returns_invalid_request_for_not_available_plugin() -> Re
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1027,6 +1043,7 @@ async fn plugin_install_returns_invalid_request_for_disallowed_product_plugin() 
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1079,6 +1096,7 @@ async fn plugin_install_tracks_analytics_event() -> Result<()> {
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1144,6 +1162,7 @@ async fn plugin_install_failure_tracks_analytics_event() -> Result<()> {
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1196,10 +1215,21 @@ async fn plugin_install_tracks_remote_plugin_analytics_event() -> Result<()> {
         .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
 
-    let request_id = send_remote_plugin_install_request(&mut mcp, REMOTE_PLUGIN_ID).await?;
+    let request_id = send_remote_plugin_install_request_with_attempt_id(
+        &mut mcp,
+        REMOTE_PLUGIN_ID,
+        INSTALL_ATTEMPT_ID,
+    )
+    .await?;
     let response: PluginInstallResponse =
         timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
     assert_eq!(response.apps_needing_auth, Vec::<AppSummary>::new());
+    let request_body =
+        wait_for_remote_plugin_install_request_body(&server, REMOTE_PLUGIN_ID).await?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request_body)?,
+        json!({"install_attempt_id": INSTALL_ATTEMPT_ID})
+    );
 
     let payload = wait_for_plugin_analytics_payload(&server).await?;
     assert_eq!(
@@ -1382,6 +1412,7 @@ async fn plugin_install_returns_apps_needing_auth() -> Result<()> {
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1474,6 +1505,7 @@ async fn plugin_install_skips_mcp_oauth_for_chatgpt_dual_surface_plugin() -> Res
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1527,6 +1559,7 @@ url = "https://example.com/allowed-mcp"
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1581,6 +1614,7 @@ enabled = false
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1681,6 +1715,7 @@ url = {executor_url}
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1742,6 +1777,7 @@ async fn plugin_install_starts_mcp_oauth_with_formerly_disallowed_plugin_app() -
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1850,6 +1886,7 @@ async fn plugin_install_starts_mcp_oauth_through_configured_http_proxy() -> Resu
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -1913,6 +1950,7 @@ connectors = true
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -2165,6 +2203,7 @@ async fn plugin_install_includes_formerly_disallowed_apps_needing_auth() -> Resu
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -2228,13 +2267,13 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
     write_plugin_source(repo_root.path(), "sample-plugin", &[])?;
     std::fs::write(
         repo_root.path().join("sample-plugin/.mcp.json"),
-        r#"{
-  "mcpServers": {
-    "sample-mcp": {
-      "command": "echo"
-    }
-  }
-}"#,
+        serde_json::to_vec(&json!({
+            "mcpServers": {
+                "sample-mcp": {
+                    "command": stdio_server_bin()?,
+                }
+            }
+        }))?,
     )?;
     let marketplace_path =
         AbsolutePathBuf::try_from(repo_root.path().join(".agents/plugins/marketplace.json"))?;
@@ -2249,6 +2288,7 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
         .send_plugin_install_request(PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "sample-plugin".to_string(),
         })
         .await?;
@@ -2257,7 +2297,28 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
     assert_eq!(response.apps_needing_auth, Vec::<AppSummary>::new());
     let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
     assert!(!config.contains("[mcp_servers.sample-mcp]"));
-    assert!(!config.contains("command = \"echo\""));
+
+    let request_id = mcp
+        .send_list_mcp_server_status_request(ListMcpServerStatusParams {
+            cursor: None,
+            limit: None,
+            detail: None,
+            thread_id: None,
+        })
+        .await?;
+    let response: ListMcpServerStatusResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(
+        response
+            .data
+            .into_iter()
+            .map(|server| (server.name, server.plugin_id))
+            .collect::<Vec<_>>(),
+        vec![(
+            "sample-mcp".to_string(),
+            Some("sample-plugin@debug".to_string()),
+        )]
+    );
 
     let request_id = mcp
         .send_raw_request(
@@ -2890,9 +2951,45 @@ async fn send_remote_plugin_install_request(
     mcp.send_plugin_install_request(PluginInstallParams {
         marketplace_path: None,
         remote_marketplace_name: Some("caller-marketplace-is-ignored".to_string()),
+        install_attempt_id: None,
         plugin_name: remote_plugin_id.to_string(),
     })
     .await
+}
+
+async fn send_remote_plugin_install_request_with_attempt_id(
+    mcp: &mut TestAppServer,
+    remote_plugin_id: &str,
+    install_attempt_id: &str,
+) -> Result<i64> {
+    mcp.send_plugin_install_request(PluginInstallParams {
+        marketplace_path: None,
+        remote_marketplace_name: Some("caller-marketplace-is-ignored".to_string()),
+        install_attempt_id: Some(install_attempt_id.to_string()),
+        plugin_name: remote_plugin_id.to_string(),
+    })
+    .await
+}
+
+async fn wait_for_remote_plugin_install_request_body(
+    server: &MockServer,
+    remote_plugin_id: &str,
+) -> Result<Vec<u8>> {
+    let path_suffix = format!("/ps/plugins/{remote_plugin_id}/install");
+    timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            let Some(requests) = server.received_requests().await else {
+                bail!("wiremock did not record requests");
+            };
+            if let Some(request) = requests.iter().find(|request| {
+                request.method == "POST" && request.url.path().ends_with(&path_suffix)
+            }) {
+                return Ok::<Vec<u8>, anyhow::Error>(request.body.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?
 }
 
 async fn wait_for_remote_plugin_request_count(

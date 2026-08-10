@@ -4675,6 +4675,32 @@
     "ConfigLayerSource": {
       "oneOf": [
         {
+          "description": "Default configuration supplied with the installed Codex package.",
+          "properties": {
+            "file": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                }
+              ],
+              "description": "Path to the packaged default configuration file."
+            },
+            "type": {
+              "enum": [
+                "packagedDefaults"
+              ],
+              "title": "PackagedDefaultsConfigLayerSourceType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "type"
+          ],
+          "title": "PackagedDefaultsConfigLayerSource",
+          "type": "object"
+        },
+        {
           "description": "Managed preferences layer delivered by MDM (macOS only).",
           "properties": {
             "domain": {
@@ -9538,6 +9564,12 @@
         "name": {
           "type": "string"
         },
+        "pluginId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "resourceTemplates": {
           "items": {
             "$ref": "#/definitions/ResourceTemplate"
@@ -10844,6 +10876,13 @@
     "PluginInstallParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "installAttemptId": {
+          "description": "Client-generated identifier used to correlate one installation attempt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "marketplacePath": {
           "anyOf": [
             {

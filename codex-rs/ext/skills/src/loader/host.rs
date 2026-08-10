@@ -33,10 +33,10 @@ use super::metadata::validate_len;
 use super::namespace::SkillNamespaceResolver;
 
 /// A resolved host skill root ready for filesystem discovery.
-pub struct HostSkillRoot {
-    pub path: AbsolutePathBuf,
-    pub scope: SkillScope,
-    pub file_system: Arc<dyn ExecutorFileSystem>,
+pub(crate) struct HostSkillRoot {
+    pub(crate) path: AbsolutePathBuf,
+    pub(crate) scope: SkillScope,
+    pub(crate) file_system: Arc<dyn ExecutorFileSystem>,
     plugin: Option<PluginSkillRootContext>,
 }
 
@@ -76,7 +76,7 @@ impl HostSkillRoot {
     }
 
     /// Returns the owning plugin identity when this root belongs to a plugin.
-    pub fn plugin_identity(&self) -> Option<&PluginIdentity> {
+    pub(crate) fn plugin_identity(&self) -> Option<&PluginIdentity> {
         self.plugin.as_ref().map(|plugin| &plugin.identity)
     }
 
@@ -109,13 +109,13 @@ impl HostSkillRoot {
 
 /// Skills and errors loaded from one canonical host root.
 #[derive(Clone)]
-pub struct HostSkillRootSnapshot {
-    pub root: AbsolutePathBuf,
-    pub skills: Vec<SkillMetadata>,
-    pub skill_discovery_path_by_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
-    pub errors: Vec<SkillError>,
-    pub file_system: Arc<dyn ExecutorFileSystem>,
-    pub is_agent_plugin: bool,
+pub(crate) struct HostSkillRootSnapshot {
+    pub(crate) root: AbsolutePathBuf,
+    pub(crate) skills: Vec<SkillMetadata>,
+    pub(crate) skill_discovery_path_by_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
+    pub(crate) errors: Vec<SkillError>,
+    pub(crate) file_system: Arc<dyn ExecutorFileSystem>,
+    pub(crate) is_agent_plugin: bool,
 }
 
 struct ResolvedDiscoveredSkill {
@@ -124,7 +124,7 @@ struct ResolvedDiscoveredSkill {
     path_uri: PathUri,
 }
 
-pub async fn load_host_skill_root(root: HostSkillRoot) -> HostSkillRootSnapshot {
+pub(crate) async fn load_host_skill_root(root: HostSkillRoot) -> HostSkillRootSnapshot {
     let is_agent_plugin = root.discovery_mode() == SkillDiscoveryMode::DirectChildren;
     let canonical_root =
         canonicalize_for_skill_identity(root.file_system.as_ref(), &root.path).await;

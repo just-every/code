@@ -65,6 +65,7 @@ use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_features::unstable_features_warning_event;
+use codex_history::RolloutItem;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
@@ -120,7 +121,6 @@ use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RawResponseItemEvent;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -336,6 +336,8 @@ use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
+use codex_history::CompactedItem;
+use codex_history::InitialHistory;
 use codex_mcp::McpConfig;
 use codex_mcp::effective_mcp_servers;
 use codex_otel::SessionTelemetry;
@@ -354,13 +356,11 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ModelRerouteEvent;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
@@ -1596,12 +1596,12 @@ impl Session {
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
             let mcp_inputs_changed = state.session_configuration.mcp_inputs_differ(&updated);
-            let environment_config = updated.environment_config();
+            let environment_config = updated.turn_environment_config();
             if updates.environments.is_some() {
                 self.services
                     .turn_environments
                     .update_selections(updated.environment_selections(), &environment_config);
-            } else if state.session_configuration.environment_config() != environment_config {
+            } else if state.session_configuration.turn_environment_config() != environment_config {
                 self.services
                     .turn_environments
                     .update_environment_configs(&environment_config);
@@ -2891,13 +2891,14 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "active turn reads must stay consistent with the matching turn state"
     )]
-    pub(crate) async fn strict_auto_review_enabled_for_turn(&self) -> bool {
+    pub(crate) async fn active_turn_context_and_strict_auto_review(
+        &self,
+    ) -> Option<(Arc<TurnContext>, bool)> {
         let active = self.active_turn.lock().await;
-        let Some(active) = active.as_ref() else {
-            return false;
-        };
+        let active = active.as_ref()?;
+        let turn_context = Arc::clone(&active.task.as_ref()?.turn_context);
         let ts = active.turn_state.lock().await;
-        ts.strict_auto_review_enabled()
+        Some((turn_context, ts.strict_auto_review_enabled()))
     }
 
     pub(crate) async fn granted_session_permissions(
