@@ -94,6 +94,7 @@ export type { LoginAccountResponse } from "./LoginAccountResponse";
 export type { LoginAppBrand } from "./LoginAppBrand";
 export type { LogoutAccountResponse } from "./LogoutAccountResponse";
 export type { McpAuthStatus } from "./McpAuthStatus";
+export type { McpServerOauthClientRegistration } from "./McpServerOauthClientRegistration";
 export type { McpServerOauthLoginCompletedNotification } from "./McpServerOauthLoginCompletedNotification";
 export type { McpServerOauthLoginParams } from "./McpServerOauthLoginParams";
 export type { McpServerOauthLoginResponse } from "./McpServerOauthLoginResponse";

@@ -13396,9 +13396,27 @@
         "title": "McpServerOauthLoginCompletedNotification",
         "type": "object"
       },
+      "McpServerOauthClientRegistration": {
+        "enum": [
+          "auto",
+          "dcr"
+        ],
+        "type": "string"
+      },
       "McpServerOauthLoginParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "clientRegistration": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/McpServerOauthClientRegistration"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Registration strategy for this login only; omission preserves automatic DCR."
+          },
           "name": {
             "type": "string"
           },
