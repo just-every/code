@@ -201,9 +201,15 @@ impl NetworkProxyBuilder {
             .await;
         let current_cfg = state.current_cfg().await?;
         #[cfg(target_os = "windows")]
-        let runtime_settings = NetworkProxyRuntimeSettings::from_config(&current_cfg)?;
-        #[cfg(target_os = "windows")]
-        let mut windows_ingress = None;
+        let (current_cfg, runtime_settings, mut windows_ingress) = {
+            let current_cfg = config::NetworkProxyConfig {
+                dangerously_allow_all_unix_sockets: false,
+                unix_sockets: None,
+                ..current_cfg
+            };
+            let runtime_settings = NetworkProxyRuntimeSettings::from_config(&current_cfg)?;
+            (current_cfg, runtime_settings, None)
+        };
         let (requested_http_addr, requested_socks_addr, reserved_listeners) = if self
             .managed_by_codex
         {
@@ -390,8 +396,13 @@ impl NetworkProxyRuntimeSettings {
         };
         Ok(Self {
             allow_local_binding: config.allow_local_binding,
-            allow_unix_sockets: config.allow_unix_sockets().into(),
-            dangerously_allow_all_unix_sockets: config.dangerously_allow_all_unix_sockets,
+            allow_unix_sockets: if cfg!(target_os = "windows") {
+                Arc::default()
+            } else {
+                config.allow_unix_sockets().into()
+            },
+            dangerously_allow_all_unix_sockets: !cfg!(target_os = "windows")
+                && config.dangerously_allow_all_unix_sockets,
             mitm_ca_trust_bundle,
         })
     }
@@ -592,7 +603,11 @@ pub fn is_managed_proxy_env_var(key: &str, value: &str) -> bool {
 }
 
 pub fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
-    env.retain(|key, value| !is_managed_proxy_env_var(key, value));
+    let brokered_credential_dummy_env_keys =
+        crate::credential_broker::brokered_credential_dummy_env_keys(env);
+    env.retain(|key, value| {
+        !brokered_credential_dummy_env_keys.contains(key) && !is_managed_proxy_env_var(key, value)
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -817,9 +832,27 @@ impl NetworkProxy {
 
     /// Captures the static inputs needed to launch a matching executor-local proxy.
     pub async fn remote_launch_config(&self) -> Result<crate::RemoteNetworkProxyLaunchConfig> {
-        let proxy = crate::RemoteNetworkProxyConfig::from_effective_config(
-            &self.state.current_cfg().await?,
-        )?;
+        let (mut config, brokerage_created_default_allowlist) =
+            self.state.current_cfg_with_brokerage_provenance().await?;
+        let mut broker_only_config = config::NetworkProxyConfig {
+            enabled: config.enabled,
+            credential_broker_openai_host: config.credential_broker_openai_host.clone(),
+            dangerously_allow_plaintext_credential_injection: config
+                .dangerously_allow_plaintext_credential_injection,
+            ..config::NetworkProxyConfig::default()
+        };
+        broker_only_config.set_credential_broker_enabled(/*enabled*/ true);
+        broker_only_config.set_allowed_domains(vec!["*".to_string()]);
+        let broker_only = brokerage_created_default_allowlist && config == broker_only_config;
+        if config.credential_broker {
+            config.enabled &= !broker_only;
+            config.credential_broker = false;
+            config.dangerously_allow_plaintext_credential_injection = false;
+            if config.mitm && config.mitm_hooks.is_empty() {
+                config.mitm = false;
+            }
+        }
+        let proxy = crate::RemoteNetworkProxyConfig::from_effective_config(&config)?;
         let (environment_id, execution_id) = self
             .execution_scope
             .as_ref()
@@ -1014,6 +1047,15 @@ impl NetworkProxy {
                 socks_addr: self.socks_addr,
             },
         );
+    }
+
+    /// Restores known dummy credentials before a child intentionally leaves managed networking.
+    pub fn restore_brokered_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        command: &mut [String],
+    ) {
+        self.state.restore_child_credentials(env, command);
     }
 
     pub fn apply_to_env_for_environment(
@@ -1268,7 +1310,7 @@ impl NetworkProxy {
             return Ok(NetworkProxyHandle::noop());
         }
 
-        if !unix_socket_permissions_supported() {
+        if !cfg!(target_os = "windows") && !unix_socket_permissions_supported() {
             warn!(
                 "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform"
             );
@@ -1547,6 +1589,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_startup_ignores_macos_unix_socket_permissions_on_windows() -> Result<()> {
+        let unix_sockets = crate::config::NetworkUnixSocketPermissions {
+            entries: [
+                (
+                    "/tmp/allowed.sock".to_string(),
+                    crate::config::NetworkUnixSocketPermission::Allow,
+                ),
+                (
+                    "/tmp/denied.sock".to_string(),
+                    crate::config::NetworkUnixSocketPermission::Deny,
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let config = NetworkProxyConfig {
+            enabled: true,
+            proxy_url: "http://0.0.0.0:3128".to_string(),
+            socks_url: "http://0.0.0.0:8081".to_string(),
+            dangerously_allow_non_loopback_proxy: true,
+            dangerously_allow_all_unix_sockets: true,
+            unix_sockets: Some(unix_sockets.clone()),
+            ..NetworkProxyConfig::default()
+        };
+        let state = Arc::new(network_proxy_state_for_policy(config.clone()));
+
+        let (result, events) = crate::network_policy::test_support::capture_events(|| async {
+            NetworkProxy::builder()
+                .state(state)
+                .managed_by_codex(/*managed_by_codex*/ false)
+                .build()
+                .await
+        })
+        .await;
+        let proxy = result?;
+        let expected_bind_host = if cfg!(target_os = "windows") {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        };
+
+        assert_eq!(
+            (proxy.http_addr, proxy.socks_addr),
+            (
+                format!("{expected_bind_host}:3128").parse::<SocketAddr>()?,
+                format!("{expected_bind_host}:8081").parse::<SocketAddr>()?,
+            )
+        );
+        let replacement = crate::state::build_config_state(config.clone(), Default::default())?;
+        proxy.replace_config_state(replacement).await?;
+        let expected_unix_sockets = if cfg!(target_os = "windows") {
+            Vec::new()
+        } else {
+            vec!["/tmp/allowed.sock".to_string()]
+        };
+        assert_eq!(
+            proxy.allow_unix_sockets().as_ref(),
+            expected_unix_sockets.as_slice()
+        );
+        assert_eq!(
+            proxy.dangerously_allow_all_unix_sockets(),
+            !cfg!(target_os = "windows")
+        );
+        assert_eq!(proxy.current_cfg().await?, config);
+
+        let remote = proxy.remote_launch_config().await?;
+        assert_eq!(
+            (
+                remote.proxy.unix_sockets,
+                remote.proxy.dangerously_allow_all_unix_sockets,
+            ),
+            (Some(unix_sockets), true)
+        );
+        let emitted_unix_socket_warning = events.iter().any(|event| {
+            event.field("message").is_some_and(|message| {
+                message.contains("unix socket proxying is enabled")
+                    || message.contains("allowUnixSockets")
+            })
+        });
+        assert_eq!(emitted_unix_socket_warning, !cfg!(target_os = "windows"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remote_policy_decider_rechecks_live_policy_and_restores_attribution() -> Result<()> {
         let captured = Arc::new(Mutex::new(None));
         let captured_request = Arc::clone(&captured);
@@ -1685,7 +1812,15 @@ mod tests {
             assert_eq!(proxy.http_addr, http_addr);
             assert_eq!(proxy.socks_addr, socks_addr);
             assert_eq!(proxy.network_proxy_restricting_sid(None), None);
-            let handle = proxy.run().await.expect("start stable ingress route");
+            let (result, events) =
+                crate::network_policy::test_support::capture_events(|| async { proxy.run().await })
+                    .await;
+            let handle = result.expect("start stable ingress route");
+            assert!(!events.iter().any(|event| {
+                event
+                    .field("message")
+                    .is_some_and(|message| message.contains("allowUnixSockets"))
+            }));
             let second_state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
                 enabled: true,
                 proxy_url: format!("http://{http_addr}"),
@@ -1865,7 +2000,12 @@ mod tests {
     async fn remote_launch_config_carries_execution_scope() -> Result<()> {
         #[cfg(target_os = "windows")]
         let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();
-        let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
+        let mut config = NetworkProxyConfig {
+            dangerously_allow_plaintext_credential_injection: true,
+            ..NetworkProxyConfig::default()
+        };
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        let state = Arc::new(network_proxy_state_for_policy(config));
         let proxy = match NetworkProxy::builder().state(state).build().await {
             Ok(proxy) => proxy,
             Err(err) => {
@@ -1891,6 +2031,39 @@ mod tests {
 
         assert_eq!(launch.environment_id.as_deref(), Some("remote-env"));
         assert_eq!(launch.execution_id.as_deref(), Some("execution-1"));
+        assert!(!launch.proxy.enabled);
+        for (enabled, mode, allowed_domain, proxy_url) in [
+            (false, config::NetworkMode::Full, Some("*"), None),
+            (false, config::NetworkMode::Full, Some("example.com"), None),
+            (
+                false,
+                config::NetworkMode::Full,
+                None,
+                Some("http://127.0.0.1:8123"),
+            ),
+            (true, config::NetworkMode::Full, None, None),
+            (true, config::NetworkMode::Limited, None, None),
+        ] {
+            let mut config = NetworkProxyConfig {
+                enabled,
+                mode,
+                ..NetworkProxyConfig::default()
+            };
+            if let Some(domain) = allowed_domain {
+                config.set_allowed_domains(vec![domain.to_string()]);
+            }
+            if let Some(proxy_url) = proxy_url {
+                config.proxy_url = proxy_url.to_string();
+            }
+            config.set_credential_broker_enabled(/*enabled*/ true);
+            let proxy = NetworkProxy::builder()
+                .state(Arc::new(network_proxy_state_for_policy(config)))
+                .build()
+                .await?;
+            let launch = proxy.remote_launch_config().await?;
+            assert!(launch.proxy.enabled);
+            assert_eq!(launch.proxy.mode, mode);
+        }
         assert_eq!(
             prepared
                 .env

@@ -26,6 +26,7 @@ use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveThreadToSectionParams;
+use crate::PersistContext;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
@@ -816,7 +817,11 @@ impl ThreadStore for InMemoryThreadStore {
         Box::pin(InMemoryThreadStore::append_items(self, params))
     }
 
-    fn persist_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+    fn persist_thread(
+        &self,
+        _thread_id: ThreadId,
+        _context: PersistContext,
+    ) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             self.state.lock().await.calls.persist_thread += 1;
             Ok(())
@@ -1019,6 +1024,7 @@ fn stored_thread_from_state(
                     id.clone()
                 },
                 id,
+                appearance: None,
             }),
         section_position: state.section_positions.get(&thread_id).copied(),
         section_entered_at: state.section_entered_at.get(&thread_id).copied(),

@@ -2195,6 +2195,7 @@ mod tests {
             params: v2::McpServerOauthLoginParams {
                 name: "server-a".to_string(),
                 thread_id: None,
+                client_registration: None,
                 scopes: None,
                 timeout_secs: None,
             },
@@ -3433,6 +3434,7 @@ mod tests {
             request_id: RequestId::Integer(9),
             params: v2::AppsReadParams {
                 app_ids: vec!["app-a".to_string(), "app-b".to_string()],
+                thread_id: None,
                 include_tools: true,
             },
         };
@@ -3440,7 +3442,11 @@ mod tests {
             json!({
                 "method": "app/read",
                 "id": 9,
-                "params": { "appIds": ["app-a", "app-b"], "includeTools": true }
+                "params": {
+                    "appIds": ["app-a", "app-b"],
+                    "threadId": null,
+                    "includeTools": true
+                }
             }),
             serde_json::to_value(&request)?,
         );

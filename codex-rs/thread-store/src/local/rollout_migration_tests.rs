@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
 
 use codex_app_server_protocol::build_turns_from_rollout_items;
+use codex_extension_items::ExtensionItem;
+use codex_extension_items::image_generation::ImageGenerationFailure;
+use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
@@ -17,6 +20,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SandboxPolicy;
@@ -161,6 +165,10 @@ fn input_response_message(role: &str, text: &str) -> ResponseItem {
     }
 }
 
+fn rollout_response_item(item: ResponseItem) -> RolloutItem {
+    RolloutItem::ResponseItem(item.into())
+}
+
 fn exec_completion(turn_id: &str, call_id: &str) -> RolloutItem {
     serde_json::from_value(json!({
         "type": "event_msg",
@@ -211,7 +219,7 @@ fn started(turn_id: &str) -> RolloutItem {
 fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
     RolloutItem::Compacted(CompactedItem {
         message: "checkpoint".to_string(),
-        replacement_history: Some(replacement_history),
+        replacement_history: Some(replacement_history.into_iter().map(Into::into).collect()),
         window_number: Some(1),
         first_window_id: None,
         previous_window_id: None,
@@ -395,6 +403,62 @@ async fn migration_projects_explicit_and_implicit_legacy_completed_items() {
     assert_eq!(reasoning["type"], "reasoning");
     assert_eq!(reasoning["summary"], json!(["summary"]));
     assert_eq!(reasoning["content"], json!(["raw"]));
+}
+
+#[tokio::test]
+async fn migration_preserves_image_generation_failure_metadata() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let expected_item = ImageGenerationItem {
+        id: "image-call".to_string(),
+        status: "failed".to_string(),
+        revised_prompt: Some("paint a blue whale".to_string()),
+        result: String::new(),
+        transparent_background: None,
+        failure: Some(ImageGenerationFailure::UsageLimitExceeded {
+            limit_id: "image_gen".to_string(),
+            resets_at: Some(1_786_150_800),
+        }),
+        saved_path: None,
+    };
+    let image_completion =
+        RolloutItem::EventMsg(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+            call_id: expected_item.id.clone(),
+            status: expected_item.status.clone(),
+            revised_prompt: expected_item.revised_prompt.clone(),
+            result: expected_item.result.clone(),
+            transparent_background: expected_item.transparent_background,
+            failure: expected_item.failure.clone(),
+            saved_path: expected_item.saved_path.clone(),
+        }));
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            started("image-turn"),
+            image_completion,
+            completed("image-turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate legacy image completion");
+
+    let migrated_item = read_rollout(&path)
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => Some(event.item),
+            _ => None,
+        })
+        .expect("migrated image completion");
+    let TurnItem::Extension(ExtensionItem::ImageGeneration(migrated_item)) = migrated_item else {
+        panic!("expected migrated extension image-generation item");
+    };
+    assert_eq!(migrated_item, expected_item);
 }
 
 #[tokio::test]
@@ -611,7 +675,7 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
         response_thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "remove response boundary")),
+            rollout_response_item(input_response_message("user", "remove response boundary")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
             })),
@@ -643,16 +707,16 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
         contextual_thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "keep first boundary")),
-            RolloutItem::ResponseItem(input_response_message(
+            rollout_response_item(input_response_message("user", "keep first boundary")),
+            rollout_response_item(input_response_message(
                 "developer",
                 "<permissions instructions>context only</permissions instructions>",
             )),
-            RolloutItem::ResponseItem(input_response_message(
+            rollout_response_item(input_response_message(
                 "user",
                 "<environment_context>context only</environment_context>",
             )),
-            RolloutItem::ResponseItem(input_response_message("user", "remove real user boundary")),
+            rollout_response_item(input_response_message("user", "remove real user boundary")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
             })),
@@ -680,7 +744,7 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
         read_rollout(&contextual_path)
             .into_iter()
             .filter_map(|line| match line.item {
-                RolloutItem::ResponseItem(response) => Some(response),
+                RolloutItem::ResponseItem(response) => Some(response.into_item()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
@@ -697,9 +761,9 @@ async fn migration_drops_trailing_context_when_rollback_arrives_before_next_turn
         thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "keep question")),
-            RolloutItem::ResponseItem(input_response_message("user", "remove question")),
-            RolloutItem::ResponseItem(input_response_message(
+            rollout_response_item(input_response_message("user", "keep question")),
+            rollout_response_item(input_response_message("user", "remove question")),
+            rollout_response_item(input_response_message(
                 "user",
                 "<turn_aborted>remove this context too</turn_aborted>",
             )),
@@ -720,7 +784,7 @@ async fn migration_drops_trailing_context_when_rollback_arrives_before_next_turn
         read_rollout(&path)
             .into_iter()
             .filter_map(|line| match line.item {
-                RolloutItem::ResponseItem(response) => Some(response),
+                RolloutItem::ResponseItem(response) => Some(response.into_item()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
@@ -737,7 +801,7 @@ async fn migration_coalesces_response_first_user_message_rollback_boundary() {
         thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "remove question")),
+            rollout_response_item(input_response_message("user", "remove question")),
             user_message("remove question"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
@@ -768,7 +832,7 @@ async fn migration_does_not_coalesce_distinct_adjacent_user_records() {
         thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "copied parent question")),
+            rollout_response_item(input_response_message("user", "copied parent question")),
             user_message("child question"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
@@ -787,7 +851,7 @@ async fn migration_does_not_coalesce_distinct_adjacent_user_records() {
         read_rollout(&path)
             .into_iter()
             .filter_map(|line| match line.item {
-                RolloutItem::ResponseItem(response) => Some(response),
+                RolloutItem::ResponseItem(response) => Some(response.into_item()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
@@ -928,7 +992,7 @@ async fn migration_rolls_back_inter_agent_metadata_with_its_delivery() {
         SessionSource::Cli,
         vec![
             RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
-            RolloutItem::ResponseItem(delivery.to_model_input_item()),
+            rollout_response_item(delivery.to_model_input_item()),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
             })),
@@ -942,12 +1006,12 @@ async fn migration_rolls_back_inter_agent_metadata_with_its_delivery() {
         .await
         .expect("migrate rolled-back inter-agent delivery");
 
-    assert!(!read_rollout(&path).iter().any(|line| {
-        matches!(
-            line.item,
-            RolloutItem::InterAgentCommunicationMetadata { .. }
-                | RolloutItem::ResponseItem(ResponseItem::AgentMessage { .. })
-        )
+    assert!(!read_rollout(&path).iter().any(|line| match &line.item {
+        RolloutItem::InterAgentCommunicationMetadata { .. } => true,
+        RolloutItem::ResponseItem(response_item) => {
+            matches!(&response_item.item, ResponseItem::AgentMessage { .. })
+        }
+        _ => false,
     }));
 }
 
@@ -1022,7 +1086,7 @@ async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback
         thread_id,
         SessionSource::Cli,
         vec![
-            RolloutItem::ResponseItem(input_response_message("user", "remove question")),
+            rollout_response_item(input_response_message("user", "remove question")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
             })),
@@ -1143,7 +1207,12 @@ async fn migration_uses_turn_context_to_select_reverse_replay_anchor() {
     let replacement_histories = read_rollout(&path)
         .into_iter()
         .filter_map(|line| match line.item {
-            RolloutItem::Compacted(item) => item.replacement_history,
+            RolloutItem::Compacted(item) => item.replacement_history.map(|items| {
+                items
+                    .into_iter()
+                    .map(codex_rollout::ResponseItemEnvelope::into_item)
+                    .collect::<Vec<_>>()
+            }),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1219,7 +1288,7 @@ async fn migration_drops_copied_user_fork_metadata_without_creating_a_history_ba
         ..SessionMeta::default()
     };
     let copied_response =
-        RolloutItem::ResponseItem(input_response_message("user", "copied parent history"));
+        rollout_response_item(input_response_message("user", "copied parent history"));
     let path = write_rollout_with_fork(
         home.path(),
         thread_id,
@@ -1239,7 +1308,7 @@ async fn migration_drops_copied_user_fork_metadata_without_creating_a_history_ba
         .into_iter()
         .filter_map(|line| match line.item {
             RolloutItem::ResponseItem(item) => {
-                Some(serde_json::to_value(item).expect("serialize copied response"))
+                Some(serde_json::to_value(item.item).expect("serialize copied response"))
             }
             _ => None,
         })
@@ -1273,7 +1342,7 @@ async fn migration_drops_copied_user_fork_metadata_without_creating_a_history_ba
             .into_iter()
             .filter_map(|line| match line.item {
                 RolloutItem::ResponseItem(item) => {
-                    Some(serde_json::to_value(item).expect("serialize migrated response"))
+                    Some(serde_json::to_value(item.item).expect("serialize migrated response"))
                 }
                 _ => None,
             })
@@ -1301,15 +1370,18 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
             }),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
-                replacement_history: Some(vec![ResponseItem::Message {
-                    id: None,
-                    role: "user".to_string(),
-                    content: vec![ContentItem::InputText {
-                        text: "latest compacted context".to_string(),
-                    }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                }]),
+                replacement_history: Some(vec![
+                    ResponseItem::Message {
+                        id: None,
+                        role: "user".to_string(),
+                        content: vec![ContentItem::InputText {
+                            text: "latest compacted context".to_string(),
+                        }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    }
+                    .into(),
+                ]),
                 window_number: Some(2),
                 first_window_id: None,
                 previous_window_id: None,

@@ -2329,6 +2329,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-build-info"
+version = "0.0.0"
+dependencies = [
+ "codex-install-context",
+ "pretty_assertions",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-bwrap"
 version = "0.0.0"
 dependencies = [
@@ -2552,10 +2564,14 @@ dependencies = [
  "codex-websocket-client",
  "futures",
  "pretty_assertions",
+ "prost",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3392,6 +3408,9 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-home-dir",
  "pretty_assertions",
+ "semver",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -3957,6 +3976,7 @@ dependencies = [
  "codex-exec-server",
  "codex-http-client",
  "codex-keyring-store",
+ "codex-network-proxy",
  "codex-protocol",
  "codex-secrets",
  "codex-utils-cargo-bin",
@@ -4137,6 +4157,7 @@ dependencies = [
 name = "codex-skills-extension"
 version = "0.0.0"
 dependencies = [
+ "codex-analytics",
  "codex-config",
  "codex-exec-server",
  "codex-extension-api",
@@ -4237,6 +4258,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "codex-app-server-protocol",
+ "codex-extension-items",
  "codex-git-utils",
  "codex-install-context",
  "codex-otel",
@@ -12256,6 +12278,10 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "sentry"

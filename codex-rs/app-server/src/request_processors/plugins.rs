@@ -32,6 +32,7 @@ use codex_mcp::should_retry_without_scopes;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::auth::AuthMode as DomainAuthMode;
+use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::perform_oauth_login_silent;
@@ -59,7 +60,7 @@ pub(crate) struct PluginRequestProcessor {
 }
 
 fn plugin_skills_to_info(
-    skills: &[codex_core::skills::SkillMetadata],
+    skills: &[codex_skills::SkillMetadata],
     disabled_skill_paths: &HashSet<AbsolutePathBuf>,
 ) -> Vec<SkillSummary> {
     skills
@@ -1998,6 +1999,7 @@ impl PluginRequestProcessor {
                     oauth_config.env_http_headers.clone(),
                     &resolved_scopes.scopes,
                     oauth_client_id,
+                    McpOAuthClientRegistration::Auto,
                     server.oauth_resource.as_deref(),
                     callback_port,
                     callback_url.as_deref(),
@@ -2017,6 +2019,7 @@ impl PluginRequestProcessor {
                             oauth_config.env_http_headers,
                             &[],
                             oauth_client_id,
+                            McpOAuthClientRegistration::Auto,
                             server.oauth_resource.as_deref(),
                             callback_port,
                             callback_url.as_deref(),

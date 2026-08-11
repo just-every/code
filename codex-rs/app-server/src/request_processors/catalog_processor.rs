@@ -16,7 +16,7 @@ pub(crate) struct CatalogRequestProcessor {
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
 
 fn skills_to_info(
-    skills: &[codex_core::skills::SkillMetadata],
+    skills: &[codex_skills::SkillMetadata],
     disabled_paths: &HashSet<AbsolutePathBuf>,
 ) -> Vec<codex_app_server_protocol::SkillMetadata> {
     skills
@@ -89,7 +89,7 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
 }
 
 fn errors_to_info(
-    errors: &[codex_core::skills::SkillError],
+    errors: &[codex_skills::SkillError],
 ) -> Vec<codex_app_server_protocol::SkillErrorInfo> {
     errors
         .iter()
@@ -533,7 +533,6 @@ impl CatalogRequestProcessor {
         let skills_request = skills_service.for_request();
         let mut data = futures::stream::iter(cwds.into_iter().enumerate())
             .map(|(index, cwd)| {
-                let config = &config;
                 let fs = fs.clone();
                 let skills_request = &skills_request;
                 let effective_skill_roots = effective_skill_roots.clone();
@@ -556,11 +555,10 @@ impl CatalogRequestProcessor {
                             );
                         }
                     };
-                    let skills_input = codex_core::skills::HostSkillsLoadInput::new(
+                    let skills_input = codex_skills_extension::HostSkillsLoadInput::new(
                         cwd_abs.clone(),
                         effective_skill_roots,
                         config_layer_stack,
-                        config.bundled_skills_enabled(),
                     )
                     .with_plugin_skill_snapshots(plugin_skill_snapshots);
                     let snapshot = skills_request

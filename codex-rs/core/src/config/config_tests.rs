@@ -326,6 +326,28 @@ consolidation_model = "gpt-5.2"
     );
 }
 
+#[tokio::test]
+async fn goal_max_token_budget_requires_positive_integer() {
+    let config_toml = toml::from_str::<ConfigToml>("[goals]\nmax_goal_token_budget = 25000\n")
+        .expect("positive goal token budget should deserialize");
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("positive goal token budget should load");
+    assert_eq!(config.max_goal_token_budget, Some(25_000));
+
+    for invalid in ["0", "-1", "1.5", "\"100\""] {
+        let config = format!("[goals]\nmax_goal_token_budget = {invalid}\n");
+        assert!(
+            toml::from_str::<ConfigToml>(&config).is_err(),
+            "invalid goal token budget should be rejected: {invalid}"
+        );
+    }
+}
+
 #[test]
 fn parses_bundled_skills_config() {
     let cfg: ConfigToml = toml::from_str(
@@ -5012,7 +5034,6 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         refreshed_toml,
         ConfigOverrides {
             cwd: Some(codex_home.path().to_path_buf()),
-            psp: Some(true),
             ..Default::default()
         },
         codex_home.abs(),
@@ -5090,8 +5111,6 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         .rebuild_preserving_session_layers(&refreshed_config)
         .await?;
 
-    assert!(config.psp);
-    assert!(config.http_client_factory().has_chatgpt_cookies());
     assert_eq!(
         config.mcp_servers.get(),
         &HashMap::from([
@@ -10566,77 +10585,6 @@ browser_use_full_cdp_access = false
     assert!(!config.features.enabled(Feature::InAppBrowser));
     assert!(!config.features.enabled(Feature::BrowserUse));
     assert!(!config.features.enabled(Feature::BrowserUseFullCdpAccess));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn debug_config_lockfile_export_settings_load_from_nested_table() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"[debug.config_lockfile]
-export_dir = "locks"
-allow_codex_version_mismatch = true
-save_fields_resolved_from_model_catalog = false
-"#,
-    )?;
-
-    let config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert_eq!(
-        config.config_lock_export_dir,
-        Some(AbsolutePathBuf::resolve_path_against_base(
-            "locks",
-            codex_home.path()
-        ))
-    );
-    assert!(config.config_lock_allow_codex_version_mismatch);
-    assert!(!config.config_lock_save_fields_resolved_from_model_catalog);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn debug_config_lockfile_load_path_loads_lock_from_nested_table() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let lock_path = codex_home.path().join("session.config.lock.toml");
-    std::fs::write(
-        &lock_path,
-        format!(
-            r#"version = {}
-codex_version = "older-version"
-
-[config]
-"#,
-            crate::config_lock::CONFIG_LOCK_VERSION
-        ),
-    )?;
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        format!(
-            r#"[debug.config_lockfile]
-load_path = '{}'
-allow_codex_version_mismatch = true
-save_fields_resolved_from_model_catalog = false
-"#,
-            lock_path.display()
-        ),
-    )?;
-
-    let config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert!(config.config_lock_toml.is_some());
-    assert!(config.config_lock_allow_codex_version_mismatch);
-    assert!(!config.config_lock_save_fields_resolved_from_model_catalog);
 
     Ok(())
 }

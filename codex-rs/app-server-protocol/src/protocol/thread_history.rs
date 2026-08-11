@@ -400,7 +400,7 @@ impl ThreadHistoryBuilder {
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
-            RolloutItem::ResponseItem(item) => self.handle_response_item(item),
+            RolloutItem::ResponseItem(item) => self.handle_response_item(&item.item),
             RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
@@ -863,6 +863,7 @@ impl ThreadHistoryBuilder {
             revised_prompt: None,
             result: String::new(),
             transparent_background: None,
+            failure: None,
             saved_path: None,
         });
         self.upsert_item_in_current_turn(item);
@@ -875,6 +876,7 @@ impl ThreadHistoryBuilder {
             revised_prompt: payload.revised_prompt.clone(),
             result: payload.result.clone(),
             transparent_background: payload.transparent_background,
+            failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
         });
         self.upsert_item_in_current_turn(item);
@@ -2079,6 +2081,7 @@ mod tests {
                         revised_prompt: Some("A blue square".to_string()),
                         result: "cG5n".to_string(),
                         transparent_background: Some(true),
+                        failure: None,
                         saved_path: Some(saved_path.clone()),
                     },
                 )),
@@ -2110,6 +2113,7 @@ mod tests {
                 revised_prompt: Some("A blue square".to_string()),
                 result: "cG5n".to_string(),
                 transparent_background: Some(true),
+                failure: None,
                 saved_path: Some(saved_path),
             })]
         );
@@ -2373,6 +2377,12 @@ mod tests {
                 revised_prompt: Some("final prompt".into()),
                 result: "Zm9v".into(),
                 transparent_background: Some(true),
+                failure: Some(
+                    codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
+                        limit_id: "image_gen".into(),
+                        resets_at: Some(1_786_150_800),
+                    },
+                ),
                 saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
@@ -2413,6 +2423,12 @@ mod tests {
                         revised_prompt: Some("final prompt".into()),
                         result: "Zm9v".into(),
                         transparent_background: Some(true),
+                        failure: Some(
+                            codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
+                                limit_id: "image_gen".into(),
+                                resets_at: Some(1_786_150_800),
+                            },
+                        ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
                     }),
                 ],
@@ -4383,7 +4399,7 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             })),
-            RolloutItem::ResponseItem(hook_prompt),
+            RolloutItem::ResponseItem(hook_prompt.into()),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 started_at: None,
@@ -4459,15 +4475,18 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             })),
-            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Message {
-                id: Some(codex_protocol::ResponseItemId::with_suffix("msg", "1")),
-                role: "user".into(),
-                content: vec![codex_protocol::models::ContentItem::InputText {
-                    text: "plain text".into(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::Message {
+                    id: Some(codex_protocol::ResponseItemId::with_suffix("msg", "1")),
+                    role: "user".into(),
+                    content: vec![codex_protocol::models::ContentItem::InputText {
+                        text: "plain text".into(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 started_at: None,

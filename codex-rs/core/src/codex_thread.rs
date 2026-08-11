@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::elicitation::ElicitationRegistration;
+use crate::environment_config::EnvironmentConfig;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
@@ -48,6 +49,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::PersistContext;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadMetadataPatch;
@@ -284,7 +286,9 @@ impl CodexThread {
 
     #[doc(hidden)]
     pub async fn ensure_rollout_materialized(&self) {
-        self.session.ensure_rollout_materialized().await;
+        self.session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
     }
 
     #[doc(hidden)]
@@ -590,6 +594,20 @@ impl CodexThread {
 
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
+        self.inject_response_items_for_turn(items).await?;
+        self.session.flush_rollout().await?;
+        Ok(())
+    }
+
+    /// Record raw Responses API items immediately before admitting a user turn.
+    ///
+    /// The caller must submit the associated user input while retaining its
+    /// thread-operation lock. The subsequent turn persistence includes both
+    /// these items and the user input, without an independent rollout flush.
+    pub async fn inject_response_items_for_turn(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
         if items.is_empty() {
             return Err(CodexErr::InvalidRequest(
                 "items must not be empty".to_string(),
@@ -610,7 +628,6 @@ impl CodexThread {
         self.session
             .inject_no_new_turn(items, Some(turn_context.as_ref()))
             .await;
-        self.session.flush_rollout().await?;
         Ok(())
     }
 
@@ -750,13 +767,18 @@ impl CodexThread {
         self.session.thread_environment_selections().await
     }
 
+    /// Installs resolved environment configuration and capability roots on this thread.
+    pub async fn environment_ready(
+        &self,
+        selection: &TurnEnvironmentSelection,
+        config: EnvironmentConfig,
+    ) -> CodexResult<()> {
+        self.session.environment_ready(selection, config).await
+    }
+
     /// Passively inspects the selected capability roots whose environments are ready now.
     pub fn inspect_selected_capability_roots(&self) -> SelectedCapabilityRootsStatus {
-        self.session
-            .services
-            .turn_environments
-            .environment_manager()
-            .inspect_selected_capability_roots(&self.session.services.selected_capability_roots)
+        self.session.inspect_selected_capability_roots()
     }
 
     pub async fn read_mcp_resource(

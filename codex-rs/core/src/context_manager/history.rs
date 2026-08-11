@@ -9,6 +9,8 @@ use crate::event_mapping::is_contextual_user_message_content;
 use crate::session::turn_context::TurnContext;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use codex_history::CodexHarnessMetadata;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -42,7 +44,7 @@ use std::sync::LazyLock;
 pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector. Snapshots share the vector until a
     /// caller needs to mutate it, avoiding deep copies for read-only history consumers.
-    items: Arc<Vec<ResponseItem>>,
+    items: Arc<Vec<ResponseItemEnvelope>>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     token_info: Option<TokenUsageInfo>,
@@ -96,7 +98,7 @@ impl ContextManager {
     ) -> (Vec<Box<dyn ContextualUserFragment>>, Option<WorldStateItem>) {
         let snapshot = world_state.snapshot();
         let fragments =
-            world_state.render_history_diff(self.world_state_baseline.as_ref(), &self.items);
+            world_state.render_history_diff(self.world_state_baseline.as_ref(), self.raw_items());
         let rollout_item = self.world_state_baseline.as_ref().map_or_else(
             || Some(WorldStateItem::full(snapshot.clone().into_value())),
             |previous| {
@@ -126,15 +128,40 @@ impl ContextManager {
     pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
     where
         I: IntoIterator,
-        I::Item: std::ops::Deref<Target = ResponseItem>,
+        I::Item: Deref<Target = ResponseItem>,
     {
-        for item in items {
-            let item_ref = item.deref();
-            if !is_api_message(item_ref) {
+        self.record_items_with_metadata(items.into_iter().map(|item| (item, None)), policy);
+    }
+
+    /// Records history envelopes while preserving their history-only metadata.
+    pub(crate) fn record_annotated_items(
+        &mut self,
+        items: &[ResponseItemEnvelope],
+        policy: TruncationPolicy,
+    ) {
+        self.record_items_with_metadata(
+            items
+                .iter()
+                .map(|envelope| (&envelope.item, envelope.metadata.as_ref())),
+            policy,
+        );
+    }
+
+    fn record_items_with_metadata<'a, I, T>(&mut self, items: I, policy: TruncationPolicy)
+    where
+        I: IntoIterator<Item = (T, Option<&'a CodexHarnessMetadata>)>,
+        T: Deref<Target = ResponseItem>,
+    {
+        for (item, metadata) in items {
+            let item = item.deref();
+            if !is_api_message(item) {
                 continue;
             }
 
-            let processed = Self::process_item(item_ref, policy);
+            let processed = ResponseItemEnvelope {
+                item: Self::process_item(item, policy),
+                metadata: metadata.cloned(),
+            };
             Arc::make_mut(&mut self.items).push(processed);
         }
     }
@@ -142,18 +169,44 @@ impl ContextManager {
     /// Returns the history prepared for sending to the model. This applies a proper
     /// normalization and drops un-suited items. Unsupported image and audio content
     /// is stripped from messages and tool outputs according to `input_modalities`.
-    pub(crate) fn for_prompt(mut self, input_modalities: &[InputModality]) -> Vec<ResponseItem> {
+    pub(crate) fn for_prompt(self, input_modalities: &[InputModality]) -> Vec<ResponseItem> {
+        self.for_prompt_annotated(input_modalities)
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect()
+    }
+
+    /// Returns normalized history envelopes for internal consumers that must retain metadata.
+    pub(crate) fn for_prompt_annotated(
+        mut self,
+        input_modalities: &[InputModality],
+    ) -> Vec<ResponseItemEnvelope> {
         self.normalize_history(input_modalities);
         Arc::unwrap_or_clone(self.items)
     }
 
-    /// Returns raw items in the history.
-    pub(crate) fn raw_items(&self) -> &[ResponseItem] {
+    /// Iterates over raw response items without exposing their history envelopes.
+    pub(crate) fn raw_items(
+        &self,
+    ) -> impl Clone + ExactSizeIterator<Item = &ResponseItem> + DoubleEndedIterator {
+        self.items.iter().map(|envelope| &envelope.item)
+    }
+
+    /// Returns annotated history items without cloning their response payloads.
+    pub(crate) fn annotated_items(&self) -> &[ResponseItemEnvelope] {
         &self.items
     }
 
     /// Returns raw items in the history and consumes the snapshot.
     pub(crate) fn into_raw_items(self) -> Vec<ResponseItem> {
+        self.into_annotated_items()
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect()
+    }
+
+    /// Returns annotated history items and consumes the snapshot.
+    pub(crate) fn into_annotated_items(self) -> Vec<ResponseItemEnvelope> {
         Arc::unwrap_or_clone(self.items)
     }
 
@@ -183,7 +236,7 @@ impl ContextManager {
         let items_tokens = self
             .items
             .iter()
-            .map(estimate_item_token_count)
+            .map(|envelope| estimate_item_token_count(&envelope.item))
             .fold(0i64, i64::saturating_add);
 
         Some(base_tokens.saturating_add(items_tokens))
@@ -198,12 +251,17 @@ impl ContextManager {
             // If the removed item participates in a call/output pair, also remove
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
-            normalize::remove_corresponding_for(items, &removed);
+            normalize::remove_corresponding_for(items, &removed.item);
             self.world_state_baseline = None;
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
+        self.replace_annotated(items.into_iter().map(ResponseItemEnvelope::new).collect());
+    }
+
+    pub(crate) fn replace_annotated(&mut self, items: Vec<ResponseItemEnvelope>) {
         self.items = Arc::new(items);
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
@@ -233,7 +291,7 @@ impl ContextManager {
         let snapshot = self.items.clone();
         let user_positions = user_message_positions(&snapshot);
         let Some(&first_instruction_turn_idx) = user_positions.first() else {
-            self.replace(Arc::unwrap_or_clone(snapshot));
+            self.replace_annotated(Arc::unwrap_or_clone(snapshot));
             return;
         };
 
@@ -253,7 +311,7 @@ impl ContextManager {
         {
             retained_items.retain_mut(|item| {
                 if item.turn_id() == Some(first_turn_id)
-                    && let ResponseItem::Message { role, content, .. } = item
+                    && let ResponseItem::Message { role, content, .. } = &mut item.item
                     && role == "developer"
                 {
                     content.retain(|content| {
@@ -270,7 +328,7 @@ impl ContextManager {
             });
         }
 
-        self.replace(retained_items);
+        self.replace_annotated(retained_items);
     }
 
     pub(crate) fn update_token_info(
@@ -287,35 +345,41 @@ impl ContextManager {
 
     fn get_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
-        let Some(last_user_index) = self.items.iter().rposition(is_user_turn_boundary) else {
+        let Some(last_user_index) = self
+            .items
+            .iter()
+            .rposition(|envelope| is_user_turn_boundary(&envelope.item))
+        else {
             return 0;
         };
 
         self.items
             .iter()
             .take(last_user_index)
-            .filter(|item| {
+            .filter(|envelope| {
                 matches!(
-                    item,
+                    &envelope.item,
                     ResponseItem::Reasoning {
                         encrypted_content: Some(_),
                         ..
                     }
                 )
             })
-            .map(estimate_item_token_count)
+            .map(|envelope| estimate_item_token_count(&envelope.item))
             .fold(0i64, i64::saturating_add)
     }
 
     // These are local items added after the most recent model-emitted item.
     // They are not reflected in `last_token_usage.total_tokens`.
-    fn items_after_last_model_generated_item(&self) -> &[ResponseItem] {
+    fn items_after_last_model_generated_item(
+        &self,
+    ) -> impl Clone + ExactSizeIterator<Item = &ResponseItem> + DoubleEndedIterator {
         let start = self
             .items
             .iter()
-            .rposition(is_model_generated_item)
+            .rposition(|envelope| is_model_generated_item(&envelope.item))
             .map_or(self.items.len(), |index| index.saturating_add(1));
-        &self.items[start..]
+        self.items[start..].iter().map(|envelope| &envelope.item)
     }
 
     /// When true, the server already accounted for past reasoning tokens and
@@ -328,7 +392,6 @@ impl ContextManager {
             .unwrap_or(0);
         let items_after_last_model_generated_tokens = self
             .items_after_last_model_generated_item()
-            .iter()
             .map(estimate_item_token_count)
             .fold(0i64, i64::saturating_add);
         if server_reasoning_included {
@@ -342,7 +405,6 @@ impl ContextManager {
 
     pub(crate) fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
         self.items_after_last_model_generated_item()
-            .iter()
             .map(estimate_item_token_count)
             .fold(0i64, i64::saturating_add)
     }
@@ -431,12 +493,12 @@ impl ContextManager {
     /// reinjection.
     fn trim_pre_turn_context_updates(
         &mut self,
-        snapshot: &[ResponseItem],
+        snapshot: &[ResponseItemEnvelope],
         first_instruction_turn_idx: usize,
         mut cut_idx: usize,
     ) -> usize {
         while cut_idx > first_instruction_turn_idx {
-            match &snapshot[cut_idx - 1] {
+            match &snapshot[cut_idx - 1].item {
                 ResponseItem::Message { role, content, .. }
                     if role == "developer" && is_contextual_dev_message_content(content) =>
                 {
@@ -833,10 +895,10 @@ fn is_inter_agent_instruction_content(content: &[ContentItem]) -> bool {
     InterAgentCommunication::is_message_content(content)
 }
 
-fn user_message_positions(items: &[ResponseItem]) -> Vec<usize> {
+fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
     let mut positions = Vec::new();
-    for (idx, item) in items.iter().enumerate() {
-        if is_user_turn_boundary(item) {
+    for (idx, envelope) in items.iter().enumerate() {
+        if is_user_turn_boundary(&envelope.item) {
             positions.push(idx);
         }
     }

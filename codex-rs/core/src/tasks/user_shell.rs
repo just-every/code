@@ -39,6 +39,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
+use codex_thread_store::PersistContext;
 
 use super::SessionTask;
 use super::SessionTaskResult;
@@ -463,7 +464,9 @@ async fn persist_user_shell_output(
             .await;
         // Standalone shell turns can run before any regular user turn, so
         // explicitly materialize rollout persistence after recording output.
-        session.ensure_rollout_materialized().await;
+        session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
         return;
     }
 

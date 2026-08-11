@@ -26,6 +26,7 @@ fn test_turn_environment(environment_id: &str) -> crate::session::turn_context::
         TurnEnvironmentConfig {
             allow_login_shell: true,
             permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
+            selected_capability_roots: None,
         },
     )
 }
@@ -267,7 +268,7 @@ async fn file_system_sandbox_context_preserves_executor_workspace_permissions() 
 }
 
 #[tokio::test]
-async fn no_sandbox_attempt_has_no_file_system_context() {
+async fn file_system_sandbox_context_respects_sandbox_request() {
     let path = std::env::temp_dir()
         .join("apply-patch-runtime-none.txt")
         .abs();
@@ -309,5 +310,29 @@ async fn no_sandbox_attempt_has_no_file_system_context() {
     assert_eq!(
         ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
         None
+    );
+
+    let cwd = PathUri::parse("file:///C:/workspace").expect("Windows workspace URI");
+    let permissions = PermissionProfile::workspace_write();
+    let attempt = SandboxAttempt {
+        sandbox_requested: true,
+        permissions: &permissions,
+        exec_server_permissions: &permissions,
+        sandbox_cwd: &cwd,
+        workspace_roots: std::slice::from_ref(&cwd),
+        ..attempt
+    };
+
+    assert_eq!(
+        ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
+        Some(FileSystemSandboxContext {
+            permissions: permissions.into(),
+            cwd: Some(cwd.clone()),
+            workspace_roots: vec![cwd],
+            windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+            windows_sandbox_private_desktop: false,
+            windows_sandbox_proxy_settings_mode: None,
+            use_legacy_landlock: false,
+        })
     );
 }

@@ -107,9 +107,11 @@ pub(crate) struct TurnMetadataState {
     turn_id: String,
     sandbox: Option<String>,
     sandbox_mode: Option<String>,
+    auto_review_enabled: bool,
     enriched_workspaces: RwLock<Option<BTreeMap<String, TurnMetadataWorkspace>>>,
     tool_namespaces_info: RwLock<Option<TurnToolNamespacesInfo>>,
     turn_started_at_unix_ms: RwLock<Option<i64>>,
+    responses_api_metadata: RwLock<BTreeMap<String, String>>,
     responsesapi_client_metadata: RwLock<BTreeMap<String, String>>,
     user_input_requested_during_turn: AtomicBool,
     enrichment_task: Mutex<Option<JoinHandle<()>>>,
@@ -129,6 +131,7 @@ impl TurnMetadataState {
         permission_profile: &PermissionProfile,
         windows_sandbox_level: WindowsSandboxLevel,
         enforce_managed_network: bool,
+        auto_review_enabled: bool,
     ) -> Self {
         let repo_root = get_git_repo_root(&cwd);
         let sandbox = Some(
@@ -155,9 +158,11 @@ impl TurnMetadataState {
             turn_id,
             sandbox,
             sandbox_mode,
+            auto_review_enabled,
             enriched_workspaces: RwLock::new(None),
             tool_namespaces_info: RwLock::new(None),
             turn_started_at_unix_ms: RwLock::new(None),
+            responses_api_metadata: RwLock::new(BTreeMap::new()),
             responsesapi_client_metadata: RwLock::new(BTreeMap::new()),
             user_input_requested_during_turn: AtomicBool::new(false),
             enrichment_task: Mutex::new(None),
@@ -168,7 +173,7 @@ impl TurnMetadataState {
         &self,
         context: McpTurnMetadataContext<'_>,
     ) -> Option<serde_json::Value> {
-        let mut responses_metadata = self.responses_metadata_template();
+        let mut responses_metadata = self.mcp_metadata_template();
         // Never serialize harness-owned tool inventory for external MCP servers.
         responses_metadata.tool_namespaces_info = None;
         let Value::Object(mut metadata) = responses_metadata.turn_metadata_value()? else {
@@ -249,6 +254,16 @@ impl TurnMetadataState {
             filter_extra_metadata(responsesapi_client_metadata);
     }
 
+    pub(crate) fn set_responses_api_metadata(
+        &self,
+        responses_api_metadata: BTreeMap<String, String>,
+    ) {
+        *self
+            .responses_api_metadata
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = responses_api_metadata;
+    }
+
     pub(crate) fn workspace_kind(&self) -> Option<String> {
         self.responsesapi_client_metadata
             .read()
@@ -258,6 +273,30 @@ impl TurnMetadataState {
     }
 
     fn responses_metadata_template(&self) -> CodexResponsesMetadata {
+        let mut metadata = self.mcp_metadata_template();
+        metadata.extra.extend(
+            self.responses_api_metadata
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        );
+        metadata
+    }
+
+    fn mcp_metadata_template(&self) -> CodexResponsesMetadata {
+        let mut extra = self
+            .responsesapi_client_metadata
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for key in self
+            .responses_api_metadata
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+        {
+            extra.remove(key);
+        }
         CodexResponsesMetadata {
             turn_id: Some(self.turn_id.clone()),
             forked_from_thread_id: self.forked_from_thread_id,
@@ -268,6 +307,7 @@ impl TurnMetadataState {
             thread_source: self.thread_source.clone(),
             sandbox: self.sandbox.clone(),
             sandbox_mode: self.sandbox_mode.clone(),
+            auto_review_enabled: Some(self.auto_review_enabled),
             workspaces: self.current_workspaces(),
             tool_namespaces_info: self
                 .tool_namespaces_info
@@ -275,11 +315,7 @@ impl TurnMetadataState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             turn_started_at_unix_ms: self.current_turn_started_at_unix_ms(),
-            extra: self
-                .responsesapi_client_metadata
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            extra,
             ..CodexResponsesMetadata::new(
                 String::new(),
                 self.session_id.clone(),

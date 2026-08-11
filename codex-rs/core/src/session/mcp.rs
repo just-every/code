@@ -1,5 +1,6 @@
 use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
+use crate::tools::sandboxing::executor_windows_sandbox_level;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::FileSystemSandboxContext;
@@ -386,7 +387,8 @@ impl Session {
                         environment.cwd().clone(),
                     );
                     sandbox.workspace_roots = environment.workspace_roots().to_vec();
-                    sandbox.windows_sandbox_level = windows_sandbox_level;
+                    sandbox.windows_sandbox_level =
+                        executor_windows_sandbox_level(windows_sandbox_level, environment.cwd());
                     sandbox.windows_sandbox_private_desktop =
                         config.permissions.windows_sandbox_private_desktop;
                     sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
@@ -440,11 +442,13 @@ impl Session {
             .selected_capability_roots
             .iter()
             .cloned()
-            .chain(
-                environments
-                    .turn_environments()
-                    .flat_map(|environment| environment.environment.selected_capability_roots()),
-            )
+            .chain(environments.turn_environments().flat_map(|environment| {
+                environment
+                    .config
+                    .selected_capability_roots
+                    .clone()
+                    .unwrap_or_else(|| environment.environment.selected_capability_roots())
+            }))
             .enumerate()
         {
             if let Some(kept_location) = root_locations_by_id.get(&root.id) {

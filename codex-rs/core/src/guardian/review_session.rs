@@ -51,6 +51,7 @@ use crate::session::turn_context::TurnContext;
 use codex_config::types::McpServerConfig;
 use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_thread_store::PersistContext;
 use codex_utils_path_uri::PathUri;
 
 use super::ApprovalRequestReasons;
@@ -220,8 +221,12 @@ impl GuardianReviewSessionReuseKey {
     }
 }
 
-fn encrypted_parent_compaction(items: &[ResponseItem]) -> Option<ResponseItem> {
-    let item = items.iter().rev().find(|item| {
+fn encrypted_parent_compaction<'a, I>(items: I) -> Option<ResponseItem>
+where
+    I: IntoIterator<Item = &'a ResponseItem>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    let item = items.into_iter().rev().find(|item| {
         matches!(
             item,
             ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
@@ -380,7 +385,10 @@ impl GuardianReviewSessionManager {
 
     pub(crate) async fn trunk_rollout_path(&self) -> Option<PathBuf> {
         let trunk = self.state.lock().await.trunk.clone()?;
-        trunk.session.ensure_rollout_materialized().await;
+        trunk
+            .session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
         match trunk.session.current_rollout_path().await {
             Ok(path) => path,
             Err(err) => {
@@ -737,7 +745,7 @@ async fn spawn_guardian_review_session(
         ),
         None => (
             parent_compaction
-                .map(|item| InitialHistory::Forked(vec![RolloutItem::ResponseItem(item)])),
+                .map(|item| InitialHistory::Forked(vec![RolloutItem::ResponseItem(item.into())])),
             0,
             None,
         ),
@@ -966,7 +974,9 @@ async fn append_guardian_followup_reminder(review_session: &GuardianReviewSessio
 async fn load_rollout_items_for_fork(
     session: &Session,
 ) -> anyhow::Result<Option<Vec<RolloutItem>>> {
-    session.try_ensure_rollout_materialized().await?;
+    session
+        .try_ensure_rollout_materialized(PersistContext::Standard)
+        .await?;
     session.flush_rollout().await?;
     let live_thread = session.live_thread_for_persistence("guardian review fork")?;
     let history = live_thread.load_history(/*include_archived*/ true).await?;

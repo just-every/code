@@ -5,6 +5,7 @@ use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ThreadSection;
+use codex_app_server_protocol::ThreadSectionAppearance;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
@@ -15,6 +16,7 @@ use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_thread_store::PersistContext;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -2525,7 +2527,7 @@ impl ThreadRequestProcessor {
                 codex_app_server_protocol::ThreadHistoryMode::Paginated
             ) {
                 self.thread_store
-                    .persist_thread(thread_id)
+                    .persist_thread(thread_id, PersistContext::Standard)
                     .await
                     .map_err(|err| thread_read_history_load_error(thread_id, err))?;
                 thread.turns = self
@@ -3321,7 +3323,7 @@ impl ThreadRequestProcessor {
                 if paginated_resume
                     && let Err(error) = self
                         .thread_store
-                        .persist_thread(thread_id)
+                        .persist_thread(thread_id, PersistContext::Standard)
                         .await
                         .map_err(thread_store_resume_read_error)
                 {
@@ -3670,7 +3672,7 @@ impl ThreadRequestProcessor {
             }
             if paginated_resume && (include_turns || params.initial_turns_page.is_some()) {
                 self.thread_store
-                    .persist_thread(existing_thread_id)
+                    .persist_thread(existing_thread_id, PersistContext::Standard)
                     .await
                     .map_err(thread_store_resume_read_error)?;
             }
@@ -3811,7 +3813,7 @@ impl ThreadRequestProcessor {
             history
                 .iter()
                 .cloned()
-                .map(RolloutItem::ResponseItem)
+                .map(|item| RolloutItem::ResponseItem(item.into()))
                 .collect(),
         ))
     }
@@ -5242,6 +5244,12 @@ pub(crate) fn thread_from_stored_thread(
         section: thread.section.map(|section| ThreadSection {
             id: section.id,
             name: section.name,
+            appearance: section
+                .appearance
+                .map(|appearance| ThreadSectionAppearance {
+                    icon: appearance.icon,
+                    color: appearance.color,
+                }),
         }),
         section_entered_at: thread
             .section_entered_at
@@ -5392,7 +5400,7 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
     items
         .iter()
         .find_map(|item| match item {
-            RolloutItem::ResponseItem(item) => match codex_core::parse_turn_item(item) {
+            RolloutItem::ResponseItem(item) => match codex_core::parse_turn_item(&item.item) {
                 Some(codex_protocol::items::TurnItem::UserMessage(user)) => Some(user.message()),
                 _ => None,
             },
