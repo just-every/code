@@ -385,7 +385,11 @@ def codex_rust_crate(
             deps = all_crate_deps() + maybe_deps + deps_extra,
             edition = crate_edition,
             rustc_flags = rustc_flags_extra + WINDOWS_RUSTC_LINK_FLAGS,
+            # rules_rust substitutes workspace status values only for stamped
+            # actions, so pass the existing key through to final binaries.
+            rustc_env = {"STABLE_GIT_COMMIT": "{STABLE_GIT_COMMIT}"},
             srcs = native.glob(["src/**/*.rs"]),
+            stamp = 1,
             visibility = ["//visibility:public"],
         )
 
