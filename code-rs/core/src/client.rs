@@ -224,6 +224,18 @@ fn should_store_responses(
     !request_family.use_responses_lite && prompt.store
 }
 
+fn response_include_for_request(
+    store: bool,
+    use_responses_lite: bool,
+    has_reasoning: bool,
+) -> Vec<String> {
+    if (!store || use_responses_lite) && has_reasoning {
+        vec!["reasoning.encrypted_content".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 fn is_server_overloaded_error(error: &Error) -> bool {
     matches!(
         error.code.as_deref(),
@@ -839,16 +851,11 @@ impl ModelClient {
             attempt += 1;
 
             let reasoning = self.current_reasoning_param(&request_family, effective_effort);
-            let mut include: Vec<String> = if (!store || request_family.use_responses_lite)
-                && reasoning.is_some()
-            {
-                vec!["reasoning.encrypted_content".to_string()]
-            } else {
-                Vec::new()
-            };
-            if request_family.use_responses_lite {
-                include.push("codex-lite".to_string());
-            }
+            let include = response_include_for_request(
+                store,
+                request_family.use_responses_lite,
+                reasoning.is_some(),
+            );
 
             let service_tier = self
                 .config
@@ -1346,16 +1353,11 @@ impl ModelClient {
             let reasoning = self.current_reasoning_param(&request_family, effective_effort);
             // Request encrypted COT if we are not storing responses,
             // otherwise reasoning items will be referenced by ID
-            let mut include: Vec<String> = if (!store || request_family.use_responses_lite)
-                && reasoning.is_some()
-            {
-                vec!["reasoning.encrypted_content".to_string()]
-            } else {
-                Vec::new()
-            };
-            if request_family.use_responses_lite {
-                include.push("codex-lite".to_string());
-            }
+            let include = response_include_for_request(
+                store,
+                request_family.use_responses_lite,
+                reasoning.is_some(),
+            );
 
             let text = text_template.clone();
 
@@ -3313,6 +3315,14 @@ mod tests {
 
         prompt.store = true;
         assert!(!should_store_responses(&prompt, &provider, &family));
+    }
+
+    #[test]
+    fn responses_lite_include_uses_public_response_fields_only() {
+        let include = response_include_for_request(false, true, true);
+
+        assert_eq!(include, vec!["reasoning.encrypted_content".to_string()]);
+        assert!(!include.iter().any(|field| field == "codex-lite"));
     }
 
     #[test]
