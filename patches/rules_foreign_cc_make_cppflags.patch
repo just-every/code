@@ -1,0 +1,15 @@
+diff --git a/foreign_cc/built_tools/make_build.bzl b/foreign_cc/built_tools/make_build.bzl
+--- a/foreign_cc/built_tools/make_build.bzl
++++ b/foreign_cc/built_tools/make_build.bzl
+@@ -114,6 +114,11 @@
+             "ARFLAGS": _join_flags_list(ctx.workspace_name, arflags),
+             "CC": absolute_cc,
+             "CFLAGS": _join_flags_list(ctx.workspace_name, non_sysroot_cflags),
++            # Configure's preprocessor checks need the declared header paths too.
++            "CPPFLAGS": " ".join([
++                "$${CPPFLAGS:-}$$",
++                _join_flags_list(ctx.workspace_name, non_sysroot_cflags),
++            ]).strip(),
+             "LD": absolute_ld,
+             "LDFLAGS": _join_flags_list(ctx.workspace_name, non_sysroot_ldflags),
+         })

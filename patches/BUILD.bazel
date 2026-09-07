@@ -13,6 +13,8 @@ exports_files([
     "rules_rs_windows_exec_linker.patch",
     "rusty_v8_prebuilt_out_dir.patch",
     "ring_windows_msvc_include_dirs.patch",
+    "tikv-jemalloc-sys_make_env.patch",
+    "tikv-jemalloc-sys_dependency_flags.patch",
     "v8_bazel_rules.patch",
     "v8_module_deps.patch",
     "v8_source_portability.patch",

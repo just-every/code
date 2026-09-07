@@ -1,0 +1,10 @@
+diff --git a/toolchains/private/BUILD.bazel b/toolchains/private/BUILD.bazel
+--- a/toolchains/private/BUILD.bazel
++++ b/toolchains/private/BUILD.bazel
+@@ -23,5 +23,6 @@
+ make_tool(
+     name = "make_tool",
+     srcs = "@gnumake_src//:all_srcs",
++    configure_xcompile = True,
+     tags = ["manual"],
+ )

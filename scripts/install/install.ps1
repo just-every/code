@@ -820,6 +820,7 @@ $codexHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
 $standaloneRoot = Join-Path $codexHome "packages\standalone"
 $releasesDir = Join-Path $standaloneRoot "releases"
 $currentDir = Join-Path $standaloneRoot "current"
+$autoUpdateVersion = Join-Path $standaloneRoot "auto-update-version"
 $lockPath = Join-Path $standaloneRoot "install.lock"
 
 $defaultVisibleBinDir = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
@@ -852,9 +853,55 @@ $oldStandaloneBackup = $null
 $packageAsset = "codex-npm-$npmTag-$resolvedVersion.tgz"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+$guardRejected = $false
 
 try {
     Invoke-WithInstallLock -LockPath $lockPath -Script {
+        $updaterRecord = Join-Path $codexHome "app-server-daemon\app-server-updater.pid"
+        $oldUpdaterParent = $false
+        if ($Release -eq "latest" -and $env:CODEX_INSTALL_IF_LATEST -ne "1" -and (Test-Path -LiteralPath $updaterRecord)) {
+            $updaterPid = $null
+            $updaterStartTime = $null
+            try {
+                $record = Get-Content -LiteralPath $updaterRecord -Raw | ConvertFrom-Json
+                $updaterPid = [long]$record.pid
+                $updaterStartTime = [string]$record.processStartTime
+            } catch {
+                # Empty or stale PID reservations must not block a manual install.
+            }
+            if ($null -ne $updaterPid -and $updaterPid -gt 0 -and -not [string]::IsNullOrEmpty($updaterStartTime)) {
+                $updaterProcess = Get-Process -Id $updaterPid -ErrorAction SilentlyContinue
+                if ($null -ne $updaterProcess -and $updaterStartTime -eq [string]$updaterProcess.StartTime.ToFileTimeUtc()) {
+                    try {
+                        $parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop).ParentProcessId
+                        if ([long]$parentPid -le 0) { throw "Missing updater parent process." }
+                    } catch {
+                        try {
+                            $parentPid = (Get-WmiObject Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop).ParentProcessId
+                            if ([long]$parentPid -le 0) { throw "Missing updater parent process." }
+                        } catch {
+                            throw "Cannot verify whether the standalone installer was launched by an older updater."
+                        }
+                    }
+                    $oldUpdaterParent = $updaterPid -eq $parentPid
+                }
+            }
+        }
+        if ($env:CODEX_INSTALL_IF_LATEST -eq "1" -or $oldUpdaterParent) {
+            $previousRelease = if ($oldUpdaterParent -and (Test-Path -LiteralPath $autoUpdateVersion)) {
+                [System.IO.File]::ReadAllText($autoUpdateVersion)
+            } else {
+                $env:CODEX_UPDATE_FROM_RELEASE
+            }
+            $currentTarget = if (Test-Path -LiteralPath $currentDir) { (Get-Item -LiteralPath $currentDir).Target } else { $null }
+            if ($Release -ne "latest" -or [string]::IsNullOrEmpty($previousRelease) -or [string]::IsNullOrEmpty($currentTarget) -or
+                -not (Test-Path -LiteralPath $autoUpdateVersion) -or
+                [System.IO.File]::ReadAllText($autoUpdateVersion) -cne $previousRelease -or
+                [System.IO.Path]::GetFullPath($currentTarget) -ne [System.IO.Path]::GetFullPath((Join-Path $releasesDir $previousRelease))) {
+                $script:guardRejected = $true
+                return
+            }
+        }
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
         if (-not (Test-ReleaseIsComplete -ReleaseDir $releaseDir -ExpectedVersion $resolvedVersion -ExpectedTarget $target)) {
@@ -905,6 +952,15 @@ try {
 
         New-Item -ItemType Directory -Force -Path $standaloneRoot | Out-Null
         Ensure-Junction -LinkPath $currentDir -TargetPath $releaseDir -InstallerOwnedTargetPrefix $releasesDir
+        if ($Release -eq "latest") {
+            $tempMarker = "$autoUpdateVersion.tmp.$PID"
+            [System.IO.File]::WriteAllText($tempMarker, $releaseName)
+            Move-Item -LiteralPath $tempMarker -Destination $autoUpdateVersion -Force
+        } else {
+            if (Test-Path -LiteralPath $autoUpdateVersion) {
+                Remove-Item -LiteralPath $autoUpdateVersion -Force -ErrorAction Stop
+            }
+        }
 
         $visibleParent = Split-Path -Parent $visibleBinDir
         New-Item -ItemType Directory -Force -Path $visibleParent | Out-Null
@@ -928,6 +984,7 @@ try {
 } finally {
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 }
+if ($guardRejected) { return }
 
 Maybe-HandleConflictingInstall -Conflict $conflictingInstall
 

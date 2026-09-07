@@ -19,6 +19,7 @@ CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
 RELEASES_DIR="$STANDALONE_ROOT/releases"
 CURRENT_LINK="$STANDALONE_ROOT/current"
+AUTO_UPDATE_VERSION="$STANDALONE_ROOT/auto-update-version"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
 LOCK_STALE_AFTER_SECS=600
@@ -922,9 +923,50 @@ cleanup() {
     rm -rf "$tmp_dir"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 acquire_install_lock
+updater_record="$CODEX_HOME_DIR/app-server-daemon/app-server-updater.pid"
+old_updater_parent="false"
+if [ "${CODEX_INSTALL_IF_LATEST:-}" != "1" ] && [ -f "$updater_record" ]; then
+  updater_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$updater_record" | head -n 1)"
+  recorded_start="$(sed -n 's/.*"processStartTime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$updater_record" | head -n 1)"
+  if [ -r "/proc/$$/stat" ]; then
+    parent_pid="$(sed 's/^.*) //' "/proc/$$/stat" | awk '{ print $2 }')"
+  else
+    parent_pid="$(ps -p "$$" -o ppid= 2>/dev/null)" || parent_pid=""
+    parent_pid="$(printf '%s' "$parent_pid" | tr -d ' ')"
+  fi
+  if [ -n "$updater_pid" ] && [ "$updater_pid" = "$parent_pid" ]; then
+    actual_details="$(ps -p "$updater_pid" -o stat= -o lstart= 2>/dev/null)" || actual_details=""
+    actual_start="$(printf '%s' "$actual_details" | sed 's/^[^[:space:]]*[[:space:]]*//; s/[[:space:]]*$//')"
+    if [ -n "$recorded_start" ] && [ "$recorded_start" = "$actual_start" ]; then
+      old_updater_parent="true"
+    fi
+  fi
+  if [ "$RELEASE" = "latest" ] && [ -n "$updater_pid" ] &&
+    { [ -z "$parent_pid" ] || { [ "$updater_pid" = "$parent_pid" ] &&
+      { [ -z "$recorded_start" ] || [ -z "$actual_start" ]; }; }; } &&
+    kill -0 "$updater_pid" 2>/dev/null; then
+    warn "Cannot verify whether an older updater launched this installer; skipping latest update."
+    exit 0
+  fi
+fi
+if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "$old_updater_parent" = "true" ]; then
+  guarded_release="${CODEX_UPDATE_FROM_RELEASE:-}"
+  if [ "$old_updater_parent" = "true" ]; then
+    guarded_release="$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)"
+  fi
+  current_release_dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd)" || exit 0
+  releases_dir="$(cd -P "$RELEASES_DIR" 2>/dev/null && pwd)" || exit 0
+  if [ "$RELEASE" != "latest" ] || [ -z "$guarded_release" ] ||
+    [ "$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)" != "$guarded_release" ] ||
+    [ "$current_release_dir" != "$releases_dir/$guarded_release" ]; then
+    exit 0
+  fi
+fi
 cleanup_stale_install_artifacts
 
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"; then

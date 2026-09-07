@@ -195,6 +195,7 @@ def codex_rust_crate(
         lib_data_extra = [],
         rustc_flags_extra = [],
         binary_rustc_flags_extra = {},
+        binaries_with_build_commit = [],
         rustc_env = {},
         rustc_env_files = [],
         deps_extra = [],
@@ -239,6 +240,9 @@ def codex_rust_crate(
         lib_data_extra: Extra runtime data for the library target.
         binary_rustc_flags_extra: Mapping from binary names to extra rustc
             flags for those binary targets.
+        binaries_with_build_commit: Binary names that embed STABLE_GIT_COMMIT from the
+            generated build-commit environment file. Other workspace status is
+            excluded from their compilation inputs.
         rustc_env: Extra rustc_env entries to merge with defaults.
         rustc_env_files: Generated compiler environment files for the library target.
         deps_extra: Extra normal deps beyond @crates resolution.
@@ -403,11 +407,16 @@ def codex_rust_crate(
             # generated rust_binary instead of leaking it to sibling binaries.
             compile_data = binary_compile_data_extra.get(binary, []),
             rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + WINDOWS_RUSTC_LINK_FLAGS,
-            # rules_rust substitutes workspace status values only for stamped
-            # actions, so pass the existing key through to final binaries.
-            rustc_env = {"STABLE_GIT_COMMIT": "{STABLE_GIT_COMMIT}"},
+            # Keep stamp = 0: rules_rust otherwise makes stable-status.txt and
+            # volatile-status.txt compiler inputs, even though we only consume
+            # STABLE_GIT_COMMIT. BUILD_USER and BUILD_HOST vary across developers
+            # and CI workers, while BUILD_TIMESTAMP varies across builds; these
+            # unrelated values prevent remote cache reuse for the same commit.
+            # Isolate status inputs in build-commit-env's cheap action so its
+            # output, and hence this compiler input, changes only with the commit.
+            rustc_env_files = ["//bazel/build-info:build-commit-env"] if binary in binaries_with_build_commit else [],
             srcs = native.glob(["src/**/*.rs"]),
-            stamp = 1,
+            stamp = 0,
             visibility = ["//visibility:public"],
         )
 

@@ -1,0 +1,12 @@
+load("@bazel_lib//lib:expand_template.bzl", "expand_template")
+
+# Isolate workspace status in a cheap action whose output changes only when
+# the embedded commit changes. Rust compiler actions consume only this file.
+expand_template(
+    name = "build-commit-env",
+    out = "build-commit.env",
+    stamp = 1,
+    stamp_substitutions = {"{BUILD_COMMIT}": "{{STABLE_GIT_COMMIT}}"},
+    template = ["STABLE_GIT_COMMIT={BUILD_COMMIT}"],
+    visibility = ["//codex-rs:__subpackages__"],
+)
