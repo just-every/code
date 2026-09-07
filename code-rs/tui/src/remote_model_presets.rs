@@ -189,7 +189,10 @@ fn map_reasoning_effort(effort: RemoteReasoningEffort) -> ProtocolReasoningEffor
         RemoteReasoningEffort::Low => ProtocolReasoningEffort::Low,
         RemoteReasoningEffort::Medium => ProtocolReasoningEffort::Medium,
         RemoteReasoningEffort::High => ProtocolReasoningEffort::High,
-        RemoteReasoningEffort::XHigh | RemoteReasoningEffort::Max => {
+        RemoteReasoningEffort::XHigh
+        | RemoteReasoningEffort::Max
+        | RemoteReasoningEffort::Ultra
+        | RemoteReasoningEffort::Persistent => {
             ProtocolReasoningEffort::XHigh
         }
         RemoteReasoningEffort::Custom(_) => ProtocolReasoningEffort::Medium,

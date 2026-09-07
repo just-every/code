@@ -487,10 +487,12 @@ mod tests {
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            supports_experimental_context: false,
             use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
             multi_agent_version: None,
+            multi_agent_reasoning_effort: None,
             used_fallback_model_metadata: false,
         }
     }
@@ -580,7 +582,10 @@ fn map_reasoning_effort(effort: &ProtocolReasoningEffort) -> crate::config_types
         ProtocolReasoningEffort::Low => LocalEffort::Low,
         ProtocolReasoningEffort::Medium => LocalEffort::Medium,
         ProtocolReasoningEffort::High => LocalEffort::High,
-        ProtocolReasoningEffort::XHigh | ProtocolReasoningEffort::Max => LocalEffort::XHigh,
+        ProtocolReasoningEffort::XHigh
+        | ProtocolReasoningEffort::Max
+        | ProtocolReasoningEffort::Ultra
+        | ProtocolReasoningEffort::Persistent => LocalEffort::XHigh,
         ProtocolReasoningEffort::Custom(_) => LocalEffort::Medium,
     }
 }

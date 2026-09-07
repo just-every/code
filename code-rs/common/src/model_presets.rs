@@ -621,6 +621,8 @@ fn reasoning_effort_rank(effort: &ReasoningEffort) -> u8 {
         ReasoningEffort::High => 3,
         ReasoningEffort::XHigh => 4,
         ReasoningEffort::Max => 4,
+        ReasoningEffort::Ultra => 4,
+        ReasoningEffort::Persistent => 4,
         ReasoningEffort::Custom(_) => 2,
     }
 }

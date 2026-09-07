@@ -254,7 +254,9 @@ fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
             code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
             code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
             code_protocol::openai_models::ReasoningEffort::XHigh
-            | code_protocol::openai_models::ReasoningEffort::Max => ReasoningEffort::XHigh,
+            | code_protocol::openai_models::ReasoningEffort::Max
+            | code_protocol::openai_models::ReasoningEffort::Ultra
+            | code_protocol::openai_models::ReasoningEffort::Persistent => ReasoningEffort::XHigh,
             code_protocol::openai_models::ReasoningEffort::Custom(_) => ReasoningEffort::Medium,
         });
     family.default_reasoning_summary = model_info.default_reasoning_summary.into();

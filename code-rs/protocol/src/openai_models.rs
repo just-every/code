@@ -48,6 +48,8 @@ pub enum ReasoningEffort {
     High,
     XHigh,
     Max,
+    Ultra,
+    Persistent,
     /// A model-defined effort value that this client does not know yet.
     Custom(String),
 }
@@ -63,6 +65,8 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
+            Self::Persistent => "persistent",
             Self::Custom(effort) => effort,
         }
     }
@@ -128,6 +132,8 @@ impl FromStr for ReasoningEffort {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
+            "persistent" => Ok(Self::Persistent),
             "" => Err("reasoning_effort must not be empty".to_string()),
             effort => Ok(Self::Custom(effort.to_string())),
         }
@@ -445,6 +451,9 @@ pub struct ModelInfo {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_search_tool: bool,
+    /// Whether experimental context management may be activated at session startup.
+    #[serde(default)]
+    pub supports_experimental_context: bool,
     #[serde(default)]
     pub use_responses_lite: bool,
     #[serde(
@@ -462,6 +471,8 @@ pub struct ModelInfo {
         deserialize_with = "deserialize_optional_model_selector"
     )]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_agent_reasoning_effort: Option<ReasoningEffort>,
     /// Internal-only marker set by core when a model slug resolved to fallback metadata.
     #[serde(default, skip_serializing, skip_deserializing)]
     #[schemars(skip)]
@@ -720,6 +731,8 @@ fn canonical_reasoning_efforts() -> impl Iterator<Item = ReasoningEffort> {
         ReasoningEffort::High,
         ReasoningEffort::XHigh,
         ReasoningEffort::Max,
+        ReasoningEffort::Ultra,
+        ReasoningEffort::Persistent,
     ]
     .into_iter()
 }
@@ -733,7 +746,44 @@ fn effort_rank(effort: &ReasoningEffort) -> i32 {
         ReasoningEffort::High => 4,
         ReasoningEffort::XHigh => 5,
         ReasoningEffort::Max => 5,
+        ReasoningEffort::Ultra => 6,
+        ReasoningEffort::Persistent => 6,
         ReasoningEffort::Custom(_) => 3,
+    }
+}
+
+impl ModelInfo {
+    /// Resolves a selected effort to the value sent in an ordinary inference request.
+    pub fn resolve_reasoning_effort(&self, effort: ReasoningEffort) -> ReasoningEffort {
+        match effort {
+            ReasoningEffort::Ultra => self
+                .multi_agent_reasoning_effort
+                .as_ref()
+                .filter(|effort| {
+                    *effort != &ReasoningEffort::Ultra
+                        && self
+                            .supported_reasoning_levels
+                            .iter()
+                            .any(|preset| &preset.effort == *effort)
+                })
+                .cloned()
+                .or_else(|| {
+                    self.supported_reasoning_levels
+                        .iter()
+                        .find(|preset| preset.effort == ReasoningEffort::Max)
+                        .or_else(|| {
+                            self.supported_reasoning_levels
+                                .iter()
+                                .rev()
+                                .find(|preset| preset.effort != ReasoningEffort::Ultra)
+                        })
+                        .map(|preset| preset.effort.clone())
+                })
+                .unwrap_or(ReasoningEffort::Medium),
+            // Keep "persistent" in local settings; the Responses API calls it "disabled".
+            ReasoningEffort::Persistent => ReasoningEffort::Custom("disabled".to_string()),
+            effort => effort,
+        }
     }
 }
 
@@ -789,10 +839,12 @@ mod tests {
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            supports_experimental_context: false,
             use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
             multi_agent_version: None,
+            multi_agent_reasoning_effort: None,
             used_fallback_model_metadata: false,
         }
     }
@@ -1043,10 +1095,12 @@ mod tests {
         assert!(!model.include_skills_usage_instructions);
         assert!(!model.supports_image_detail_original);
         assert!(!model.supports_search_tool);
+        assert!(!model.supports_experimental_context);
         assert!(!model.use_responses_lite);
         assert_eq!(model.model_specialty, None);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert_eq!(model.tool_mode, None);
+        assert_eq!(model.multi_agent_reasoning_effort, None);
     }
 
     #[test]
@@ -1205,9 +1259,54 @@ mod tests {
         assert_eq!("high".parse(), Ok(ReasoningEffort::High));
         assert_eq!("minimal".parse(), Ok(ReasoningEffort::Minimal));
         assert_eq!("max".parse(), Ok(ReasoningEffort::Max));
+        assert_eq!("ultra".parse(), Ok(ReasoningEffort::Ultra));
+        assert_eq!("persistent".parse(), Ok(ReasoningEffort::Persistent));
         assert_eq!(
             serde_json::to_string(&ReasoningEffort::Max).unwrap(),
             "\"max\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Ultra).unwrap(),
+            "\"ultra\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Persistent).unwrap(),
+            "\"persistent\""
+        );
+    }
+
+    #[test]
+    fn resolve_reasoning_effort_normalizes_model_owned_values() {
+        let model = ModelInfo {
+            supported_reasoning_levels: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "High".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Max,
+                    description: "Max".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Ultra,
+                    description: "Ultra".to_string(),
+                },
+            ],
+            multi_agent_reasoning_effort: Some(ReasoningEffort::High),
+            ..test_model(None)
+        };
+
+        assert_eq!(
+            model.resolve_reasoning_effort(ReasoningEffort::Ultra),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            model.resolve_reasoning_effort(ReasoningEffort::Persistent),
+            ReasoningEffort::Custom("disabled".to_string())
+        );
+        assert_eq!(
+            model.resolve_reasoning_effort(ReasoningEffort::Custom("future".to_string())),
+            ReasoningEffort::Custom("future".to_string())
         );
     }
 
