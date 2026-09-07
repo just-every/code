@@ -1,16 +1,9 @@
 use std::sync::Arc;
 
-use codex_protocol::protocol::ReviewDecision;
-
-use crate::ApprovalAssessment;
 use crate::ApprovalReviewContributor;
-use crate::ApprovalReviewError;
-use crate::ApprovalReviewInput;
 use crate::ConfigContributor;
 use crate::ContextContributor;
-use crate::ExtensionData;
 use crate::ExtensionEventSink;
-use crate::ExtensionMetrics;
 use crate::McpServerContributor;
 use crate::NoopExtensionEventSink;
 use crate::SkillInvocationContributor;
@@ -200,45 +193,6 @@ impl<C: Sync> ExtensionRegistry<C> {
                 .skill_invocation_contributors
                 .iter()
                 .any(|contributor| contributor.requires_host_skill_discovery())
-    }
-
-    /// Returns the first full approval assessment claimed by a contributor.
-    pub async fn full_approval_review(
-        &self,
-        input: ApprovalReviewInput<'_>,
-    ) -> Option<Result<ApprovalAssessment, ApprovalReviewError>> {
-        for contributor in &self.approval_review_contributors {
-            if let Some(assessment) = contributor.full_review(&input).await {
-                return Some(assessment);
-            }
-        }
-
-        None
-    }
-
-    /// Returns the first fast approval decision claimed by a contributor.
-    pub async fn fast_approval_decision(
-        &self,
-        session_store: &ExtensionData,
-        thread_store: &ExtensionData,
-        prompt: &str,
-        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
-    ) -> Option<ReviewDecision> {
-        for contributor in &self.approval_review_contributors {
-            if let Some(decision) = contributor
-                .fast_decision(
-                    session_store,
-                    thread_store,
-                    prompt,
-                    extension_metrics.clone(),
-                )
-                .await
-            {
-                return Some(decision);
-            }
-        }
-
-        None
     }
 
     /// Returns the first claimed decision in registration order.

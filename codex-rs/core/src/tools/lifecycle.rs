@@ -29,6 +29,7 @@ pub(crate) async fn notify_tool_start(
     let thread_store = &invocation.session.services.thread_extension_data;
     let conversation_history = invocation.session.conversation_history_snapshot().await;
     let root_turn_id = invocation.turn.turn_metadata_state.root_turn_id();
+    let originating_item_id = invocation.originating_item_id().await;
 
     for contributor in contributors {
         contributor
@@ -39,6 +40,7 @@ pub(crate) async fn notify_tool_start(
                 turn_id: invocation.turn.sub_id.as_str(),
                 root_turn_id: root_turn_id.as_deref(),
                 call_id: invocation.call_id.as_str(),
+                originating_item_id: originating_item_id.as_ref(),
                 tool_name: &invocation.tool_name,
                 mcp_tool,
                 payload: &invocation.payload,

@@ -127,6 +127,9 @@ pub struct ToolStartInput<'a> {
     pub root_turn_id: Option<&'a str>,
     /// Model-visible tool call id.
     pub call_id: &'a str,
+    /// Responses item that issued this call or started its code-mode cell.
+    /// Hosts preserve the original wrapper identity across yields and waits.
+    pub originating_item_id: Option<&'a codex_protocol::ResponseItemId>,
     /// Tool name as routed by the host.
     pub tool_name: &'a ToolName,
     /// Read-only metadata and provenance from the exact MCP call that will execute.

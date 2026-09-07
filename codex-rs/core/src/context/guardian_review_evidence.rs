@@ -10,8 +10,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 
 use codex_extension_api::ConversationHistorySnapshot;
-use codex_features::Feature;
-use codex_features::Features;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::GuardianAssessmentEvent;
@@ -20,6 +18,7 @@ use codex_protocol::request_user_input::RequestUserInputResponse;
 use serde_json::json;
 
 use super::ContextualUserFragment;
+use super::GuardianContextMode;
 use crate::codex_thread::GuardianAuthorizationVersion;
 use crate::codex_thread::GuardianRootMessage;
 use crate::guardian::guardian_truncate_text;
@@ -29,13 +28,6 @@ const MAX_TRUSTED_SKILLS: usize = 16;
 const MAX_TRUSTED_SKILL_PATHS_BYTES: usize = 2_048;
 const MAX_GUARDIAN_USER_INPUT_ANSWERS: usize = 8;
 const MAX_GUARDIAN_USER_INPUT_TOKENS: usize = 900;
-
-#[derive(Debug, Default)]
-enum GuardianContextMode {
-    #[default]
-    Legacy,
-    ThreadOwned,
-}
 
 /// Selected answer fragments and the authorization state they describe.
 pub struct GuardianUserInputSnapshot {
@@ -65,17 +57,13 @@ struct GuardianReviewEvidenceState {
 
 impl GuardianReviewEvidence {
     /// Reports the fixed thread mode used for both capture and reviewer policy.
-    pub fn uses_thread_owned_context(&self) -> bool {
-        matches!(self.mode, GuardianContextMode::ThreadOwned)
+    pub fn context_mode(&self) -> GuardianContextMode {
+        self.mode
     }
 
-    pub(crate) fn from_features(features: &Features) -> Self {
+    pub(crate) fn new(mode: GuardianContextMode) -> Self {
         Self {
-            mode: if features.enabled(Feature::GuardianThreadContext) {
-                GuardianContextMode::ThreadOwned
-            } else {
-                GuardianContextMode::Legacy
-            },
+            mode,
             state: Mutex::default(),
         }
     }

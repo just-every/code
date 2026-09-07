@@ -179,6 +179,10 @@ impl ExecCell {
         self.animations_enabled
     }
 
+    pub(crate) fn freeze_snapshot(&mut self) {
+        self.animations_enabled = false;
+    }
+
     pub(crate) fn iter_calls(&self) -> impl Iterator<Item = &ExecCall> {
         self.calls.iter()
     }

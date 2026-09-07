@@ -52,6 +52,7 @@ impl StreamingSseServer {
 
 /// Starts a lightweight HTTP server that supports:
 /// - GET /v1/models -> empty models response
+/// - GET /v1/responses -> 426 to select the HTTP fallback
 /// - POST /v1/responses -> SSE stream gated per-chunk, served in order
 ///
 /// Returns the server handle and a list of receivers that fire when each
@@ -113,6 +114,11 @@ pub async fn start_streaming_sse_server(
                             })
                             .to_string();
                             let _ = write_http_response(&mut stream, /*status*/ 200, &body, "application/json").await;
+                            return;
+                        }
+
+                        if method == "GET" && path == "/v1/responses" {
+                            let _ = write_http_response(&mut stream, /*status*/ 426, "websockets unsupported", "text/plain").await;
                             return;
                         }
 

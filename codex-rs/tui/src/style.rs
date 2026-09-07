@@ -61,6 +61,22 @@ pub(crate) fn accent_style() -> Style {
     accent_style_for(default_bg())
 }
 
+pub(crate) fn footer_hint_key_style() -> Style {
+    if default_bg().is_some_and(is_light) {
+        Style::default().fg(Color::Black)
+    } else {
+        Style::default()
+    }
+}
+
+pub(crate) fn footer_hint_label_style() -> Style {
+    if default_bg().is_some_and(is_light) {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().dim()
+    }
+}
+
 /// Returns the style for a user-authored message using the provided terminal background.
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {

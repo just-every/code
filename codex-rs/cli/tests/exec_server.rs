@@ -244,11 +244,14 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
         .await
         .context("remote harness did not connect")???;
 
+    let environment_info = client.environment_info().await?;
     let expected_info = EnvironmentInfo {
         executor_version: "1.2.3-alpha.4".to_string(),
+        // The build identity belongs to the spawned CLI, not this test process.
+        provider_id: environment_info.provider_id.clone(),
         ..EnvironmentInfo::local()
     };
-    assert_eq!(client.environment_info().await?, expected_info);
+    assert_eq!(environment_info, expected_info);
     std::fs::remove_file(&manifest)?;
     assert_eq!(client.force_environment_info().await?, expected_info);
 

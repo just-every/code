@@ -117,9 +117,7 @@ async fn request_user_input_sets_non_blocking_outside_plan_mode(
         session
             .services
             .thread_extension_data
-            .insert(GuardianReviewEvidence::from_features(
-                session.features().get(),
-            ));
+            .insert(GuardianReviewEvidence::new(session.guardian_context_mode));
         let original_history = session.conversation_history_snapshot().await;
         *session.active_turn.lock().await = Some(ActiveTurn::default());
 

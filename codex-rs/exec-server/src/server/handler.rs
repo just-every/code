@@ -67,6 +67,7 @@ use crate::rpc::RpcNotificationSender;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 use crate::rpc::invalid_request;
+use crate::server::build_identity::local_environment_info;
 use crate::server::file_system_handler::FileSystemHandler;
 use crate::server::session_registry::SessionHandle;
 use crate::server::session_registry::SessionRegistry;
@@ -162,7 +163,7 @@ impl ExecServerHandler {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
         Ok(InitializeResponse {
             session_id,
-            environment_info: Some(super::release_version::local_environment_info()),
+            environment_info: Some(local_environment_info()),
         })
     }
 
@@ -197,7 +198,7 @@ impl ExecServerHandler {
 
     pub(crate) fn environment_info(&self) -> Result<EnvironmentInfo, JSONRPCErrorError> {
         self.require_initialized_for("environment info")?;
-        Ok(super::release_version::local_environment_info())
+        Ok(local_environment_info())
     }
 
     pub(crate) async fn environment_config_read(

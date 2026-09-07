@@ -1,5 +1,4 @@
-//! Signal-driven shutdown tests; Windows uses the detached daemon control request
-//! for SIGTERM-equivalent graceful and forced shutdown coverage.
+//! Signal-driven shutdown tests for Unix websocket servers.
 
 use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
 use super::connection_handling_websocket::WsClient;
@@ -89,6 +88,7 @@ async fn websocket_transport_second_ctrl_c_forces_exit_while_turn_running() -> R
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn websocket_transport_sigterm_waits_for_running_turn_before_exit() -> Result<()> {
     let GracefulCtrlCFixture {
@@ -114,6 +114,7 @@ async fn websocket_transport_sigterm_waits_for_running_turn_before_exit() -> Res
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn websocket_transport_second_sigterm_forces_exit_while_turn_running() -> Result<()> {
     let GracefulCtrlCFixture {
@@ -336,13 +337,4 @@ async fn expect_websocket_disconnect(stream: &mut WsClient) -> Result<()> {
             Some(Err(_)) => return Ok(()),
         }
     }
-}
-
-#[cfg(windows)]
-fn send_sigterm(process: &Child, home: &std::path::Path) -> Result<()> {
-    std::fs::write(
-        home.join("daemon.shutdown"),
-        process.id().context("server pid")?.to_string(),
-    )?;
-    Ok(())
 }

@@ -43,6 +43,7 @@ pub use remote_control::start_remote_control;
 pub use remote_control::take_remote_control_disabled_env;
 pub use stdio::start_stdio_connection;
 pub use unix_socket::AppServerStartupLock;
+pub use unix_socket::DaemonShutdownAccess;
 pub use unix_socket::acquire_app_server_startup_lock;
 pub use unix_socket::prepare_control_socket_path;
 pub use unix_socket::start_control_socket_acceptor;
@@ -170,6 +171,8 @@ impl FromStr for AppServerTransport {
 
 #[derive(Debug)]
 pub enum TransportEvent {
+    /// Accepted on the managed local control socket, outside JSON-RPC.
+    DaemonShutdown,
     ConnectionOpened {
         connection_id: ConnectionId,
         origin: ConnectionOrigin,

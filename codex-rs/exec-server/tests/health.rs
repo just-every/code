@@ -38,7 +38,9 @@ async fn remote_environment_fetches_info_from_exec_server() -> anyhow::Result<()
     assert!(environment.is_remote());
 
     let remote_info = environment.info().await?;
-    let local_info = Environment::default_for_tests().info().await?;
+    let mut local_info = Environment::default_for_tests().info().await?;
+    // Only the remote executor advertises its optional build identity.
+    local_info.provider_id = remote_info.provider_id.clone();
     assert_eq!(remote_info, local_info);
 
     server.shutdown().await?;

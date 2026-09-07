@@ -19,7 +19,7 @@ mod config_requirements_browser_use;
 mod config_requirements_in_app_browser;
 mod config_rpc;
 mod connection_handling_websocket;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 mod connection_handling_websocket_unix;
 #[cfg(unix)]
 mod curated_mcp_sync;
@@ -102,6 +102,8 @@ mod thread_archive;
 mod thread_delete;
 mod thread_environments;
 mod thread_fork;
+#[path = "thread_fork_multi_agent_tests.rs"]
+mod thread_fork_multi_agent;
 mod thread_inject_items;
 mod thread_list;
 mod thread_loaded_list;
@@ -130,3 +132,6 @@ mod turn_steer;
 mod view_image;
 mod web_search;
 mod windows_sandbox_setup;
+
+mod user_verification;
+mod user_verification_mcp;

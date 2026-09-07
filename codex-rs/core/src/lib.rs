@@ -68,6 +68,7 @@ mod exec_policy;
 #[cfg(test)]
 mod git_info_tests;
 mod guardian;
+pub mod guardian_review;
 mod hook_mcp_executor;
 mod hook_runtime;
 mod image_preparation;
@@ -212,3 +213,6 @@ pub use installation_id::resolve_installation_id;
 pub mod compact;
 mod memory_usage;
 pub mod otel_init;
+
+// Captured environment bindings can be passed back to ThreadManager by internal reviewers.
+pub use environment_selection::TurnEnvironmentSnapshot;

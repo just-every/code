@@ -66,6 +66,50 @@ fn configured_thread_session(thread_id: ThreadId) -> crate::session_state::Threa
     }
 }
 
+#[tokio::test]
+async fn session_and_settings_sync_server_provider_id() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.config.model_provider.base_url = Some("https://local-provider.example/v1".to_string());
+    let status = |chat: &mut ChatWidget| {
+        chat.add_status_output(
+            /*refreshing_rate_limits*/ false, /*request_id*/ None,
+        );
+        chat.transcript
+            .last_status_copy_targets
+            .as_ref()
+            .expect("status")
+            .handle
+            .copy_text()
+    };
+    assert!(!status(&mut chat).contains("Model provider:"));
+
+    let first_id = ThreadId::new();
+    let mut first = configured_thread_session(first_id);
+    first.model_provider_id = "server-ollama".to_string();
+    chat.handle_thread_session(first.clone());
+    let displayed = status(&mut chat);
+    assert!(displayed.contains("Model provider:") && displayed.contains("server-ollama"));
+    assert!(!displayed.contains("local-provider.example"));
+
+    let mut other = configured_thread_session(ThreadId::new());
+    other.model_provider_id = "server-bedrock".to_string();
+    chat.handle_thread_session_quiet(other);
+    let displayed = status(&mut chat);
+    assert!(displayed.contains("server-bedrock"));
+    assert!(!displayed.contains("server-ollama"));
+
+    chat.handle_thread_session_quiet(first);
+    assert_eq!(chat.config.model_provider_id, "server-ollama");
+
+    let mut updated = thread_settings_for_test("gpt-5.4", first_id);
+    updated.thread_settings.model_provider = "server-updated".to_string();
+    chat.handle_server_notification(
+        ServerNotification::ThreadSettingsUpdated(updated),
+        /*replay_kind*/ None,
+    );
+    assert!(status(&mut chat).contains("server-updated"));
+}
+
 fn start_safety_buffering_test_turn(
     chat: &mut ChatWidget,
     op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>,
@@ -780,7 +824,11 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
         /*replay_kind*/ None,
     );
 
-    assert!(drain_insert_history(&mut rx).is_empty());
+    let completion_cells = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| normalize_completion_timestamps(lines_to_single_string(lines).trim()))
+        .collect::<Vec<_>>();
+    assert_eq!(completion_cells, vec!["done [completion time]"]);
     assert!(!chat.bottom_pane.is_task_running());
     assert!(chat.bottom_pane.status_widget().is_none());
     assert_eq!(

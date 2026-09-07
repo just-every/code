@@ -49,6 +49,7 @@ SELECT
     threads.section_position,
     threads.section_entered_at_ms,
     threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url
@@ -646,8 +647,9 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode,
-    project_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    project_id,
+    daybreak_enabled
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -698,9 +700,24 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.git_origin_url.as_deref())
         .bind("enabled")
         .bind(metadata.project_id.as_deref())
+        .bind(metadata.daybreak_enabled)
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Set the user preference without changing rollout-derived thread metadata.
+    pub async fn set_thread_daybreak_enabled(
+        &self,
+        thread_id: ThreadId,
+        daybreak_enabled: bool,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET daybreak_enabled = ? WHERE id = ?")
+            .bind(daybreak_enabled)
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
             .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -886,6 +903,7 @@ WHERE id = ?
         // Backfill/reconcile callers merge existing git info before upserting, but that
         // read/modify/write is not atomic. Preserve non-null SQLite git fields here so
         // an explicit metadata update cannot be lost if a stale rollout upsert lands later.
+        // Daybreak and project choices are insert-only here; explicit changes use their setters.
         sqlx::query(
             r#"
 INSERT INTO threads (
@@ -925,8 +943,9 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode,
-    project_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    project_id,
+    daybreak_enabled
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -1011,6 +1030,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.git_origin_url.as_deref())
         .bind(creation_memory_mode.unwrap_or("enabled"))
         .bind(metadata.project_id.as_deref())
+        .bind(metadata.daybreak_enabled)
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
@@ -1312,6 +1332,7 @@ SELECT
     threads.section_position,
     threads.section_entered_at_ms,
     threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url

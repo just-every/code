@@ -875,6 +875,7 @@ async fn metadata_and_mcp_requests_complete_while_unrelated_resume_loads_config(
                     params: ThreadMetadataUpdateParams {
                         thread_id: thread.id.clone(),
                         project_id: None,
+                        daybreak_enabled: None,
                         git_info: Some(ThreadMetadataGitInfoUpdateParams {
                             sha: None,
                             branch: Some(Some("feature/viewer".to_string())),
@@ -1063,6 +1064,7 @@ async fn resume_revalidates_persisted_thread_after_config_load(
                 params: ThreadMetadataUpdateParams {
                     thread_id: thread_id.clone(),
                     project_id: project_id.clone(),
+                    daybreak_enabled: None,
                     git_info: None,
                 },
             })
@@ -1087,6 +1089,7 @@ async fn resume_revalidates_persisted_thread_after_config_load(
             params: ThreadMetadataUpdateParams {
                 thread_id: thread_id.clone(),
                 project_id: project_id.clone(),
+                daybreak_enabled: None,
                 git_info: Some(ThreadMetadataGitInfoUpdateParams {
                     sha: None,
                     branch: Some(Some("feature/updated-during-resume".to_string())),

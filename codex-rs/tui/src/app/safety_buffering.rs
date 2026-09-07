@@ -46,6 +46,14 @@ impl App {
 
         let retry_config = self.chat_widget.config_ref().clone();
         let input_state = self.chat_widget.capture_thread_input_state();
+        if self.pending_server_profiles.contains_key(&thread_id) {
+            self.fail_safety_buffered_branch(
+                input_state,
+                prompt,
+                color_eyre::eyre::eyre!("Wait for permissions to update before forking."),
+            );
+            return;
+        }
 
         let AppCommand::UserTurn {
             items,
@@ -171,6 +179,7 @@ impl App {
         let retry_display = ChatWidget::user_message_display_from_inputs(items);
 
         self.config = retry_config.clone();
+        let selected_profile = self.confirmed_server_profile(thread_id);
         let started = app_server
             .fork_thread_at(
                 &self.local_settings,
@@ -179,6 +188,7 @@ impl App {
                 /*last_turn_id*/ None,
                 /*before_turn_id*/ Some(turn_id),
                 ForkGoalContinuation::DeferUntilNextTurn,
+                selected_profile.as_ref(),
             )
             .await;
         let started = match started {

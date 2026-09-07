@@ -15,9 +15,7 @@ use codex_protocol::ThreadId;
 mod async_scorer;
 mod sync_reviewer;
 
-pub use async_scorer::StrictReviewReason;
 pub use sync_reviewer::GuardianExtension as GuardianReviewerExtension;
-pub use sync_reviewer::GuardianThreadContext as GuardianReviewerThreadContext;
 
 /// Guardian extension dependencies supplied by the host at construction time.
 #[derive(Clone, Debug)]
@@ -79,17 +77,15 @@ where
 }
 
 /// Installs the guardian contributors into the extension registry.
-pub fn install<S, I>(
+pub fn install<S>(
     registry: &mut ExtensionRegistryBuilder<Config>,
     agent_spawner: S,
-    internal_session_spawner: I,
     auth_manager: Arc<AuthManager>,
     thread_manager: Weak<ThreadManager>,
 ) where
     S: Send + Sync + 'static,
-    I: Send + Sync + 'static,
 {
     registry.thread_lifecycle_contributor(Arc::new(GuardianExtension::new(agent_spawner)));
     async_scorer::install(registry, auth_manager, thread_manager.clone());
-    sync_reviewer::install(registry, thread_manager, internal_session_spawner);
+    sync_reviewer::install(registry, thread_manager);
 }

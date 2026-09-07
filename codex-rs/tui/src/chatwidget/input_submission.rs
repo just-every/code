@@ -107,7 +107,7 @@ impl ChatWidget {
         .1
     }
 
-    fn submit_user_message_with_history_and_shell_escape_policy(
+    pub(super) fn submit_user_message_with_history_and_shell_escape_policy(
         &mut self,
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
@@ -410,6 +410,7 @@ impl ChatWidget {
             return (false, None);
         }
         self.dismiss_backend_banner_for_new_turn();
+        self.note_realtime_typed_input(&submitted_message.text);
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
         }
@@ -463,7 +464,6 @@ impl ChatWidget {
             }
         }
 
-        self.transcript.needs_final_message_separator = false;
         (true, Some(op))
     }
 

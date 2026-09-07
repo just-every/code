@@ -780,8 +780,10 @@ impl TurnEnvironmentState {
     }
 }
 
+/// Existing environment bindings captured for a turn. Internal child threads can
+/// retain these bindings without resolving a different set of environments.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct TurnEnvironmentSnapshot {
+pub struct TurnEnvironmentSnapshot {
     // Keep every selected environment, including failures, in its original order.
     pub(crate) environments: Vec<TurnEnvironmentState>,
 }

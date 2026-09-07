@@ -61,3 +61,52 @@ async fn cancelling_initialization_terminates_the_owned_helper() -> anyhow::Resu
     tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 1), spawned.exit_rx).await??;
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn negotiation_timeout_waits_for_helper_exit_before_allowing_retry() -> anyhow::Result<()> {
+    let spawned = codex_utils_pty::spawn_pipe_process(
+        std::path::Path::new("/bin/sleep"),
+        &["30".to_owned()],
+        std::path::Path::new("/"),
+        &child_environment(std::iter::empty()),
+        /*arg0*/ &None,
+        &[],
+    )
+    .await?;
+    let (output, receiver) = tokio::sync::mpsc::channel(/*buffer*/ 1);
+    output
+        .send(crate::encode_frame(&crate::Message::TransportTimedOut {})?)
+        .await?;
+    let (reaped, exit) = tokio::sync::oneshot::channel();
+    let host = super::VoiceHost {
+        process: spawned.session,
+        output: crate::message_reader::MessageReader::new(receiver),
+        exit,
+    };
+    let answer = crate::SessionDescription::try_from("synthetic-answer".to_owned()).unwrap();
+    let mut connection = Box::pin(host.apply_answer(answer));
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(connection.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    let code =
+        tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 1), spawned.exit_rx).await??;
+    // The process has exited, but the explicit reaping acknowledgement is still required.
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(connection.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    reaped.send(code).unwrap();
+    let error = connection
+        .await
+        .err()
+        .expect("timeout must not return a connected helper");
+    assert_eq!(
+        error.downcast_ref::<crate::ConnectionError>(),
+        Some(&crate::ConnectionError::NegotiationTimedOut)
+    );
+    Ok(())
+}

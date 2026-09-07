@@ -1271,10 +1271,15 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
             /*replay_kind*/ None,
         );
 
+        chat.flush_active_cell();
         let cells = drain_insert_history(&mut rx);
         let [lines] = cells.as_slice() else {
             panic!("expected one completed MCP tool call for {server}");
         };
+        if server == "cua_repl" {
+            insta::assert_snapshot!("failed_computer_activity", lines_to_single_string(lines));
+            continue;
+        }
         insta::allow_duplicates! {
             insta::assert_snapshot!(lines_to_single_string(lines), @r#"
             • Called Inspect workspace
@@ -1508,29 +1513,51 @@ async fn thread_snapshot_replayed_turn_started_marks_task_running() {
 
 #[tokio::test]
 async fn replayed_in_progress_turn_marks_task_running() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.replay_thread_turns(
-        vec![AppServerTurn {
-            id: "turn-1".to_string(),
-            items_view: codex_app_server_protocol::TurnItemsView::Full,
-            items: Vec::new(),
-            status: AppServerTurnStatus::InProgress,
-            error: None,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        }],
+    for replay_kind in [
         ReplayKind::ResumeInitialMessages,
-    );
+        ReplayKind::ThreadSnapshot,
+    ] {
+        for items_view in [
+            codex_app_server_protocol::TurnItemsView::Full,
+            codex_app_server_protocol::TurnItemsView::NotLoaded,
+        ] {
+            let (mut chat, mut rx, mut op_rx) =
+                make_chatwidget_manual(/*model_override*/ None).await;
+            chat.thread_id = Some(ThreadId::new());
+            chat.replay_thread_turns(
+                vec![AppServerTurn {
+                    items_view,
+                    ..app_server_turn(
+                        "turn-1",
+                        AppServerTurnStatus::InProgress,
+                        /*duration_ms*/ None,
+                        /*error*/ None,
+                    )
+                }],
+                replay_kind,
+            );
 
-    assert!(drain_insert_history(&mut rx).is_empty());
-    assert!(chat.bottom_pane.is_task_running());
-    let status = chat
-        .bottom_pane
-        .status_widget()
-        .expect("status indicator should be visible");
-    assert_eq!(status.header(), "Working");
+            assert!(drain_insert_history(&mut rx).is_empty());
+            assert_eq!(
+                (
+                    chat.bottom_pane.is_task_running(),
+                    chat.turn_lifecycle.last_turn_id.as_deref(),
+                ),
+                (true, Some("turn-1")),
+            );
+            assert_chatwidget_snapshot!(
+                "replayed_in_progress_turn",
+                normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 80)),
+            );
+
+            chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            assert_matches!(op_rx.try_recv(), Ok(Op::Interrupt));
+            assert!(
+                std::iter::from_fn(|| rx.try_recv().ok())
+                    .all(|event| !matches!(event, AppEvent::Exit(_)))
+            );
+        }
+    }
 }
 
 #[tokio::test]

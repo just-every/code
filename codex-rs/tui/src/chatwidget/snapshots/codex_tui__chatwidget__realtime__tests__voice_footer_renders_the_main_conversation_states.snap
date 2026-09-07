@@ -1,0 +1,29 @@
+---
+source: tui/src/chatwidget/realtime_tests.rs
+assertion_line: 176
+expression: "states.join(\"\\n\\n\")"
+---
+connecting:
+› Ask Codex to do anything
+
+   voice ◌ connecting   /voice stop   /voice mute
+
+listening:
+› Ask Codex to do anything
+
+   voice ● listening   /voice stop   mic ░░░░░  codex ░░░░░   /voice mute
+
+speaking:
+› Ask Codex to do anything
+
+   voice ● speaking   /voice stop   mic ████░  codex █████   /voice mute
+
+muted:
+› Ask Codex to do anything
+
+   voice ◌ muted   /voice stop   mic off  codex ████░   /voice mute
+
+transcript:
+› Ask Codex to do anything
+
+   voice ● speaking   /voice stop   mic ██░░░  codex ██░░░   /voice mute

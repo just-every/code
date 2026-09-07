@@ -1,6 +1,7 @@
 //! Projects bounded root evidence for worker reviewers using the thread's context mode.
 //! Legacy mode keeps parent-window selection; retained mode preserves original source scope.
 //! Projection limits do not change authorization completeness; unavailable source text does.
+//! Retained-history reconciliation owns recovery order and missing-instruction provenance.
 
 use std::borrow::Cow;
 
@@ -8,10 +9,15 @@ use super::AgentControl;
 use crate::codex_thread::GuardianRootMessage;
 use crate::codex_thread::GuardianRootSnapshot;
 use crate::compact::is_summary_message;
+use crate::context::GuardianContextMode;
 use crate::context::GuardianReviewEvidence;
 use crate::context::is_contextual_user_fragment;
 use crate::event_mapping::parse_turn_item;
+use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
 use crate::guardian::guardian_truncate_text;
+use codex_history::ReconciledRetainedContext;
+use codex_history::RetainedContextEntry;
+use codex_history::RetainedUserMessage;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
@@ -22,7 +28,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::MultiAgentVersion;
 
 const MAX_ROOT_MESSAGES: usize = 8;
-const MAX_ROOT_MESSAGE_TOKENS: usize = 900;
 
 impl AgentControl {
     /// Returns bounded root conversation and authorization state for a MultiAgent V2 worker.
@@ -48,17 +53,49 @@ impl AgentControl {
             .thread_extension_data
             .get_or_init(GuardianReviewEvidence::default);
         let mut latest_user_turn_id = None;
-        let (messages, authorization_version) = if root_evidence.uses_thread_owned_context() {
-            let mut missing_root_instructions = false;
-            let mut messages = history
-                .retained_context()
-                .into_iter()
-                .flat_map(codex_history::RetainedContext::ordered_entries)
-                .filter_map(|entry| match entry {
-                    codex_history::RetainedContextEntry::UserMessage(message) => {
+        let (messages, authorization_version) = if root_evidence.context_mode()
+            == GuardianContextMode::ThreadOwned
+        {
+            let reconciled = ReconciledRetainedContext::new(
+                history.retained_context(),
+                root_history
+                    .annotated_items()
+                    .iter()
+                    .filter_map(|envelope| {
+                        let item = &envelope.item;
+                        let Some(TurnItem::UserMessage(message)) = parse_turn_item(item) else {
+                            return None;
+                        };
+                        let text = message.message();
+                        if is_summary_message(&text)
+                            || text.trim_start().starts_with("<user_action>")
+                        {
+                            return None;
+                        }
+                        let order = envelope
+                            .metadata
+                            .as_ref()
+                            .filter(|metadata| !metadata.inherited_user_message)
+                            .and_then(|metadata| metadata.user_input_order);
+                        Some((
+                            order,
+                            RetainedUserMessage {
+                                turn_id: item.turn_id().unwrap_or_default().to_owned(),
+                                message_id: item.id().map(|id| id.as_str().to_owned()),
+                                text,
+                                complete: false,
+                            },
+                        ))
+                    }),
+            );
+            let mut missing_root_instructions = reconciled.missing_user_messages;
+            let mut messages = reconciled
+                .ordered_entries()
+                .filter_map(|(_, entry)| match entry {
+                    RetainedContextEntry::UserMessage(message) => {
                         let text = if message.text.is_empty() && !message.complete {
-                            // Storage may omit a large instruction. After parent compaction,
-                            // Guardian history can still retain that exact source message.
+                            // Older records may omit a large instruction. Recover that exact
+                            // source while it remains available in the parent context.
                             let original = message.message_id.as_deref().and_then(|id| {
                                 root_history.raw_items().chain(history.review_items()).find(
                                     |item| item.id().is_some_and(|item_id| item_id.as_str() == id),
@@ -84,11 +121,11 @@ impl AgentControl {
                         .then(|| {
                             latest_user_turn_id = Some(message.turn_id.clone());
                             GuardianRootMessage::User(
-                                guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                                guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                             )
                         })
                     }
-                    codex_history::RetainedContextEntry::VerifiedAnswer(answer) => {
+                    RetainedContextEntry::VerifiedAnswer(answer) => {
                         codex_guardian_context::render_verified_answer(answer)
                             .map(GuardianRootMessage::UserInput)
                     }
@@ -113,7 +150,7 @@ impl AgentControl {
                         })
                         .collect::<String>();
                     Some(GuardianRootMessage::Assistant(
-                        guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                        guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -147,7 +184,8 @@ impl AgentControl {
                         .then(|| {
                             latest_user_turn_id = item.turn_id().map(str::to_owned);
                             GuardianRootMessage::User(
-                                guardian_truncate_text(&message, MAX_ROOT_MESSAGE_TOKENS).0,
+                                guardian_truncate_text(&message, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS)
+                                    .0,
                             )
                         })
                     }
@@ -162,7 +200,7 @@ impl AgentControl {
                             })
                             .collect::<String>();
                         Some(GuardianRootMessage::Assistant(
-                            guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                            guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                         ))
                     }
                     (_, ResponseItem::FunctionCall { call_id, .. }) => root_evidence

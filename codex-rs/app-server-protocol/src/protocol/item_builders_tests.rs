@@ -129,6 +129,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
     assert!(expected[1].items.is_empty());
 
     let assessment = GuardianAssessmentEvent {
+        review_reason: None,
         id: "review-stdin".into(),
         target_item_id: Some("terminal-command".into()),
         plugin_id: None,
@@ -159,6 +160,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
         ] {
             items.push(RolloutItem::EventMsg(EventMsg::GuardianAssessment(
                 GuardianAssessmentEvent {
+                    review_reason: None,
                     turn_id: turn_id.into(),
                     status,
                     ..assessment.clone()

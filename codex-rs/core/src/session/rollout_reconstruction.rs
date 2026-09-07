@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::GuardianContextMode;
 use crate::context::world_state::WorldStateSnapshot;
 use crate::context_manager::is_user_turn_boundary;
 use codex_history::ResponseItemEnvelope;
@@ -338,17 +339,19 @@ impl Session {
         )
         .unwrap_or(u64::MAX);
 
-        let mut history = ContextManager::new();
-        if self.enabled(Feature::GuardianThreadContext) {
-            history.enable_user_message_retention();
-        }
+        let mut history = ContextManager::with_guardian_context_mode(
+            self.guardian_context_mode,
+            &turn_context.session_source,
+        );
         let mut saw_legacy_compaction_without_replacement_history = false;
         if let Some(checkpoint) = base_compaction
             && let Some(items) = &checkpoint.compacted.replacement_history
         {
             history.replace_annotated(items.clone());
-            history.restore_guardian_history(checkpoint.compacted.guardian_history.as_ref());
-            history.restore_retained_context(checkpoint.compacted.retained_context.as_ref());
+            history.restore_review_context(
+                checkpoint.compacted.retained_context.as_ref(),
+                checkpoint.compacted.guardian_history.as_ref(),
+            );
         }
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
@@ -387,11 +390,12 @@ impl Session {
                         // prompt shape.
                         // TODO(ccunningham): if we drop support for None replacement_history compaction items,
                         // we can get rid of this second loop entirely and just build `history` directly in the first loop.
-                        let identity = if self.enabled(Feature::GuardianThreadContext) {
-                            compact::CompactedMessageIdentity::Preserve
-                        } else {
-                            compact::CompactedMessageIdentity::Regenerate
-                        };
+                        let identity =
+                            if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
+                                compact::CompactedMessageIdentity::Preserve
+                            } else {
+                                compact::CompactedMessageIdentity::Regenerate
+                            };
                         let user_messages = compact::collect_annotated_user_messages(
                             history.annotated_items(),
                             identity,

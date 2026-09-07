@@ -4,6 +4,8 @@ mod daemon_shutdown;
 pub use daemon_shutdown::DAEMON_SHUTDOWN_FILE_ENV;
 #[cfg(windows)]
 pub use daemon_shutdown::daemon_shutdown_signal;
+/// Only managed app-server launches accept the local socket shutdown request.
+pub const DAEMON_SHUTDOWN_SOCKET_ENV: &str = "CODEX_DAEMON_SHUTDOWN_SOCKET";
 mod outgoing_message;
 mod transport;
 
@@ -17,6 +19,7 @@ pub use transport::AppServerTransport;
 pub use transport::AppServerTransportParseError;
 pub use transport::CHANNEL_CAPACITY;
 pub use transport::ConnectionOrigin;
+pub use transport::DaemonShutdownAccess;
 pub use transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 pub use transport::RemoteControlDisabledByRequirements;
 pub use transport::RemoteControlEnableError;

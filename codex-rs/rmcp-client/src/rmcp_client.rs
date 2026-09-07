@@ -194,7 +194,7 @@ pub(crate) struct ElicitationPauseState {
 }
 
 impl ElicitationPauseState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (paused, _rx) = watch::channel(false);
         Self {
             active_count: Arc::new(AtomicUsize::new(0)),
@@ -314,6 +314,11 @@ pub enum Elicitation {
         message: String,
         requested_schema: serde_json::Value,
     },
+    UserVerification {
+        title: String,
+        description: String,
+        challenge: String,
+    },
 }
 
 impl Elicitation {
@@ -323,6 +328,7 @@ impl Elicitation {
             Self::OpenAiForm { meta, .. } | Self::OpenAiElicitationForm { meta, .. } => {
                 meta.as_ref().and_then(serde_json::Value::as_object)
             }
+            Self::UserVerification { .. } => None,
         }
     }
 }
@@ -1633,6 +1639,10 @@ async fn create_oauth_transport_and_runtime(
         oauth_runtime: runtime,
     })
 }
+
+#[cfg(test)]
+#[path = "user_verification_cancellation_tests.rs"]
+mod user_verification_cancellation_tests;
 
 #[cfg(test)]
 mod tests {

@@ -12,7 +12,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
-async fn permission_discovery_uses_server_catalog_and_keeps_remote_custom_selection_disabled() {
+async fn permission_discovery_uses_server_catalog_for_remote_custom_selection() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.explicit_permission_profile_mode = false;
     chat.set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
@@ -21,7 +21,6 @@ async fn permission_discovery_uses_server_catalog_and_keeps_remote_custom_select
     ))
     .unwrap();
     let mut discovery = Discovery::local(&chat.config);
-    discovery.remote = true;
     discovery
         .profiles
         .push(codex_app_server_protocol::PermissionProfileSummary {
@@ -48,9 +47,13 @@ async fn permission_discovery_uses_server_catalog_and_keeps_remote_custom_select
         "permission_discovery_remote",
         render_bottom_popup(&chat, /*width*/ 110)
     );
-    // Server-only alternatives remain visible, but cannot enter the local mutation path.
-    chat.handle_key_event(KeyEvent::from(KeyCode::Char('5')));
-    assert!(rx.try_recv().is_err());
+    // Server-only alternatives are routed through App rather than resolved locally.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Char('2')));
+    assert!(matches!(
+        rx.try_recv().expect("server profile selection"),
+        AppEvent::SelectPermissionProfile(PermissionProfileSelection { profile_id, .. })
+            if profile_id == "server-only"
+    ));
     chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
     chat.open_permissions_popup();
     rx.try_recv().unwrap();

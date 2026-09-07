@@ -63,8 +63,44 @@ use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_realtime_webrtc::StartedRealtimeWebrtcSession;
 
 use crate::history_cell::HistoryCell;
+
+/// Whether a managed checkout starts fresh or preserves the current conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedWorktreeMode {
+    New,
+    Fork,
+}
+
+/// Checkout creation result returned from the blocking Git task to the TUI event loop.
+/// Prepared checkout and destination configuration consumed on a fresh event-loop stack.
+#[derive(Debug)]
+pub(crate) struct ManagedWorktreeTransition {
+    pub(crate) source_thread_id: ThreadId,
+    pub(crate) source_cwd: AbsolutePathBuf,
+    pub(crate) manager: codex_worktree::WorktreeManager,
+    pub(crate) checkout: codex_worktree::ManagedWorktree,
+    pub(crate) config: Box<crate::legacy_core::config::Config>,
+    pub(crate) mode: ManagedWorktreeMode,
+    pub(crate) name: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ManagedWorktreeCreated {
+    pub(crate) source_thread_id: ThreadId,
+    pub(crate) source_cwd: AbsolutePathBuf,
+    pub(crate) mode: ManagedWorktreeMode,
+    pub(crate) name: Option<String>,
+    pub(crate) result: Result<
+        (
+            codex_worktree::WorktreeManager,
+            codex_worktree::ManagedWorktree,
+        ),
+        String,
+    >,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
@@ -386,6 +422,28 @@ pub(crate) enum AppEvent {
     /// Start a new session, optionally assigning it a name.
     NewSession {
         name: Option<String>,
+    },
+
+    /// Create a managed checkout and start or fork a session into it.
+    StartManagedWorktree {
+        mode: ManagedWorktreeMode,
+        name: Option<String>,
+    },
+    /// Continue a checkout transition after synchronous Git work finishes off-loop.
+    ManagedWorktreeCreated(Box<ManagedWorktreeCreated>),
+
+    BrowseManagedWorktrees,
+    ManagedWorktreesLoaded {
+        request: crate::worktree_browser::Request,
+        result: Result<Vec<crate::worktree_browser::Entry>, String>,
+    },
+    ManagedWorktreeAction {
+        request: crate::worktree_browser::Request,
+        action: crate::worktree_browser::Action,
+    },
+    ShowManagedWorktreeActions {
+        request: crate::worktree_browser::Request,
+        entry: crate::worktree_browser::Entry,
     },
 
     /// Change the working directory of the originating idle primary thread.
@@ -996,6 +1054,25 @@ pub(crate) enum AppEvent {
     /// Update the current personality in the running app and widget.
     UpdatePersonality(Personality),
 
+    /// Result of creating a TUI-owned WebRTC offer for an active thread.
+    RealtimeWebrtcOfferCreated {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        result: Result<StartedRealtimeWebrtcSession, String>,
+    },
+
+    /// Result of establishing the WebRTC connection for an active voice attempt.
+    RealtimeWebrtcConnected {
+        thread_id: ThreadId,
+        attempt_id: u64,
+        result: Result<(), codex_realtime_webrtc::ConnectionError>,
+    },
+
+    /// Stop voice on its original thread after its chat widget is replaced.
+    StopRealtimeConversation {
+        thread_id: ThreadId,
+    },
+
     /// Finish a settings selection after its preceding update events have been applied.
     SettingsSelectionClosed,
     /// Run after any nested settings events emitted while handling the close event.
@@ -1179,6 +1256,9 @@ pub(crate) enum AppEvent {
         updates: Vec<(String, bool)>,
         response_tx: tokio::sync::oneshot::Sender<Result<FeatureWriteResult, String>>,
     },
+
+    /// Save an enable prompt on the app server without changing the current thread.
+    EnableFeatureForNewThreads(Feature),
 
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {

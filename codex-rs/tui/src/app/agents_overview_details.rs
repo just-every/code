@@ -242,6 +242,7 @@ fn request_preview(request: &ServerRequest) -> Option<String> {
             | McpServerElicitationRequest::OpenAiForm { message, .. }
             | McpServerElicitationRequest::OpenAiElicitationForm { message, .. }
             | McpServerElicitationRequest::Url { message, .. } => Some(message.as_str()),
+            McpServerElicitationRequest::UserVerification { .. } => None,
         },
         ServerRequest::ToolRequestUserInput { params, .. } => params
             .questions

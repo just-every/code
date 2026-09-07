@@ -2543,8 +2543,9 @@ mod tests {
     #[test_case::test_case(Some(EnvironmentInfo::local()); "from_initialize")]
     #[test_case::test_case(Some(EnvironmentInfo {
         executor_version: "1.2.3-alpha.4".to_string(),
+        provider_id: Some("sha256:fb4f62da3e84f6864dcec8ede7bc66f1c96ecaeaf55f8a786b85df994057c8ac".to_string()),
         ..EnvironmentInfo::local()
-    }); "with_executor_version")]
+    }); "with_executor_metadata")]
     #[test_case::test_case(None; "legacy_server")]
     #[tokio::test]
     async fn environment_info_is_cached(

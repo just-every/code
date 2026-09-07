@@ -25,6 +25,9 @@ mod update_thread_metadata;
 mod writer_lock;
 
 #[cfg(test)]
+#[path = "daybreak_metadata_tests.rs"]
+mod daybreak_metadata_tests;
+#[cfg(test)]
 #[path = "pending_thread_metadata_tests.rs"]
 mod pending_thread_metadata_tests;
 #[cfg(test)]

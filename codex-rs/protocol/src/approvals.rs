@@ -204,6 +204,10 @@ pub enum GuardianReviewReason {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct GuardianAssessmentEvent {
+    /// Request-scoped trigger; absent in events recorded by older clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review_reason: Option<GuardianReviewReason>,
     /// Stable identifier for this guardian review lifecycle.
     pub id: String,
     /// Thread item being reviewed, when the review maps to a concrete item.
@@ -390,6 +394,13 @@ impl ExecApprovalRequestEvent {
 #[serde(tag = "mode", rename_all = "snake_case")]
 #[ts(tag = "mode")]
 pub enum ElicitationRequest {
+    #[serde(rename = "openai/userVerification")]
+    #[ts(rename = "openai/userVerification")]
+    UserVerification {
+        title: String,
+        description: String,
+        challenge: String,
+    },
     Form {
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
         #[ts(optional, rename = "_meta")]

@@ -1,11 +1,9 @@
 //! Queue user messages through a local or remote app server.
 
-use std::path::Path;
-
 use crate::app_server_session::AppServerSession;
+use crate::named_session_lookup::SessionCollection;
+use crate::named_session_lookup::lookup;
 use crate::session_archive_commands::SessionArchiveCommandOptions;
-use crate::session_archive_commands::SessionNameMatch;
-use crate::session_archive_commands::lookup_session_by_exact_name;
 use crate::session_archive_commands::start_app_server_for_session_command;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
@@ -19,6 +17,7 @@ use color_eyre::Report;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre::eyre;
+use std::path::Path;
 use uuid::Uuid;
 
 const JSONRPC_INVALID_REQUEST: i64 = -32600;
@@ -87,12 +86,17 @@ pub(super) async fn run_session_queue_action_with_app_server(
     let thread_id = if let Ok(thread_id) = ThreadId::from_string(target) {
         thread_id
     } else {
-        let thread = lookup_session_by_exact_name(
+        let thread = lookup(
             app_server,
             codex_home,
             target,
-            /*archived*/ false,
-            SessionNameMatch::FirstIncludingNonInteractive,
+            &[SessionCollection::Active],
+            &[
+                super::resume_source_kinds(/*include_non_interactive*/ true),
+                // An empty filter includes Atlas/ChatGPT sessions.
+                Vec::new(),
+            ],
+            /*model_provider*/ None,
         )
         .await?
         .ok_or_else(|| eyre!("No active session found matching '{target}'."))?;

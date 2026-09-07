@@ -1,11 +1,15 @@
+//! Builds tool-less risk requests and publishes the first classifier output.
+//! Both transports share request identity, retry, cancellation, and output handling.
+
+mod connection_pool;
+
+use connection_pool::ConnectionPool;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::time::Instant;
 
 use codex_api::ApiError;
 use codex_api::Reasoning;
@@ -13,36 +17,23 @@ use codex_api::ReasoningContext;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesEndpoint;
-use codex_api::ResponsesWebsocketClient;
-use codex_api::ResponsesWebsocketConnection;
-use codex_api::ResponsesWsRequest;
 use codex_api::TransportError;
-use codex_api::build_session_headers;
 use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::ExtensionMetrics;
 use codex_http_client::HttpClientFactory;
 use codex_login::AgentIdentityAuthPolicy;
-use codex_login::CodexAuth;
 use codex_login::UnauthorizedRecovery;
-use codex_login::default_client::add_originator_header;
-use codex_login::default_client::default_headers;
-use codex_model_provider::AgentIdentitySessionFallback;
-use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::ResponseItemId;
-use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
-use http::HeaderValue;
 use http::StatusCode;
 use serde_json::json;
 use thiserror::Error;
-use tokio::sync::OwnedSemaphorePermit;
-use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -54,10 +45,8 @@ pub(crate) const CLASSIFICATION_TOKEN_USAGE_METRIC: &str =
     "codex.guardian_v2.classification.token_usage";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 pub(super) const INITIAL_WEBSOCKET_CONNECTIONS: usize = if cfg!(test) { 2 } else { 8 };
-const MAX_WEBSOCKET_CONNECTIONS: usize = 16;
+const MAX_CONCURRENT_REQUESTS: usize = 16;
 const MAX_SAMPLING_RETRIES: usize = 2;
-const MAX_WEBSOCKET_AGE: Duration = Duration::from_secs(55 * 60);
-const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
 const RESPONSES_LITE_METADATA_KEY: &str =
     "ws_request_header_x_openai_internal_codex_responses_lite";
 const TURN_METADATA_KEY: &str = "x-codex-turn-metadata";
@@ -88,10 +77,10 @@ pub struct LunaSamplerConfig {
     pub metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
 
-/// One tool-less Luna classification request over an already-open connection.
+/// One tool-less Luna classification request.
 pub struct LunaSamplingRequest {
-    /// Runtime receipt of the response handling the classified tool.
-    pub guardian_ticket: Option<codex_protocol::guardian_ticket::GuardianTicket>,
+    /// ID of the response handling the classified tool.
+    pub parent_response_id: Option<String>,
     /// Trusted instructions describing the requested classification.
     pub instructions: String,
     /// Host-supplied Guardian reviews isolated from untrusted transcript entries.
@@ -122,8 +111,8 @@ pub enum LunaSamplerError {
     /// The thread's provider or scoped credentials could not be resolved.
     #[error("could not resolve the Luna model provider: {0}")]
     Provider(#[source] CodexErr),
-    /// The Responses WebSocket could not be opened or streamed.
-    #[error("Luna Responses WebSocket failed: {0}")]
+    /// The Responses request could not be opened or streamed.
+    #[error("Luna Responses request failed: {0}")]
     Api(#[source] ApiError),
     /// The provider's WebSocket connect deadline elapsed.
     #[error("Luna Responses WebSocket connection timed out")]
@@ -140,30 +129,6 @@ pub enum LunaSamplerError {
     /// The supplied parent checkpoint cannot be consumed by this Luna configuration.
     #[error("parent compaction is incompatible with Luna")]
     IncompatibleCompaction,
-}
-
-struct PooledConnection {
-    connection: ResponsesWebsocketConnection,
-    endpoint: ResponsesEndpoint,
-    // The bridge routes by thread ID, so each socket needs its own identity.
-    thread_id: String,
-    expires_at: Instant,
-    auth_changes: Option<tokio::sync::watch::Receiver<u64>>,
-}
-
-struct ConnectionLease {
-    connection: PooledConnection,
-    idle_connections: Arc<Mutex<Vec<PooledConnection>>>,
-    _permit: OwnedSemaphorePermit,
-}
-
-impl ConnectionLease {
-    fn reuse(self) {
-        self.idle_connections
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(self.connection);
-    }
 }
 
 struct ActiveRequest {
@@ -199,11 +164,10 @@ fn record_token_usage(metrics: Option<&dyn ExtensionMetrics>, token_usage: Optio
     }
 }
 
-/// A bounded pool of authenticated Responses WebSockets dedicated to Luna sampling.
+/// Runs bounded Luna classifications over pooled WebSockets or HTTP.
 pub struct LunaSampler {
-    config: LunaSamplerConfig,
-    idle_connections: Arc<Mutex<Vec<PooledConnection>>>,
-    capacity: Arc<Semaphore>,
+    config: Arc<LunaSamplerConfig>,
+    connections: Arc<ConnectionPool>,
     active_requests: Mutex<VecDeque<ActiveRequest>>,
 }
 
@@ -218,170 +182,18 @@ impl LunaSampler {
     }
 
     pub(super) fn new(config: LunaSamplerConfig) -> Self {
+        let config = Arc::new(config);
         Self {
+            connections: ConnectionPool::new(Arc::clone(&config)),
             config,
-            idle_connections: Arc::new(Mutex::new(Vec::with_capacity(MAX_WEBSOCKET_CONNECTIONS))),
-            capacity: Arc::new(Semaphore::new(MAX_WEBSOCKET_CONNECTIONS)),
-            active_requests: Mutex::new(VecDeque::with_capacity(MAX_WEBSOCKET_CONNECTIONS)),
+            active_requests: Mutex::new(VecDeque::with_capacity(MAX_CONCURRENT_REQUESTS)),
         }
     }
 
     pub(super) async fn prewarm(&self) {
-        for _ in 0..INITIAL_WEBSOCKET_CONNECTIONS {
-            let idle_connections = self
-                .idle_connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len();
-            if idle_connections >= self.capacity.available_permits() {
-                break;
-            }
-            let connection = match self.open_connection().await {
-                Ok(connection) => connection,
-                Err(_) => break,
-            };
-            self.idle_connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(connection);
+        if let Some(refill) = self.connections.replenish() {
+            let _ = refill.await;
         }
-    }
-
-    async fn responses_endpoint(&self) -> ResponsesEndpoint {
-        let provider = self.config.provider.info();
-        if self.config.free_guardian
-            && self
-                .config
-                .provider
-                .auth()
-                .await
-                .as_ref()
-                .is_some_and(CodexAuth::uses_codex_backend)
-            && provider.supports_codex_backend_routes()
-            && provider.requires_openai_auth
-            && provider.env_key.is_none()
-            && provider.experimental_bearer_token.is_none()
-            && provider.auth.is_none()
-            && provider.aws.is_none()
-        {
-            ResponsesEndpoint::GuardianClassifier
-        } else {
-            ResponsesEndpoint::Responses
-        }
-    }
-
-    async fn open_connection(&self) -> Result<PooledConnection, LunaSamplerError> {
-        let provider = self
-            .config
-            .provider
-            .api_provider()
-            .await
-            .map_err(LunaSamplerError::Provider)?;
-        let auth_manager = self.config.provider.auth_manager();
-        let auth_changes = auth_manager.map(|manager| manager.auth_change_receiver());
-        let auth = self
-            .config
-            .provider
-            .api_auth_for_scope(ProviderAuthScope {
-                agent_identity_policy: self.config.agent_identity_policy,
-                session_source: self.config.session_source.clone(),
-                agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
-            })
-            .await
-            .map_err(LunaSamplerError::Provider)?
-            .auth;
-        let thread_id = ThreadId::new().to_string();
-        let mut headers = build_session_headers(
-            Some(self.config.session_id.clone()),
-            Some(thread_id.clone()),
-        );
-        headers.insert("x-openai-subagent", HeaderValue::from_static("guardian"));
-        headers.insert(
-            "x-codex-window-id",
-            HeaderValue::from_str(&format!("{thread_id}:0")).map_err(|error| {
-                LunaSamplerError::Api(ApiError::Stream(format!(
-                    "invalid classifier window ID: {error}"
-                )))
-            })?,
-        );
-        headers.insert(
-            "openai-beta",
-            HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA),
-        );
-        headers.insert(
-            "x-openai-internal-codex-responses-lite",
-            HeaderValue::from_static("true"),
-        );
-        if let Some(originator) = self.config.originator.as_deref() {
-            add_originator_header(&mut headers, originator);
-        }
-        if let Ok(request_id) = HeaderValue::from_str(&thread_id) {
-            headers.insert("x-client-request-id", request_id);
-        }
-
-        let provider_info = self.config.provider.info();
-        let endpoint = self.responses_endpoint().await;
-        let client = ResponsesWebsocketClient::new(provider, auth).with_endpoint(endpoint);
-        let connect = client.connect(
-            &self.config.http_client_factory,
-            headers,
-            default_headers(),
-            /*turn_state*/ None,
-            /*telemetry*/ None,
-        );
-        let connection = tokio::time::timeout(provider_info.websocket_connect_timeout(), connect)
-            .await
-            .map_err(|_| LunaSamplerError::ConnectionTimeout)?
-            .map_err(LunaSamplerError::Api)?;
-        if auth_changes
-            .as_ref()
-            .is_some_and(|auth| auth.has_changed().unwrap_or(true))
-        {
-            return Err(LunaSamplerError::Api(ApiError::Stream(
-                "authentication changed while connecting".into(),
-            )));
-        }
-
-        Ok(PooledConnection {
-            connection,
-            endpoint,
-            thread_id,
-            expires_at: Instant::now() + MAX_WEBSOCKET_AGE,
-            auth_changes,
-        })
-    }
-
-    async fn lease_connection(&self) -> Result<ConnectionLease, LunaSamplerError> {
-        let permit = Arc::clone(&self.capacity)
-            .acquire_owned()
-            .await
-            .map_err(|_| LunaSamplerError::ConnectionTimeout)?;
-        let connection = loop {
-            let idle = self
-                .idle_connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop();
-            match idle {
-                Some(connection)
-                    if connection
-                        .auth_changes
-                        .as_ref()
-                        .is_none_or(|auth| !auth.has_changed().unwrap_or(true))
-                        && Instant::now() < connection.expires_at
-                        && !connection.connection.is_closed().await =>
-                {
-                    break connection;
-                }
-                Some(_) => {}
-                None => break self.open_connection().await?,
-            }
-        };
-        Ok(ConnectionLease {
-            connection,
-            idle_connections: Arc::clone(&self.idle_connections),
-            _permit: permit,
-        })
     }
 
     async fn retry_after_failure(
@@ -413,10 +225,7 @@ impl LunaSampler {
                     if !recovery.has_next() || recovery.next().await.is_err() {
                         return false;
                     }
-                    self.idle_connections
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clear();
+                    self.connections.clear();
                     return true;
                 } else {
                     status.is_server_error() || *status == StatusCode::TOO_MANY_REQUESTS
@@ -445,7 +254,7 @@ impl LunaSampler {
         false
     }
 
-    /// Sends one tool-less classification request on an exclusively leased WebSocket.
+    /// Sends one tool-less classification request using an available transport.
     pub async fn sample(&self, request: LunaSamplingRequest) -> Result<String, LunaSamplerError> {
         if request.parent_compaction.is_some()
             && !self.supports_parent_compaction(request.parent_compaction_hash.as_deref())
@@ -454,7 +263,7 @@ impl LunaSampler {
         }
         // A classification is its own inference turn; retries keep that identity.
         let turn_id = Uuid::now_v7().to_string();
-        let guardian_ticket = request.guardian_ticket;
+        let parent_response_id = request.parent_response_id;
         let parent_turn_id = request.parent_turn_id;
         let root_turn_id = request.root_turn_id;
         let mut input = vec![
@@ -562,7 +371,7 @@ impl LunaSampler {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             active_requests.retain(|request| !request.supersede.is_closed());
-            if active_requests.len() == MAX_WEBSOCKET_CONNECTIONS {
+            if active_requests.len() == MAX_CONCURRENT_REQUESTS {
                 let oldest_scored = active_requests
                     .iter()
                     .position(|request| request.scored.load(Ordering::Relaxed))
@@ -586,7 +395,7 @@ impl LunaSampler {
             let lease = match tokio::select! {
                 biased;
                 _ = &mut superseded => return Err(LunaSamplerError::Superseded),
-                lease = self.lease_connection() => lease,
+                lease = self.connections.lease() => lease,
             } {
                 Ok(lease) => lease,
                 Err(error) => {
@@ -599,13 +408,12 @@ impl LunaSampler {
                     return Err(error);
                 }
             };
-            request.service_tier =
-                if lease.connection.endpoint == ResponsesEndpoint::GuardianClassifier {
-                    None
-                } else {
-                    self.config.service_tier.clone()
-                };
-            let thread_id = &lease.connection.thread_id;
+            request.service_tier = if lease.endpoint == ResponsesEndpoint::GuardianClassifier {
+                None
+            } else {
+                self.config.service_tier.clone()
+            };
+            let thread_id = &lease.thread_id;
             let mut turn_metadata = json!({
                 "session_id": self.config.session_id,
                 "thread_id": thread_id,
@@ -629,18 +437,17 @@ impl LunaSampler {
                 turn_metadata["root_turn_id"] = json!(root_turn_id);
             }
             client_metadata.insert(TURN_METADATA_KEY.to_owned(), turn_metadata.to_string());
-            request.client_metadata = Some(client_metadata);
-            let mut stream = match lease
-                .connection
-                .connection
-                .stream_request(
-                    ResponsesWsRequest::ResponseCreate((&request).into()),
-                    /*connection_reused*/ true,
-                    /*turn_state*/ None,
-                    guardian_ticket.as_ref(),
-                )
-                .await
+            if lease.endpoint == ResponsesEndpoint::GuardianClassifier
+                && let Some(parent_response_id) = &parent_response_id
             {
+                client_metadata.insert("parent_response_id".to_owned(), parent_response_id.clone());
+            }
+            request.client_metadata = Some(client_metadata);
+            let mut stream = match tokio::select! {
+                biased;
+                _ = &mut superseded => return Err(LunaSamplerError::Superseded),
+                stream = lease.stream_request(&request) => stream,
+            } {
                 Ok(stream) => stream,
                 Err(error) => {
                     let error = LunaSamplerError::Api(error);
@@ -748,4 +555,4 @@ impl LunaSampler {
 
 #[cfg(test)]
 #[path = "sampler_tests.rs"]
-mod tests;
+pub(super) mod tests;

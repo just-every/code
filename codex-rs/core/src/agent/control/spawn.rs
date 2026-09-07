@@ -6,6 +6,7 @@ use crate::config::PermissionProfileSnapshot;
 use crate::context::ContextualUserFragment;
 use crate::context::CurrentTimeReminder;
 use crate::context::DeveloperInstructions;
+use crate::context::GuardianContextMode;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
@@ -15,7 +16,6 @@ use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
-use codex_features::Feature;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
@@ -109,7 +109,7 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
 fn retain_forked_developer_message(
     item: &mut ResponseItem,
     usage_hint_texts: &[String],
-    features: &crate::config::ManagedFeatures,
+    context_mode: GuardianContextMode,
 ) -> bool {
     if !matches!(item, ResponseItem::Message { role, .. } if role == "developer") {
         return true;
@@ -119,7 +119,7 @@ fn retain_forked_developer_message(
         return false;
     };
     content.retain(|content_item| {
-        if features.enabled(Feature::GuardianThreadContext)
+        if context_mode == GuardianContextMode::ThreadOwned
             && content_item.kind().0 == "guardian.approved_action"
         {
             return false;
@@ -129,7 +129,7 @@ fn retain_forked_developer_message(
         };
 
         !(MultiAgentRoleInstructions::matches_text(text)
-            || (features.enabled(Feature::GuardianThreadContext)
+            || (context_mode == GuardianContextMode::ThreadOwned
                 && text.starts_with(
                     crate::guardian::AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX,
                 ))
@@ -929,12 +929,13 @@ impl AgentControl {
                 break;
             }
         }
+        let context_mode = GuardianContextMode::from_features(&config.features);
         let mut replaced_parent_developer_instructions = false;
         // Scrub inherited hints and replace only the parent's developer-instruction fragment.
         // Compaction stores response items separately, so sanitize both top-level messages and
         // compacted replacement histories with the same policy.
         let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
-            if config.features.enabled(Feature::GuardianThreadContext)
+            if context_mode == GuardianContextMode::ThreadOwned
                 && multi_agent_version == MultiAgentVersion::V2
                 && matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user")
             {
@@ -952,7 +953,7 @@ impl AgentControl {
             if !retain_forked_developer_message(
                 response_item,
                 &multi_agent_v2_usage_hint_texts_to_filter,
-                &config.features,
+                context_mode,
             ) {
                 return false;
             }
@@ -1031,10 +1032,9 @@ impl AgentControl {
                     compacted.guardian_history = None;
                     // Only V2 fetches root authorization live. Its local scope starts known-empty;
                     // V1 must remain incomplete when inherited authorization has been stripped.
-                    compacted.retained_context =
-                        (config.features.enabled(Feature::GuardianThreadContext)
-                            && multi_agent_version == MultiAgentVersion::V2)
-                            .then(codex_history::RetainedContext::default);
+                    compacted.retained_context = (context_mode == GuardianContextMode::ThreadOwned
+                        && multi_agent_version == MultiAgentVersion::V2)
+                        .then(codex_history::RetainedContext::default);
                     if let Some(replacement_history) = compacted.replacement_history.as_mut() {
                         // Matches before this checkpoint cannot survive its replacement history.
                         replaced_parent_developer_instructions = false;

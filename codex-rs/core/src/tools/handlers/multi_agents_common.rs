@@ -195,6 +195,9 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, Fu
 fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallError> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
+    // Preserve activation for history forks without freezing the parent's model-owned prompts.
+    // Fresh child startup restores configured preferences from the retained snapshot.
+    config.token_budget = turn.configured_token_budget.clone();
     config.model = Some(turn.model_info().slug.clone());
     config.model_provider = turn.provider.info().clone();
     config.model_reasoning_effort = turn

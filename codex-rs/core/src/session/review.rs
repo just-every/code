@@ -130,9 +130,6 @@ pub(super) async fn spawn_review_thread(
         auto_review_enabled,
         &model_info,
     ));
-    if turn_metadata_state.can_start_root_turn(&session_source) {
-        turn_metadata_state.set_root_turn_id(review_turn_id.clone());
-    }
 
     let extension_data = Arc::new(codex_extension_api::ExtensionData::new(
         review_turn_id.clone(),
@@ -140,7 +137,6 @@ pub(super) async fn spawn_review_thread(
     extension_data.insert(parent_turn_context.skills_snapshot().as_ref().clone());
 
     let review_turn_context = TurnContext {
-        guardian_ticket: None,
         sub_id: review_turn_id.clone(),
         trace_id: current_span_trace_id(),
         realtime_active: parent_turn_context.realtime_active,

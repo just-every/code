@@ -93,7 +93,10 @@ pub async fn detached_memory_responses_metadata(
     permission_profile: &PermissionProfile,
     sandbox: Option<&str>,
 ) -> CodexResponsesMetadata {
+    let turn_id = uuid::Uuid::now_v7().to_string();
     let mut metadata = CodexResponsesMetadata {
+        turn_id: Some(turn_id.clone()),
+        root_turn_id: Some(turn_id),
         request_kind: Some(CodexResponsesRequestKind::Memory),
         thread_source: Some(ThreadSource::MemoryConsolidation),
         subagent_header: subagent_header_value(session_source),
@@ -215,7 +218,7 @@ impl TurnMetadataState {
             turn_id,
             sandbox_tags,
             auto_review_enabled,
-            node_repl_auto_review_required: model_info.node_repl_auto_review_required,
+            node_repl_auto_review_required: model_info.computer_use_review_required(),
             node_repl_disabled: model_info.node_repl_disabled,
             enriched_workspaces: RwLock::new(None),
             tool_namespaces_info: RwLock::new(None),
@@ -340,24 +343,6 @@ impl TurnMetadataState {
         self.root_turn_id.get().cloned()
     }
 
-    pub(crate) fn can_start_root_turn(&self, session_source: &SessionSource) -> bool {
-        if session_source.is_non_root_agent() {
-            return false;
-        }
-        match &self.thread_source {
-            // Desktop create/fork/send lacks trusted app-server provenance; fail closed.
-            Some(
-                ThreadSource::Subagent
-                | ThreadSource::GuardianReview
-                | ThreadSource::MemoryConsolidation,
-            ) => false,
-            Some(ThreadSource::Feature(feature)) => {
-                !matches!(feature.as_str(), "system" | "title") && !feature.starts_with("ambient")
-            }
-            Some(ThreadSource::User) | None => true,
-        }
-    }
-
     pub(crate) fn set_responsesapi_client_metadata(
         &self,
         responsesapi_client_metadata: HashMap<String, String>,
@@ -408,6 +393,14 @@ impl TurnMetadataState {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        // Extract Guardian's internal parent before filtering configured metadata keys.
+        // Ordinary app-server client metadata stays in `extra`.
+        let parent_response_id =
+            if self.subagent_header.as_deref() == Some(crate::guardian::GUARDIAN_REVIEWER_NAME) {
+                extra.remove("parent_response_id")
+            } else {
+                None
+            };
         for key in self
             .responses_api_metadata
             .read()
@@ -417,6 +410,7 @@ impl TurnMetadataState {
             extra.remove(key);
         }
         let mut metadata = CodexResponsesMetadata {
+            parent_response_id,
             turn_id: Some(self.turn_id.clone()),
             agent_name: Some(self.agent_name.clone()),
             forked_from_thread_id: self.forked_from_thread_id,

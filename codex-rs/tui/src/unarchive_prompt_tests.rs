@@ -46,7 +46,9 @@ fn resume_prompt_snapshot() {
 
 #[test]
 fn fork_prompt_cancel_snapshot() {
-    let mut screen = prompt(SessionStartAction::Fork);
+    let mut screen = prompt(SessionStartAction::Fork(
+        crate::app_server_session::ForkPermissionMode::InheritSaved,
+    ));
     assert_eq!(
         screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         None
@@ -68,7 +70,9 @@ fn fork_prompt_cancel_snapshot() {
 
 #[test]
 fn confirmation_requires_an_accept_key() {
-    let mut screen = prompt(SessionStartAction::Fork);
+    let mut screen = prompt(SessionStartAction::Fork(
+        crate::app_server_session::ForkPermissionMode::InheritSaved,
+    ));
     for key in [
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
@@ -92,7 +96,9 @@ fn confirmation_requires_an_accept_key() {
 }
 
 fn render_inline(width: u16) -> String {
-    let screen = prompt(SessionStartAction::Fork);
+    let screen = prompt(SessionStartAction::Fork(
+        crate::app_server_session::ForkPermissionMode::InheritSaved,
+    ));
     let height = screen.content().desired_height(width);
     let mut terminal = Terminal::new(VT100Backend::new(width, height + 2)).unwrap();
     terminal
@@ -133,7 +139,9 @@ async fn inline_prompt_only_claims_content_height() -> Result<()> {
         /*x*/ 0, /*y*/ 3, /*width*/ 80, /*height*/ 0,
     );
     tui.terminal.set_viewport_area(original);
-    let screen = prompt(SessionStartAction::Fork);
+    let screen = prompt(SessionStartAction::Fork(
+        crate::app_server_session::ForkPermissionMode::InheritSaved,
+    ));
     {
         let mut guard = PromptScreenGuard::enter(&mut tui)?;
         guard.draw(&screen)?;
@@ -159,7 +167,9 @@ async fn alternate_prompt_restores_original_viewport() -> Result<()> {
     tui.terminal.set_viewport_area(original);
     {
         let mut guard = PromptScreenGuard::enter(&mut tui)?;
-        guard.draw(&prompt(SessionStartAction::Fork))?;
+        guard.draw(&prompt(SessionStartAction::Fork(
+            crate::app_server_session::ForkPermissionMode::InheritSaved,
+        )))?;
         assert!(guard.tui.is_alt_screen_active());
         assert_eq!(
             guard.tui.terminal.viewport_area,

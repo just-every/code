@@ -38,6 +38,10 @@ impl ConnectionRpcGate {
         drop(token);
     }
 
+    pub(crate) fn is_closed(&self) -> bool {
+        self.tasks.is_closed()
+    }
+
     pub(crate) async fn close(&self) {
         let mut accepting = self.accepting.lock().await;
         *accepting = false;

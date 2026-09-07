@@ -21,7 +21,7 @@ const MAX_INSTRUCTION_TOKENS: usize = 900;
 fn render_retained_instructions(context: &RetainedContext) -> Vec<String> {
     let mut complete = context.user_messages_complete();
     let mut fragments = Vec::new();
-    for (order, entry) in context.ordered_entries().enumerate() {
+    for (order, (_, entry)) in context.ordered_entries().enumerate() {
         let RetainedContextEntry::UserMessage(message) = entry else {
             continue;
         };

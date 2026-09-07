@@ -239,6 +239,10 @@ pub struct StartThreadOptions {
     pub metrics_service_name: Option<String>,
     pub parent_trace: Option<W3cTraceContext>,
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// Existing environment bindings captured by an internal caller.
+    pub inherited_environments: Option<TurnEnvironmentSnapshot>,
+    /// Explicit instructions carried by an internal caller instead of loading them again.
+    pub user_instructions: Option<LoadedUserInstructions>,
     pub thread_extension_init: ExtensionDataInit,
     pub client_mcp_extensions: ClientMcpExtensions,
     /// Thread ID reserved before startup so the caller can associate host-owned state with it.
@@ -258,6 +262,8 @@ impl StartThreadOptions {
             metrics_service_name: None,
             parent_trace: None,
             environments: None,
+            inherited_environments: None,
+            user_instructions: None,
             thread_extension_init: ExtensionDataInit::default(),
             client_mcp_extensions: ClientMcpExtensions::default(),
             reserved_thread_id: None,
@@ -960,7 +966,35 @@ impl ThreadManager {
     pub async fn spawn_internal_session(
         &self,
         parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        self.spawn_internal_session_with_history(parent_thread_id, options, InitialHistory::New)
+            .await
+    }
+
+    /// Starts an internal session from an explicitly selected, committed history.
+    ///
+    /// The caller selects the history; this never reads an in-flight parent turn or
+    /// appends an interruption marker. Authentication and budget still come from the parent.
+    pub async fn fork_internal_session(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+        history: Vec<RolloutItem>,
+    ) -> CodexResult<NewThread> {
+        self.spawn_internal_session_with_history(
+            parent_thread_id,
+            options,
+            InitialHistory::Forked(history),
+        )
+        .await
+    }
+
+    async fn spawn_internal_session_with_history(
+        &self,
+        parent_thread_id: ThreadId,
         mut options: StartThreadOptions,
+        history: InitialHistory,
     ) -> CodexResult<NewThread> {
         if !matches!(options.session_source, Some(SessionSource::Internal(_))) {
             return Err(CodexErr::InvalidRequest(
@@ -968,13 +1002,15 @@ impl ThreadManager {
             ));
         }
         let parent = self.get_thread(parent_thread_id).await?;
-        options.initial_history = InitialHistory::New;
+        let forked_from_thread_id = history.forked_from_id();
+        options.initial_history = history;
         let mut request = ThreadSpawnRequest::new(
             options,
             Arc::clone(&parent.session.services.auth_manager),
             parent.session.services.agent_control.clone(),
         );
         request.parent_thread_id = Some(parent_thread_id);
+        request.forked_from_thread_id = forked_from_thread_id;
         Box::pin(self.state.spawn_thread(request)).await
     }
 
@@ -1179,6 +1215,24 @@ impl ThreadManager {
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.state.threads.write().await.remove(thread_id)
+    }
+
+    /// Removes a runtime for a client request, leaving internal workers with their owner.
+    /// The access check and removal share the same lock so a rejected worker stays registered.
+    pub async fn remove_thread_for_client(
+        &self,
+        thread_id: &ThreadId,
+    ) -> CodexResult<Option<Arc<CodexThread>>> {
+        let mut threads = self.state.threads.write().await;
+        if threads
+            .get(thread_id)
+            .is_some_and(|thread| thread.session_source.is_internal())
+        {
+            return Err(CodexErr::InvalidRequest(
+                "live internal threads can only be removed by their owner".to_owned(),
+            ));
+        }
+        Ok(threads.remove(thread_id))
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -1892,10 +1946,13 @@ impl ThreadManagerState {
             metrics_service_name,
             parent_trace,
             environments,
+            inherited_environments: captured_environments,
+            user_instructions: supplied_user_instructions,
             thread_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
         } = options;
+        let inherited_environments = captured_environments.or(inherited_environments);
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1914,6 +1971,16 @@ impl ThreadManagerState {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
                 if thread.is_running() {
+                    // The parent's pool still owns this runtime and its rollout writer.
+                    // Returning it would report success without allowing client access.
+                    if matches!(
+                        thread.session_source,
+                        SessionSource::Internal(InternalSessionSource::Guardian)
+                    ) {
+                        return Err(CodexErr::InvalidRequest(
+                            "cannot resume a live Guardian reviewer; use thread/read to inspect it, or resume after its parent is unloaded".to_owned(),
+                        ));
+                    }
                     if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
                         && thread.rollout_path().as_deref() != Some(requested_rollout_path)
                     {
@@ -1965,6 +2032,7 @@ impl ThreadManagerState {
                 .await,
             )
         };
+        let user_instructions = supplied_user_instructions.unwrap_or(user_instructions);
         let parent_rollout_thread_trace = self
             .parent_rollout_thread_trace_for_source(&session_source, &initial_history)
             .await;
@@ -2012,7 +2080,16 @@ impl ThreadManagerState {
             conversation_history: initial_history,
             requested_history_mode: history_mode,
             fork_persistence,
-            session_source,
+            // Keep only the manager registration internal. The session and its saved
+            // history retain Guardian's existing identity for metadata, filtering and resume.
+            session_source: match session_source {
+                SessionSource::Internal(InternalSessionSource::Guardian) => {
+                    SessionSource::SubAgent(SubAgentSource::Other(
+                        crate::guardian::GUARDIAN_REVIEWER_NAME.to_owned(),
+                    ))
+                }
+                source => source,
+            },
             forked_from_thread_id,
             parent_thread_id,
             thread_source: thread_source.clone(),
@@ -2034,7 +2111,14 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
-            git_enrichment_policy: GitEnrichmentPolicy::Fresh,
+            git_enrichment_policy: if matches!(
+                &tracked_session_source,
+                SessionSource::Internal(InternalSessionSource::Guardian)
+            ) {
+                GitEnrichmentPolicy::Skip
+            } else {
+                GitEnrichmentPolicy::Fresh
+            },
             windows_sandbox_proxy_settings_mode,
         })
         .await?;

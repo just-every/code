@@ -621,7 +621,7 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
 
 #[tokio::test]
 async fn queued_unknown_slash_reports_error_when_dequeued() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
 
@@ -642,6 +642,24 @@ async fn queued_unknown_slash_reports_error_when_dequeued() {
         "expected delayed slash error, got {rendered:?}"
     );
     assert!(chat.input_queue.queued_user_messages.is_empty());
+
+    chat.set_feature_enabled(Feature::Worktrees, /*enabled*/ true);
+    chat.set_local_worktree_operations(/*enabled*/ false);
+    let drain = chat.submit_queued_slash_prompt(UserMessage::from("/worktree extra").into());
+    assert_matches!(drain, QueueDrain::Continue);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(drain_insert_history(&mut rx).iter().any(|lines| {
+        lines_to_single_string(lines).contains("Unrecognized command '/worktree'")
+    }));
+
+    chat.set_local_worktree_operations(/*enabled*/ true);
+    let non_git = tempfile::tempdir().unwrap();
+    chat.config.cwd = non_git.path().to_path_buf().abs();
+    let drain = chat.submit_queued_slash_prompt(UserMessage::from("/worktree").into());
+    assert_matches!(drain, QueueDrain::Continue);
+    assert!(drain_insert_history(&mut rx).iter().any(|lines| {
+        lines_to_single_string(lines).contains("Managed worktrees require a local Git repository.")
+    }));
 }
 
 #[tokio::test]
@@ -2015,6 +2033,175 @@ async fn slash_copy_picker_previews_whole_response_code_blocks_and_blockquotes()
 }
 
 #[tokio::test]
+async fn slash_copy_picker_copies_status_fields_and_preserves_source_after_copying() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let session_id = "00000000-0000-0000-0000-000000000123";
+    chat.thread_id = Some(ThreadId::from_string(session_id).expect("valid thread ID"));
+    chat.thread_name = Some("Clipboard example".to_string());
+    chat.config.cwd = test_path_buf("/workspace").abs();
+    let directory = chat.config.cwd.display().to_string();
+    chat.dispatch_command(SlashCommand::Status);
+    drain_insert_history(&mut rx);
+
+    // The picker must copy the status that was displayed, not newer widget settings.
+    chat.config.cwd = test_path_buf("/another-workspace").abs();
+    chat.thread_name = Some("New name".to_string());
+    chat.dispatch_command(SlashCommand::Copy);
+    assert_chatwidget_snapshot!(
+        "slash_copy_picker_status_fields",
+        render_bottom_popup(&chat, /*width*/ 100)
+            .replace(&directory, "[[workspace]]")
+            .replace(crate::version::CODEX_CLI_VERSION, "VERSION"),
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let (whole_status, label) = next_copy_selection(&mut rx);
+    assert_eq!(label, "Whole status");
+    assert_chatwidget_snapshot!(
+        "slash_copy_whole_status",
+        whole_status
+            .replace(&directory, "[[workspace]]")
+            .replace(crate::version::CODEX_CLI_VERSION, "VERSION"),
+    );
+    let expected = [
+        ("Whole status", whole_status.as_str()),
+        ("Model", "gpt-5.4"),
+        ("Directory", directory.as_str()),
+        ("Thread name", "Clipboard example"),
+        ("Session ID", session_id),
+    ];
+    for (index, (label, value)) in expected.into_iter().enumerate() {
+        chat.dispatch_command(SlashCommand::Copy);
+        let shortcut =
+            char::from_digit((index + 1) as u32, /*radix*/ 10).expect("numeric shortcut");
+        chat.handle_key_event(KeyEvent::new(KeyCode::Char(shortcut), KeyModifiers::NONE));
+        assert_eq!(
+            next_copy_selection(&mut rx),
+            (value.to_string(), label.to_string())
+        );
+        chat.copy_selection_with(value, label, |text| {
+            assert_eq!(text, value);
+            Ok(None)
+        });
+        drain_insert_history(&mut rx);
+        assert!(chat.bottom_pane.no_modal_or_popup_active());
+    }
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+async fn slash_copy_status_omits_missing_fields_and_copies_full_directory() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.config.cwd = test_path_buf(&format!("/workspace/{}", "nested/".repeat(/*n*/ 20))).abs();
+    let directory = chat.config.cwd.display().to_string();
+    chat.thread_name = Some(String::new());
+    chat.dispatch_command(SlashCommand::Status);
+    drain_insert_history(&mut rx);
+
+    chat.dispatch_command(SlashCommand::Copy);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("2. Model"));
+    assert!(popup.contains("3. Directory"));
+    assert!(!popup.contains("Thread name"));
+    assert!(!popup.contains("Session ID"));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+    assert_eq!(
+        next_copy_selection(&mut rx),
+        (directory, "Directory".to_string())
+    );
+}
+
+#[tokio::test]
+async fn slash_copy_status_yields_to_later_turns_and_commands_even_after_refresh() {
+    enum NextTurn {
+        Response,
+        UserTurn,
+        Command,
+        InlineCommand,
+        RejectedInlineCommand,
+        ServiceTier,
+        ShellCommand,
+    }
+    for next in [
+        NextTurn::Response,
+        NextTurn::UserTurn,
+        NextTurn::Command,
+        NextTurn::InlineCommand,
+        NextTurn::RejectedInlineCommand,
+        NextTurn::ServiceTier,
+        NextTurn::ShellCommand,
+    ] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+        chat.thread_id = Some(ThreadId::new());
+        complete_turn_with_message(&mut chat, "turn-1", Some("Original reply"));
+        set_chatgpt_auth(&mut chat);
+        chat.dispatch_command(SlashCommand::Status);
+        drain_insert_history(&mut rx);
+        chat.dispatch_command(SlashCommand::Copy);
+        assert!(render_bottom_popup(&chat, /*width*/ 80).contains("1. Whole status"));
+        chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        drain_insert_history(&mut rx);
+
+        match next {
+            NextTurn::Response => {
+                complete_turn_with_message(&mut chat, "turn-2", Some("Next reply"))
+            }
+            NextTurn::UserTurn => chat.submit_user_message(UserMessage::from("Next question")),
+            NextTurn::Command => chat.dispatch_command(SlashCommand::Pwd),
+            NextTurn::InlineCommand => chat.dispatch_command_with_args(
+                SlashCommand::Rename,
+                "Renamed thread".to_string(),
+                Vec::new(),
+            ),
+            NextTurn::RejectedInlineCommand => {
+                handle_turn_started(&mut chat, "turn-2");
+                chat.dispatch_command_with_args(SlashCommand::Cd, "/tmp".to_string(), Vec::new());
+            }
+            NextTurn::ServiceTier => chat.handle_service_tier_command_dispatch(fast_tier_command()),
+            NextTurn::ShellCommand => chat.submit_user_message(UserMessage::from("!echo hello")),
+        }
+        chat.finish_status_rate_limit_refresh(/*request_id*/ 0, Vec::new());
+        drain_insert_history(&mut rx);
+        chat.dispatch_command(SlashCommand::Copy);
+        chat.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        let expected = if matches!(next, NextTurn::Response) {
+            "Next reply"
+        } else {
+            "Original reply"
+        };
+        assert_eq!(
+            next_copy_selection(&mut rx),
+            (expected.to_string(), "Whole response".to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn slash_copy_status_yields_to_queued_commands_after_queued_status() {
+    for command in ["/rename Queued rename", "!echo hello"] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        handle_turn_started(&mut chat, "turn-1");
+        queue_composer_text_with_tab(&mut chat, "/status");
+        queue_composer_text_with_tab(&mut chat, command);
+        complete_turn_with_message(&mut chat, "turn-1", Some("Original reply"));
+        let history = drain_insert_history(&mut rx);
+        assert!(
+            history
+                .iter()
+                .any(|lines| lines_to_single_string(lines).contains("/status"))
+        );
+        assert!(chat.input_queue.queued_user_messages.is_empty());
+
+        chat.dispatch_command(SlashCommand::Copy);
+        chat.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert_eq!(
+            next_copy_selection(&mut rx),
+            ("Original reply".to_string(), "Whole response".to_string())
+        );
+    }
+}
+
+#[tokio::test]
 async fn slash_copy_picker_waits_for_submission_after_typing_or_autocomplete() {
     for select_from_autocomplete in [false, true] {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -2250,11 +2437,13 @@ async fn slash_export_opens_destination_picker() {
     let cells = drain_insert_history(&mut rx);
     assert_chatwidget_snapshot!(
         "slash_export_completion_message",
-        cells
-            .iter()
-            .map(|cell| lines_to_single_string(cell).trim().to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
+        normalize_completion_timestamps(
+            cells
+                .iter()
+                .map(|cell| lines_to_single_string(cell).trim().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     );
 }
 

@@ -1,4 +1,36 @@
+//! Keeps a picker listing's pagination state and its checkout filter consistent across pages.
+
+use std::path::Path;
+
 use super::PageCursor;
+use super::repository_cwd_filter;
+use codex_app_server_protocol::ThreadListCwdFilter;
+
+/// Holds the expanded checkout set for the cursor's entire listing cycle.
+#[derive(Default)]
+pub(super) struct PageCwdFilter {
+    current: Option<ThreadListCwdFilter>,
+}
+
+impl PageCwdFilter {
+    pub(super) fn for_request(
+        &mut self,
+        cursor: Option<&PageCursor>,
+        cwd: Option<&Path>,
+        uses_remote_filesystem: bool,
+        worktrees_enabled: bool,
+    ) -> Option<ThreadListCwdFilter> {
+        if cursor.is_none() {
+            self.current = cwd
+                .map(|cwd| repository_cwd_filter(cwd, uses_remote_filesystem, worktrees_enabled));
+        }
+        self.current.clone()
+    }
+}
+
+#[cfg(test)]
+#[path = "page_loading_tests.rs"]
+mod tests;
 
 /// Selects whether thread listing trusts indexed metadata or uses the store's normal behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

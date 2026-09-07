@@ -3,8 +3,8 @@
 //! Transcript collection and bounded host-owned history are also available directly,
 //! without section composition.
 //! Contributor failures abort collection without returning partial context.
-//! Sections carry structured transcript evidence without depending on either
-//! consumer's rendering, retention, compaction, or request lifecycle.
+//! Sections preserve source-specific evidence and share prompt framing, while
+//! hosts retain transcript selection, compaction and request lifecycles.
 //! Registered contributors declare their scope once and are collected only for
 //! matching context consumers. History and collection settings are borrowed for
 //! each request so the default registry can be reused without retaining state.
@@ -19,8 +19,11 @@ use authorization::TrustedUserAnswersSection;
 use retained_instructions::RetainedUserInstructionsSection;
 use transcript::ConversationTranscriptSection;
 
+pub use action::ActionPresentation;
+pub use action::PlannedAction;
+pub use action::PlannedActionKind;
 pub use authorization::GuardianRootMessage;
-pub use composition::ComposedContext;
+pub use section::ContextSection;
 
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
@@ -43,11 +46,14 @@ pub use verified_answers::render_verified_answers;
 
 mod retained_instructions;
 
+mod action;
 mod authorization;
-mod composition;
 mod entry;
 mod history;
+mod permissions;
 mod retention;
+mod section;
+pub use permissions::PermissionContext;
 mod transcript;
 mod truncation;
 
@@ -95,6 +101,10 @@ pub struct SectionInput<'a> {
     pub root_conversation: &'a [GuardianRootMessage],
     /// Bounded, role-labeled answers selected from the host-owned context snapshot.
     pub trusted_user_answers: &'a [String],
+    /// Exact action JSON and reason, already bounded by the requesting host.
+    pub planned_action: Option<&'a PlannedAction>,
+    /// Sync-only restrictions resolved from the parent execution environment.
+    pub permissions: Option<&'a PermissionContext>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -181,6 +191,8 @@ pub fn default_registry() -> &'static SectionRegistry {
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);
         registry.register(ConversationTranscriptSection);
+        registry.register(permissions::PermissionContextSection);
+        registry.register(action::PlannedActionSection);
         registry
     });
     &REGISTRY
@@ -203,28 +215,6 @@ impl SectionRegistry {
             .filter_map(|contributor| contributor.contribute(input).transpose())
             .collect()
     }
-}
-
-/// Ordered evidence with a stable section identity and source-specific content.
-///
-/// Variants preserve provenance: transcript entries carry their original roles,
-/// root messages remain line-role-labeled, and answers are host-verified fragments.
-/// All currently supported sections are delivered as user-role evidence. Source
-/// attribution never promotes their contents to developer instructions.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ContextSection {
-    ConversationTranscript {
-        items: Vec<ConversationTranscriptEntry>,
-    },
-    RootConversation {
-        items: Vec<String>,
-    },
-    TrustedUserAnswers {
-        items: Vec<String>,
-    },
-    RetainedUserInstructions {
-        items: Vec<String>,
-    },
 }
 
 #[cfg(test)]

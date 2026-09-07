@@ -178,6 +178,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
+        supports_experimental_context: false,
         use_responses_lite: false,
         guardian: None,
         node_repl_auto_review_required: false,

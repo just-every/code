@@ -7,6 +7,7 @@ use super::PidCommandKind;
 use super::PidFileState;
 use super::PidRecord;
 use super::read_process_start_time;
+use crate::managed_install::executable_identity;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -67,14 +68,17 @@ impl PidBackend {
                 }
             }
         }
-        // Pin the Windows image path across installer junction retargeting.
-        #[cfg(windows)]
+        // Pin the selected release across installer symlink/junction retargeting.
         let codex_bin = fs::canonicalize(&self.codex_bin)
             .await
             .unwrap_or_else(|_| self.codex_bin.clone());
-        #[cfg(not(windows))]
-        let codex_bin = &self.codex_bin;
-        let mut command = Command::new(codex_bin);
+        let launched_identity =
+            if matches!(self.command_kind, super::PidCommandKind::AppServer { .. }) {
+                executable_identity(&codex_bin).await.ok()
+            } else {
+                None
+            };
+        let mut command = Command::new(&codex_bin);
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
@@ -174,16 +178,25 @@ impl PidBackend {
                     Err(err) => return Err(err).context("failed to clear updater readiness"),
                 }
             }
-            let shutdown_file = self.pid_file.with_extension("shutdown");
-            match fs::remove_file(&shutdown_file).await {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err).context("failed to clear daemon shutdown request"),
+            match self.command_kind {
+                PidCommandKind::AppServer { .. } => {
+                    command.env(codex_app_server_transport::DAEMON_SHUTDOWN_SOCKET_ENV, "1");
+                }
+                PidCommandKind::UpdateLoop => {
+                    let shutdown_file = self.pid_file.with_extension("shutdown");
+                    match fs::remove_file(&shutdown_file).await {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => {
+                            return Err(err).context("failed to clear updater shutdown request");
+                        }
+                    }
+                    command.env(
+                        codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
+                        shutdown_file,
+                    );
+                }
             }
-            command.env(
-                codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
-                shutdown_file,
-            );
         }
 
         let child = match command.spawn() {
@@ -220,6 +233,7 @@ impl PidBackend {
             Ok(process_start_time) => PidRecord {
                 pid,
                 process_start_time,
+                executable_identity: launched_identity,
             },
             Err(err) => {
                 let _ = self.terminate_process(pid);

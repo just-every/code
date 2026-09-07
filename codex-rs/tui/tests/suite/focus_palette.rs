@@ -344,6 +344,29 @@ impl PtyCodex {
     pub(super) fn screen_contents(&self) -> String {
         self.parser.screen().contents()
     }
+
+    pub(super) fn wait_for_screen(&mut self, text: &str) -> Result<()> {
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        while Instant::now() < deadline {
+            self.read_output(Duration::from_millis(/*millis*/ 50))?;
+            if self.screen_contains(text) {
+                return Ok(());
+            }
+            if let Some(status) = self.child.try_wait()? {
+                bail!("Codex exited while waiting for {text:?} ({status})");
+            }
+        }
+        bail!("missing {text:?}; screen:\n{}", self.screen_contents())
+    }
+
+    pub(super) fn ensure_running(&mut self) -> Result<()> {
+        ensure!(
+            self.child.try_wait()?.is_none(),
+            "Codex exited unexpectedly; screen:\n{}",
+            self.screen_contents()
+        );
+        Ok(())
+    }
 }
 
 impl Drop for PtyCodex {

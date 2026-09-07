@@ -23,7 +23,7 @@ async fn start_session(
 async fn archived_session_requires_confirmation_before_resume_or_fork() -> Result<()> {
     for action in [
         SessionStartAction::Resume(ResumeModelSettings::RestoreFromThread),
-        SessionStartAction::Fork,
+        SessionStartAction::Fork(crate::app_server_session::ForkPermissionMode::InheritSaved),
     ] {
         let codex_home = TempDir::new()?;
         let config = ConfigBuilder::default()
@@ -49,6 +49,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let target = SessionTarget {
             path: Some(archived_path.clone()),
             thread_id: ThreadId::from_string(&id)?,
+            cwd: None,
             history_mode: None,
         };
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
@@ -79,7 +80,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
             SessionStartAction::Resume(_) => {
                 assert_eq!(started.session.thread_id, target.thread_id)
             }
-            SessionStartAction::Fork => {
+            SessionStartAction::Fork(_) => {
                 assert_ne!(started.session.thread_id, target.thread_id);
                 assert_eq!(
                     app_server
@@ -105,6 +106,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let missing = SessionTarget {
             path: None,
             thread_id: ThreadId::new(),
+            cwd: None,
             history_mode: None,
         };
         let error = start_session(&mut app_server, &config, &missing, action, async || {
@@ -131,6 +133,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
         thread_id,
+        cwd: None,
         history_mode: None,
     };
     let expected = format!(

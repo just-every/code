@@ -1,7 +1,7 @@
 //! Agent turn lifecycle and runtime bookkeeping for `ChatWidget`.
 //!
 //! This module owns task start/completion state, runtime metrics, plan updates,
-//! and final-message separator handling.
+//! and completion metadata rendering.
 
 use super::*;
 
@@ -113,7 +113,7 @@ impl ChatWidget {
     pub(super) fn on_task_complete(
         &mut self,
         last_agent_message: Option<String>,
-        duration_ms: Option<i64>,
+        completion: Option<history_cell::FinalMessageSeparator>,
         from_replay: bool,
     ) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
@@ -154,31 +154,19 @@ impl ChatWidget {
         self.flush_unified_exec_wait_streak();
         if !from_replay {
             self.collect_runtime_metrics_delta();
-            let runtime_metrics =
-                (!self.turn_runtime_metrics.is_empty()).then_some(self.turn_runtime_metrics);
-            let show_work_separator = self.transcript.had_work_activity
-                && (self.transcript.needs_final_message_separator || runtime_metrics.is_some());
-            if show_work_separator || runtime_metrics.is_some() {
-                let elapsed_seconds = if show_work_separator {
-                    duration_ms
-                        .and_then(|duration_ms| u64::try_from(duration_ms).ok())
-                        .map(|duration_ms| duration_ms / 1_000)
-                        .or_else(|| {
-                            self.bottom_pane
-                                .status_elapsed()
-                                .map(|elapsed| elapsed.as_secs())
-                        })
-                } else {
-                    None
-                };
-                self.add_to_history(history_cell::FinalMessageSeparator::new(
-                    elapsed_seconds,
-                    runtime_metrics,
-                ));
-            }
-            self.turn_runtime_metrics = RuntimeMetricsSummary::default();
-            self.transcript.needs_final_message_separator = false;
-            self.transcript.had_work_activity = false;
+        }
+        let runtime_metrics = (!from_replay && !self.turn_runtime_metrics.is_empty())
+            .then_some(self.turn_runtime_metrics);
+        if let Some(completion) = completion {
+            self.add_to_history(completion.with_runtime_metrics(runtime_metrics));
+        } else if let Some(runtime_metrics) = runtime_metrics {
+            self.add_to_history(history_cell::FinalMessageSeparator::new(
+                /*elapsed_seconds*/ None,
+                Some(runtime_metrics),
+            ));
+        }
+        self.turn_runtime_metrics = RuntimeMetricsSummary::default();
+        if !from_replay {
             self.request_status_line_branch_refresh();
             self.request_status_line_git_summary_refresh();
             self.refresh_thread_usage_after_turn();
@@ -213,23 +201,27 @@ impl ChatWidget {
         if !from_replay {
             self.transcript.saw_plan_item_this_turn = false;
         }
-        // If there is a queued user message, send exactly one now to begin the next turn.
-        let follow_up_started = self.maybe_send_next_queued_input();
-        let active_goal_continuing = self
-            .current_goal_status
-            .as_ref()
-            .is_some_and(GoalStatusState::is_active);
-        // Emit a notification when the agent is truly waiting for the user.
-        // Queued follow-up input and active goal continuation both start the
-        // next turn immediately, so notifying at that boundary would feel like
-        // a false "needs attention".
-        if !follow_up_started && !active_goal_continuing {
-            self.notify(Notification::AgentTurnComplete {
-                response: notification_response,
-            });
+        if !from_replay {
+            // Emit a notification only when the live agent is waiting for the user.
+            let follow_up_started = self.maybe_send_next_queued_input();
+            let active_goal_continuing = self
+                .current_goal_status
+                .as_ref()
+                .is_some_and(GoalStatusState::is_active);
+            if !follow_up_started
+                && !active_goal_continuing
+                && !self
+                    .turn_lifecycle
+                    .last_turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| self.should_hide_realtime_delegation(turn_id))
+            {
+                self.notify(Notification::AgentTurnComplete {
+                    response: notification_response,
+                });
+            }
+            self.maybe_show_pending_rate_limit_prompt();
         }
-
-        self.maybe_show_pending_rate_limit_prompt();
     }
 
     pub(super) fn maybe_prompt_plan_implementation(&mut self) {

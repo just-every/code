@@ -11,6 +11,7 @@ use std::borrow::Cow;
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
     pub(super) session: Option<ThreadSessionState>,
+    pub(super) delegated_turns: Vec<String>,
     pub(super) turns: Vec<Turn>,
     pub(super) events: Vec<ThreadBufferedEvent>,
     pub(super) input_state: Option<ThreadInputState>,
@@ -22,6 +23,24 @@ pub(super) enum ThreadBufferedEvent {
     Request(Box<ServerRequest>),
     HistoryEntryResponse(HistoryLookupResponse),
     FeedbackSubmission(FeedbackThreadEvent),
+}
+
+fn is_voice_handoff_item(item: &ThreadItem) -> bool {
+    matches!(item, ThreadItem::UserMessage { content, .. }
+        if crate::chatwidget::realtime_delegation_input(content).is_some())
+}
+
+fn hide_private_items_after_voice_handoff(items: &mut Vec<ThreadItem>, delegated: bool) {
+    let has_marker = items.iter().any(is_voice_handoff_item);
+    // An evicted marker leaves no reliable order, so hide private items
+    // conservatively. A present marker lets earlier typed output survive.
+    let mut voice_started = delegated && !has_marker;
+    items.retain(|item| {
+        if is_voice_handoff_item(item) {
+            voice_started = true;
+        }
+        !voice_started || !crate::chatwidget::is_private_realtime_agent_item(item)
+    });
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +55,7 @@ pub(super) struct FeedbackThreadEvent {
 pub(super) enum ThreadEventAttachment {
     Live,
     ReplayOnly,
+    ExternalWriter,
 }
 
 #[derive(Debug)]
@@ -52,11 +72,24 @@ pub(super) struct ThreadEventStore {
     pub(super) capacity: usize,
     pub(super) active: bool,
     pub(super) buffered_agent_message_delta_bytes: usize,
+    delegated_turns: VecDeque<String>,
     recap_progress: recap::RecapProgress,
 }
 
 impl ThreadEventStore {
-    pub(super) fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
+    pub(super) fn event_survives_session_refresh(event: &mut ThreadBufferedEvent) -> bool {
+        if let ThreadBufferedEvent::Notification(notification) = event
+            && let ServerNotification::ItemCompleted(notification) = notification.as_mut()
+            && let ThreadItem::AgentMessage {
+                questions: Some(_),
+                text,
+                ..
+            } = &mut notification.item
+        {
+            // Refreshed turns contain the text; retain only the live question state.
+            text.clear();
+            return true;
+        }
         match event {
             ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::FeedbackSubmission(_) => true,
             ThreadBufferedEvent::Notification(notification) => matches!(
@@ -82,6 +115,7 @@ impl ThreadEventStore {
             capacity,
             active: false,
             buffered_agent_message_delta_bytes: 0,
+            delegated_turns: VecDeque::new(),
             recap_progress: recap::RecapProgress::default(),
         }
     }
@@ -104,7 +138,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
-        self.buffer.retain(Self::event_survives_session_refresh);
+        self.buffer.retain_mut(Self::event_survives_session_refresh);
         self.buffered_agent_message_delta_bytes = 0;
     }
 
@@ -134,6 +168,18 @@ impl ThreadEventStore {
     }
 
     fn push_notification_inner(&mut self, notification: Cow<'_, ServerNotification>) {
+        let user_item = match notification.as_ref() {
+            ServerNotification::ItemStarted(n) => Some((&n.turn_id, &n.item)),
+            ServerNotification::ItemCompleted(n) => Some((&n.turn_id, &n.item)),
+            _ => None,
+        };
+        if let Some((turn_id, ThreadItem::UserMessage { content, .. })) = user_item
+            && turn_id.len() <= 512
+            && crate::chatwidget::realtime_delegation_input(content).is_some()
+            && !self.delegated_turns.contains(turn_id)
+        {
+            self.delegated_turns.push_back(turn_id.clone());
+        }
         self.pending_interactive_replay
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
@@ -191,6 +237,27 @@ impl ThreadEventStore {
         }
 
         self.push_replay_notification(notification);
+        self.trim_delegated_turns();
+    }
+
+    fn trim_delegated_turns(&mut self) {
+        while self.delegated_turns.len() > self.capacity {
+            // Keep an evicted user marker while this turn still has buffered output.
+            let stale = self.delegated_turns.iter().position(|turn_id| {
+                !self.buffer.iter().any(|event| {
+                    matches!(event, ThreadBufferedEvent::Notification(n) if match n.as_ref() {
+                        ServerNotification::ItemCompleted(item) => &item.turn_id == turn_id,
+                        ServerNotification::AgentMessageDelta(delta) => &delta.turn_id == turn_id,
+                        ServerNotification::ReasoningSummaryTextDelta(delta) => &delta.turn_id == turn_id,
+                        ServerNotification::ReasoningTextDelta(delta) => &delta.turn_id == turn_id,
+                        ServerNotification::ReasoningSummaryPartAdded(part) => &part.turn_id == turn_id,
+                        ServerNotification::TurnCompleted(turn) => &turn.turn.id == turn_id,
+                        _ => false,
+                    })
+                })
+            });
+            self.delegated_turns.remove(stale.unwrap_or(0));
+        }
     }
 
     pub(super) fn push_request(&mut self, request: ServerRequest) {
@@ -229,6 +296,7 @@ impl ThreadEventStore {
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {
         let mut snapshot = ThreadEventSnapshot {
             session: self.session.clone(),
+            delegated_turns: self.delegated_turns.iter().cloned().collect(),
             turns: self.turns.clone(),
             // Thread switches replay buffered events into a rebuilt ChatWidget. Only replay
             // interactive prompts that are still pending, or answered approvals/input will reappear.
@@ -250,6 +318,99 @@ impl ThreadEventStore {
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }
+        let delegated = snapshot
+            .turns
+            .iter()
+            .filter(|turn| {
+                turn.items.iter().any(|item| {
+                    matches!(item, ThreadItem::UserMessage { content, .. }
+                    if crate::chatwidget::realtime_delegation_input(content).is_some())
+                })
+            })
+            .map(|turn| turn.id.clone())
+            .chain(self.delegated_turns.iter().cloned())
+            .collect::<std::collections::HashSet<_>>();
+        for turn in &mut snapshot.turns {
+            hide_private_items_after_voice_handoff(&mut turn.items, delegated.contains(&turn.id));
+        }
+        let buffered_markers = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ThreadBufferedEvent::Notification(notification) => match notification.as_ref() {
+                    ServerNotification::ItemStarted(n) if is_voice_handoff_item(&n.item) => {
+                        Some(n.turn_id.clone())
+                    }
+                    ServerNotification::ItemCompleted(n) if is_voice_handoff_item(&n.item) => {
+                        Some(n.turn_id.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut voice_started = delegated
+            .difference(&buffered_markers)
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut typed_items = std::collections::HashSet::new();
+        snapshot.events.retain_mut(|event| {
+            let ThreadBufferedEvent::Notification(notification) = event else {
+                return true;
+            };
+            match notification.as_ref() {
+                ServerNotification::ItemStarted(n) if is_voice_handoff_item(&n.item) => {
+                    voice_started.insert(n.turn_id.clone());
+                }
+                ServerNotification::ItemCompleted(n) if is_voice_handoff_item(&n.item) => {
+                    voice_started.insert(n.turn_id.clone());
+                }
+                ServerNotification::ItemStarted(n) => {
+                    if let ThreadItem::AgentMessage { id, .. } | ThreadItem::Reasoning { id, .. } =
+                        &n.item
+                    {
+                        let key = (n.turn_id.clone(), id.clone());
+                        if voice_started.contains(&n.turn_id) {
+                            typed_items.remove(&key);
+                        } else {
+                            typed_items.insert(key);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            match notification.as_mut() {
+                ServerNotification::AgentMessageDelta(n) => {
+                    !voice_started.contains(&n.turn_id)
+                        || typed_items.contains(&(n.turn_id.clone(), n.item_id.clone()))
+                }
+                ServerNotification::ReasoningSummaryTextDelta(n) => {
+                    !voice_started.contains(&n.turn_id)
+                        || typed_items.contains(&(n.turn_id.clone(), n.item_id.clone()))
+                }
+                ServerNotification::ReasoningTextDelta(n) => {
+                    !voice_started.contains(&n.turn_id)
+                        || typed_items.contains(&(n.turn_id.clone(), n.item_id.clone()))
+                }
+                ServerNotification::ReasoningSummaryPartAdded(n) => {
+                    !voice_started.contains(&n.turn_id)
+                        || typed_items.contains(&(n.turn_id.clone(), n.item_id.clone()))
+                }
+                ServerNotification::ItemCompleted(n) if voice_started.contains(&n.turn_id) => {
+                    matches!(&n.item, ThreadItem::AgentMessage { id, .. } | ThreadItem::Reasoning { id, .. }
+                        if typed_items.contains(&(n.turn_id.clone(), id.clone())))
+                        || !crate::chatwidget::is_private_realtime_agent_item(&n.item)
+                }
+                ServerNotification::TurnCompleted(n) if delegated.contains(&n.turn.id) => {
+                    hide_private_items_after_voice_handoff(
+                        &mut n.turn.items,
+                        /*delegated*/ true,
+                    );
+                    true
+                }
+                _ => true,
+            }
+        });
         snapshot
     }
 
@@ -374,6 +535,10 @@ impl ThreadEventChannel {
         self.attachment = ThreadEventAttachment::ReplayOnly;
     }
 
+    pub(super) fn mark_external_writer(&mut self) {
+        self.attachment = ThreadEventAttachment::ExternalWriter;
+    }
+
     pub(super) fn attachment(&self) -> ThreadEventAttachment {
         self.attachment
     }
@@ -413,12 +578,16 @@ mod tests {
     use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
     use codex_app_server_protocol::HookScope as AppServerHookScope;
     use codex_app_server_protocol::HookStartedNotification;
+    use codex_app_server_protocol::ItemCompletedNotification;
+    use codex_app_server_protocol::ItemStartedNotification;
     use codex_app_server_protocol::McpToolCallProgressNotification;
+    use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
     use codex_app_server_protocol::ThreadRealtimeAudioChunk;
     use codex_app_server_protocol::ThreadRealtimeOutputAudioDeltaNotification;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnStartedNotification;
+    use codex_app_server_protocol::UserInput;
     use codex_config::types::ApprovalsReviewer;
     use codex_protocol::models::PermissionProfile;
     use pretty_assertions::assert_eq;
@@ -722,6 +891,28 @@ mod tests {
     }
 
     #[test]
+    fn refresh_retains_live_questions_without_replaying_their_text() {
+        let mut expected = serde_json::json!({
+            "method": "item/completed", "params": {
+                "threadId": "thread", "turnId": "turn", "completedAtMs": 0,
+                "item": {
+                    "type": "agentMessage", "id": "question", "text": "already in the snapshot",
+                    "phase": null, "memoryCitation": null, "delivery": null,
+                    "questions": [{"title": "Which way?", "options": null}]
+                }
+            }
+        });
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(serde_json::from_value(expected.clone()).unwrap());
+        store.rebase_buffer_after_session_refresh();
+        expected["params"]["item"]["text"] = serde_json::json!("");
+        let ThreadBufferedEvent::Notification(actual) = &store.snapshot().events[0] else {
+            panic!("missing live question");
+        };
+        assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+    }
+
+    #[test]
     fn thread_event_store_rebase_preserves_hook_notifications() {
         let thread_id = ThreadId::new();
         let mut store = ThreadEventStore::new(/*capacity*/ 8);
@@ -778,5 +969,94 @@ mod tests {
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
+    }
+
+    #[test]
+    fn buffered_voice_handoff_retains_only_preexisting_typed_reasoning() {
+        let thread_id = ThreadId::new().to_string();
+        let turn_id = "mixed-reasoning-turn".to_string();
+        let mut store = ThreadEventStore::new(/*capacity*/ 16);
+        let typed = ThreadItem::Reasoning {
+            id: "typed-reasoning".into(),
+            summary: Vec::new(),
+            content: Vec::new(),
+        };
+        store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+            item: typed,
+            started_at_ms: 0,
+        }));
+        store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+            item: ThreadItem::UserMessage {
+                id: "voice-marker".into(),
+                client_id: None,
+                content: vec![UserInput::Text {
+                    text:
+                        "<realtime_delegation><input>spoken follow-up</input></realtime_delegation>"
+                            .into(),
+                    text_elements: Vec::new(),
+                }],
+            },
+            started_at_ms: 0,
+        }));
+        for (id, text) in [
+            ("typed-reasoning", "Typed tail"),
+            ("private-reasoning", "Private voice reasoning"),
+        ] {
+            if id == "private-reasoning" {
+                store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: ThreadItem::Reasoning {
+                        id: id.into(),
+                        summary: Vec::new(),
+                        content: Vec::new(),
+                    },
+                    started_at_ms: 0,
+                }));
+            }
+            store.push_notification(ServerNotification::ReasoningSummaryTextDelta(
+                ReasoningSummaryTextDeltaNotification {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item_id: id.into(),
+                    delta: text.into(),
+                    summary_index: 0,
+                },
+            ));
+            store.push_notification(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: ThreadItem::Reasoning {
+                        id: id.into(),
+                        summary: vec![text.into()],
+                        content: Vec::new(),
+                    },
+                    completed_at_ms: 0,
+                },
+            ));
+        }
+
+        let retained = store
+            .snapshot()
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                ThreadBufferedEvent::Notification(notification) => match *notification {
+                    ServerNotification::ReasoningSummaryTextDelta(n) => Some(n.delta),
+                    ServerNotification::ItemCompleted(n) => match n.item {
+                        ThreadItem::Reasoning { summary, .. } => Some(summary.join("")),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec!["Typed tail", "Typed tail"]);
     }
 }

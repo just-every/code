@@ -75,6 +75,22 @@ async fn permission_shortcut_rejections_leave_state_unchanged() -> Result<()> {
                 .replace(&thread_id.to_string(), "<THREAD_ID>")
         );
         assert!(events.try_recv().is_err());
+        if !experimental_api {
+            app.select_permission_profile(
+                &mut app_server,
+                PermissionProfileSelection {
+                    profile_id: "server-only".into(),
+                    approval_policy: None,
+                    approvals_reviewer: None,
+                    display_label: "server-only".into(),
+                },
+            )
+            .await;
+            insta::assert_snapshot!(
+                next_history_message(&mut events),
+                @"■ Named profiles require a newer app server."
+            );
+        }
         app_server.shutdown().await?;
     }
     Ok(())

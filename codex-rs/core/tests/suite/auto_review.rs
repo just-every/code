@@ -7,9 +7,7 @@ use anyhow::Result;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::config::Constrained;
 use codex_extension_api::ApprovalReviewContributor;
-use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
-use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -29,7 +27,6 @@ use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -65,17 +62,14 @@ use wiremock::matchers::path;
 struct ApprovedReviewContributor;
 
 impl ApprovalReviewContributor for ApprovedReviewContributor {
-    fn fast_decision<'a>(
+    fn decide<'a>(
         &'a self,
-        _session_store: &'a ExtensionData,
-        _thread_store: &'a ExtensionData,
-        prompt: &'a str,
-        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
-    ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
+        input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+    ) -> ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>> {
         Box::pin(async move {
-            assert!(extension_metrics.is_some());
-            assert!(prompt.contains("\"tool\":\"request_permissions\""));
-            Some(ReviewDecision::Approved)
+            assert!(input.metrics.is_some());
+            assert_eq!(input.action["tool"], "request_permissions");
+            Some(codex_extension_api::ApprovalDecision::Allow)
         })
     }
 }
@@ -83,16 +77,13 @@ impl ApprovalReviewContributor for ApprovedReviewContributor {
 struct EscalationApprovingReviewContributor;
 
 impl ApprovalReviewContributor for EscalationApprovingReviewContributor {
-    fn fast_decision<'a>(
+    fn decide<'a>(
         &'a self,
-        _session_store: &'a ExtensionData,
-        _thread_store: &'a ExtensionData,
-        prompt: &'a str,
-        _extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
-    ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
+        input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+    ) -> ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>> {
         Box::pin(async move {
-            assert!(prompt.contains("\"sandbox_permissions\":\"require_escalated\""));
-            Some(ReviewDecision::Approved)
+            assert_eq!(input.action["sandbox_permissions"], "require_escalated");
+            Some(codex_extension_api::ApprovalDecision::Allow)
         })
     }
 }
@@ -622,6 +613,7 @@ fn remote_model_with_auto_review_override(slug: &str, review_model: &str) -> Mod
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        supports_experimental_context: false,
         use_responses_lite: false,
         node_repl_auto_review_required: false,
         node_repl_disabled: false,

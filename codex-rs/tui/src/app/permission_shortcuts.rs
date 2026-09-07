@@ -17,6 +17,10 @@ impl App {
             self.chat_widget.complete_permission_shortcut(thread_id);
             return;
         }
+        if self.reject_pending_permission_change() {
+            self.chat_widget.complete_permission_shortcut(thread_id);
+            return;
+        }
         let result: Result<()> = async {
             let active_profile = ActivePermissionProfile::new(selection.profile_id.clone());
             let profile = builtin_permission_profile_for_active_permission_profile(&active_profile)

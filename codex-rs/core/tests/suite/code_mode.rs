@@ -2373,21 +2373,28 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
 }
 
 #[derive(Default)]
-struct GuardianTicketObserver {
-    tickets: Mutex<Vec<(String, Option<String>)>>,
+struct ResponseIdObserver {
+    response_ids: Mutex<Vec<(String, Option<String>)>>,
+    originating_items: Mutex<Vec<(String, Option<codex_protocol::ResponseItemId>)>>,
     wait_started: tokio::sync::Notify,
 }
 
-impl ToolLifecycleContributor for GuardianTicketObserver {
+impl ToolLifecycleContributor for ResponseIdObserver {
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            if matches!(input.tool_name.name.as_str(), "exec" | "exec_command") {
+                self.originating_items.lock().unwrap().push((
+                    input.tool_name.name.clone(),
+                    input.originating_item_id.cloned(),
+                ));
+            }
             if matches!(input.tool_name.name.as_str(), "exec_command" | "wait") {
-                self.tickets.lock().unwrap().push((
+                self.response_ids.lock().unwrap().push((
                     input.tool_name.name.clone(),
                     input
                         .turn_store
-                        .get::<codex_protocol::guardian_ticket::GuardianTicket>()
-                        .map(|ticket| ticket.as_str().to_owned()),
+                        .get::<codex_api::ResponseId>()
+                        .map(|id| id.0.clone()),
                 ));
                 if input.tool_name.name == "wait" {
                     self.wait_started.notify_one();
@@ -2403,7 +2410,7 @@ async fn code_mode_can_yield_and_resume_with_wait() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let observer = Arc::new(GuardianTicketObserver::default());
+    let observer = Arc::new(ResponseIdObserver::default());
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(observer.clone());
     let mut builder = test_codex()
@@ -2431,7 +2438,7 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     responses::mount_sse_once(
         &server,
         sse(vec![
-            serde_json::json!({"type": "response.created", "response": {"id": "resp-1", "headers": {"x-codex-guardian-ticket": "p".repeat(43)}}}),
+            responses::ev_response_created("resp-1"),
             ev_custom_tool_call("call-1", "exec", &code),
             ev_completed("resp-1"),
         ]),
@@ -2464,7 +2471,7 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     responses::mount_sse_once(
         &server,
         sse(vec![
-            serde_json::json!({"type": "response.created", "response": {"id": "resp-3", "headers": {"x-codex-guardian-ticket": "q".repeat(43)}}}),
+            responses::ev_response_created("resp-3"),
             responses::ev_function_call(
                 "call-2",
                 "wait",
@@ -2511,7 +2518,7 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     responses::mount_sse_once(
         &server,
         sse(vec![
-            serde_json::json!({"type": "response.created", "response": {"id": "resp-5", "headers": {"x-codex-guardian-ticket": "r".repeat(43)}}}),
+            responses::ev_response_created("resp-5"),
             responses::ev_function_call(
                 "call-3",
                 "wait",
@@ -2551,15 +2558,32 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "phase 3");
 
-    let observed = observer.tickets.lock().unwrap();
-    let mut nested_tickets = observed
+    // Resuming the cell changes the response id, but its nested calls retain
+    // the original exec item's identity for request-local freshness accounting.
+    let originating_items = observer.originating_items.lock().unwrap();
+    let wrapper_item = originating_items[0]
+        .1
+        .clone()
+        .expect("wrapper item identity");
+    assert!(originating_items.len() >= 3);
+    assert!(
+        originating_items
+            .iter()
+            .all(|(_, item)| item.as_ref() == Some(&wrapper_item))
+    );
+
+    let observed = observer.response_ids.lock().unwrap();
+    let mut nested_response_ids = observed
         .iter()
         .filter(|(tool, _)| tool == "exec_command")
-        .filter_map(|(_, ticket)| ticket.clone())
-        .skip_while(|ticket| ticket != &"q".repeat(43))
+        .filter_map(|(_, response_id)| response_id.clone())
+        .skip_while(|response_id| response_id != &"resp-3".to_owned())
         .collect::<Vec<_>>();
-    nested_tickets.dedup();
-    assert_eq!(nested_tickets, vec!["q".repeat(43), "r".repeat(43)]);
+    nested_response_ids.dedup();
+    assert_eq!(
+        nested_response_ids,
+        vec!["resp-3".to_owned(), "resp-5".to_owned()]
+    );
     assert_eq!(
         observed
             .iter()
@@ -2567,8 +2591,8 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
             .cloned()
             .collect::<Vec<_>>(),
         vec![
-            ("wait".to_owned(), Some("q".repeat(43))),
-            ("wait".to_owned(), Some("r".repeat(43))),
+            ("wait".to_owned(), Some("resp-3".to_owned())),
+            ("wait".to_owned(), Some("resp-5".to_owned())),
         ]
     );
     Ok(())

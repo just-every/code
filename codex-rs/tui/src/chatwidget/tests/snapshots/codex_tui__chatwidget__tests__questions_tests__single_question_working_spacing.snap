@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/questions_tests.rs
+expression: rendered
+---
+• Working (0s • esc to interrupt)
+
+• Queued follow-up inputs
+
+  Only question?
+
+  A typed answer
+
+  enter submit   ctrl + ] skip   ⌥ + ↓ main prompt

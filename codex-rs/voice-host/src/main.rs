@@ -1,5 +1,26 @@
-//! Same-build helper lifecycle, private runtime initialization and owned transport. No devices yet.
+//! Same-build helper lifecycle with privately owned runtime, transport and opt-in local devices.
+//! Queued privacy controls take priority over starting another capture batch.
 
+// Non-native helper targets negotiate transport but have no device backend to send audio.
+#[cfg_attr(
+    not(any(
+        target_os = "macos",
+        all(target_os = "linux", target_env = "gnu"),
+        all(windows, target_env = "msvc")
+    )),
+    allow(dead_code)
+)]
+mod audio_track;
+#[cfg_attr(
+    not(any(
+        target_os = "macos",
+        all(target_os = "linux", target_env = "gnu"),
+        all(windows, target_env = "msvc")
+    )),
+    path = "devices_unavailable.rs"
+)]
+mod devices;
+mod incoming;
 mod runtime;
 mod transport;
 mod transport_runtime;
@@ -12,6 +33,8 @@ use std::time::Duration;
 use codex_realtime_webrtc::Message;
 use codex_realtime_webrtc::encode_frame;
 use codex_realtime_webrtc::read_message;
+
+const DEVICE_SERVICE_INTERVAL: Duration = Duration::from_millis(/*millis*/ 5);
 
 const BUILD_COMMIT: &str = match option_env!("STABLE_GIT_COMMIT") {
     Some(commit) => commit,
@@ -78,10 +101,69 @@ fn run(
     output.flush()?;
     let mut runtime = None;
     let executor = tokio::runtime::Runtime::new()?;
-    let mut transport = None;
+    let mut transport: Option<transport::Transport> = None;
     let mut answered = false;
+    let mut devices: Option<devices::Devices> = None;
     loop {
-        let reply = match receiver.recv() {
+        let message = if let Some(devices) = &mut devices {
+            let peer = transport
+                .as_mut()
+                .ok_or_else(|| io::Error::other("voice peer not started"))?;
+            wait_for_control(&receiver, || {
+                // Bound one pass to the ingress queue capacity so new media
+                // cannot indefinitely postpone a waiting privacy control.
+                for _ in 0..64 {
+                    let Some(packet) = peer.incoming.take().map_err(io::Error::other)? else {
+                        break;
+                    };
+                    devices.receive(packet)?;
+                }
+                executor.block_on(devices.service(&mut peer.audio))?;
+                Ok(())
+            })?
+            .ok_or(mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        let reply = match message {
+            Ok(Message::InspectAudio {}) => {
+                if answered && transport.as_ref().is_none_or(|peer| !*peer.ready.borrow()) {
+                    return Err(io::Error::other("voice connection closed"));
+                }
+                Message::AudioState {
+                    state: devices
+                        .as_ref()
+                        .map(devices::Devices::take_state)
+                        .transpose()?
+                        .unwrap_or_default(),
+                }
+            }
+            Ok(Message::OpenDevices {}) if devices.is_none() && runtime.is_some() && answered => {
+                devices = Some(devices::Devices::open()?);
+                Message::DevicesOpened {}
+            }
+            Ok(Message::SetAudioControls { controls }) => {
+                let peer = transport
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("voice peer not started"))?;
+                if controls.speaker_suppressed {
+                    peer.incoming
+                        .set_suppressed(controls.speaker_suppressed)
+                        .map_err(io::Error::other)?;
+                }
+                devices
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("audio devices not open"))?
+                    .set_controls(controls)?;
+                if !controls.speaker_suppressed {
+                    peer.incoming
+                        .set_suppressed(controls.speaker_suppressed)
+                        .map_err(io::Error::other)?;
+                }
+                Message::AudioControlsApplied {}
+            }
             Ok(Message::StartTransport {}) if transport.is_none() => {
                 let peer = start_transport(&executor)?;
                 let sdp = executor.block_on(peer.offer()).map_err(io::Error::other)?;
@@ -94,9 +176,15 @@ fn run(
                 let Some(peer) = transport.as_ref() else {
                     return Err(io::Error::other("voice transport not started"));
                 };
-                executor
+                let outcome = executor
                     .block_on(peer.apply_answer(sdp.into_sdp()))
                     .map_err(io::Error::other)?;
+                if outcome == transport::AnswerOutcome::TimedOut {
+                    // The client reaps this helper before considering a fresh negotiation.
+                    output.write_all(&encode_frame(&Message::TransportTimedOut {})?)?;
+                    output.flush()?;
+                    return Ok(());
+                }
                 answered = true;
                 Message::TransportReady {}
             }
@@ -108,13 +196,15 @@ fn run(
                 Message::RuntimeReady {}
             }
             Ok(Message::Close {}) => {
+                let _ = devices.take();
                 if let Some(mut peer) = transport.take() {
                     executor.block_on(peer.close()).map_err(io::Error::other)?;
                 }
                 output.write_all(&encode_frame(&Message::Closed {})?)?;
                 return output.flush();
             }
-            Err(_) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Ok(
                 Message::Hello { .. }
                 | Message::Ready {}
@@ -123,11 +213,31 @@ fn run(
                 | Message::ApplyAnswer { .. }
                 | Message::Offer { .. }
                 | Message::TransportReady {}
+                | Message::TransportTimedOut {}
+                | Message::OpenDevices {}
+                | Message::DevicesOpened {}
+                | Message::AudioControlsApplied {}
+                | Message::AudioState { .. }
                 | Message::Closed {},
             ) => return Err(io::Error::other("invalid voice control sequence")),
         };
         output.write_all(&encode_frame(&reply)?)?;
         output.flush()?;
+    }
+}
+
+// Pending privacy controls and shutdown always precede the next capture batch.
+// A command arriving after service begins cannot retract an already in-flight packet.
+fn wait_for_control(
+    receiver: &mpsc::Receiver<Message>,
+    mut service: impl FnMut() -> io::Result<()>,
+) -> io::Result<Option<Message>> {
+    loop {
+        match receiver.recv_timeout(DEVICE_SERVICE_INTERVAL) {
+            Ok(message) => return Ok(Some(message)),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
+            Err(mpsc::RecvTimeoutError::Timeout) => service()?,
+        }
     }
 }
 

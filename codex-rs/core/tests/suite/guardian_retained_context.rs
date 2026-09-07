@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::CodexThread;
+use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
@@ -17,6 +18,7 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_history::GuardianHistoryCheckpoint;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RetainedContext;
@@ -34,7 +36,9 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::ForkBoundary;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::PrepareForkParams;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -210,18 +214,34 @@ async fn compact_and_assert_answers(
     Ok(actual.clone())
 }
 
-#[test_case(ThreadHistoryMode::Legacy, true; "enabled legacy rollback")]
-#[test_case(ThreadHistoryMode::Paginated, true; "enabled paginated resume")]
-#[test_case(ThreadHistoryMode::Legacy, false; "disabled legacy rollback")]
-#[test_case(ThreadHistoryMode::Paginated, false; "disabled paginated resume")]
+#[derive(Clone, Copy)]
+enum InstructionSize {
+    Normal,
+    Oversized,
+}
+
+#[test_case(ThreadHistoryMode::Legacy, true, InstructionSize::Normal; "enabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, true, InstructionSize::Normal; "enabled paginated resume")]
+#[test_case(ThreadHistoryMode::Legacy, false, InstructionSize::Normal; "disabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, false, InstructionSize::Normal; "disabled paginated resume")]
+#[test_case(ThreadHistoryMode::Legacy, true, InstructionSize::Oversized; "oversized instruction rollback")]
+#[test_case(ThreadHistoryMode::Paginated, true, InstructionSize::Oversized; "oversized instruction resume")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_instructions_keep_identity_across_compaction_and_resume(
     history_mode: ThreadHistoryMode,
     thread_context_enabled: bool,
+    instruction_size: InstructionSize,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     const INITIAL: &str = "Never publish publicly.";
     const STEER: &str = "Also inspect the README.";
+    let initial = match instruction_size {
+        InstructionSize::Normal => INITIAL.to_owned(),
+        InstructionSize::Oversized => format!(
+            "{INITIAL}\n{}\nNever upload logs.",
+            "Project detail. ".repeat(2_000)
+        ),
+    };
     // Paginated history supports checkpoint resume, but not the full-history read
     // used by ThreadRollback. Exercise rollback on its supported legacy path.
     let rollback_counts: &[usize] = match history_mode {
@@ -284,7 +304,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     let response_mock = mount_sse_sequence(&server, responses).await;
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: INITIAL.to_owned(),
+            text: initial.clone(),
             text_elements: Vec::new(),
         }]))
         .await?;
@@ -335,7 +355,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     assert_eq!(answers[0].turn_id, answers[1].turn_id);
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
-    assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+    assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [initial.as_str()]));
     for (index, request) in requests.iter().skip(1).enumerate() {
         assert!(request.has_message_with_input_texts("user", |texts| texts == [STEER]));
         for answer in &answers[..=index] {
@@ -350,7 +370,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         }
     }
     let history = thread.conversation_history_snapshot().await;
-    let user_messages = [INITIAL, STEER]
+    let user_messages = [initial.as_str(), STEER]
         .into_iter()
         .enumerate()
         .map(|(index, text)| {
@@ -370,7 +390,9 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
                 .expect("original user-message identity");
             json!({
                 "order": index, "turn_id": answers[index].turn_id,
-                "message_id": message_id.as_str(), "text": text, "complete": true,
+                "message_id": message_id.as_str(),
+                "text": codex_guardian_context::truncate_text(text, /*max_tokens*/ 900),
+                "complete": index != 0 || matches!(instruction_size, InstructionSize::Normal),
             })
         })
         .collect::<Vec<_>>();
@@ -481,10 +503,149 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     assert_eq!(requests.len(), 4 + rollback_counts.len());
     assert!(requests[3].has_message_with_input_texts("user", |texts| texts == [STEER]));
     if history_mode == ThreadHistoryMode::Legacy {
-        assert!(requests[4].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+        assert!(
+            requests[4].has_message_with_input_texts("user", |texts| texts == [initial.as_str()])
+        );
         assert!(!requests[4].has_message_with_input_texts("user", |texts| texts == [STEER]));
-        assert!(!requests[5].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+        assert!(
+            !requests[5].has_message_with_input_texts("user", |texts| texts == [initial.as_str()])
+        );
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum LegacyInstructionSource {
+    GuardianHistory,
+    ModelWindow,
+    Missing,
+}
+
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::GuardianHistory; "legacy backup")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::GuardianHistory; "paginated backup")]
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::ModelWindow; "legacy window")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::ModelWindow; "paginated window")]
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::Missing; "legacy missing source")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::Missing; "paginated missing source")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_checkpoint_recovers_root_excerpt_before_discarding_backup(
+    history_mode: ThreadHistoryMode,
+    source_location: LegacyInstructionSource,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .enable(Feature::GuardianThreadContext)
+                .expect("enable retained instructions");
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction");
+            config.model_provider.name = "Local compaction test provider".to_owned();
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("initial-turn")]),
+            sse(vec![
+                ev_assistant_message("summary", "Compacted context."),
+                ev_completed("compact"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary-again", "Compacted context."),
+                ev_completed("compact-again"),
+            ]),
+        ],
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: format!(
+                "Never publish publicly.\n{}\nNever upload logs.",
+                "Project detail. ".repeat(2_000)
+            ),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let snapshot = test.codex.conversation_history_snapshot().await;
+    let source = snapshot
+        .items()
+        .find(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"))
+        .cloned()
+        .context("original instruction")?;
+    let mut expected = compact_and_assert_answers(&test, &test.codex, &[]).await?;
+    let mut checkpoint = load_context(&test, &test.codex)
+        .await?
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .context("compaction checkpoint")?;
+    // Pre-cutover checkpoints cleared retained text over 16 KiB and kept its raw
+    // source in the Guardian backup. Persist that old wire format for real replay.
+    let mut legacy = serde_json::to_value(&expected)?;
+    legacy["user_messages"][0]["text"] = json!("");
+    let legacy: RetainedContext = serde_json::from_value(legacy)?;
+    checkpoint.retained_context = Some(legacy.clone());
+    let window = checkpoint
+        .replacement_history
+        .as_mut()
+        .context("compacted model window")?;
+    window.retain(|item| item.id() != source.id());
+    match source_location {
+        LegacyInstructionSource::GuardianHistory => {
+            // Compaction can leave a shorter copy with the same ID in the model window.
+            let mut shortened = source.clone();
+            let ResponseItem::Message { content, .. } = &mut shortened else {
+                unreachable!("original instruction is a user message");
+            };
+            *content = vec![ContentItem::InputText {
+                text: "Never publish publicly.".to_owned(),
+            }];
+            window.push(shortened.into());
+            checkpoint.guardian_history = Some(GuardianHistoryCheckpoint(vec![source]));
+        }
+        LegacyInstructionSource::ModelWindow => window.push(source.into()),
+        LegacyInstructionSource::Missing => expected = legacy,
+    }
+    test.codex
+        .append_rollout_items(&[RolloutItem::Compacted(checkpoint)])
+        .await?;
+    let resumed = resume(&test, &test.codex).await?;
+    assert_eq!(
+        resumed
+            .conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    // The excerpt must survive another compaction and resume after the backup is gone.
+    assert_eq!(
+        compact_and_assert_answers(&test, &resumed, &[]).await?,
+        expected
+    );
+    let resumed = resume(&test, &resumed).await?;
+    assert_eq!(
+        resumed
+            .conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    resumed.shutdown_and_wait().await?;
     Ok(())
 }
 
@@ -735,6 +896,225 @@ enum LifecycleBoundary {
     ChildFork,
 }
 
+// Cover live copied history and a truncated referenced checkpoint. Parent-answer
+// omission is already exercised by retained_answers_cross_real_session_boundaries.
+#[test_case(ThreadHistoryMode::Legacy; "copied worker history")]
+#[test_case(ThreadHistoryMode::Paginated; "referenced truncated checkpoint")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_fork_retains_inherited_user_instructions(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let compacted = history_mode == ThreadHistoryMode::Paginated;
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mut test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction for worker checkpoint");
+            config.model_provider.name = "Local compaction test provider".to_owned();
+            for feature in [
+                Feature::GuardianApproval,
+                Feature::GuardianThreadContext,
+                Feature::Collab,
+                Feature::MultiAgentV2,
+                Feature::DefaultModeRequestUserInput,
+            ] {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("enable test feature");
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let instruction = if compacted {
+        format!(
+            "You may publish the release. {} Delegate an inspection.",
+            "Original project detail. ".repeat(500)
+        )
+    } else {
+        "You may publish the release. Delegate an inspection.".to_owned()
+    };
+    let mut created = test.thread_manager.subscribe_thread_created();
+    mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call_with_namespace(
+                    "spawn", "collaboration", "spawn_agent",
+                    &json!({"task_name": "worker", "message": "Inspect the project.", "fork_turns": "all"}).to_string(),
+                ),
+                ev_completed("spawn-response"),
+            ]),
+            sse(vec![ev_completed("root-complete")]),
+            sse(vec![ev_completed("worker-complete")]),
+        ],
+    ).await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: instruction.clone(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let worker = test
+        .thread_manager
+        .get_thread(created.recv().await?)
+        .await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    test.codex.shutdown_and_wait().await?;
+    let local_instruction = if compacted {
+        // Leave less than Guardian's 900-token budget for the inherited source
+        // within local compaction's 20K user-message budget.
+        format!("Ask me before publishing. {}", "x".repeat(78_000))
+    } else {
+        "Ask me before publishing.".to_owned()
+    };
+    mount_sse_sequence(&server, vec![sse(vec![ev_completed("local-instruction")])]).await;
+    worker
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: local_instruction.clone(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    if compacted {
+        // Local compaction keeps the inherited source message in replacement history.
+        mount_sse_sequence(
+            &server,
+            vec![sse(vec![
+                ev_assistant_message("worker-summary", "Inspected the project."),
+                ev_completed("worker-compacted"),
+            ])],
+        )
+        .await;
+        compact_and_assert_answers(&test, &worker, &[]).await?;
+    }
+    let worker_context = worker.conversation_history_snapshot().await;
+    let inherited_text = worker_context
+        .items()
+        .find_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                let [ContentItem::InputText { text }] = content.as_slice() else {
+                    return None;
+                };
+                text.starts_with("You may publish the release.")
+                    .then(|| text.clone())
+            }
+            _ => None,
+        })
+        .context("inherited source in worker history")?;
+    if compacted {
+        assert_ne!(inherited_text, instruction);
+        assert!(inherited_text.contains("tokens truncated"));
+        assert!(inherited_text.len() < 900 * 4);
+    }
+    // The adopted root later compacts through the mechanical path, which can drop originals.
+    test.config
+        .features
+        .enable(Feature::TokenBudget)
+        .expect("use mechanical root compaction");
+    let fork = if history_mode == ThreadHistoryMode::Paginated {
+        let prepared = test
+            .thread_store
+            .prepare_fork(PrepareForkParams {
+                thread_id: worker.session_configured().thread_id,
+                boundary: ForkBoundary::Latest,
+            })
+            .await?;
+        test.thread_manager
+            .fork_prepared_thread(
+                test.config.clone(),
+                prepared,
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await?
+    } else {
+        test.thread_manager
+            .fork_thread_from_history(
+                ForkSnapshot::Interrupted,
+                test.config.clone(),
+                InitialHistory::Resumed(ResumedHistory {
+                    conversation_id: worker.session_configured().thread_id,
+                    history: Arc::new(load_context(&test, &worker).await?),
+                    rollout_path: None,
+                }),
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await?
+    };
+    assert!(fork.thread.guardian_root_snapshot().await.is_none());
+    let history = fork.thread.conversation_history_snapshot().await;
+    let retained = history.retained_context().context("root context")?;
+    let answers = codex_guardian_context::render_verified_answers(retained);
+    assert_eq!(
+        (answers.fragments, answers.complete),
+        (
+            vec![codex_guardian_context::GuardianRootMessage::IncompleteVerifiedAnswers.render()],
+            false
+        ),
+    );
+    assert_eq!(
+        retained
+            .ordered_entries()
+            .map(|(_, entry)| match entry {
+                codex_history::RetainedContextEntry::UserMessage(message) =>
+                    (message.text.clone(), message.complete),
+                codex_history::RetainedContextEntry::VerifiedAnswer(_) =>
+                    panic!("no answers before root adoption"),
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (inherited_text, !compacted),
+            (
+                codex_guardian_context::truncate_text(&local_instruction, /*max_tokens*/ 900),
+                !compacted,
+            ),
+        ],
+    );
+    let after = record_answer(
+        &fork.thread,
+        &server,
+        "root-action",
+        "Do not publish.",
+        /*acceptance_order*/ 2,
+    )
+    .await?;
+    let expected = fork
+        .thread
+        .conversation_history_snapshot()
+        .await
+        .retained_context()
+        .context("root after local answer")?
+        .clone();
+    assert!(!expected.verified_answers_complete());
+    let root = fork.thread;
+    compact_and_assert_answers(&test, &root, &[after]).await?;
+    let root = resume(&test, &root).await?;
+    assert_eq!(
+        root.conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    root.shutdown_and_wait().await?;
+    worker.shutdown_and_wait().await?;
+    Ok(())
+}
+
 #[test_case(false, true; "enabled without checkpoint")]
 #[test_case(true, true; "enabled after checkpoint")]
 #[test_case(false, false; "legacy without checkpoint")]
@@ -927,7 +1307,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
     assert_eq!(
         expected.as_ref().map(|context| context
             .ordered_entries()
-            .map(|entry| match entry {
+            .map(|(_, entry)| match entry {
                 codex_history::RetainedContextEntry::UserMessage(message) => message.text.as_str(),
                 codex_history::RetainedContextEntry::VerifiedAnswer(_) =>
                     panic!("unexpected answer"),

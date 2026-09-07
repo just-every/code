@@ -207,6 +207,9 @@ pub struct RevertThreadParams {
     pub thread_id: ThreadId,
     /// First turn excluded from the retained history.
     pub before_turn_id: String,
+    /// Resolved runtime version to preserve when its turn context is removed.
+    /// When absent, keep the version in the existing session metadata.
+    pub multi_agent_version: Option<MultiAgentVersion>,
 }
 
 /// Frozen source history and model context for a reference-backed fork.
@@ -611,6 +614,9 @@ pub struct StoredThread {
     /// Canonical project assignment owned by app-server, if any.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// User-selected Daybreak preference, absent until explicitly set.
+    #[serde(default)]
+    pub daybreak_enabled: Option<bool>,
     /// Working directory captured for the thread.
     pub cwd: PathBuf,
     /// CLI version captured for the thread.
@@ -780,6 +786,8 @@ pub struct ThreadMetadataPatch {
         with = "optional_option"
     )]
     pub project_id: ClearableField<String>,
+    /// User-selected Daybreak preference; omission leaves it unchanged.
+    pub daybreak_enabled: Option<bool>,
 }
 
 impl ThreadMetadataPatch {
@@ -866,6 +874,9 @@ impl ThreadMetadataPatch {
         if next.project_id.is_some() {
             self.project_id = next.project_id;
         }
+        if next.daybreak_enabled.is_some() {
+            self.daybreak_enabled = next.daybreak_enabled;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -894,6 +905,7 @@ impl ThreadMetadataPatch {
             && self.git_info.is_none()
             && self.memory_mode.is_none()
             && self.project_id.is_none()
+            && self.daybreak_enabled.is_none()
     }
 }
 

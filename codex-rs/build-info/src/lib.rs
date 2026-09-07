@@ -1,4 +1,4 @@
-//! Resolve the release identity of the current Codex runtime.
+//! Resolve the packaged release version, compiled commit, and target of the current runtime.
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -7,6 +7,8 @@ use codex_install_context::InstallContext;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
 
 static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
 
@@ -14,6 +16,7 @@ static BUILD_INFO: OnceLock<BuildInfo> = OnceLock::new();
 ///
 /// The environment lookup intentionally expands at the macro call site so Git
 /// changes invalidate only final binary actions, not this shared library.
+/// Cargo builds must supply STABLE_GIT_COMMIT in the build environment.
 #[macro_export]
 macro_rules! initialize {
     () => {
@@ -26,6 +29,8 @@ macro_rules! initialize {
 pub struct BuildInfo {
     version: Version,
     build_commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
 }
 
 impl BuildInfo {
@@ -59,10 +64,12 @@ impl BuildInfo {
                     "unknown".to_string()
                 },
                 version: parsed_version,
+                target: None,
             },
             Err(_) => Self {
                 version: Version::new(0, 0, 0),
                 build_commit: version,
+                target: None,
             },
         }
     }
@@ -93,19 +100,44 @@ impl BuildInfo {
         &self.build_commit
     }
 
+    /// Return the compiler target triple, or `None` for historical metadata without a target.
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn resolve(install_context: &InstallContext, build_commit: &'static str) -> Self {
         if let Some(manifest) = install_context.package_manifest() {
             return Self {
                 version: manifest.version,
                 build_commit: build_commit.to_owned(),
+                target: Some(env!("CODEX_BUILD_TARGET").to_owned()),
             };
         }
 
         Self {
             version: Version::new(0, 0, 0),
             build_commit: build_commit.to_owned(),
+            target: Some(env!("CODEX_BUILD_TARGET").to_owned()),
         }
     }
+}
+
+/// Derive a standard build's opaque ID from its stamped commit and compiler target.
+///
+/// Explicit inputs let CI identify cross-compiled builds without running them.
+/// Runtime callers must use the running executable's stamp and target. The stable
+/// encoding is SHA-256 of `git:<full lowercase commit>:<target>`, excluding version.
+/// This identifies a standard build configuration, not exact executable bytes.
+pub fn build_id(build_commit: &str, target: &str) -> Option<String> {
+    if build_commit.len() != 40
+        || !build_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || target.is_empty()
+    {
+        return None;
+    }
+    let identity = format!("git:{}:{target}", build_commit.to_ascii_lowercase());
+    let digest = Sha256::digest(identity.as_bytes());
+    Some(format!("sha256:{digest:x}"))
 }
 
 impl fmt::Display for BuildInfo {

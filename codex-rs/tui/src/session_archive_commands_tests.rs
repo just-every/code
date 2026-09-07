@@ -252,75 +252,119 @@ async fn unarchives_by_sqlite_name() -> color_eyre::Result<()> {
 }
 
 #[tokio::test]
-async fn deletes_valid_duplicate_after_stale_sqlite_hit() -> color_eyre::Result<()> {
+async fn delete_refuses_same_label_in_active_and_archived_sessions() -> color_eyre::Result<()> {
     let temp_dir = TempDir::new()?;
     let config = build_config(&temp_dir).await?;
     let runtime = state_runtime(&config).await?;
-    let stale_id = ThreadId::new();
-    let stale_rollout_path = write_rollout(
-        &config,
-        stale_id,
-        /*archived*/ true,
-        "2025-02-01T10:00:00Z",
-        "stale preview",
-        SessionSource::Cli,
-    )?;
-    runtime
-        .upsert_thread(&thread_metadata(
+    let mut paths = Vec::new();
+    let mut thread_ids = Vec::new();
+    for archived in [false, true] {
+        let thread_id = ThreadId::new();
+        thread_ids.push(thread_id);
+        let path = write_rollout(
             &config,
-            stale_id,
-            stale_rollout_path.clone(),
-            "saved-session",
-            /*archived*/ false,
-        ))
-        .await
-        .map_err(std::io::Error::other)?;
-
-    let thread_id = ThreadId::new();
-    let rollout_path = write_rollout(
-        &config,
-        thread_id,
-        /*archived*/ false,
-        "2025-02-01T10:00:00Z",
-        "preview",
-        SessionSource::Cli,
-    )?;
-    codex_rollout::append_thread_name(config.codex_home.as_path(), thread_id, "saved-session")
-        .await?;
+            thread_id,
+            archived,
+            "2025-02-01T10:00:00Z",
+            "preview text",
+            SessionSource::Cli,
+        )?;
+        runtime
+            .upsert_thread(&thread_metadata(
+                &config,
+                thread_id,
+                path.clone(),
+                "preview text",
+                archived,
+            ))
+            .await
+            .map_err(std::io::Error::other)?;
+        paths.push(path);
+    }
 
     let mut app_server = start_app_server(config.clone()).await?;
-    let message = run_session_archive_action_with_app_server(
+    let error = run_session_archive_action_with_app_server(
         &mut app_server,
         config.codex_home.as_path(),
         SessionArchiveAction::Delete(DeleteConfirmation::Skip),
-        "saved-session",
+        "preview text",
     )
-    .await?;
+    .await
+    .expect_err("duplicate previews must not pick a deletion target");
     app_server.shutdown().await?;
-
     assert_eq!(
+        (error.to_string(), paths.iter().all(|path| path.exists())),
         (
-            message,
-            rollout_path.exists(),
-            stale_rollout_path.exists(),
-            runtime
-                .get_thread(thread_id)
-                .await
-                .map_err(std::io::Error::other)?,
-            runtime
-                .get_thread(stale_id)
-                .await
-                .map_err(std::io::Error::other)?
-                .is_some(),
-        ),
-        (
-            format!("Deleted session saved-session ({thread_id})."),
-            false,
-            true,
-            None,
+            format!(
+                "Multiple sessions match 'preview text' (including {} and {}); use a session UUID to disambiguate.",
+                thread_ids[0], thread_ids[1]
+            ),
             true,
         ),
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn refuses_action_with_stale_sqlite_collection() -> color_eyre::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let config = build_config(&temp_dir).await?;
+    let runtime = state_runtime(&config).await?;
+    let cases = [
+        (false, SessionArchiveAction::Archive, "active"),
+        (true, SessionArchiveAction::Unarchive, "archived"),
+    ];
+    let mut paths = Vec::new();
+    for (listed_archived, _, _) in cases {
+        let stale_id = ThreadId::new();
+        let stale_rollout_path = write_rollout(
+            &config,
+            stale_id,
+            /*archived*/ !listed_archived,
+            "2025-02-01T10:00:00Z",
+            "stale preview",
+            SessionSource::Cli,
+        )?;
+        runtime
+            .upsert_thread(&thread_metadata(
+                &config,
+                stale_id,
+                stale_rollout_path.clone(),
+                &format!("stale-{listed_archived}"),
+                listed_archived,
+            ))
+            .await
+            .map_err(std::io::Error::other)?;
+        paths.push((stale_id, stale_rollout_path));
+    }
+
+    let mut app_server = start_app_server(config.clone()).await?;
+    for (listed_archived, action, scope) in cases {
+        let name = format!("stale-{listed_archived}");
+        let error = run_session_archive_action_with_app_server(
+            &mut app_server,
+            config.codex_home.as_path(),
+            action,
+            &name,
+        )
+        .await
+        .expect_err("a stale row must not select a rollout in the wrong collection");
+        assert_eq!(
+            error.to_string(),
+            format!("No {scope} session found matching '{name}'.")
+        );
+    }
+    app_server.shutdown().await?;
+    for (id, path) in paths {
+        assert!(path.exists());
+        assert!(
+            runtime
+                .get_thread(id)
+                .await
+                .map_err(std::io::Error::other)?
+                .is_some()
+        );
+    }
     Ok(())
 }
 
@@ -393,8 +437,7 @@ async fn trusts_sqlite_name_over_legacy_index_for_delete() -> color_eyre::Result
 }
 
 #[tokio::test]
-async fn queues_non_interactive_and_custom_sessions_without_scanning_rollouts()
--> color_eyre::Result<()> {
+async fn queues_non_interactive_and_custom_sessions_by_server_label() -> color_eyre::Result<()> {
     let temp_dir = TempDir::new()?;
     let config = build_config(&temp_dir).await?;
     let runtime = state_runtime(&config).await?;
@@ -466,21 +509,6 @@ async fn queues_non_interactive_and_custom_sessions_without_scanning_rollouts()
         .upsert_thread(&custom_metadata)
         .await
         .map_err(std::io::Error::other)?;
-    let legacy_thread_id = ThreadId::new();
-    write_rollout(
-        &config,
-        legacy_thread_id,
-        /*archived*/ false,
-        "2025-02-01T10:00:00Z",
-        "preview",
-        SessionSource::Cli,
-    )?;
-    codex_rollout::append_thread_name(
-        config.codex_home.as_path(),
-        legacy_thread_id,
-        "saved-session",
-    )
-    .await?;
     let (resolved_custom_thread_id, _) = run_session_queue_action_with_app_server(
         &mut app_server,
         config.codex_home.as_path(),
@@ -489,40 +517,27 @@ async fn queues_non_interactive_and_custom_sessions_without_scanning_rollouts()
         "custom-client-message-id",
     )
     .await?;
-    assert_eq!(
-        (
-            resolved_custom_thread_id,
-            runtime
-                .get_thread(legacy_thread_id)
-                .await
-                .map_err(std::io::Error::other)?,
-        ),
-        (custom_thread_id, None),
-    );
+    assert_eq!(resolved_custom_thread_id, custom_thread_id);
     runtime
         .update_thread_title(custom_thread_id, "saved-session")
         .await
         .map_err(std::io::Error::other)?;
 
-    let (resolved_duplicate_id, _) = run_session_queue_action_with_app_server(
+    let duplicate_error = run_session_queue_action_with_app_server(
         &mut app_server,
         config.codex_home.as_path(),
         "saved-session",
         "do the thing",
         "duplicate-client-message-id",
     )
-    .await?;
+    .await
+    .expect_err("different sources with the same label need a thread ID");
     app_server.shutdown().await?;
-
     assert_eq!(
-        (
-            resolved_duplicate_id,
-            runtime
-                .get_thread(legacy_thread_id)
-                .await
-                .map_err(std::io::Error::other)?,
-        ),
-        (custom_thread_id, None),
+        duplicate_error.to_string(),
+        format!(
+            "Multiple sessions match 'saved-session' (including {thread_id} and {custom_thread_id}); use a session UUID to disambiguate."
+        )
     );
     Ok(())
 }

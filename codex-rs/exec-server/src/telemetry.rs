@@ -186,6 +186,7 @@ impl ExecServerTelemetry {
         &self,
         duration: Duration,
         result: Result<(), &'static str>,
+        capture_tags: &[(&str, &str)],
     ) {
         // Local execution has no exec-server telemetry owner. Use the host's
         // configured metrics client while preserving an explicit server client.
@@ -199,10 +200,11 @@ impl ExecServerTelemetry {
         };
         let success = if result.is_ok() { "true" } else { "false" };
         let mut tags = vec![("version", "v2"), ("success", success)];
-        let _ = metrics.record_duration("codex.shell_snapshot.duration_ms", duration, &tags);
+        tags.extend_from_slice(capture_tags);
         if let Err(failure_reason) = result {
             tags.push(("failure_reason", failure_reason));
         }
+        let _ = metrics.record_duration("codex.shell_snapshot.duration_ms", duration, &tags);
         let _ = metrics.counter("codex.shell_snapshot", /*inc*/ 1, &tags);
     }
 

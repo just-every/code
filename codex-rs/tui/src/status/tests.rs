@@ -732,7 +732,7 @@ async fn status_snapshot_shows_active_user_defined_profile() {
 }
 
 #[tokio::test]
-async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_link() {
+async fn status_uses_server_provider_id_and_auth_requirement() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.6-sol".to_string());
@@ -752,13 +752,12 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         .single()
         .expect("timestamp");
     let model_slug = get_model_offline_for_tests(config.model.as_deref());
-    let runtime_base_url = "https://bedrock-mantle.eu-west-1.api.aws/openai/v1";
 
     config.model_provider.requires_openai_auth = true;
     let (composite, _handle) = new_status_output_with_rate_limits_handle(
         &config,
         /*requires_openai_auth*/ false,
-        Some(runtime_base_url),
+        Some("server-ollama"),
         /*remote_connection*/ None,
         test_status_account_display().as_ref(),
         /*token_info*/ None,
@@ -789,7 +788,7 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
     let (composite, _handle) = new_status_output_with_rate_limits_handle(
         &config,
         /*requires_openai_auth*/ true,
-        /*runtime_model_provider_base_url*/ None,
+        Some("server-openai"),
         /*remote_connection*/ None,
         test_status_account_display().as_ref(),
         /*token_info*/ None,
@@ -1641,7 +1640,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
     let (composite, _) = new_status_output_with_rate_limits_handle(
         &config,
         /*requires_openai_auth*/ true,
-        /*runtime_model_provider_base_url*/ None,
+        /*model_provider_id*/ None,
         Some(&remote_connection),
         account_display.as_ref(),
         Some(&token_info),
@@ -1752,7 +1751,7 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
     let (status, handle) = new_status_output_with_rate_limits_handle(
         &config,
         /*requires_openai_auth*/ true,
-        /*runtime_model_provider_base_url*/ None,
+        /*model_provider_id*/ None,
         /*remote_connection*/ None,
         /*account_display*/ None,
         /*token_info*/ None,

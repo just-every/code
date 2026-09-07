@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/permissions.rs
-assertion_line: 50
+assertion_line: 46
 expression: "render_bottom_popup(&chat, 110)"
 ---
   Update Model Permissions
@@ -14,7 +14,6 @@ expression: "render_bottom_popup(&chat, 110)"
                                  requirements.)
      Read Only (disabled)        Codex can read files in the current workspace. Approval is required to edit
                                  files or access the internet. (disabled: Disabled by requirements.)
-     server-only (disabled)      Description from the connected server. (disabled: Selecting custom profiles
-                                 from a remote server is not supported yet.)
+  2. server-only                 Description from the connected server.
 
   Press enter to confirm or esc to go back

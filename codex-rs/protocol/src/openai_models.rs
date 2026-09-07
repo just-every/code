@@ -41,6 +41,8 @@ pub use guardian::GuardianScope;
 
 #[path = "openai_models/guardian_v2.rs"]
 mod guardian_v2;
+#[path = "openai_models/reasoning_effort.rs"]
+mod reasoning_effort;
 
 pub use guardian_v2::GuardianV2ModelConfig;
 pub use guardian_v2::GuardianV2TranscriptModelConfig;
@@ -468,6 +470,9 @@ pub struct ModelInfo {
     pub used_fallback_model_metadata: bool,
     #[serde(default)]
     pub supports_search_tool: bool,
+    /// Whether experimental context management may be activated at session startup.
+    #[serde(default)]
+    pub supports_experimental_context: bool,
     #[serde(default)]
     pub use_responses_lite: bool,
     #[serde(default)]
@@ -1009,6 +1014,7 @@ mod tests {
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            supports_experimental_context: false,
             use_responses_lite: false,
             guardian: None,
             node_repl_auto_review_required: false,
@@ -1020,7 +1026,6 @@ mod tests {
             multi_agent_reasoning_effort: None,
         }
     }
-
     fn personality_variables() -> ModelInstructionsVariables {
         ModelInstructionsVariables {
             personality_default: Some("default".to_string()),
@@ -1771,6 +1776,7 @@ mod tests {
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert!(!model.supports_search_tool);
+        assert!(!model.supports_experimental_context);
         assert!(!model.use_responses_lite);
         assert!(!model.node_repl_auto_review_required);
         assert!(!model.node_repl_disabled);

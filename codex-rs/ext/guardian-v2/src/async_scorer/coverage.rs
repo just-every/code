@@ -150,15 +150,4 @@ impl GuardianPolicy {
                 == Some("require_escalated")
         }))
     }
-
-    pub(super) fn review_scope(action: &serde_json::Value) -> Option<GuardianScope> {
-        match action.get("tool").and_then(serde_json::Value::as_str)? {
-            "mcp_tool_call" => action
-                .get("server")
-                .and_then(serde_json::Value::as_str)
-                .map(GuardianScope::for_mcp_server),
-            "network_access" => Some(GuardianScope::Network),
-            tool => GuardianScope::for_tool(&ToolName::plain(tool)),
-        }
-    }
 }

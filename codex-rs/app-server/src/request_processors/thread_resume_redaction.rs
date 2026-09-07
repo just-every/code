@@ -210,6 +210,7 @@ mod tests {
             section: None,
             section_entered_at: None,
             project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "mock_provider".to_string(),
             model: None,

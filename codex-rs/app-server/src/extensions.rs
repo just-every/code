@@ -19,8 +19,6 @@ use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
-use codex_extension_api::InternalSessionSpawnFuture;
-use codex_extension_api::InternalSessionSpawner;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalService;
 use codex_http_client::HttpClientFactory;
@@ -100,7 +98,6 @@ where
     codex_guardian_v2::install(
         &mut builder,
         guardian_agent_spawner,
-        internal_session_spawner(thread_manager.clone()),
         auth_manager.clone(),
         thread_manager,
     );
@@ -319,24 +316,6 @@ pub(crate) fn guardian_agent_spawner(
             })?;
             thread_manager
                 .spawn_subagent(forked_from_thread_id, options)
-                .await
-        })
-    }
-}
-
-fn internal_session_spawner(
-    thread_manager: Weak<ThreadManager>,
-) -> impl InternalSessionSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> {
-    move |parent_thread_id: ThreadId,
-          options: StartThreadOptions|
-          -> InternalSessionSpawnFuture<'static, NewThread, CodexErr> {
-        let thread_manager = thread_manager.clone();
-        Box::pin(async move {
-            let thread_manager = thread_manager.upgrade().ok_or_else(|| {
-                CodexErr::UnsupportedOperation("thread manager dropped".to_string())
-            })?;
-            thread_manager
-                .spawn_internal_session(parent_thread_id, options)
                 .await
         })
     }

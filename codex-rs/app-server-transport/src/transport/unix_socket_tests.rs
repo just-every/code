@@ -1,5 +1,6 @@
 use super::AppServerTransport;
 use super::CHANNEL_CAPACITY;
+use super::DaemonShutdownAccess;
 use super::TransportEvent;
 use super::acquire_app_server_startup_lock;
 use super::app_server_control_socket_path;
@@ -64,6 +65,7 @@ async fn control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_a
         socket_path.clone(),
         transport_event_tx,
         shutdown_token.clone(),
+        DaemonShutdownAccess::Disabled,
     )
     .await
     .expect("control socket acceptor should start");
@@ -142,6 +144,87 @@ async fn control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_a
 }
 
 #[tokio::test]
+async fn shutdown_is_only_accepted_on_managed_local_socket_for_its_own_pid() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp_dir.path());
+    let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let acceptor = start_control_socket_acceptor(
+        socket_path.clone(),
+        tx,
+        shutdown.clone(),
+        DaemonShutdownAccess::Disabled,
+    )
+    .await
+    .expect("acceptor");
+
+    let stream = connect_to_socket(socket_path.as_path())
+        .await
+        .expect("connect");
+    assert!(
+        client_async("ws://localhost/daemon/shutdown", stream)
+            .await
+            .is_err()
+    );
+    assert!(rx.try_recv().is_err());
+    shutdown.cancel();
+    acceptor.await.expect("acceptor shutdown");
+
+    let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let acceptor = start_control_socket_acceptor(
+        socket_path.clone(),
+        tx,
+        shutdown.clone(),
+        DaemonShutdownAccess::Managed,
+    )
+    .await
+    .expect("managed acceptor");
+    let stream = connect_to_socket(socket_path.as_path())
+        .await
+        .expect("connect");
+    let (mut websocket, _) = client_async("ws://localhost/daemon/shutdown", stream)
+        .await
+        .expect("upgrade");
+    websocket
+        .send(WebSocketMessage::Text("0".into()))
+        .await
+        .expect("wrong pid");
+    assert!(!matches!(
+        websocket.next().await,
+        Some(Ok(WebSocketMessage::Text(_)))
+    ));
+    assert!(rx.try_recv().is_err());
+
+    let stream = connect_to_socket(socket_path.as_path())
+        .await
+        .expect("connect");
+    let (mut websocket, _) = client_async("ws://localhost/daemon/shutdown", stream)
+        .await
+        .expect("upgrade");
+    let pid = std::process::id().to_string();
+    websocket
+        .send(WebSocketMessage::Text(pid.clone().into()))
+        .await
+        .expect("request");
+    assert_eq!(
+        websocket.next().await.expect("ack").expect("ack frame"),
+        WebSocketMessage::Text(pid.into())
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "server must wait until the ack is received"
+    );
+    websocket.close(None).await.expect("confirm receipt");
+    assert!(matches!(
+        timeout(Duration::from_secs(2), rx.recv()).await,
+        Ok(Some(TransportEvent::DaemonShutdown))
+    ));
+    shutdown.cancel();
+    acceptor.await.expect("acceptor shutdown");
+}
+
+#[tokio::test]
 async fn app_server_startup_lock_serializes_waiters() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
     let lock_path = test_startup_lock_path(temp_dir.path());
@@ -177,6 +260,7 @@ async fn control_socket_file_is_private_after_bind() {
         socket_path.clone(),
         transport_event_tx,
         shutdown_token.clone(),
+        DaemonShutdownAccess::Disabled,
     )
     .await
     .expect("control socket acceptor should start");
@@ -199,9 +283,14 @@ async fn control_socket_pins_directory_until_shutdown() {
     let moved = temp_dir.path().join("moved");
     let (tx, _rx) = mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let acceptor = start_control_socket_acceptor(socket_path.clone(), tx, shutdown.clone())
-        .await
-        .expect("acceptor");
+    let acceptor = start_control_socket_acceptor(
+        socket_path.clone(),
+        tx,
+        shutdown.clone(),
+        DaemonShutdownAccess::Disabled,
+    )
+    .await
+    .expect("acceptor");
     assert!(std::fs::rename(directory, &moved).is_err());
     shutdown.cancel();
     acceptor.await.expect("shutdown");

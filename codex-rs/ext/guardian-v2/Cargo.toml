@@ -23,8 +23,6 @@ codex-history = { workspace = true }
 codex-http-client = { workspace = true }
 codex-login = { workspace = true }
 codex-model-provider = { workspace = true }
-codex-models-manager = { workspace = true }
-codex-network-proxy = { workspace = true }
 codex-protocol = { workspace = true }
 dirs = { workspace = true }
 http = { workspace = true }

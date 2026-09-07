@@ -75,6 +75,60 @@ fn contains_text(buffer: &Buffer, text: &str) -> bool {
         })
 }
 
+#[tokio::test]
+async fn external_writer_view_shows_notice_instead_of_composer() {
+    let (mut widget, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
+    widget.show_external_writer_thread();
+
+    let frame = crate::terminal_palette::with_test_default_colors(
+        crate::terminal_probe::DefaultColors {
+            fg: (230, 230, 230),
+            bg: (20, 20, 20),
+        },
+        || render_frame(&widget, /*width*/ 60),
+    );
+    let rows: Vec<String> = frame
+        .content
+        .chunks(usize::from(frame.area.width))
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .collect();
+    insta::assert_snapshot!(
+        rows.iter()
+            .map(|row| row.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert_ne!(frame[(0, 1)].bg, ratatui::style::Color::Reset);
+    assert_eq!(frame[(0, 1)].bg, frame[(59, 4)].bg);
+    assert!(
+        !frame[(3, 5)]
+            .style()
+            .add_modifier
+            .intersects(ratatui::style::Modifier::DIM | ratatui::style::Modifier::BOLD)
+    );
+    assert!(
+        frame[(5, 5)]
+            .style()
+            .add_modifier
+            .contains(ratatui::style::Modifier::DIM)
+    );
+    assert!(!widget.bottom_pane.composer_input_enabled());
+}
+
+#[tokio::test]
+async fn external_writer_notice_uses_current_transcript_shortcut() {
+    let (mut widget, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
+    let mut keymap = crate::keymap::RuntimeKeymap::defaults();
+    keymap.app.open_transcript = vec![crate::key_hint::ctrl(KeyCode::Char('k'))];
+    widget.bottom_pane.set_keymap_bindings(&keymap);
+    widget.show_external_writer_thread();
+
+    assert!(contains_text(
+        &render_frame(&widget, /*width*/ 80),
+        "ctrl+k transcript"
+    ));
+}
+
 #[test]
 fn active_transcript_preserves_clipped_markdown_hyperlinks() {
     let cell = history_cell::AgentMarkdownCell::new(

@@ -8,11 +8,14 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
 {
     let home = tempfile::tempdir()?;
     let selected = AbsolutePathBuf::from_absolute_path(home.path().join("work.config.toml"))?;
+    let managed = home.path().join("managed.toml");
     std::fs::write(home.path().join("config.toml"), "# unselected\n")?;
     std::fs::write(&selected, "[features]\nnetwork_proxy = true\n")?;
+    std::fs::write(&managed, "")?;
     let loader = LoaderOverrides {
         user_config_path: Some(selected.clone()),
         user_config_profile: Some("work".parse()?),
+        managed_config_path: Some(managed.clone()),
         ignore_project_config: true,
         ..LoaderOverrides::without_managed_config_for_tests()
     };
@@ -78,6 +81,49 @@ async fn experimental_features_use_selected_server_profile_and_preserve_task_set
     assert_eq!(
         std::fs::read_to_string(home.path().join("config.toml"))?,
         "# unselected\n"
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let notice_text = |app: &App| {
+        app.transcript_cells
+            .last()
+            .unwrap()
+            .display_lines(/*width*/ 120)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    app.enable_feature_for_new_threads(&mut tui, &server, Feature::Collab)
+        .await;
+    insta::assert_snapshot!("subagents_enable_notice", notice_text(&app));
+    std::fs::write(
+        &selected,
+        format!(
+            "{}memory_tool = false\n",
+            std::fs::read_to_string(&selected)?
+        ),
+    )?;
+    app.enable_feature_for_new_threads(&mut tui, &server, Feature::MemoryTool)
+        .await;
+    insta::assert_snapshot!("memories_enable_notice", notice_text(&app));
+    let saved: toml::Value = toml::from_str(&std::fs::read_to_string(&selected)?)?;
+    assert_eq!(saved["features"]["multi_agent"].as_bool(), Some(true));
+    assert_eq!(saved["features"]["memories"].as_bool(), Some(true));
+    assert_eq!(saved["features"]["memory_tool"].as_bool(), Some(true));
+    assert_eq!(
+        (app.config.clone(), app.chat_widget.config_ref().clone()),
+        before
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("config.toml"))?,
+        "# unselected\n"
+    );
+    std::fs::write(&managed, "[features]\nmulti_agent = false\n")?;
+    app.enable_feature_for_new_threads(&mut tui, &server, Feature::Collab)
+        .await;
+    insta::assert_snapshot!(
+        "subagents_enable_overridden",
+        notice_text(&app).replace(managed.display().to_string().as_str(), "<managed config>")
     );
     // A failed save still reports to history after its popup has closed.
     let (tx, rx) = oneshot::channel();

@@ -64,6 +64,8 @@ pub struct ThreadItem {
     pub section: Option<codex_state::ThreadSection>,
     /// Canonical project assignment in SQLite-owned metadata.
     pub project_id: Option<String>,
+    /// Saved Daybreak choice in SQLite-owned metadata, when available.
+    pub daybreak_enabled: Option<bool>,
     /// Working directory from session metadata.
     pub cwd: Option<PathBuf>,
     /// Git branch from session metadata.
@@ -848,6 +850,7 @@ async fn build_thread_item(
             preview,
             section: None,
             project_id: None,
+            daybreak_enabled: None,
             cwd,
             git_branch,
             git_sha,

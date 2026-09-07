@@ -1,0 +1,5 @@
+---
+source: tui/src/app/tests.rs
+expression: model_line
+---
+│ model:     server-reported-model   /model to change │

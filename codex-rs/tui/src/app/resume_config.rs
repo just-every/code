@@ -9,7 +9,7 @@ impl App {
     pub(super) async fn resume_config_for_target(
         &mut self,
         tui: &mut tui::Tui,
-        app_server: &AppServerSession,
+        app_server: &mut AppServerSession,
         target_session: &SessionTarget,
     ) -> std::result::Result<(Config, crate::local_settings::LocalSettings), AppRunControl> {
         self.refresh_in_memory_config_from_disk_best_effort("resuming a thread")
@@ -18,7 +18,9 @@ impl App {
             .runtime_working_directory_override
             .as_deref()
             .or(self.harness_overrides.cwd.as_deref())
-            .or_else(|| app_server.remote_cwd_override());
+            .or_else(|| app_server.remote_cwd_override())
+            .map(Path::to_path_buf);
+        let cwd_override = cwd_override.as_deref();
         let resume_cwd_mode = crate::session_resume::effective_resume_cwd_mode(
             self.local_settings.tui.resume_cwd,
             cwd_override,
@@ -47,11 +49,17 @@ impl App {
         let resume_cwd = if self.app_server_target.uses_remote_workspace() {
             current_cwd.clone()
         } else {
+            let history_cwd = if matches!(resume_cwd_mode, Some(ResumeCwdMode::Current)) {
+                None
+            } else {
+                crate::session_resume::read_session_cwd(app_server, target_session.thread_id)
+                    .await
+                    .or_else(|| target_session.cwd.clone())
+            };
             let outcome = crate::session_resume::resolve_cwd_for_resume_or_fork(
                 tui,
                 &self.config,
-                self.state_db.as_deref(),
-                target_session,
+                history_cwd,
                 CwdPromptAction::Resume,
                 crate::session_resume::ResumeCwdContext {
                     current_cwd: &current_cwd,

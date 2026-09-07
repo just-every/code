@@ -598,7 +598,7 @@ fn unified_exec_interaction_cell_renders_wait() {
 }
 
 #[test]
-fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics() {
+fn final_message_separator_preserves_runtime_metrics_for_short_turns() {
     let summary = RuntimeMetricsSummary {
         tool_calls: RuntimeMetricTotals {
             count: 3,
@@ -633,7 +633,7 @@ fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics
     let rendered = render_lines(&cell.display_lines(/*width*/ 600));
 
     assert_eq!(rendered.len(), 1);
-    assert!(!rendered[0].contains("Worked for"));
+    assert!(rendered[0].starts_with("  Local tools:"));
     assert!(rendered[0].contains("Local tools: 3 calls (2.5s)"));
     assert!(rendered[0].contains("Inference: 2 calls (1.2s)"));
     assert!(rendered[0].contains("WebSocket: 1 events send (700ms)"));

@@ -55,7 +55,9 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             let gathered = Arc::new(Notify::new());
             let mut settings = webrtc::peer_connection::SettingEngine::default();
             settings.set_lite(/*lite*/ true);
+            let (media, mut remote_audio) = crate::audio_track::AudioTrack::new().unwrap();
             let builder = PeerConnectionBuilder::new()
+                .with_media_engine(media)
                 .with_setting_engine(settings)
                 .with_handler(Arc::new(RemoteEvents(sender, gathered.clone())));
             let remote = if tcp {
@@ -66,6 +68,7 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             .build()
             .await
             .unwrap();
+            remote.add_track(remote_audio.track.clone()).await.unwrap();
             let mut local = Transport::with_runtime(runtime.clone()).await.unwrap();
             let offer = RTCSessionDescription::offer(local.offer().await.unwrap()).unwrap();
             remote.set_remote_description(offer).await.unwrap();
@@ -83,10 +86,11 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
             for _ in candidates.len()..MAX_REMOTE_CANDIDATES {
                 answer.push_str(&format!("{}\r\n", candidates[0]));
             }
-            local
+            let outcome = local
                 .apply_answer(answer)
                 .await
                 .unwrap_or_else(|error| panic!("tcp={tcp}: {error}"));
+            assert_eq!(outcome, super::AnswerOutcome::Ready);
             let channel = channels.recv().await.unwrap();
             assert_eq!(
                 (
@@ -116,6 +120,26 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
                 (RTCDataChannelState::Open, true)
             );
             channel.send_text("synthetic sideband event").await.unwrap();
+            local.incoming.set_suppressed(/*suppressed*/ false).unwrap();
+            let sent = std::time::Instant::now();
+            remote_audio
+                .send(crate::audio_track::EncodedAudio {
+                    data: vec![0xf8, 0xff, 0xfe],
+                    at: sent,
+                })
+                .await
+                .unwrap();
+            let received = loop {
+                if let Some(packet) = local.incoming.take().unwrap() {
+                    break packet;
+                }
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 5)).await;
+            };
+            assert!(received.at >= sent);
+            assert_eq!(
+                &received.as_ref()[received.as_ref().len() - 3..],
+                &[0xf8, 0xff, 0xfe]
+            );
             local.close().await.unwrap();
             assert!(local.ready.has_changed().is_err());
             remote.close().await.unwrap();

@@ -1,19 +1,18 @@
 ---
 source: tui/src/status/tests.rs
-assertion_line: 776
 expression: rendered
 ---
 /status
 
-╭────────────────────────────────────────────────────────────────────────────────────────╮
-│  >_ OpenAI Codex (v0.0.0)                                                              │
-│                                                                                        │
-│  Model:            gpt-5.6-sol (reasoning none, summaries auto)                        │
-│  Model provider:   Amazon Bedrock - https://bedrock-mantle.eu-west-1.api.aws/openai/v1 │
-│  Directory: [[workspace]]                                                              │
-│  Permissions:      Custom (workspace with network access, Ask for approval)            │
-│  Agents.md:        <none>                                                              │
-│                                                                                        │
-│  Token usage:      0 total  (0 input + 0 output)                                       │
-│  Limits:           data not available yet                                              │
-╰────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.0.0)                                                   │
+│                                                                             │
+│  Model:            gpt-5.6-sol (reasoning none, summaries auto)             │
+│  Model provider:   server-ollama                                            │
+│  Directory: [[workspace]]                                                   │
+│  Permissions:      Custom (workspace with network access, Ask for approval) │
+│  Agents.md:        <none>                                                   │
+│                                                                             │
+│  Token usage:      0 total  (0 input + 0 output)                            │
+│  Limits:           data not available yet                                   │
+╰─────────────────────────────────────────────────────────────────────────────╯

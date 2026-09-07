@@ -42,6 +42,12 @@ where
     }
 }
 
+pub(crate) fn quiet_startup_test_pump() -> StartupDraftPump {
+    let mut pump = startup_test_pump(std::iter::empty());
+    pump.events = Box::pin(futures::stream::pending());
+    pump
+}
+
 #[test]
 fn startup_draft_renders_full_empty_and_multiline_composer_frames() {
     let mut pump = startup_test_pump(std::iter::empty());

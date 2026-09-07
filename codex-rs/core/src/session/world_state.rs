@@ -82,7 +82,10 @@ impl Session {
         let environment_subagents = if turn_context.config.include_environment_context {
             self.services
                 .agent_control
-                .format_environment_context_subagents(self.thread_id)
+                .format_environment_context_subagents(
+                    self.thread_id,
+                    turn_context.multi_agent_version,
+                )
                 .await
         } else {
             String::new()

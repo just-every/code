@@ -1,0 +1,8 @@
+---
+source: tui/src/app/tests.rs
+assertion_line: 293
+expression: rendered
+---
+Existing conversation
+
+■ Multiple sessions match 'duplicate-label' (including <session UUID> and <session UUID>); use a session UUID to disambiguate.

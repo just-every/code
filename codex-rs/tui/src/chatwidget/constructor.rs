@@ -26,7 +26,6 @@ impl ChatWidget {
             feedback,
             is_first_run,
             status_account_display,
-            runtime_model_provider_base_url,
             initial_plan_type,
             model,
             startup_tooltip_override,
@@ -127,14 +126,15 @@ impl ChatWidget {
             model_catalog,
             model_popup_request_id: None,
             permission_popup_request_id: None,
+            worktree_popup_request_id: None,
             permission_profiles_menu_opened: false,
             model_popup_model_ids: Vec::new(),
             session_telemetry,
             session_header: SessionHeader::new(header_model),
             initial_user_message,
             status_account_display,
-            runtime_model_provider_base_url,
             remote_connection: None,
+            local_worktree_operations: true,
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
@@ -175,6 +175,8 @@ impl ChatWidget {
             last_unified_wait: None,
             unified_exec_wait_streak: None,
             turn_lifecycle: TurnLifecycleState::new(prevent_idle_sleep),
+            realtime_conversation: RealtimeConversationUiState::default(),
+            realtime_conversation_available_for_thread: false,
             safety_buffering: SafetyBufferingState::default(),
             task_complete_pending: false,
             unified_exec_processes: Vec::new(),
@@ -216,6 +218,7 @@ impl ChatWidget {
             thread_rename_block_message: None,
             active_side_conversation: false,
             blocks_direct_input: false,
+            external_writer_view: false,
             misalignment_policy_violation: None,
             normal_placeholder_text: placeholder,
             side_placeholder_text: side_placeholder,
@@ -287,8 +290,12 @@ impl ChatWidget {
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_service_tier_commands();
         widget.sync_personality_command_enabled();
+        widget.sync_worktrees_enabled();
         widget.sync_plugins_command_enabled();
         widget.sync_goal_command_enabled();
+        widget
+            .bottom_pane
+            .set_voice_command_enabled(/*enabled*/ false);
         widget.sync_mentions_v2_enabled();
         widget
             .bottom_pane

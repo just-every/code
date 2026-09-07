@@ -11,7 +11,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GuardianAssessmentAction;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
@@ -19,6 +18,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -72,6 +72,12 @@ for line in sys.stdin:
                     "_meta": {"codex_request_type": "approval_request",
                               "codex_approval_kind": "mcp_tool_call", "tool_name": "write_record",
                               **meta, **invocation_meta}}})
+        if len(sys.argv) > 3:
+            for elicitation in pending_elicitations:
+                params = elicitation["params"]
+                params.update(json.loads(sys.argv[3]))
+                if params.get("mode") == "url":
+                    params.pop("requestedSchema")
         send(pending_elicitations.pop(0))
         continue
     elif method is None and str(request.get("id", "")).startswith("server-approval"):
@@ -224,14 +230,12 @@ async fn server_initiated_mcp_elicitation_can_require_synchronous_auto_review(
     struct AutoApprovingReviewContributor;
 
     impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContributor {
-        fn fast_decision<'a>(
+        fn decide<'a>(
             &'a self,
-            _session_store: &'a codex_extension_api::ExtensionData,
-            _thread_store: &'a codex_extension_api::ExtensionData,
-            _prompt: &'a str,
-            _extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
-        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
-            Box::pin(async { Some(ReviewDecision::Approved) })
+            _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+        {
+            Box::pin(async { Some(codex_extension_api::ApprovalDecision::Allow) })
         }
     }
 
@@ -649,6 +653,119 @@ async fn node_elicitations_attribute_independent_reviews_without_changing_action
             .as_str()
             .expect("Guardian rejection reason")
             .contains("Independent inner action decision.")
+    );
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[test_case("form"; "nonempty_form")]
+#[test_case("url"; "url")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_review_preserves_unsupported_guardian_elicitations(mode: &str) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(Ok(()), "the MCP fixture requires a host Python interpreter");
+    let server = responses::start_mock_server().await;
+    let form_schema = json!({
+        "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]
+    });
+    let params = if mode == "url" {
+        json!({"mode": "url", "url": "https://example.com/approve", "elicitationId": "approval"})
+    } else {
+        json!({"requestedSchema": form_schema})
+    };
+    let mcp_servers = serde_json::from_value(json!({
+        "elicitation": {
+            "command": if cfg!(windows) { "python" } else { "python3" },
+            "args": ["-u", "-c", ELICITATION_SERVER, "{}", "", params.to_string()],
+            "default_tools_approval_mode": "approve",
+        }
+    }))?;
+    let test = test_codex()
+        .with_config(move |config| {
+            config.approvals_reviewer = ApprovalsReviewer::User;
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Granular(
+                codex_protocol::protocol::GranularApprovalConfig {
+                    sandbox_approval: false,
+                    rules: false,
+                    skill_approval: false,
+                    request_permissions: false,
+                    mcp_elicitations: true,
+                },
+            ));
+            config
+                .mcp_servers
+                .set(mcp_servers)
+                .expect("set MCP fixture");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&test.codex, "elicitation").await?;
+    responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace(
+                "eliciting-tool",
+                "mcp__elicitation",
+                "request_approval",
+                "{}",
+            ),
+            responses::ev_completed("parent-tool"),
+        ]),
+    )
+    .await;
+    let parent = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("parent-complete")]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Run the tool and ask me for its approval.".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ElicitationRequest(_)
+                | EventMsg::GuardianAssessment(_)
+                | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    let EventMsg::ElicitationRequest(request) = event else {
+        panic!("expected a user elicitation, got {event:?}");
+    };
+    match &request.request {
+        codex_protocol::approvals::ElicitationRequest::Form {
+            requested_schema, ..
+        } => {
+            assert_eq!(requested_schema, &form_schema);
+        }
+        codex_protocol::approvals::ElicitationRequest::Url { url, .. } => {
+            assert_eq!(url, "https://example.com/approve");
+        }
+        other => panic!("unexpected elicitation: {other:?}"),
+    }
+    test.codex
+        .submit(Op::ResolveElicitation {
+            server_name: request.server_name,
+            request_id: request.id,
+            decision: codex_protocol::approvals::ElicitationAction::Decline,
+            content: None,
+            meta: None,
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        parent
+            .single_request()
+            .function_call_output("eliciting-tool")
+            .to_string()
+            .contains("decline")
     );
     test.codex.shutdown_and_wait().await?;
     Ok(())

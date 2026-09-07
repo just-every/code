@@ -247,6 +247,10 @@ impl ChatWidget {
 
     /// Rebuild and update the bottom-pane pending-input preview.
     pub(super) fn refresh_pending_input_preview(&mut self) {
+        let has_queued = self.has_queued_follow_up_messages();
+        if let Some(questions) = &mut self.bottom_pane.questions {
+            questions.has_queued_messages = has_queued;
+        }
         let preview = self.input_queue.preview();
         self.bottom_pane.set_pending_input_preview(
             preview.queued_messages,
@@ -261,7 +265,12 @@ impl ChatWidget {
         mut collaboration_mode: CollaborationModeMask,
     ) {
         if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(if self.external_writer_view {
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string()
+            } else {
+                PARENT_OWNED_INPUT_MESSAGE.to_string()
+            });
             return;
         }
         if collaboration_mode.mode == Some(ModeKind::Plan)

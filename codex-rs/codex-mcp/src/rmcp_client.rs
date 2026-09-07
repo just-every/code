@@ -21,6 +21,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::client_tool_catalog::ClientToolCatalog;
 use crate::codex_apps::normalize_codex_apps_callable_name;
 use crate::codex_apps::normalize_codex_apps_callable_namespace;
 use crate::codex_apps::normalize_codex_apps_tool_title;
@@ -52,6 +53,7 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_exec_server::Environment;
+use codex_login::AuthChangeState;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -78,8 +80,10 @@ use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::ServerPeerInfo;
 use rmcp::model::Tool as RmcpTool;
+use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use tracing::instrument;
 use tracing::warn;
@@ -111,9 +115,10 @@ const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
 
 #[derive(Clone)]
 pub(crate) struct ManagedClient {
+    pub(crate) _auth_change_notifications: Option<Arc<AbortOnDropHandle<()>>>,
     pub(crate) client: Arc<RmcpClient>,
     pub(crate) server_info: McpServerInfo,
-    pub(crate) tools: Vec<ToolInfo>,
+    pub(crate) tool_catalog: Arc<ClientToolCatalog>,
     pub(crate) tool_timeout: Option<Duration>,
     pub(crate) server_instructions: Option<String>,
     pub(crate) server_supports_sandbox_state_meta_capability: bool,
@@ -121,30 +126,28 @@ pub(crate) struct ManagedClient {
 }
 
 impl ManagedClient {
-    pub(crate) fn listed_tools(&self) -> Vec<ToolInfo> {
+    pub(crate) async fn listed_tools(&self) -> Vec<ToolInfo> {
         let total_start = Instant::now();
-        if let Some(tools) = self
-            .codex_apps_tools_cache_context
-            .as_ref()
-            .and_then(ConnectorRuntimeContext::current_tools)
-        {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "hit")],
-            );
-            return tools;
-        }
-
-        if self.codex_apps_tools_cache_context.is_some() {
-            emit_duration(
-                MCP_TOOLS_LIST_DURATION_METRIC,
-                total_start.elapsed(),
-                &[("cache", "miss")],
-            );
-        }
-
-        self.tools.clone()
+        self.tool_catalog
+            .read(|catalog| {
+                // Discovery may use the shared cache until this client is refreshed.
+                // Executable bindings always capture this client's own catalog.
+                if catalog.revision == 0
+                    && let Some(cache_context) = &self.codex_apps_tools_cache_context
+                {
+                    let tools = cache_context.current_tools();
+                    emit_duration(
+                        MCP_TOOLS_LIST_DURATION_METRIC,
+                        total_start.elapsed(),
+                        &[("cache", if tools.is_some() { "hit" } else { "miss" })],
+                    );
+                    if let Some(tools) = tools {
+                        return tools;
+                    }
+                }
+                catalog.tools.clone()
+            })
+            .await
     }
 }
 
@@ -294,6 +297,7 @@ struct ManagedClientStartup {
     runtime_auth_provider: Option<SharedAuthProvider>,
     client_elicitation_capability: ElicitationCapability,
     client_mcp_extensions: ClientMcpExtensions,
+    auth_changes: Option<watch::Receiver<AuthChangeState>>,
     protocol_mode: McpProtocolMode,
     catalog_item_limit: usize,
     cancel_token: CancellationToken,
@@ -317,6 +321,7 @@ impl ManagedClientStartup {
             runtime_auth_provider,
             client_elicitation_capability,
             client_mcp_extensions,
+            auth_changes,
             protocol_mode,
             catalog_item_limit,
             cancel_token,
@@ -374,6 +379,7 @@ impl ManagedClientStartup {
                         tool_catalog_fetch_ticket,
                         client_elicitation_capability,
                         client_mcp_extensions,
+                        auth_changes,
                         catalog_item_limit,
                     },
                 )
@@ -442,6 +448,7 @@ impl AsyncManagedClient {
         runtime_auth_provider: Option<SharedAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_changes: Option<watch::Receiver<AuthChangeState>>,
         protocol_mode: McpProtocolMode,
         catalog_item_limit: usize,
     ) -> Self {
@@ -471,6 +478,7 @@ impl AsyncManagedClient {
             runtime_auth_provider,
             client_elicitation_capability,
             client_mcp_extensions,
+            auth_changes,
             protocol_mode,
             catalog_item_limit,
             cancel_token: cancel_token.clone(),
@@ -585,7 +593,7 @@ impl AsyncManagedClient {
             Ok(startup_tools)
         } else {
             match self.client().await {
-                Ok(client) => Ok(client.listed_tools()),
+                Ok(client) => Ok(client.listed_tools().await),
                 Err(error) if self.is_codex_apps_mcp_server => self.cached_tools().ok_or(error),
                 Err(error) => Err(error),
             }
@@ -896,11 +904,23 @@ async fn start_server_task(
         tool_catalog_fetch_ticket,
         client_elicitation_capability,
         client_mcp_extensions,
+        auth_changes,
         catalog_item_limit,
     } = params;
-    let params =
+    let send_elicitation =
+        elicitation_requests.make_sender(server_name.clone(), tx_event, &client_mcp_extensions);
+    let mut params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
-    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
+    if auth_changes.is_some() {
+        params
+            .capabilities
+            .experimental
+            .get_or_insert_default()
+            .insert(
+                crate::auth_changes::CAPABILITY.to_string(),
+                Default::default(),
+            );
+    }
 
     let started_at = Instant::now();
     let initialize_result = client
@@ -913,6 +933,14 @@ async fn start_server_task(
         &initialize_result,
     );
     let initialize_result = initialize_result.map_err(StartupOutcomeError::from)?;
+
+    let auth_change_notifications = crate::auth_changes::start(
+        Arc::clone(&client),
+        &initialize_result.capabilities,
+        auth_changes,
+    )
+    .await
+    .map_err(StartupOutcomeError::from)?;
 
     let server_disables_tool_catalog_cache = initialize_result
         .capabilities
@@ -974,9 +1002,10 @@ async fn start_server_task(
         );
     }
     let managed = ManagedClient {
+        _auth_change_notifications: auth_change_notifications,
         client: Arc::clone(&client),
         server_info,
-        tools: client_tools,
+        tool_catalog: Arc::new(ClientToolCatalog::new(client_tools)),
         tool_timeout: None,
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability,
@@ -1072,6 +1101,7 @@ struct StartServerTaskParams {
     tool_catalog_fetch_ticket: Option<McpToolCatalogFetchTicket>,
     client_elicitation_capability: ElicitationCapability,
     client_mcp_extensions: ClientMcpExtensions,
+    auth_changes: Option<watch::Receiver<AuthChangeState>>,
     catalog_item_limit: usize,
 }
 

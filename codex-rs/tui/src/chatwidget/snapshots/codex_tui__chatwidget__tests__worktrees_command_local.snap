@@ -1,0 +1,8 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+assertion_line: 3091
+expression: popup
+---
+› /work
+
+  /worktree  start or continue a conversation in a new worktree

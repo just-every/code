@@ -233,6 +233,44 @@ impl App {
         app_server: &mut AppServerSession,
         key_event: KeyEvent,
     ) {
+        if self.chat_widget.is_external_writer_view()
+            && self.overlay.is_none()
+            && self.chat_widget.no_modal_or_popup_active()
+            && key_event.kind == KeyEventKind::Press
+        {
+            let modifiers = key_event.modifiers;
+            let quit = match key_event.code {
+                KeyCode::Esc => modifiers == KeyModifiers::NONE,
+                KeyCode::Char('q' | 'Q') => {
+                    modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT
+                }
+                KeyCode::Char('c' | 'C') => {
+                    modifiers == KeyModifiers::CONTROL
+                        || modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                }
+                _ => false,
+            };
+            if quit {
+                self.app_event_tx.send(AppEvent::Exit(ExitMode::Immediate));
+                return;
+            }
+            if matches!(key_event.code, KeyCode::Char('r' | 'R'))
+                && (modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT)
+                && let Some(thread_id) = self.current_displayed_thread_id()
+            {
+                let target = SessionTarget {
+                    path: self
+                        .primary_session_configured
+                        .as_ref()
+                        .and_then(|session| session.rollout_path.clone()),
+                    thread_id,
+                    cwd: None,
+                    history_mode: None,
+                };
+                let _ = self.resume_target_session(tui, app_server, target).await;
+                return;
+            }
+        }
         // Some terminals, especially on macOS, encode Option+Left/Right as Option+b/f unless
         // enhanced keyboard reporting is available. We only treat those word-motion fallbacks as
         // agent-switch shortcuts when the composer is empty so we never steal the expected
@@ -373,6 +411,13 @@ impl App {
                 .thread_id()
                 .is_some_and(|thread_id| app_server.has_older_history(thread_id));
             self.open_transcript_overlay(tui);
+            return;
+        }
+
+        if self.chat_widget.is_external_writer_view()
+            && self.overlay.is_none()
+            && self.chat_widget.no_modal_or_popup_active()
+        {
             return;
         }
 

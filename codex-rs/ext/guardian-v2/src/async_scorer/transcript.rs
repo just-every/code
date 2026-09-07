@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ResponseItem;
 pub(crate) use codex_features::GuardianV2TranscriptSource as TranscriptSource;
+use codex_guardian_context::ContextSection;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::ConversationTranscriptConfig;
 use codex_guardian_context::ConversationTranscriptEntry;
@@ -11,6 +12,7 @@ use codex_guardian_context::ConversationTranscriptOptions;
 use codex_guardian_context::GuardianRootMessage;
 #[cfg(test)]
 use codex_guardian_context::MANUAL_APPROVAL_DEVELOPER_PREFIX;
+use codex_guardian_context::PlannedAction;
 use codex_guardian_context::SectionError;
 use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
@@ -52,8 +54,7 @@ struct TranscriptEntry {
 }
 
 pub(crate) struct RenderedContext {
-    pub(crate) authorization: Vec<String>,
-    pub(crate) entries: Vec<String>,
+    pub(crate) sections: Vec<ContextSection<String>>,
     pub(crate) truncations: Vec<TruncationObservation>,
 }
 
@@ -172,6 +173,7 @@ impl TranscriptConfig {
         history: &dyn ConversationHistorySnapshot,
         root_conversation: &[GuardianRootMessage],
         trusted_user_answers: &[String],
+        planned_action: Option<&PlannedAction>,
     ) -> Result<RenderedContext, SectionError> {
         let history = SnapshotHistory(history);
         let retention = TranscriptRetentionConfig {
@@ -191,22 +193,49 @@ impl TranscriptConfig {
                 node_repl_output_tokens: self.max_tool_entry_tokens,
             },
         };
-        let context = default_registry().compose(&SectionInput {
+        let context = default_registry().collect(&SectionInput {
             target,
             history: &history,
             transcript: &transcript,
             root_conversation,
             trusted_user_answers,
+            planned_action,
+            permissions: None,
         })?;
-        let mut rendered = Self::render(context.transcript, &retention);
-        rendered.authorization = context.authorization;
-        Ok(rendered)
+        let mut truncations = Vec::new();
+        let sections = context
+            .into_iter()
+            .map(|section| match section {
+                ContextSection::ConversationTranscript { items } => {
+                    let (items, observations) = Self::render(items, &retention);
+                    truncations.extend(observations);
+                    ContextSection::ConversationTranscript { items }
+                }
+                ContextSection::RootConversation { items } => {
+                    ContextSection::RootConversation { items }
+                }
+                ContextSection::TrustedUserAnswers { items } => {
+                    ContextSection::TrustedUserAnswers { items }
+                }
+                ContextSection::RetainedUserInstructions { items } => {
+                    ContextSection::RetainedUserInstructions { items }
+                }
+                ContextSection::PermissionContext { items } => {
+                    ContextSection::PermissionContext { items }
+                }
+                ContextSection::PlannedAction(action) => ContextSection::PlannedAction(action),
+            })
+            .collect::<Vec<_>>();
+        Ok(RenderedContext {
+            sections,
+            truncations,
+        })
     }
 
     fn render(
         transcript_entries: impl IntoIterator<Item = ConversationTranscriptEntry>,
         retention: &TranscriptRetentionConfig,
-    ) -> RenderedContext {
+    ) -> (Vec<String>, Vec<TruncationObservation>) {
         let mut entries = Vec::new();
 
         for entry in transcript_entries {
@@ -300,11 +329,7 @@ impl TranscriptConfig {
             })
             .collect();
 
-        RenderedContext {
-            authorization: Vec::new(),
-            entries,
-            truncations,
-        }
+        (entries, truncations)
     }
 }
 

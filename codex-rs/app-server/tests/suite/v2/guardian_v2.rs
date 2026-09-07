@@ -76,11 +76,20 @@ use super::mcp_tool::TEST_TOOL_NAME;
 use super::mcp_tool::start_mcp_server;
 use super::mcp_tool::start_mcp_server_with_tools;
 
+#[path = "guardian_sync_session_tests.rs"]
+mod sync_sessions;
+
 #[path = "guardian_v2_history_tests.rs"]
 mod history;
 
 #[path = "guardian_v2_model_tests.rs"]
 mod model_tests;
+
+#[path = "guardian_policy_tests.rs"]
+mod policy;
+
+#[path = "guardian_code_mode_tests.rs"]
+mod code_mode;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL: &str = "mock-model";
@@ -371,7 +380,9 @@ async fn parent_response(
     State(state): State<Arc<MockResponsesState>>,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    let events = if request
+    let events = if request["model"] == "gpt-5.6-luna" {
+        luna_response(&state, request).await
+    } else if request
         .pointer("/client_metadata/x-openai-subagent")
         .and_then(Value::as_str)
         == Some("guardian")
@@ -550,6 +561,39 @@ async fn parent_response(
     )
 }
 
+async fn luna_response(state: &MockResponsesState, request: Value) -> Vec<Value> {
+    let is_root_sample = state.root_worker
+        && state
+            .root_thread_id
+            .lock()
+            .expect("root thread lock should not be poisoned")
+            .as_ref()
+            .is_some_and(|thread_id| {
+                request["prompt_cache_key"] == format!("guardian-v2:{thread_id}")
+            });
+    if !is_root_sample {
+        state
+            .luna_requests
+            .lock()
+            .expect("Luna request lock should not be poisoned")
+            .push(request);
+        state.allow_luna.notified().await;
+    }
+    let classification = if state.invalid_classification {
+        "invalid"
+    } else if state.luna_score < 0.5 {
+        "low"
+    } else {
+        "high"
+    };
+    vec![
+        responses::ev_response_created("luna-score"),
+        responses::ev_output_text_delta(classification),
+        responses::ev_assistant_message("luna-score-message", classification),
+        responses::ev_completed("luna-score"),
+    ]
+}
+
 async fn luna_websocket(
     State(state): State<Arc<MockResponsesState>>,
     websocket: WebSocketUpgrade,
@@ -561,36 +605,7 @@ async fn luna_websocket(
                 continue;
             };
             let request: Value = serde_json::from_str(&text).expect("valid Luna request");
-            let is_root_sample = state.root_worker
-                && state
-                    .root_thread_id
-                    .lock()
-                    .expect("root thread lock should not be poisoned")
-                    .as_ref()
-                    .is_some_and(|thread_id| {
-                        request["prompt_cache_key"] == format!("guardian-v2:{thread_id}")
-                    });
-            if !is_root_sample {
-                state
-                    .luna_requests
-                    .lock()
-                    .expect("Luna request lock should not be poisoned")
-                    .push(request);
-                state.allow_luna.notified().await;
-            }
-            let classification = if state.invalid_classification {
-                "invalid"
-            } else if state.luna_score < 0.5 {
-                "low"
-            } else {
-                "high"
-            };
-            for event in [
-                responses::ev_response_created("luna-score"),
-                responses::ev_output_text_delta(classification),
-                responses::ev_assistant_message("luna-score-message", classification),
-                responses::ev_completed("luna-score"),
-            ] {
+            for event in luna_response(&state, request).await {
                 if socket
                     .send(Message::Text(event.to_string().into()))
                     .await
@@ -774,9 +789,9 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     };
     let guardian_scope_config = match scope {
         GuardianToolScope::AllTools => {
-            "\n\n[features.guardianv2]\nenabled = true\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
+            "\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
         }
-        GuardianToolScope::ComputerUseOnly { .. } => "\n\n[features.guardianv2]\nenabled = true",
+        GuardianToolScope::ComputerUseOnly { .. } => "",
     };
     let tool_approval_mode = if node_repl_review_required {
         "auto"
@@ -792,12 +807,9 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             analytics_server.uri(),
         ))
         .with_extra_config(&format!(
-            "[mcp_servers.{server_name}]\nurl = \"{mcp_server_url}/mcp\"\ndefault_tools_approval_mode = \"{tool_approval_mode}\"\n\n[analytics]\nenabled = true\n\n[otel]\nmetrics_exporter = {{ otlp-http = {{ endpoint = \"{responses_url}/metrics\", protocol = \"json\" }} }}{guardian_scope_config}"
+            "[mcp_servers.{server_name}]\nurl = \"{mcp_server_url}/mcp\"\ndefault_tools_approval_mode = \"{tool_approval_mode}\"\n\n[analytics]\nenabled = true\n\n[otel]\nmetrics_exporter = {{ otlp-http = {{ endpoint = \"{responses_url}/metrics\", protocol = \"json\" }} }}\n\n[features.guardianv2]\nenabled = true\nthread_context = {thread_context_enabled}{guardian_scope_config}"
         ))
         .enable_feature(Feature::GuardianApproval);
-    if thread_context_enabled {
-        mock_config = mock_config.enable_feature(Feature::GuardianThreadContext);
-    }
     if lifecycle.has_user_input() || lifecycle.has_root_user_input() {
         mock_config = mock_config.enable_feature(Feature::DefaultModeRequestUserInput);
     }
@@ -937,8 +949,8 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         .expect("root thread lock should not be poisoned") = Some(thread_id.clone());
     let mut turn_input = vec![UserInput::Text {
         text: if matches!(lifecycle, ThreadLifecycle::RootUserInputCompaction) {
-            // The retained record omits this payload; recover it from Guardian history
-            // after compaction removes it from the live model window.
+            // Exceed the full-text storage cap; the bounded root excerpt must survive
+            // after compaction removes the original from the live model window.
             format!("{USER_CONTEXT}\n{}", "Context detail. ".repeat(1_200))
         } else {
             USER_CONTEXT.to_owned()
@@ -1559,15 +1571,14 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             })
             .await?;
         }
+        let turn = wait_for_matching_analytics_event(&analytics_server, TIMEOUT, |event| {
+            event["event_type"] == "codex_turn_event"
+                && event["event_params"]["thread_id"] == reviewed_thread_id
+        })
+        .await?;
         timeout(TIMEOUT, app_server.shutdown_gracefully()).await??;
         let events = captured_analytics_events(&analytics_server).await;
-        let turn = &events
-            .iter()
-            .find(|event| {
-                event["event_type"] == "codex_turn_event"
-                    && event["event_params"]["thread_id"] == reviewed_thread_id
-            })
-            .expect("parent turn analytics")["event_params"];
+        let turn = &turn["event_params"];
         assert_eq!(turn["guardian_v2_enabled"], classifier_in_scope);
         let classification = events.iter().find(|event| {
             event["event_type"] == "codex_guardian_v2_classification"

@@ -9,14 +9,27 @@ impl App {
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
     ) -> Result<AppRunControl> {
-        let picker_app_server = match crate::start_app_server_for_picker(
-            &self.config,
-            &self.app_server_target,
-            self.state_db.clone(),
-            self.environment_manager.clone(),
-        )
-        .await
-        {
+        // Keep embedded-server initialization on its own runtime task as well as opening the
+        // picker on a fresh event-loop iteration; its auth manager needs more stack headroom.
+        let picker_config = self.config.clone();
+        let picker_target = self.app_server_target.clone();
+        let picker_state_db = self.state_db.clone();
+        let picker_environment_manager = Arc::clone(&self.environment_manager);
+        let picker_app_server = tokio::spawn(async move {
+            crate::start_app_server_for_picker(
+                &picker_config,
+                &picker_target,
+                picker_state_db,
+                picker_environment_manager,
+            )
+            .await
+        })
+        .await;
+        let picker_app_server = match picker_app_server {
+            Ok(result) => result,
+            Err(err) => Err(err.into()),
+        };
+        let picker_app_server = match picker_app_server {
             Ok(app_server) => app_server,
             Err(err) => {
                 self.add_session_picker_error(format!("Failed to start TUI session picker: {err}"));
@@ -26,6 +39,10 @@ impl App {
         };
         let selection =
             crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
+                crate::uses_remote_workspace_or_environment(
+                    &self.app_server_target,
+                    &self.environment_manager,
+                ),
                 tui,
                 &self.config,
                 &self.local_settings,

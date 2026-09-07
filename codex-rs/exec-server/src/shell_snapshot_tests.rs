@@ -199,24 +199,27 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
     }
     let mut expected_counters = BTreeMap::new();
     let mut expected_durations = BTreeMap::new();
-    let failures =
-        (recovery_attempt - 1).min(MAX_SNAPSHOT_ATTEMPTS) as u64 + u64::from(prewarm_fails_first);
-    for (success, count) in [
-        ("false", failures),
-        ("true", u64::from(recovery_attempt <= MAX_SNAPSHOT_ATTEMPTS)),
-    ] {
-        if count == 0 {
-            continue;
-        }
+    let captures = prewarm_fails_first
+        .then_some(("prewarm", 1))
+        .into_iter()
+        .chain(
+            (1..=recovery_attempt.min(MAX_SNAPSHOT_ATTEMPTS)).map(|attempt| ("execution", attempt)),
+        );
+    for (purpose, attempt) in captures {
+        let success = purpose == "execution" && attempt == recovery_attempt;
         let mut tags = BTreeMap::from([
             ("version".to_string(), "v2".to_string()),
             ("success".to_string(), success.to_string()),
+            ("purpose".to_string(), purpose.to_string()),
+            ("attempt".to_string(), attempt.to_string()),
+            ("shell".to_string(), "bash".to_string()),
+            ("sandbox".to_string(), "none".to_string()),
         ]);
-        expected_durations.insert(tags.clone(), count);
-        if success == "false" {
-            tags.insert("failure_reason".to_string(), "capture_failed".to_string());
+        if !success {
+            tags.insert("failure_reason".to_string(), "nonzero_exit".to_string());
         }
-        expected_counters.insert(tags, count);
+        expected_durations.insert(tags.clone(), /*value*/ 1);
+        expected_counters.insert(tags, /*value*/ 1);
     }
     assert_eq!(
         (counters, durations),

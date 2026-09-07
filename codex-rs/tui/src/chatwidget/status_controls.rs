@@ -243,7 +243,8 @@ impl ChatWidget {
         let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
             &self.config,
             self.requires_openai_auth,
-            self.runtime_model_provider_base_url.as_deref(),
+            self.thread_id
+                .map(|_| self.config.model_provider_id.as_str()),
             self.remote_connection.as_ref(),
             self.status_account_display.as_ref(),
             token_info,
@@ -268,10 +269,28 @@ impl ChatWidget {
             handle.reserve_thread_usage_label_width();
             handle.set_thread_usage(self.estimated_thread_usage().cloned());
             self.add_to_history(cell);
-            self.request_thread_usage_for_status(handle);
+            self.request_thread_usage_for_status(handle.clone());
         } else {
             self.add_to_history(cell);
         }
+        // Capture the displayed status inputs before later configuration or thread changes.
+        let mut copy_targets = vec![
+            ("Model".to_string(), Arc::<str>::from(model)),
+            (
+                "Directory".to_string(),
+                Arc::from(self.config.cwd.display().to_string()),
+            ),
+        ];
+        if let Some(name) = self.thread_name.as_deref().filter(|name| !name.is_empty()) {
+            copy_targets.push(("Thread name".to_string(), Arc::from(name)));
+        }
+        if let Some(thread_id) = self.thread_id {
+            copy_targets.push(("Session ID".to_string(), Arc::from(thread_id.to_string())));
+        }
+        self.transcript.last_status_copy_targets = Some(super::transcript::StatusCopySource {
+            handle,
+            fields: copy_targets,
+        });
     }
 
     pub(crate) fn finish_status_rate_limit_refresh(

@@ -2,8 +2,10 @@ use super::*;
 use crate::app::safety_buffering::SafetyBufferedRetry;
 use crate::app::session_lifecycle::ThreadAttachPresentation;
 use crate::chatwidget::UserMessage;
+use crate::chatwidget::tests::helpers::normalize_completion_timestamps;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -893,9 +895,15 @@ goals = true
     let mut replayed_history = String::new();
     while let Ok(event) = app_event_rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
-            replayed_history.push_str(&lines_to_single_string(
-                &cell.transcript_lines(/*width*/ 80),
-            ));
+            let rendered = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
+            if cell
+                .as_any()
+                .is::<crate::history_cell::FinalMessageSeparator>()
+            {
+                replayed_history.push_str(&normalize_completion_timestamps(rendered));
+            } else {
+                replayed_history.push_str(&rendered);
+            }
         }
     }
     assert_eq!(

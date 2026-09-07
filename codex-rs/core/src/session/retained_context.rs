@@ -1,6 +1,6 @@
 //! Orders retained inputs and records host-verified facts at the context checkpoint boundary.
 
-use codex_features::Feature;
+use crate::context::GuardianContextMode;
 use codex_history::RetainedContextEvent;
 use codex_history::RolloutItem;
 
@@ -10,7 +10,7 @@ use super::thread_settings;
 impl Session {
     /// Legacy mode neither reserves a sequence nor takes the session-state lock.
     pub(crate) async fn reserve_user_input_order(&self) -> Option<u64> {
-        if !self.enabled(Feature::GuardianThreadContext) {
+        if self.guardian_context_mode == GuardianContextMode::Legacy {
             return None;
         }
         Some(self.state.lock().await.history.reserve_input_order())

@@ -451,6 +451,9 @@ async fn apply_metadata_update(
             if let Some(project_id) = project_id.as_ref() {
                 metadata.project_id = project_id.clone();
             }
+            if let Some(daybreak_enabled) = patch.daybreak_enabled {
+                metadata.daybreak_enabled = Some(daybreak_enabled);
+            }
             let upsert_result = state_db.upsert_thread(&metadata).await;
             if existing.is_none()
                 && metadata.project_id.is_some()
@@ -539,6 +542,22 @@ async fn apply_metadata_update(
                     .map_err(|err| ThreadStoreError::Internal {
                         message: format!("failed to update memory mode for {thread_id}: {err}"),
                     })?;
+            }
+            if let Some(daybreak_enabled) = patch.daybreak_enabled
+                && !state_db
+                    .set_thread_daybreak_enabled(thread_id, daybreak_enabled)
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!(
+                            "failed to update Daybreak preference for {thread_id}: {err}"
+                        ),
+                    })?
+            {
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "thread metadata unavailable before Daybreak update: {thread_id}"
+                    ),
+                });
             }
             Ok(())
         }
@@ -655,9 +674,11 @@ fn sqlite_write_failure_should_block(patch: &ThreadMetadataPatch) -> bool {
     // transcript-derived metadata, thread names, and memory-mode indexing were log-only. Keep that
     // failure isolation so a corrupted optional state DB does not make JSONL transcript durability
     // look broken. Explicit git-only updates still require SQLite because partial git patches need
-    // the existing SQLite value to preserve unspecified fields. Project updates always require
-    // SQLite because assignment only exists in the state database.
-    patch.project_id.is_some() || (patch.git_info.is_some() && !has_observed_metadata_facts(patch))
+    // the existing SQLite value to preserve unspecified fields. Project and Daybreak updates
+    // require SQLite because those preferences only exist in the state database.
+    patch.project_id.is_some()
+        || patch.daybreak_enabled.is_some()
+        || (patch.git_info.is_some() && !has_observed_metadata_facts(patch))
 }
 
 fn sqlite_write_error_is_best_effort(err: &ThreadStoreError) -> bool {

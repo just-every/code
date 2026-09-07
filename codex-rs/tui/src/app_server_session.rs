@@ -6,7 +6,9 @@
 mod fs;
 mod history;
 mod models;
+mod realtime;
 mod rollout_history;
+mod thread_list;
 
 #[cfg(test)]
 #[path = "app_server_session/collaboration_catalog_tests.rs"]
@@ -17,6 +19,7 @@ pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::thread_items_page_params;
 
+use crate::app_event::PermissionProfileSelection;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::FeedbackAudience;
 use crate::dynamic_tools_mcp::DynamicToolMcpServer;
@@ -169,6 +172,12 @@ pub(crate) enum ForkGoalContinuation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ForkPermissionMode {
+    InheritSaved,
+    OverrideFromCurrentConfig,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForkPresentation {
     Regular,
     SideConversation,
@@ -306,7 +315,6 @@ pub(crate) struct AppServerSession {
     task_search_generation: Arc<AtomicU64>,
     remote_cwd_override: Option<PathBuf>,
     thread_params_mode: ThreadParamsMode,
-    background_rollout_migration_enabled: bool,
     history_support: ThreadHistorySupport,
     thread_settings_update_supported: bool,
     default_model: Option<String>,
@@ -348,6 +356,11 @@ pub(crate) struct AppServerStartedThread {
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
     pub(crate) task_tools_available: bool,
+}
+
+pub(crate) fn is_active_writer_error(err: &color_eyre::eyre::Report) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("already has an active writer"))
 }
 
 pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
@@ -403,7 +416,6 @@ impl AppServerSession {
             task_search_generation: Arc::new(AtomicU64::new(0)),
             remote_cwd_override: None,
             thread_params_mode,
-            background_rollout_migration_enabled: true,
             history_support: ThreadHistorySupport::Paginated,
             thread_settings_update_supported: true,
             default_model: None,
@@ -773,6 +785,7 @@ impl AppServerSession {
             config,
             /*session_start_source*/ None,
             /*remote_cwd_override*/ None,
+            /*selected_profile*/ None,
         )
         .await
     }
@@ -783,6 +796,7 @@ impl AppServerSession {
         config: &Config,
         session_start_source: Option<ThreadStartSource>,
         remote_cwd_override: Option<&std::path::Path>,
+        selected_profile: Option<&PermissionProfileSelection>,
     ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(config);
@@ -792,6 +806,14 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        if let Some(selected_profile) = selected_profile {
+            params.runtime_workspace_roots = None;
+            params.permissions = Some(selected_profile.profile_id.clone());
+            params.sandbox = None;
+            params.approval_policy = selected_profile.approval_policy;
+            params.approvals_reviewer = selected_profile.approvals_reviewer.map(Into::into);
+            remove_permission_config_overrides(&mut params.config);
+        }
         if self.history_support == ThreadHistorySupport::LegacyOnly {
             params.history_mode = None;
         }
@@ -820,23 +842,47 @@ impl AppServerSession {
         Ok(started)
     }
 
+    #[cfg(test)]
     pub(crate) async fn fork_thread(
         &mut self,
         local_settings: &LocalSettings,
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
-        self.fork_thread_at(
+        self.fork_thread_with_permission_mode(
+            local_settings,
+            config,
+            thread_id,
+            ForkPermissionMode::InheritSaved,
+        )
+        .await
+    }
+
+    pub(crate) async fn fork_thread_with_permission_mode(
+        &mut self,
+        local_settings: &LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        permission_mode: ForkPermissionMode,
+    ) -> Result<AppServerStartedThread> {
+        self.fork_thread_at_with_presentation(
             local_settings,
             config,
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
+            ForkPresentation::Regular,
+            /*selected_profile*/ None,
+            permission_mode,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "fork position and named permissions are independent"
+    )]
     pub(crate) async fn fork_thread_at(
         &mut self,
         local_settings: &LocalSettings,
@@ -845,6 +891,7 @@ impl AppServerSession {
         last_turn_id: Option<String>,
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
+        selected_profile: Option<&PermissionProfileSelection>,
     ) -> Result<AppServerStartedThread> {
         self.fork_thread_at_with_presentation(
             local_settings,
@@ -854,6 +901,8 @@ impl AppServerSession {
             before_turn_id,
             goal_continuation,
             ForkPresentation::Regular,
+            selected_profile,
+            ForkPermissionMode::InheritSaved,
         )
         .await
     }
@@ -872,6 +921,8 @@ impl AppServerSession {
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
             ForkPresentation::SideConversation,
+            /*selected_profile*/ None,
+            ForkPermissionMode::InheritSaved,
         )
         .await
     }
@@ -889,6 +940,8 @@ impl AppServerSession {
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
         presentation: ForkPresentation,
+        selected_profile: Option<&PermissionProfileSelection>,
+        permission_mode: ForkPermissionMode,
     ) -> Result<AppServerStartedThread> {
         let fork_parent = match presentation {
             ForkPresentation::Regular => self
@@ -903,7 +956,12 @@ impl AppServerSession {
                 .is_some_and(|thread| thread.history_mode == ThreadHistoryMode::Paginated)
                 || presentation == ForkPresentation::SideConversation);
         let request_id = self.next_request_id();
-        let session_config = self.session_config_with_effective_service_tier(&config);
+        let session_config = if config.model.is_none() {
+            // Avoid inferring a tier from the stale client default model.
+            config.clone()
+        } else {
+            self.session_config_with_effective_service_tier(&config)
+        };
         let mut params = ThreadForkParams {
             last_turn_id,
             before_turn_id,
@@ -916,6 +974,22 @@ impl AppServerSession {
                 self.remote_cwd_override.as_deref(),
             )
         };
+        if self.thread_params_mode() == ThreadParamsMode::Remote
+            && permission_mode == ForkPermissionMode::InheritSaved
+        {
+            params.approval_policy = None;
+            params.approvals_reviewer = None;
+            params.sandbox = None;
+            params.permissions = None;
+            remove_permission_config_overrides(&mut params.config);
+        } else if let Some(selected_profile) = selected_profile {
+            params.runtime_workspace_roots = None;
+            params.permissions = Some(selected_profile.profile_id.clone());
+            params.sandbox = None;
+            params.approval_policy = selected_profile.approval_policy;
+            params.approvals_reviewer = selected_profile.approvals_reviewer.map(Into::into);
+            remove_permission_config_overrides(&mut params.config);
+        }
         self.thread_tool_transport()
             .configure_mcp(&mut params.config);
         let response: ThreadForkResponse = match self
@@ -1037,17 +1111,6 @@ impl AppServerSession {
                 None
             }
         }
-    }
-
-    pub(crate) async fn thread_list(
-        &mut self,
-        params: ThreadListParams,
-    ) -> Result<ThreadListResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::ThreadList { request_id, params })
-            .await
-            .wrap_err("thread/list failed during TUI session lookup")
     }
 
     /// Lists thread ids that the app server currently holds in memory.
@@ -1172,6 +1235,7 @@ impl AppServerSession {
                 params: ThreadMetadataUpdateParams {
                     thread_id: thread_id.to_string(),
                     project_id: None,
+                    daybreak_enabled: None,
                     git_info: Some(ThreadMetadataGitInfoUpdateParams {
                         sha: None,
                         branch: Some(Some(branch)),
@@ -1246,8 +1310,8 @@ impl AppServerSession {
         client_user_message_id: String,
         items: Vec<UserInput>,
         cwd: PathBuf,
-        approval_policy: AskForApproval,
-        approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
+        approval_policy: Option<AskForApproval>,
+        approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         permissions_override: TurnPermissionsOverride,
         workspace_roots: &[AbsolutePathBuf],
         model: String,
@@ -1275,8 +1339,8 @@ impl AppServerSession {
                     environments: None,
                     cwd: Some(cwd),
                     runtime_workspace_roots: Some(workspace_roots.to_vec()),
-                    approval_policy: Some(approval_policy),
-                    approvals_reviewer: Some(approvals_reviewer.into()),
+                    approval_policy,
+                    approvals_reviewer,
                     sandbox_policy,
                     permissions,
                     model: Some(model),
@@ -1822,6 +1886,22 @@ fn config_request_overrides_from_config(
     Some(overrides)
 }
 
+fn remove_permission_config_overrides(config: &mut Option<HashMap<String, serde_json::Value>>) {
+    if let Some(overrides) = config.as_mut() {
+        for key in [
+            "default_permissions",
+            "permissions",
+            "network",
+            "sandbox_workspace_write",
+        ] {
+            overrides.remove(key);
+        }
+    }
+    if config.as_ref().is_some_and(HashMap::is_empty) {
+        *config = None;
+    }
+}
+
 fn service_tier_override_from_config(config: &Config) -> Option<Option<String>> {
     let local_settings = LocalSettings::from(config);
     config.service_tier.clone().map(Some).or_else(|| {
@@ -2007,7 +2087,7 @@ fn thread_resume_params_from_config(
             (None, None)
         }
     };
-    ThreadResumeParams {
+    let mut params = ThreadResumeParams {
         thread_id: thread_id.to_string(),
         model,
         model_provider,
@@ -2023,7 +2103,16 @@ fn thread_resume_params_from_config(
             &config, /*control_instructions*/ None,
         ),
         ..ThreadResumeParams::default()
+    };
+    if thread_params_mode == ThreadParamsMode::Remote {
+        // Resuming restores the server's saved permission settings, including named profiles.
+        params.approval_policy = None;
+        params.approvals_reviewer = None;
+        params.sandbox = None;
+        params.permissions = None;
+        remove_permission_config_overrides(&mut params.config);
     }
+    params
 }
 
 fn thread_fork_params_from_config(
@@ -3058,7 +3147,9 @@ mod tests {
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
         assert_eq!(start.sandbox, expected_sandbox);
-        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, None);
+        assert_eq!(resume.approval_policy, None);
+        assert_eq!(resume.approvals_reviewer, None);
         assert_eq!(fork.sandbox, expected_sandbox);
         assert_eq!(start.permissions, None);
         assert_eq!(resume.permissions, None);
@@ -3068,7 +3159,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_resume_params_keep_local_roots_with_cross_platform_cwd_override() {
+    async fn remote_resume_params_keep_cwd_without_overriding_saved_permissions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let expected_workspace_roots = config.workspace_roots.clone();
@@ -3198,7 +3289,7 @@ mod tests {
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
         assert_eq!(start.sandbox, expected_sandbox);
-        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, None);
         assert_eq!(fork.sandbox, expected_sandbox);
         assert_eq!(start.permissions, None);
         assert_eq!(resume.permissions, None);
@@ -3748,6 +3839,7 @@ mod tests {
                 section: None,
                 section_entered_at: None,
                 project_id: None,
+                daybreak_enabled: None,
                 history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 model: None,

@@ -26,6 +26,7 @@ mod rmcp_client;
 mod service_error;
 mod startup_error;
 mod stdio_server_launcher;
+mod user_verification;
 mod utils;
 mod www_authenticate;
 

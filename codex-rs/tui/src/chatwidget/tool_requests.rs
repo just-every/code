@@ -373,6 +373,16 @@ impl ChatWidget {
                     self.bottom_pane
                         .push_approval_request(request, &self.config.features);
                 }
+                McpServerElicitationRequest::UserVerification { .. } => {
+                    self.app_event_tx.resolve_elicitation(
+                        thread_id,
+                        params.server_name,
+                        request_id,
+                        codex_app_server_protocol::McpServerElicitationAction::Cancel,
+                        /*content*/ None,
+                        /*meta*/ None,
+                    );
+                }
                 McpServerElicitationRequest::OpenAiForm { .. }
                 | McpServerElicitationRequest::OpenAiElicitationForm { .. }
                 | McpServerElicitationRequest::Url { .. } => {

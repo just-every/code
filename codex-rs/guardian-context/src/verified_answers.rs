@@ -20,7 +20,7 @@ pub struct RenderedVerifiedAnswers {
 pub fn render_verified_answers(context: &RetainedContext) -> RenderedVerifiedAnswers {
     let mut complete = context.verified_answers_complete();
     let mut fragments = Vec::new();
-    for (order, entry) in context.ordered_entries().enumerate() {
+    for (order, (_, entry)) in context.ordered_entries().enumerate() {
         let RetainedContextEntry::VerifiedAnswer(answer) = entry else {
             continue;
         };

@@ -9,25 +9,68 @@ use super::bootstrap_request_error;
 use super::is_history_pagination_unsupported;
 use super::started_thread_from_resume_response;
 use super::thread_resume_params_from_config;
+use super::thread_session_state_from_thread_response;
 use crate::legacy_core::config::Config;
 use codex_app_server_client::TypedRequestError;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeResponse;
-use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 
 impl AppServerSession {
-    /// Captures the server's startup migration policy before workspace config can change.
-    ///
-    /// Sessions without a recorded startup config conservatively assume migration is enabled.
-    pub(crate) fn with_startup_config(mut self, config: &Config) -> Self {
-        self.background_rollout_migration_enabled = config
-            .features
-            .enabled(Feature::BackgroundPaginatedRolloutMigration);
+    /// Read a conflicting thread without taking its writer lease. This is a snapshot, not an
+    /// attachment: the caller must not route turns through this session.
+    pub(crate) async fn read_thread_for_viewing(
+        &mut self,
+        config: &Config,
+        local_settings: &crate::local_settings::LocalSettings,
+        thread_id: ThreadId,
+    ) -> Result<AppServerStartedThread> {
+        let mut thread = self.thread_read(thread_id, /*include_turns*/ false).await?;
+        self.hydrate_initial_thread_history(
+            &mut thread,
+            /*turn_cursor*/ None,
+            /*item_cursor*/ None,
+            Some(config),
+            Some(local_settings),
+            HistoryHydrationScope::Initial,
+        )
+        .await?;
+        let session = thread_session_state_from_thread_response(
+            &thread.id,
+            thread.forked_from_id.clone(),
+            thread.name.clone(),
+            thread.path.clone(),
+            thread.model.clone().unwrap_or_default(),
+            thread.model_provider.clone(),
+            config.service_tier.clone(),
+            AskForApproval::from(config.permissions.approval_policy.value()),
+            config.approvals_reviewer,
+            config.permissions.permission_profile().clone(),
+            config.permissions.active_permission_profile(),
+            thread.cwd.clone(),
+            config.workspace_roots.clone(),
+            Vec::new(),
+            thread.reasoning_effort,
+            config.personality,
+            local_settings,
+        )
+        .await
+        .map_err(color_eyre::eyre::Report::msg)?;
+        Ok(AppServerStartedThread {
+            session,
+            turns: thread.turns,
+            blocks_direct_input: false,
+            task_tools_available: false,
+        })
+    }
+
+    pub(crate) fn with_local_codex_home(mut self, codex_home: &AbsolutePathBuf) -> Self {
         self.task_tool_capabilities_dir = (!self.uses_embedded_app_server())
-            .then(|| config.codex_home.join("tui-thread-reference-capabilities"));
+            .then(|| codex_home.join("tui-thread-reference-capabilities"));
         self
     }
 
@@ -79,23 +122,20 @@ impl AppServerSession {
                 .get(&thread_id)
                 .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy)
                 && (!self.uses_embedded_app_server()
-                    || (!self.background_rollout_migration_enabled
-                        && !config
-                            .features
-                            .enabled(Feature::BackgroundPaginatedRolloutMigration)
-                        && {
-                            rollout_maintenance_guard =
-                                codex_rollout::try_acquire_rollout_maintenance_lock(
-                                    config.codex_home.as_path(),
-                                )
-                                .ok()
-                                .flatten();
-                            rollout_maintenance_guard.is_some()
-                        }
-                        && self
-                            .thread_read(thread_id, /*include_turns*/ false)
-                            .await
-                            .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
+                    || ({
+                        // The guard prevents migration through the full resume,
+                        // regardless of the server's migration feature settings.
+                        rollout_maintenance_guard =
+                            codex_rollout::try_acquire_rollout_maintenance_lock(
+                                config.codex_home.as_path(),
+                            )
+                            .ok()
+                            .flatten();
+                        rollout_maintenance_guard.is_some()
+                    } && self
+                        .thread_read(thread_id, /*include_turns*/ false)
+                        .await
+                        .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
             !known_legacy_history
         } else {
             false

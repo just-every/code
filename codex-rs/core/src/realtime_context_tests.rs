@@ -54,6 +54,7 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
             .expect("valid timestamp"),
         archived_at: None,
         project_id: None,
+        daybreak_enabled: None,
         section: None,
         section_position: None,
         section_entered_at: None,

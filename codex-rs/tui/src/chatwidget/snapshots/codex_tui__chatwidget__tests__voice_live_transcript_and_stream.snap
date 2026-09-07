@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/status_and_layout.rs
+assertion_line: 34
+expression: rendered
+---
+"                                                            "
+"• Agent answer arriving                                     "
+"                                                            "
+"                                                            "
+"› pick a number                                             "
+"                                                            "
+"                                                            "
+"                                                            "
+"› Ask Codex to do anything                                  "
+"                                                            "
+"   voice ● listening   /voice stop   mic ░░░░░  codex ░░░░░ "

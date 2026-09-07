@@ -21,9 +21,11 @@ fn experimental_context_is_eligible(auth_mode: AuthMode, plan_type: Option<PlanT
 pub(super) fn apply_experimental_context(
     config: &mut Config,
     auth: Option<&CodexAuth>,
+    starting_model: &ModelInfo,
 ) -> std::io::Result<()> {
     let provider = &config.model_provider;
     if !config.features.enabled(Feature::ContextManagement)
+        || !starting_model.supports_experimental_context
         || !provider.supports_codex_backend_routes()
         || !provider.requires_openai_auth
         || provider.env_key.is_some()

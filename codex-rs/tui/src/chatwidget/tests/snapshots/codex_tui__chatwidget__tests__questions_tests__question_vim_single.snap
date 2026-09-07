@@ -1,0 +1,24 @@
+---
+source: tui/src/chatwidget/tests/questions_tests.rs
+expression: "format!(\"NORMAL\\n{normal}\\n\\nSEARCH\\n{search}\")"
+---
+NORMAL
+• Queued follow-up inputs
+
+  Which way?
+
+  alpha beta
+  alpha gamma
+                                                                   Vim: Normal
+  enter submit   ctrl + ] skip   ⌥ + ↓ main prompt
+
+SEARCH
+• Queued follow-up inputs
+
+  Which way?
+
+  alpha beta
+  alpha gamma
+  /gamma
+                                                                   Vim: Normal
+  enter submit   ctrl + ] skip   ⌥ + ↓ main prompt

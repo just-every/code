@@ -76,6 +76,109 @@ fn approval_resolution_uses_acting_model_timeout_instructions() {
     }
 }
 
+#[cfg(unix)]
+#[test_case::test_case(ApprovalsReviewer::User, codex_extension_api::ApprovalDecision::AskUser; "manual prompt")]
+#[test_case::test_case(ApprovalsReviewer::AutoReview, codex_extension_api::ApprovalDecision::Allow; "cached allow")]
+#[tokio::test]
+async fn non_utf8_cwd_preserves_approval_routing(
+    reviewer: ApprovalsReviewer,
+    decision: codex_extension_api::ApprovalDecision,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use codex_extension_api::ApprovalDecision;
+    use std::os::unix::ffi::OsStringExt;
+
+    struct Contributor {
+        cwd: codex_utils_path_uri::LegacyAppPathString,
+        decision: ApprovalDecision,
+    }
+
+    impl codex_extension_api::ApprovalReviewContributor for Contributor {
+        fn decide<'a>(
+            &'a self,
+            input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<ApprovalDecision>> {
+            Box::pin(async move {
+                assert_eq!(input.action["cwd"], serde_json::json!(self.cwd));
+                Some(self.decision.clone())
+            })
+        }
+    }
+
+    let cwd = PathUri::from_abs_path(&AbsolutePathBuf::try_from(PathBuf::from(
+        std::ffi::OsString::from_vec(b"/tmp/non-utf8-\xe9".to_vec()),
+    ))?);
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.approval_review_contributor(Arc::new(Contributor {
+        cwd: codex_utils_path_uri::LegacyAppPathString::from_path_uri(&cwd, PathConvention::Posix)?,
+        decision,
+    }));
+    Arc::get_mut(&mut session)
+        .context("session is uniquely owned")?
+        .services
+        .extensions = Arc::new(extensions.build());
+    *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+    let mut review_context = GuardianReviewContext::from(&turn);
+    review_context.approval_policy = AskForApproval::OnRequest;
+    review_context.approvals_reviewer = reviewer;
+    let context = ApprovalContext {
+        review_context,
+        cancellation_token: None,
+        call_id: "non-utf8-cwd".to_string(),
+        tool_name: ToolName::plain("exec_command"),
+        strict_auto_review: false,
+        approval_reason: None,
+        retry_reason: None,
+        network_approval_context: None,
+    };
+    let action = ApprovalAction::ExecCommand {
+        id: context.call_id.clone(),
+        environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+        command: vec!["npm".to_string(), "install".to_string()],
+        hook_command: "npm install".to_string(),
+        cwd: cwd.clone(),
+        sandbox_permissions: if reviewer == ApprovalsReviewer::User {
+            SandboxPermissions::RequireEscalated
+        } else {
+            SandboxPermissions::UseDefault
+        },
+        additional_permissions: None,
+        justification: None,
+        tty: false,
+        proposed_execpolicy_amendment: None,
+    };
+    let approval = session.request_reviewer_approval(action, &context);
+    tokio::pin!(approval);
+    let expected = if reviewer == ApprovalsReviewer::User {
+        tokio::select! {
+            resolution = &mut approval => panic!("expected a user prompt, got {resolution:?}"),
+            event = events.recv() => {
+                let codex_protocol::protocol::EventMsg::ExecApprovalRequest(request) =
+                    event.context("receive user prompt")?.msg
+                else {
+                    panic!("expected a command approval prompt");
+                };
+                assert_eq!(request.cwd, codex_utils_path_uri::LegacyAppPathString::from(cwd));
+                assert_eq!(request.command, vec!["npm", "install"]);
+                session.notify_approval(&request.call_id, ReviewDecision::Approved).await;
+            }
+        }
+        ApprovalResolution {
+            decision: ReviewDecision::Approved,
+            source: ApprovalResolutionSource::User,
+        }
+    } else {
+        ApprovalResolution {
+            decision: ReviewDecision::Approved,
+            source: ApprovalResolutionSource::Guardian,
+        }
+    };
+    assert_eq!(approval.await, expected);
+    assert!(events.try_recv().is_err());
+    Ok(())
+}
+
 #[tokio::test]
 async fn explicit_mcp_reviewer_override_takes_precedence_over_action_context() {
     let (session, turn, events) = make_session_and_context_with_rx().await;

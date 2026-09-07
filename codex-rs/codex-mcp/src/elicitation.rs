@@ -21,6 +21,8 @@ use anyhow::anyhow;
 use async_channel::Sender;
 use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_TOOL_SUGGESTION;
@@ -42,6 +44,9 @@ use tokio::sync::oneshot;
 static NEXT_ELICITATION_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 const STRICT_AUTO_REVIEW_DECLINE_MESSAGE: &str = "Automated review of this operation failed. Do not proceed without asking the user for explicit approval.";
+
+#[path = "user_verification_elicitation.rs"]
+mod user_verification_elicitation;
 
 #[derive(Debug, Clone)]
 pub struct ElicitationReviewRequest {
@@ -147,7 +152,7 @@ impl ElicitationRequestRouter {
             .ok_or_else(|| anyhow!("elicitation request not found"))?;
         responder
             .send(response)
-            .map_err(|e| anyhow!("failed to send elicitation response: {e:?}"))
+            .map_err(|_| anyhow!("elicitation response receiver closed"))
     }
 }
 
@@ -202,7 +207,14 @@ impl ElicitationRequestManager {
         &self,
         server_name: String,
         tx_event: Option<Sender<Event>>,
+        client_mcp_extensions: &ClientMcpExtensions,
     ) -> SendElicitation {
+        // Event receivers such as codex mcp-server do not necessarily handle verification.
+        // Only wait for a response when trusted host activation enabled this exact route.
+        let user_verification_enabled = client_mcp_extensions
+            .get(OPENAI_ELICITATION_EXTENSION_ID)
+            .and_then(|settings| settings.get("userVerification"))
+            .is_some_and(Value::is_object);
         let router = self.router.clone();
         let authority = self.authority.clone();
         Box::new(move |id, elicitation| {
@@ -211,6 +223,32 @@ impl ElicitationRequestManager {
             let server_name = server_name.clone();
             let authority = authority.clone();
             async move {
+                if let Elicitation::UserVerification {
+                    title,
+                    description,
+                    challenge,
+                } = elicitation
+                {
+                    if !user_verification_enabled {
+                        return Ok(ElicitationResponse {
+                            action: ElicitationAction::Cancel,
+                            content: None,
+                            meta: None,
+                        });
+                    }
+                    return user_verification_elicitation::route(
+                        router,
+                        tx_event,
+                        authority,
+                        server_name,
+                        ElicitationRequest::UserVerification {
+                            title,
+                            description,
+                            challenge,
+                        },
+                    )
+                    .await;
+                }
                 if router.auto_deny() {
                     return Ok(ElicitationResponse {
                         action: ElicitationAction::Decline,
@@ -336,7 +374,9 @@ impl ElicitationRequestManager {
                             .get("properties")
                             .and_then(Value::as_object)
                             .is_some_and(|properties| !properties.is_empty()),
-                        Elicitation::Mcp(_) | Elicitation::OpenAiForm { .. } => false,
+                        Elicitation::Mcp(_)
+                        | Elicitation::OpenAiForm { .. }
+                        | Elicitation::UserVerification { .. } => false,
                     };
 
                 if !should_surface_form_in_full_access {
@@ -374,6 +414,13 @@ impl ElicitationRequestManager {
                 );
                 let routed_request_id = RequestId::String(public_request_id.clone().into());
                 let request = match elicitation {
+                    Elicitation::UserVerification { .. } => {
+                        return Ok(ElicitationResponse {
+                            action: ElicitationAction::Cancel,
+                            content: None,
+                            meta: None,
+                        });
+                    }
                     Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
                         meta,
                         message,
@@ -491,7 +538,8 @@ fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
         }
         Elicitation::Mcp(_)
         | Elicitation::OpenAiForm { .. }
-        | Elicitation::OpenAiElicitationForm { .. } => false,
+        | Elicitation::OpenAiElicitationForm { .. }
+        | Elicitation::UserVerification { .. } => false,
     }
 }
 

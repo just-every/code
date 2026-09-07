@@ -167,9 +167,6 @@ enum Subcommand {
     /// Manage Codex plugins.
     Plugin(PluginCli),
 
-    /// Start Codex as an MCP server (stdio).
-    McpServer(McpServerCommand),
-
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
@@ -320,13 +317,6 @@ struct ReviewCommand {
 
     #[clap(flatten)]
     args: ReviewArgs,
-}
-
-#[derive(Debug, Parser)]
-struct McpServerCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
-    #[arg(long = "strict-config", default_value_t = false)]
-    strict_config: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -796,6 +786,9 @@ enum AppServerDaemonSubcommand {
 
     /// Restart the local app server daemon.
     Restart,
+
+    /// Update the standalone installation and restart the managed daemon (may interrupt work).
+    Update,
 
     /// Enable remote control for future starts and a currently running managed daemon.
     EnableRemoteControl,
@@ -1270,22 +1263,6 @@ async fn cli_main(
             );
             codex_exec::run_main(exec_cli, arg0_paths.clone()).await?;
         }
-        Some(Subcommand::McpServer(McpServerCommand { strict_config })) => {
-            eprintln!(
-                "warning: `codex mcp-server` is deprecated and will be removed in a future release."
-            );
-            reject_remote_mode_for_subcommand(
-                root_remote.as_deref(),
-                root_remote_auth_token_env.as_deref(),
-                "mcp-server",
-            )?;
-            codex_mcp_server::run_main(
-                arg0_paths.clone(),
-                root_config_overrides,
-                strict_config || root_strict_config,
-            )
-            .await?;
-        }
         Some(Subcommand::Mcp(mut mcp_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1403,6 +1380,10 @@ async fn cli_main(
                     }
                     AppServerDaemonSubcommand::Restart => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Restart).await?;
+                    }
+                    AppServerDaemonSubcommand::Update => {
+                        let output = codex_app_server_daemon::update().await?;
+                        println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::EnableRemoteControl => {
                         print_app_server_remote_control_output(AppServerRemoteControlMode::Enabled)
@@ -2512,6 +2493,11 @@ fn reject_unsupported_worktree_for_subcommand(
     }
 
     match subcommand {
+        None => Ok(()),
+        Some(Subcommand::Fork(command)) if command.session_id.is_some() && !command.last => Ok(()),
+        Some(Subcommand::Fork(_)) => {
+            anyhow::bail!("`codex fork --worktree` requires an explicit session ID")
+        }
         Some(Subcommand::Exec(command)) => match &command.command {
             None | Some(ExecCommand::Fork(_)) => Ok(()),
             Some(ExecCommand::Resume(_)) => anyhow::bail!(
@@ -2522,7 +2508,9 @@ fn reject_unsupported_worktree_for_subcommand(
             }
         },
         _ => {
-            anyhow::bail!("`--worktree` currently supports only `codex exec` and `codex exec fork`")
+            anyhow::bail!(
+                "`--worktree` supports new interactive sessions, `codex fork`, `codex exec`, and `codex exec fork`"
+            )
         }
     }
 }
@@ -2563,7 +2551,6 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Agents(_))
         | Some(Subcommand::Exec(_))
         | Some(Subcommand::Review(_))
-        | Some(Subcommand::McpServer(_))
         | Some(Subcommand::ExecServer(_))
         | Some(Subcommand::Resume(_))
         | Some(Subcommand::Queue(_))
@@ -2636,6 +2623,7 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
             AppServerDaemonSubcommand::Bootstrap(_) => "app-server daemon bootstrap",
             AppServerDaemonSubcommand::Start => "app-server daemon start",
             AppServerDaemonSubcommand::Restart => "app-server daemon restart",
+            AppServerDaemonSubcommand::Update => "app-server daemon update",
             AppServerDaemonSubcommand::EnableRemoteControl => {
                 "app-server daemon enable-remote-control"
             }
@@ -3344,10 +3332,18 @@ mod tests {
     }
 
     #[test]
-    fn exec_worktree_flag_supports_root_local_and_nested_fork_positions() {
+    fn worktree_flag_supports_interactive_exec_and_explicit_fork_positions() {
         let arguments = [
+            vec!["codex", "--worktree"],
+            vec!["codex", "--worktree", "hello"],
             vec!["codex", "--worktree", "exec", "hello"],
             vec!["codex", "exec", "--worktree", "hello"],
+            vec![
+                "codex",
+                "fork",
+                "--worktree",
+                "019f1234-5678-7000-8000-000000000001",
+            ],
             vec![
                 "codex",
                 "exec",
@@ -3365,7 +3361,7 @@ mod tests {
                     &cli.subcommand,
                 )
                 .is_ok(),
-                "headless worktree command should be accepted: {arguments:?}",
+                "supported worktree command should be accepted: {arguments:?}",
             );
         }
     }
@@ -3373,8 +3369,9 @@ mod tests {
     #[test]
     fn worktree_flag_rejects_unsupported_session_and_management_commands() {
         let arguments = [
-            vec!["codex", "--worktree"],
             vec!["codex", "--worktree", "login"],
+            vec!["codex", "fork", "--worktree"],
+            vec!["codex", "fork", "--worktree", "--last"],
             vec!["codex", "exec", "resume", "--worktree", "session"],
             vec!["codex", "exec", "review", "--worktree"],
             vec!["codex", "resume", "--worktree", "session"],
@@ -3390,17 +3387,17 @@ mod tests {
             ],
         ];
 
+        let mut errors = Vec::new();
         for arguments in arguments {
             let cli = MultitoolCli::try_parse_from(&arguments).expect("parse shared worktree flag");
-            assert!(
-                reject_unsupported_worktree_for_subcommand(
-                    cli.interactive.shared.worktree,
-                    &cli.subcommand,
-                )
-                .is_err(),
-                "unsupported command must be rejected: {arguments:?}",
-            );
+            let error = reject_unsupported_worktree_for_subcommand(
+                cli.interactive.shared.worktree,
+                &cli.subcommand,
+            )
+            .expect_err("unsupported worktree command");
+            errors.push(format!("{}: {error}", arguments.join(" ")));
         }
+        insta::assert_snapshot!("unsupported_worktree_commands", errors.join("\n"));
     }
 
     #[test]
@@ -4410,15 +4407,6 @@ mod tests {
     fn strict_config_parses_for_supported_commands() {
         let cli = MultitoolCli::try_parse_from(["codex", "--strict-config"]).expect("parse");
         assert!(cli.interactive.strict_config);
-
-        let cli = MultitoolCli::try_parse_from(["codex", "mcp-server", "--strict-config"])
-            .expect("parse");
-        assert_matches!(
-            cli.subcommand,
-            Some(Subcommand::McpServer(McpServerCommand {
-                strict_config: true,
-            }))
-        );
 
         let cli =
             MultitoolCli::try_parse_from(["codex", "review", "--strict-config", "--uncommitted"])

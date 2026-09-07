@@ -1,6 +1,6 @@
-//! Detached Windows processes cannot receive console signals. The daemon passes
-//! a request path inside its user-only state directory. Only the addressed PID
-//! consumes a request, triggering the SIGTERM drain without changing the wire API.
+//! The detached Windows updater has no control socket, so its owner requests
+//! termination through a file in its private state directory. Managed app-server
+//! shutdown instead uses the protected local socket.
 
 use std::io;
 use std::io::Read;
@@ -13,8 +13,7 @@ use std::time::Duration;
 #[cfg(windows)]
 pub const DAEMON_SHUTDOWN_FILE_ENV: &str = "CODEX_DAEMON_SHUTDOWN_FILE";
 
-/// Waits for and consumes one daemon shutdown request. Without a managed launch
-/// environment this stays pending, leaving normal console shutdown unchanged.
+/// Waits for and consumes one updater shutdown request.
 #[cfg(windows)]
 pub async fn daemon_shutdown_signal() -> io::Result<()> {
     let Some(path) = std::env::var_os(DAEMON_SHUTDOWN_FILE_ENV).map(PathBuf::from) else {

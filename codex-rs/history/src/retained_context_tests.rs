@@ -1,4 +1,7 @@
 use super::*;
+use crate::CodexHarnessMetadata;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
 
 fn publish_answer() -> RetainedContextEvent {
@@ -16,7 +19,7 @@ fn publish_answer() -> RetainedContextEvent {
 }
 
 #[test]
-fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
+fn retained_evidence_preserves_order_through_recovery_checkpoint_and_rollback() {
     let mut context = RetainedContext::default();
     let first = publish_answer();
     assert!(context.record(&first));
@@ -25,11 +28,19 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
         RetainedUserMessage {
             turn_id: "revocation-turn".to_owned(),
             message_id: Some("revocation".to_owned()),
-            text: "Do not publish after all.".to_owned(),
-            complete: true,
+            text: String::new(),
+            complete: false,
         },
-        /*acceptance_order*/ None,
+        RetainedInputSource::Local(None),
     );
+    let mut expected = context.clone();
+    expected.user_messages[0].value.text = "Do not publish after all.".to_owned();
+    context.recover_user_message_excerpts(|id| {
+        assert_eq!(id, "revocation");
+        Some("Do not publish after all.".to_owned())
+    });
+    assert_eq!(context, expected);
+    context.recover_user_message_excerpts(|_| panic!("existing text must not be replaced"));
     let snapshot = context.clone();
     assert!(!context.record(&first));
     assert_eq!(context, snapshot);
@@ -37,12 +48,12 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
         serde_json::from_str(&serde_json::to_string(&context).expect("retained answer fixture"))
             .expect("retained answer fixture");
     let mut restored = RetainedContext::default();
-    restored.restore(Some(&checkpoint));
+    restored.restore(Some(&checkpoint), &[]);
     assert_eq!(restored, snapshot);
     assert_eq!(
         restored
             .ordered_entries()
-            .map(|entry| match entry {
+            .map(|(_, entry)| match entry {
                 RetainedContextEntry::VerifiedAnswer(answer) => answer.questions[0].answer.as_str(),
                 RetainedContextEntry::UserMessage(message) => message.text.as_str(),
             })
@@ -52,7 +63,7 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
     restored.rollback(
         &["revocation-turn"],
         Some("revocation"),
-        /*acceptance_order*/ None,
+        RetainedInputSource::Local(None),
     );
     assert_eq!(
         restored,
@@ -88,7 +99,7 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
     context.rollback(
         &["turn-2"],
         /*first_removed_message_id*/ None,
-        /*acceptance_order*/ None,
+        RetainedInputSource::Local(None),
     );
     assert_eq!(context.verified_answers().count(), 0);
     assert!(!context.verified_answers_complete());
@@ -124,14 +135,14 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
                 text: "Keep the repository private.".to_owned(),
                 complete: true,
             },
-            /*acceptance_order*/ None,
+            RetainedInputSource::Local(None),
         );
     }
     assert!(!restored.user_messages_complete());
     assert_eq!(
         restored
             .ordered_entries()
-            .filter(|entry| matches!(entry, RetainedContextEntry::UserMessage(_)))
+            .filter(|(_, entry)| matches!(entry, RetainedContextEntry::UserMessage(_)))
             .count(),
         MAX_FAMILY_RECORDS
     );
@@ -143,7 +154,7 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
             text: "An older queued instruction.".to_owned(),
             complete: true,
         },
-        Some(0),
+        RetainedInputSource::Local(Some(0)),
     );
     assert_eq!(
         restored, recent,
@@ -156,13 +167,37 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
             text: "restriction ".repeat(MAX_RECORD_BYTES),
             complete: true,
         },
-        /*acceptance_order*/ None,
+        RetainedInputSource::Local(None),
     );
-    let Some(RetainedContextEntry::UserMessage(message)) = restored.ordered_entries().next_back()
+    let Some((_, RetainedContextEntry::UserMessage(message))) =
+        restored.ordered_entries().next_back()
     else {
         panic!("latest user evidence");
     };
     assert_eq!((&message.text, message.complete), (&String::new(), false));
+}
+
+#[test]
+fn recovered_excerpts_obey_record_and_family_limits() {
+    let mut context = RetainedContext::default();
+    for index in 0..MAX_FAMILY_RECORDS {
+        context.record_user_message(
+            RetainedUserMessage {
+                turn_id: "turn-1".to_owned(),
+                message_id: Some(format!("message-{index}")),
+                text: String::new(),
+                complete: false,
+            },
+            RetainedInputSource::Local(None),
+        );
+    }
+    let unchanged = context.clone();
+    context.recover_user_message_excerpts(|_| Some("x".repeat(MAX_RECORD_BYTES)));
+    assert_eq!(context, unchanged);
+    context.recover_user_message_excerpts(|_| Some("x".repeat(MAX_RECORD_BYTES - 1_024)));
+    assert!(context.user_messages_incomplete);
+    assert!(context.user_messages.len() < MAX_FAMILY_RECORDS);
+    assert!(serde_json::to_vec(&context.user_messages).unwrap().len() <= MAX_FAMILY_BYTES);
 }
 
 #[test]
@@ -184,8 +219,46 @@ fn legacy_checkpoints_mark_user_messages_incomplete() {
     assert_eq!(serde_json::to_value(&legacy).unwrap(), wire);
 
     let mut restored = RetainedContext::default();
-    restored.restore(/*checkpoint*/ None);
+    restored.restore(/*checkpoint*/ None, &[]);
     assert!(!restored.user_messages_complete());
+}
+
+#[test]
+fn restored_input_order_accounts_for_surviving_local_sources() {
+    let surviving_items = [(Some(7), false), (Some(100), true), (None, false)].map(
+        |(user_input_order, inherited_user_message)| ResponseItemEnvelope {
+            item: ResponseItem::Message {
+                id: None,
+                role: "user".to_owned(),
+                content: vec![ContentItem::InputText {
+                    text: "Inspect the deployment.".to_owned(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            metadata: Some(CodexHarnessMetadata {
+                user_input_order,
+                inherited_user_message,
+                ..Default::default()
+            }),
+        },
+    );
+    let checkpoint = RetainedContext {
+        next_order: 20,
+        ..Default::default()
+    };
+    for (checkpoint, expected_order) in [(None, 8), (Some(&checkpoint), 20)] {
+        let mut restored = RetainedContext::default();
+        restored.restore(checkpoint, &surviving_items);
+        assert_eq!(
+            (
+                restored.reserve_order(),
+                restored.ordered_entries().count(),
+                restored.user_messages_complete(),
+            ),
+            (expected_order, 0, checkpoint.is_some()),
+        );
+    }
 }
 
 #[test]
@@ -208,26 +281,48 @@ fn accepted_order_survives_delayed_recording_and_checkpoint_replay() {
         text: "Keep the repository private.".to_owned(),
         complete: true,
     };
-    context.record_user_message(instruction.clone(), Some(steer_order));
+    context.record_user_message(
+        instruction.clone(),
+        RetainedInputSource::Local(Some(steer_order)),
+    );
     let mut resumed = RetainedContext::default();
-    resumed.restore(Some(&checkpoint));
-    resumed.record_user_message(instruction, Some(steer_order));
+    resumed.restore(Some(&checkpoint), &[]);
+    resumed.record_user_message(instruction, RetainedInputSource::Local(Some(steer_order)));
     assert_eq!(resumed, context);
     assert_eq!(
         resumed
             .ordered_entries()
-            .map(|entry| match entry {
-                RetainedContextEntry::UserMessage(message) => message.text.as_str(),
-                RetainedContextEntry::VerifiedAnswer(answer) => answer.questions[0].answer.as_str(),
+            .map(|(order, entry)| match entry {
+                RetainedContextEntry::UserMessage(message) => (order, message.text.as_str()),
+                RetainedContextEntry::VerifiedAnswer(answer) => {
+                    (order, answer.questions[0].answer.as_str())
+                }
             })
             .collect::<Vec<_>>(),
-        vec!["Keep the repository private.", "Yes, but never publicly."],
+        vec![
+            (
+                RetainedContextOrder::Local(steer_order),
+                "Keep the repository private."
+            ),
+            (
+                RetainedContextOrder::Local(answer_order),
+                "Yes, but never publicly."
+            ),
+        ],
     );
     // This checkpoint predates model delivery of the queued instruction. Rollback
     // still removes its later-accepted answer using the persisted boundary order.
     let mut before_delivery = checkpoint;
-    before_delivery.rollback(&["turn-1"], Some("steer"), Some(steer_order));
-    resumed.rollback(&["turn-1"], Some("steer"), Some(steer_order));
+    before_delivery.rollback(
+        &["turn-1"],
+        Some("steer"),
+        RetainedInputSource::Local(Some(steer_order)),
+    );
+    resumed.rollback(
+        &["turn-1"],
+        Some("steer"),
+        RetainedInputSource::Local(Some(steer_order)),
+    );
     assert_eq!(before_delivery, resumed);
     assert_eq!(
         resumed,
@@ -236,4 +331,58 @@ fn accepted_order_survives_delayed_recording_and_checkpoint_replay() {
             ..Default::default()
         }
     );
+}
+
+#[test]
+fn adopted_instructions_preserve_local_order_and_rollback_scope() {
+    let mut context = RetainedContext::default();
+    context.record(&publish_answer());
+    for index in 0..2 {
+        let message = RetainedUserMessage {
+            turn_id: "parent-turn".to_owned(),
+            message_id: Some(format!("parent-{index}")),
+            text: format!("Parent instruction {index}"),
+            complete: true,
+        };
+        context.record_user_message(message.clone(), RetainedInputSource::Inherited);
+        context.record_user_message(message, RetainedInputSource::Inherited);
+    }
+    assert_eq!(context.reserve_order(), 1);
+    assert!(!context.verified_answers_complete());
+    assert_eq!(
+        context
+            .ordered_entries()
+            .map(|(order, _)| order)
+            .collect::<Vec<_>>(),
+        vec![
+            RetainedContextOrder::Inherited(0),
+            RetainedContextOrder::Inherited(1),
+            RetainedContextOrder::Local(0)
+        ],
+    );
+    let checkpoint = serde_json::from_slice(&serde_json::to_vec(&context).unwrap()).unwrap();
+    let mut restored = RetainedContext::default();
+    restored.restore(Some(&checkpoint), &[]);
+    assert_eq!(restored, context);
+    // Older roots adopted complete instructions without recording the missing parent answers.
+    let mut legacy_checkpoint = serde_json::to_value(&checkpoint).unwrap();
+    legacy_checkpoint["incomplete"] = serde_json::json!(false);
+    let legacy_checkpoint = serde_json::from_value(legacy_checkpoint).unwrap();
+    restored.restore(Some(&legacy_checkpoint), &[]);
+    assert_eq!(restored, context);
+    restored.rollback(
+        &["turn-1"],
+        /*first_removed_message_id*/ None,
+        RetainedInputSource::Local(Some(0)),
+    );
+    let mut expected = context;
+    expected.verified_answers.clear();
+    assert_eq!(restored, expected);
+    restored.rollback(
+        &["parent-turn"],
+        Some("parent-1"),
+        RetainedInputSource::Inherited,
+    );
+    expected.user_messages.pop_back();
+    assert_eq!(restored, expected);
 }

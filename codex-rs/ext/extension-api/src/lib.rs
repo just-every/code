@@ -40,7 +40,6 @@ pub use codex_tools::TurnItemEmissionFuture;
 pub use codex_tools::TurnItemEmitter;
 pub use codex_tools::parse_tool_input_schema;
 pub use codex_tools::parse_tool_input_schema_without_compaction;
-pub use contributors::ApprovalAssessment;
 pub use contributors::ApprovalDecision;
 pub use contributors::ApprovalDecisionInput;
 pub use contributors::ApprovalReviewContributor;

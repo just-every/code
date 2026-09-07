@@ -6,22 +6,10 @@
 use super::*;
 
 impl ChatWidget {
-    /// Flush prior activity and preserve its separator before live or replayed assistant text.
+    /// Flush prior activity before live or replayed assistant text.
     pub(super) fn prepare_assistant_message(&mut self) {
-        // Before starting an agent stream, flush any active exec cell group.
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();
-        // If the previous turn inserted non-stream history (exec output, patch status, MCP
-        // calls), render a separator before starting the next streamed assistant message.
-        if self.transcript.needs_final_message_separator && self.transcript.had_work_activity {
-            self.add_to_history(history_cell::FinalMessageSeparator::new(
-                /*elapsed_seconds*/ None, /*runtime_metrics*/ None,
-            ));
-            self.transcript.needs_final_message_separator = false;
-        } else if self.transcript.needs_final_message_separator {
-            // Reset the flag even if we don't show separator (no work was done)
-            self.transcript.needs_final_message_separator = false;
-        }
     }
 
     /// Replay a subset of initial events into the UI to seed the transcript when
@@ -40,6 +28,14 @@ impl ChatWidget {
             }))
             .collect::<Vec<_>>();
         for (turn, hidden_nested_review_turn) in turns.into_iter().zip(hidden_nested_review_turns) {
+            // Defer completed metadata-only turns until their page loads. Active
+            // turns must restore their lifecycle even before any items are available.
+            if turn.status == TurnStatus::Completed
+                && turn.items_view == codex_app_server_protocol::TurnItemsView::NotLoaded
+                && turn.items.is_empty()
+            {
+                continue;
+            }
             let Turn {
                 id: turn_id,
                 items_view: _,
@@ -50,13 +46,31 @@ impl ChatWidget {
                 completed_at,
                 duration_ms,
             } = turn;
+            let delegated = items.iter().any(|item| {
+                matches!(item, ThreadItem::UserMessage { content, .. }
+                    if realtime::realtime_delegation_input(content).is_some())
+            });
             if matches!(status, TurnStatus::InProgress) {
+                if delegated {
+                    self.remember_realtime_delegated_reasoning_turn(&turn_id);
+                }
                 self.warning_display_state.startup_complete = true;
                 self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
                 self.on_task_started();
             }
+            let mut replaying_delegation = false;
             for item in items {
+                if matches!(&item, ThreadItem::UserMessage { content, .. }
+                    if realtime::realtime_delegation_input(content).is_some())
+                {
+                    replaying_delegation = true;
+                }
+                // Voice can steer a typed turn already in progress. Its earlier
+                // commentary and reasoning still belong to the typed request.
+                if replaying_delegation && realtime::is_private_realtime_agent_item(&item) {
+                    continue;
+                }
                 if hidden_nested_review_turn && matches!(item, ThreadItem::UserMessage { .. }) {
                     continue;
                 }
@@ -75,6 +89,11 @@ impl ChatWidget {
                 })
             {
                 error = None;
+            }
+            if hidden_nested_review_turn {
+                self.turn_lifecycle
+                    .rendered_completion_turn_ids
+                    .insert(turn_id.clone());
             }
             if matches!(
                 status,
@@ -121,7 +140,12 @@ impl ChatWidget {
             ThreadItem::UserMessage {
                 content, client_id, ..
             } => {
-                self.on_committed_user_message(&content, client_id.as_deref(), from_replay);
+                self.on_committed_user_message(
+                    &content,
+                    client_id.as_deref(),
+                    from_replay,
+                    &turn_id,
+                );
             }
             ThreadItem::AgentMessage {
                 id,
@@ -132,6 +156,20 @@ impl ChatWidget {
                 questions,
                 ..
             } => {
+                if self.complete_realtime_delegated_agent_item(
+                    &turn_id,
+                    &ThreadItem::AgentMessage {
+                        id: id.clone(),
+                        text: text.clone(),
+                        phase: phase.clone(),
+                        memory_citation: memory_citation.clone(),
+                        delivery,
+                        questions: questions.clone(),
+                    },
+                    from_replay,
+                ) {
+                    return;
+                }
                 self.on_agent_message_item_completed(
                     AgentMessageItem {
                         id,

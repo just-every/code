@@ -207,7 +207,7 @@ macro_rules! assert_chatwidget_snapshot {
         settings.bind(|| {
             insta::assert_snapshot!(
                 format!("codex_tui__chatwidget__tests__{}", $name),
-                &($value),
+                $value,
                 @$snapshot
             );
         });
@@ -240,7 +240,11 @@ mod bedrock_catalog_tests;
 mod collaboration_catalog_tests;
 #[path = "tests/compaction_tests.rs"]
 mod compaction_tests;
+#[path = "tests/completion_styling_tests.rs"]
+mod completion_styling;
 mod composer_submission;
+#[path = "tests/computer_activity_tests.rs"]
+mod computer_activity_tests;
 #[path = "tests/config_errors_tests.rs"]
 mod config_errors;
 mod exec_flow;
@@ -273,8 +277,13 @@ mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
 mod usage;
+#[path = "tests/worktree_picker_tests.rs"]
+mod worktree_picker;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;
 pub(crate) use helpers::set_chatgpt_auth;
 pub(crate) use helpers::set_fast_mode_test_catalog;
 pub(super) use helpers::*;
+
+#[path = "tests/questions_tests.rs"]
+mod questions_tests;

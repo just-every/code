@@ -112,6 +112,18 @@ pub(super) enum ActivePopup {
     MentionV2(MentionV2Popup),
 }
 
+impl ActivePopup {
+    pub(super) fn required_height(&self, width: u16, footer_total_height: u16) -> u16 {
+        match self {
+            Self::None => footer_total_height,
+            Self::Command(popup) => popup.calculate_required_height(width),
+            Self::File(popup) => popup.calculate_required_height(),
+            Self::Skill(popup) => popup.calculate_required_height(width),
+            Self::MentionV2(popup) => popup.calculate_required_height(width),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "popup_state_tests.rs"]
 mod tests;

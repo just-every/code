@@ -134,7 +134,7 @@ async fn exec_server_runs_ordinary_requests_serially_by_default() -> anyhow::Res
             })?,
         )
         .await?;
-    let _ = server
+    let response = server
         .wait_for_event(|event| {
             matches!(
                 event,
@@ -142,6 +142,10 @@ async fn exec_server_runs_ordinary_requests_serially_by_default() -> anyhow::Res
             )
         })
         .await?;
+    let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
+        panic!("expected initialize response");
+    };
+    let initialization: InitializeResponse = serde_json::from_value(result)?;
     server
         .send_notification("initialized", serde_json::json!({}))
         .await?;
@@ -213,6 +217,9 @@ async fn exec_server_runs_ordinary_requests_serially_by_default() -> anyhow::Res
     };
     assert_eq!(id, queued_environment_info_id);
     let mut expected_environment_info = EnvironmentInfo::local();
+    expected_environment_info.provider_id = initialization
+        .environment_info
+        .and_then(|info| info.provider_id);
     expected_environment_info.temporary_directories = Some(vec![PathUri::from_host_native_path(
         temporary_directory.path(),
     )?]);

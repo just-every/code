@@ -1,5 +1,8 @@
 mod common;
 
+use anyhow::Context;
+use codex_build_info::BuildInfo;
+use codex_build_info::build_id;
 use codex_exec_server::EnvironmentInfo;
 use codex_exec_server::InitializeParams;
 use codex_exec_server::InitializeResponse;
@@ -7,6 +10,7 @@ use codex_exec_server_protocol::JSONRPCError;
 use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCResponse;
+use common::TEST_BUILD_COMMIT;
 use common::exec_server::ExecServerHarness;
 use common::exec_server::exec_server_with_env;
 use pretty_assertions::assert_eq;
@@ -33,6 +37,15 @@ async fn exec_server_accepts_initialize(version: Option<&str>) -> anyhow::Result
 
     let mut command = Command::new(&executable);
     command.args(["exec-server", "--listen", "ws://127.0.0.1:0"]);
+    // Runtime environment variables cannot replace the executable's build stamp.
+    command.envs([
+        (
+            "STABLE_GIT_COMMIT",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        ),
+        ("GITHUB_SHA", "ffffffffffffffffffffffffffffffffffffffff"),
+        ("CODEX_BUILD_TARGET", "runtime-override"),
+    ]);
     let mut server = ExecServerHarness::start(command).await?;
 
     // Updates after startup cannot change the advertised release version.
@@ -56,6 +69,12 @@ async fn exec_server_accepts_initialize(version: Option<&str>) -> anyhow::Result
     Uuid::parse_str(&initialize_response.session_id)?;
     let mut expected_environment = EnvironmentInfo::local();
     expected_environment.executor_version = version.unwrap_or("0.0.0").to_string();
+    let build_info = BuildInfo::get();
+    let target = build_info
+        .target()
+        .context("the test binary has a compiled target")?;
+    expected_environment.provider_id = build_id(TEST_BUILD_COMMIT, target);
+    assert!(expected_environment.provider_id.is_some());
     assert_eq!(
         initialize_response.environment_info,
         Some(expected_environment.clone())

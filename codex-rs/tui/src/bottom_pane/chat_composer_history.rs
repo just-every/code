@@ -127,6 +127,7 @@ impl HistoryEntry {
 /// State machine that manages shell-style history navigation (Up/Down) inside
 /// the chat composer. This struct is intentionally decoupled from the
 /// rendering widget so the logic remains isolated and easier to test.
+#[derive(Clone)]
 pub(crate) struct ChatComposerHistory {
     /// Thread that owns persistent lookup responses for this metadata snapshot.
     thread_id: Option<ThreadId>,
@@ -350,6 +351,15 @@ impl ChatComposerHistory {
         true
     }
 
+    /// Track the displayed text when a composer normalizes a recalled entry.
+    pub(super) fn record_recalled_text(&mut self, text: String) {
+        self.last_history_text = Some(text);
+    }
+
+    pub(super) fn is_navigating(&self) -> bool {
+        self.history_cursor.is_some()
+    }
+
     /// Resets normal history navigation so the next Up key resumes from the newest entry.
     ///
     /// This also clears any active incremental search, since normal browsing and Ctrl+R search
@@ -553,7 +563,7 @@ impl ChatComposerHistory {
                     .map(HistoryEntryResponse::Found)
                     .unwrap_or(HistoryEntryResponse::Ignored);
             }
-            self.last_history_text = Some(entry.text.clone());
+            self.record_recalled_text(entry.text.clone());
             return HistoryEntryResponse::Found(entry);
         }
 
@@ -787,7 +797,7 @@ impl ChatComposerHistory {
 
     fn search_match(&mut self, offset: usize, entry: HistoryEntry) -> HistorySearchResult {
         self.history_cursor = Some(offset as isize);
-        self.last_history_text = Some(entry.text.clone());
+        self.record_recalled_text(entry.text.clone());
         if let Some(search) = self.search.as_mut() {
             search.selected_offset = Some(offset);
             search.record_match(offset, &entry);
@@ -816,7 +826,7 @@ impl ChatComposerHistory {
 
         let history_match = self.search.as_ref()?.unique_matches[next_index].clone();
         self.history_cursor = Some(history_match.offset as isize);
-        self.last_history_text = Some(history_match.entry.text.clone());
+        self.record_recalled_text(history_match.entry.text.clone());
         if let Some(search) = self.search.as_mut() {
             search.select_match(next_index);
         }
@@ -863,7 +873,7 @@ impl ChatComposerHistory {
                     continue;
                 }
                 self.pending_navigation_direction = None;
-                self.last_history_text = Some(entry.text.clone());
+                self.record_recalled_text(entry.text.clone());
                 return Some(entry);
             }
 
@@ -1595,7 +1605,7 @@ mod tests {
         );
 
         history.reset_navigation();
-        assert!(history.history_cursor.is_none());
+        assert!(!history.is_navigating());
         assert!(history.last_history_text.is_none());
 
         assert_eq!(

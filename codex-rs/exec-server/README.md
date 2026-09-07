@@ -193,6 +193,7 @@ Response:
   "environmentInfo": {
     "shell": { "name": "bash", "path": "/bin/bash" },
     "executorVersion": "1.2.3-alpha.4",
+    "providerId": "sha256:fb4f62da3e84f6864dcec8ede7bc66f1c96ecaeaf55f8a786b85df994057c8ac",
     "cwd": "file:///workspace"
   }
 }
@@ -202,6 +203,12 @@ Response:
 `environment/info`, so clients can use it without a second request.
 
 `executorVersion` is the executor's package release version, or `0.0.0` when unknown.
+
+The executor caches optional `providerId` at startup using
+`codex_build_info::build_id(commit, target)`, which CI can also call for an
+explicit build target. This opaque compatibility key excludes package version
+and requires no manifest. It identifies a standard build configuration, not exact
+executable bytes. Unstamped and legacy executors may omit it.
 
 Rust clients cache this metadata for the client's lifetime, including session
 resumption. If initialization omits it, the first metadata request fetches and

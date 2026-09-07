@@ -1,0 +1,6 @@
+---
+source: tui/src/app/experimental_features_tests.rs
+expression: "app.transcript_cells.last().unwrap().display_lines(120).iter().map(ToString::to_string).collect::<Vec<_>>().join(\"\\n\")"
+---
+⚠ Subagents setting saved on the server for new threads. This thread is unchanged. Project or task settings may override
+  it.

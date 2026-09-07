@@ -32,7 +32,7 @@ pub enum NodeReplReviewEvidenceMode {
 
 pub(crate) fn node_repl_review_evidence_mode(turn: &TurnContext) -> NodeReplReviewEvidenceMode {
     let features = &turn.config.features;
-    if turn.model_info().node_repl_auto_review_required
+    if turn.model_info().computer_use_review_required()
         || features.enabled(Feature::GuardianEnhancedNodeReplTranscripts)
             && features.enabled(Feature::GuardianNodeReplTranscriptImages)
     {

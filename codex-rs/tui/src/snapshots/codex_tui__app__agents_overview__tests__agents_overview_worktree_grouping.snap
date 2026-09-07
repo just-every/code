@@ -1,0 +1,29 @@
+---
+source: tui/src/app/agents_overview_tests.rs
+assertion_line: 943
+expression: grouping
+---
+  Agent command center
+  0 need input   0 working   4 ready
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /tmp/worktree-root/primary/  2
+  › ○ Task  Ready
+    ○ Task  Ready
+
+  /tmp/worktree-root/primary/subdir/child  1
+    ○ Task  Ready
+
+  /tmp/worktree-root/primary/subdir/child  1
+    ○ Task  Ready
+
+
+
+
+
+
+
+  New task
+
+› Describe a new task
+
+   enter create task    ctrl+j newline    esc tasks

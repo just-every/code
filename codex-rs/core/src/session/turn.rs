@@ -13,6 +13,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::UserVerificationNotice;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::feedback_tags;
 use crate::hook_runtime::drain_async_hook_results;
@@ -413,6 +414,10 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await?;
 
+            // Keep the override after accepted input so ordinary turn rollback removes it too.
+            sess.record_reasoning_effort_override(step_context.as_ref())
+                .await;
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
@@ -631,6 +636,12 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
+                if matches!(
+                    e.details(),
+                    CodexErrorDetails::MisalignmentPolicyViolation { .. }
+                ) {
+                    sess.conversation.retire_handoffs_for_misalignment().await;
+                }
                 let error = e.to_codex_protocol_error();
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
@@ -1437,10 +1448,10 @@ async fn run_sampling_request(
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
     loop {
-        // A retry must not lend a previous response's ticket to the next tool call.
+        // A retry must not attribute the next tool call to the previous response.
         turn_context
             .extension_data
-            .remove::<codex_protocol::guardian_ticket::GuardianTicket>();
+            .remove::<codex_api::ResponseId>();
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
@@ -1829,6 +1840,14 @@ pub(super) fn agent_message_text(item: &codex_protocol::items::AgentMessageItem)
 
 pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<MessagePhase>)> {
     match msg {
+        EventMsg::ElicitationRequest(request)
+            if matches!(
+                &request.request,
+                codex_protocol::approvals::ElicitationRequest::UserVerification { .. }
+            ) =>
+        {
+            Some((UserVerificationNotice.render(), None))
+        }
         EventMsg::AgentMessage(event) => Some((event.message.clone(), event.phase.clone())),
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item) => Some((agent_message_text(item), item.phase.clone())),
@@ -2376,9 +2395,11 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created { guardian_ticket } => {
-                if let Some(ticket) = guardian_ticket {
-                    turn_context.extension_data.insert(ticket);
+            ResponseEvent::Created { response_id } => {
+                if let Some(response_id) = response_id {
+                    turn_context
+                        .extension_data
+                        .insert(codex_api::ResponseId(response_id));
                 }
             }
             ResponseEvent::OutputItemDone(mut item) => {

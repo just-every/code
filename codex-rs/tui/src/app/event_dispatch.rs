@@ -21,7 +21,7 @@ use codex_app_server_protocol::ThreadGoalStatus;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
-const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
+pub(super) const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
     pub(super) async fn handle_event(
@@ -34,6 +34,7 @@ impl App {
             && !matches!(
                 &event,
                 AppEvent::InsertHistoryCell(_)
+                    | AppEvent::ManagedWorktreeCreated(_)
                     | AppEvent::AppendMessageHistoryEntry { .. }
                     | AppEvent::BeginInitialHistoryReplayBuffer
                     | AppEvent::BeginThreadSwitchHistoryReplayBuffer
@@ -50,6 +51,10 @@ impl App {
                     | AppEvent::SelectAgentThread(_)
                     | AppEvent::StartSide { .. }
                     | AppEvent::ForkCurrentSession { .. }
+                    | AppEvent::StartManagedWorktree {
+                        mode: crate::app_event::ManagedWorktreeMode::Fork,
+                        ..
+                    }
                     | AppEvent::ForkSessionForPromptEdit { .. }
                     | AppEvent::SetThreadGoalDraft { .. }
                     | AppEvent::SetThreadGoalStatus {
@@ -86,11 +91,43 @@ impl App {
                     self.chat_widget.show_misalignment_policy_precaution();
                 }
             }
+            AppEvent::StartManagedWorktree { mode, name } => {
+                if self.pending_start_managed_worktree.is_some() {
+                    self.chat_widget
+                        .add_error_message("A worktree is already being created.".to_string());
+                } else {
+                    self.pending_start_managed_worktree = Some((mode, name));
+                }
+            }
+            AppEvent::ManagedWorktreeCreated(created) => {
+                self.pending_managed_worktree_created = Some(created);
+            }
+            AppEvent::BrowseManagedWorktrees => {
+                if let Some(request) = self.chat_widget.request_managed_worktrees() {
+                    crate::worktree_browser::fetch(
+                        request,
+                        self.config.codex_home.to_path_buf(),
+                        self.app_event_tx.clone(),
+                    );
+                }
+            }
+            AppEvent::ManagedWorktreesLoaded { request, result } => {
+                self.chat_widget.on_managed_worktrees_loaded(request, result);
+            }
+            AppEvent::ManagedWorktreeAction { request, action } => {
+                if let Some(event) = self.chat_widget.managed_worktree_action(&request, action) {
+                    self.app_event_tx.send(event);
+                }
+            }
+            AppEvent::ShowManagedWorktreeActions { request, entry } => {
+                self.chat_widget.show_managed_worktree_actions(request, entry);
+            }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
                 requested_cwd,
             } => {
-                if self.primary_thread_id != Some(thread_id)
+                if self.pending_working_directory_change.is_some()
+                    || self.primary_thread_id != Some(thread_id)
                     || !self.chat_widget.can_change_working_directory(thread_id)
                 {
                     self.chat_widget.add_error_message(
@@ -112,7 +149,12 @@ impl App {
                     );
                     match std::fs::metadata(cwd.as_path()) {
                         Ok(metadata) if metadata.is_dir() => {
-                            self.change_working_directory(tui, app_server, cwd).await;
+                            self.pending_working_directory_change =
+                                Some(working_directory::PendingWorkingDirectoryChange {
+                                    source_thread_id: thread_id,
+                                    source_cwd: self.config.cwd.clone(),
+                                    destination: cwd,
+                                });
                         }
                         Ok(_) => self
                             .chat_widget
@@ -242,7 +284,7 @@ impl App {
                 .await;
             }
             AppEvent::OpenResumePicker => {
-                return Box::pin(self.open_resume_picker(tui, app_server)).await;
+                self.pending_open_resume_picker = true;
             }
             AppEvent::OpenExternalAgentConfigMigration => {
                 match crate::external_agent_config_migration::flow::handle_external_agent_config_migration_prompt(
@@ -278,18 +320,26 @@ impl App {
                     &self.config,
                     &id_or_name,
                 )
-                .await?
+                .await
                 {
-                    Some(target_session) => {
+                    Ok(Some(target_session)) => {
                         return self
                             .resume_target_session(tui, app_server, target_session)
                             .await;
                     }
-                    None => {
+                    Ok(None) => {
                         self.chat_widget.add_error_message(format!(
                             "No saved chat found matching '{id_or_name}'."
                         ));
                     }
+                    Err(err)
+                        if err
+                            .downcast_ref::<crate::named_session_lookup::AmbiguousSessionName>()
+                            .is_some() =>
+                    {
+                        self.chat_widget.add_error_message(err.to_string());
+                    }
+                    Err(err) => return Err(err),
                 }
             }
             AppEvent::ArchiveCurrentThread => {
@@ -313,13 +363,28 @@ impl App {
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(thread_id) = self.chat_widget.thread_id() {
+                    if self.pending_server_profiles.contains_key(&thread_id) {
+                        self.chat_widget.add_error_message(
+                            "Wait for permissions to update before forking.".into(),
+                        );
+                        return Ok(AppRunControl::Continue);
+                    }
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;
                     let mut fork_config = self.config.clone();
                     fork_config.model = Some(self.chat_widget.current_model().to_string());
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
-                    match app_server.fork_thread(&self.local_settings, fork_config, thread_id).await {
+                    let selected_profile = self.confirmed_server_profile(thread_id);
+                    match app_server.fork_thread_at(
+                        &self.local_settings,
+                        fork_config,
+                        thread_id,
+                        /*last_turn_id*/ None,
+                        /*before_turn_id*/ None,
+                        ForkGoalContinuation::StartIfIdle,
+                        selected_profile.as_ref(),
+                    ).await {
                         Ok(mut forked) => {
                             let name_error = if let Some(name) = name {
                                 match app_server
@@ -397,6 +462,14 @@ impl App {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
                 }
+                if self.pending_server_profiles.contains_key(&thread_id) {
+                    self.chat_widget.restore_user_message_to_composer(prompt);
+                    self.chat_widget.add_error_message(
+                        "Wait for permissions to update before editing this prompt.".into(),
+                    );
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
                 self.session_telemetry.counter(
                     "codex.thread.fork",
                     /*inc*/ 1,
@@ -405,6 +478,7 @@ impl App {
                 self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                     .await;
                 let config = self.fresh_session_config();
+                let selected_profile = self.confirmed_server_profile(thread_id);
                 let turns = match self.thread_event_channels.get(&thread_id) {
                     Some(channel) => {
                         let store = channel.store.lock().await;
@@ -477,6 +551,7 @@ impl App {
                                     /*last_turn_id*/ None,
                                     before_turn_id,
                                     ForkGoalContinuation::StartIfIdle,
+                                    selected_profile.as_ref(),
                                 )
                                 .await
                         }
@@ -486,6 +561,7 @@ impl App {
 &self.local_settings,
                                     &config, /*session_start_source*/ None,
                                     /*remote_cwd_override*/ None,
+                                    selected_profile.as_ref(),
                                 )
                                 .await
                         }
@@ -680,6 +756,25 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(mut op) => {
+                if let AppCommand::OverrideTurnContext {
+                    cwd,
+                    approval_policy,
+                    approvals_reviewer,
+                    permission_profile,
+                    active_permission_profile,
+                    windows_sandbox_level,
+                    ..
+                } = &op
+                    && (cwd.is_some()
+                        || approval_policy.is_some()
+                        || approvals_reviewer.is_some()
+                        || permission_profile.is_some()
+                        || active_permission_profile.is_some()
+                        || windows_sandbox_level.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 if self.active_thread_id == self.chat_widget.thread_id() {
                     if matches!(&op, AppCommand::UserTurn { .. })
                         && self.chat_widget.defer_pending_turn_for_luna_reserve()
@@ -690,6 +785,23 @@ impl App {
                         .apply_reserve_fallback_to_pending_turn(&mut op);
                 }
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
+                let is_realtime_stop = matches!(&op, AppCommand::RealtimeConversationStop { .. });
+                let realtime_stop_thread_id = match &op {
+                    AppCommand::RealtimeConversationStop { thread_id } => Some(*thread_id),
+                    _ => None,
+                };
+                let realtime_speech_delivery_id = match &op {
+                    AppCommand::RealtimeConversationSpeech { delivery_id, .. } => {
+                        Some(*delivery_id)
+                    }
+                    _ => None,
+                };
+                let is_realtime_conversation = matches!(
+                    &op,
+                    AppCommand::RealtimeConversationStart { .. }
+                        | AppCommand::RealtimeConversationStop { .. }
+                        | AppCommand::RealtimeConversationSpeech { .. }
+                );
                 if is_user_turn {
                     let screen_size = tui.terminal.last_known_screen_size;
                     self.handle_draw_pre_render(tui, screen_size)?;
@@ -702,6 +814,10 @@ impl App {
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
                 if let Err(err) = self.submit_active_thread_op(app_server, op).await {
+                    if let Some(delivery_id) = realtime_speech_delivery_id {
+                        self.chat_widget
+                            .restore_undelivered_realtime_speech(delivery_id);
+                    }
                     if self.recover_transport_error(&err)
                     {
                         return Ok(AppRunControl::Continue);
@@ -722,10 +838,22 @@ impl App {
                         && self
                             .chat_widget
                             .handle_turn_start_rejection(format!("Failed to start turn: {err:#}"));
-                    if !handled {
+                    if is_realtime_conversation {
+                        let message = format!("Voice conversation failed: {err:#}");
+                        if is_realtime_stop {
+                            if self.chat_widget.thread_id() == realtime_stop_thread_id {
+                                self.chat_widget.reset_realtime_conversation();
+                                self.chat_widget.add_error_message(message);
+                            }
+                        } else {
+                            self.chat_widget.on_realtime_error(message);
+                        }
+                        tracing::error!(error = ?err, "realtime conversation request failed");
+                    } else if handled {
+                        tracing::error!(error = ?err, "failed to start turn through app server");
+                    } else {
                         return Err(err);
                     }
-                    tracing::error!(error = ?err, "failed to start turn through app server");
                 }
             }
             AppEvent::ConfirmSafetyBufferedRetry {
@@ -1539,6 +1667,13 @@ impl App {
                     .await;
             }
             AppEvent::UpdateModel(model) => {
+                if self
+                    .active_thread_model_setting_update_params(model.clone())
+                    .is_some_and(|params| params.permissions.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
                 if model_changed {
@@ -1554,11 +1689,57 @@ impl App {
                 self.sync_active_thread_personality_setting(app_server, personality)
                     .await;
             }
+            AppEvent::RealtimeWebrtcOfferCreated {
+                thread_id,
+                attempt_id,
+                result,
+            } => {
+                if self.chat_widget.thread_id() == Some(thread_id) {
+                    self.chat_widget
+                        .on_realtime_webrtc_offer_created(thread_id, attempt_id, result);
+                } else if let Ok(offer) = result {
+                    offer.handle.close();
+                }
+            }
+            AppEvent::RealtimeWebrtcConnected {
+                thread_id,
+                attempt_id,
+                result,
+            } => {
+                if self.chat_widget.thread_id() == Some(thread_id) {
+                    self.chat_widget
+                        .on_realtime_webrtc_connected(attempt_id, result);
+                }
+            }
+            AppEvent::StopRealtimeConversation { thread_id } => {
+                match tokio::time::timeout(
+                    SHUTDOWN_FIRST_EXIT_TIMEOUT,
+                    app_server.thread_realtime_stop(thread_id),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(
+                        %thread_id,
+                        %error,
+                        "failed to stop voice conversation after switching threads"
+                    ),
+                    Err(_) => tracing::warn!(
+                        %thread_id,
+                        "timed out stopping voice conversation after switching threads"
+                    ),
+                }
+            }
             AppEvent::SettingsSelectionClosed => {
                 self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
             }
             AppEvent::SettingsSelectionSettled => {
-                if self.chat_widget.no_modal_or_popup_active() {
+                if self.chat_widget.no_modal_or_popup_active()
+                    && !self
+                        .chat_widget
+                        .thread_id()
+                        .is_some_and(|thread_id| self.pending_server_profiles.contains_key(&thread_id))
+                {
                     let config = self.chat_widget.config_ref();
                     let permissions_override = Self::turn_permissions_override_from_config(
                         config,
@@ -1609,6 +1790,13 @@ impl App {
                 self.chat_widget.open_advanced_reasoning_popup(model);
             }
             AppEvent::ApplyAdvancedReasoning { model, effort } => {
+                if self
+                    .active_thread_model_setting_update_params(model.clone())
+                    .is_some_and(|params| params.permissions.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
                 let default_effort =
@@ -2283,6 +2471,9 @@ impl App {
                 }
             }
             AppEvent::UpdateAskForApprovalPolicy(policy) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 let mut config = self.config.clone();
                 if !self.try_set_approval_policy_on_config(
                     &mut config,
@@ -2302,6 +2493,9 @@ impl App {
                     .await;
             }
             AppEvent::UpdateActivePermissionProfile(active_permission_profile) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 let mut config = self.config.clone();
                 let Some(permission_profile) = self
                     .try_set_builtin_active_permission_profile_on_config(
@@ -2376,11 +2570,12 @@ impl App {
                 }
             }
             AppEvent::SelectPermissionProfile(selection) => {
-                if self.apply_permission_profile_selection(selection).await {
-                    self.chat_widget.submit_initial_user_message_if_pending();
-                }
+                self.select_permission_profile(app_server, selection).await;
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
                 self.sync_active_thread_permission_settings_to_cached_session()
@@ -2407,6 +2602,10 @@ impl App {
             }
             AppEvent::SaveExperimentalFeatures { thread_id, updates, response_tx } => {
                 self.save_experimental_features(app_server, thread_id, updates, response_tx);
+            }
+            AppEvent::EnableFeatureForNewThreads(feature) => {
+                self.enable_feature_for_new_threads(tui, app_server, feature)
+                    .await;
             }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;
@@ -2756,6 +2955,9 @@ impl App {
                 }
             }
             AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 if app_server.uses_remote_workspace() {
                     self.chat_widget.request_permission_profiles();
                 } else {
@@ -3241,6 +3443,7 @@ impl App {
                 })
             }
             ExitMode::Immediate => {
+                self.stop_realtime_conversation(app_server).await;
                 self.pending_shutdown_exit_thread_id = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
             }

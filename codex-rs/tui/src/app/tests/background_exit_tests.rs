@@ -2,6 +2,93 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn external_writer_view_quits_with_escape_ctrl_c_or_q() -> Result<()> {
+    let (mut app, mut events, _operations) = make_test_app_with_channels().await;
+    app.chat_widget.show_external_writer_thread();
+    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    while events.try_recv().is_ok() {}
+
+    app.keymap.app.open_external_editor = vec![crate::key_hint::ctrl(KeyCode::Char('g'))];
+    app.handle_key_event(
+        &mut tui,
+        &mut app_server,
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+    )
+    .await;
+    assert_eq!(
+        app.chat_widget.external_editor_state(),
+        ExternalEditorState::Closed
+    );
+    assert!(
+        !events
+            .try_recv()
+            .is_ok_and(|event| matches!(event, AppEvent::LaunchExternalEditor))
+    );
+
+    for key in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+    ] {
+        app.handle_key_event(&mut tui, &mut app_server, key).await;
+        assert!(matches!(
+            events.try_recv(),
+            Ok(AppEvent::Exit(ExitMode::Immediate))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_writer_view_preserves_draft_from_keys_and_paste() -> Result<()> {
+    let (mut app, _events, _operations) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: crate::RemoteAppServerEndpoint::WebSocket {
+            websocket_url: "wss://example.com/".to_string(),
+            auth_token: None,
+        },
+    };
+    app.ensure_thread_channel(thread_id).mark_external_writer();
+    app.chat_widget.insert_str("Retained draft");
+    app.chat_widget.show_external_writer_thread();
+    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    for offline in [false, true] {
+        app.reconnect.offline = offline;
+        app.handle_tui_event(
+            &mut tui,
+            &mut app_server,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        )
+        .await?;
+        app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Paste("pasted".into()))
+            .await?;
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "Retained draft"
+        );
+    }
+
+    app.reconnect.offline = false;
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+    )
+    .await?;
+    assert!(app.overlay.is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn daemon_disconnect_exit_summary_includes_reconnect_and_stop_instructions() -> Result<()> {
     let (mut app, _, _) = make_test_app_with_channels().await;
     let thread_id = prepare_running_local_daemon(&mut app)?;
@@ -119,8 +206,7 @@ async fn prepare_background_exit_test(
 ) -> Result<(AppServerSession, tui::Tui)> {
     while app_event_rx.try_recv().is_ok() {}
     while op_rx.try_recv().is_ok() {}
-    let app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
     Ok((app_server, crate::tui::test_support::make_test_tui()?))
 }
 
@@ -224,9 +310,7 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
         .set_feature_enabled(Feature::Goals, /*enabled*/ true);
     let (mut app_server, mut tui) =
         prepare_background_exit_test(&app, &mut app_event_rx, &mut op_rx).await?;
-    let started = app_server
-        .start_thread(app.chat_widget.config_ref())
-        .await?;
+    let started = app_server.start_thread(&app.config).await?;
     let thread_id = started.session.thread_id;
     app.active_thread_id = Some(thread_id);
     app.chat_widget
@@ -324,9 +408,7 @@ async fn daemon_ctrl_c_closes_running_side_thread_and_returns_to_parent() -> Res
     let side_thread_id = prepare_running_local_daemon(&mut app)?;
     let (mut app_server, mut tui) =
         prepare_background_exit_test(&app, &mut app_event_rx, &mut op_rx).await?;
-    let started = app_server
-        .start_thread(app.chat_widget.config_ref())
-        .await?;
+    let started = app_server.start_thread(&app.config).await?;
     let parent_thread_id = started.session.thread_id;
     app.primary_thread_id = Some(parent_thread_id);
     app.side_threads

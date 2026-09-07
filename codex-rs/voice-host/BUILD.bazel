@@ -2,6 +2,8 @@ load("//:defs.bzl", "codex_rust_crate")
 
 codex_rust_crate(
     name = "voice-host",
+    binaries_with_build_commit = ["codex-voice-host"],
     crate_name = "codex_voice_host",
     crate_srcs = [],
+    unit_test_args = ["--test-threads=1"],
 )

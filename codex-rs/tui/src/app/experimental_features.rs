@@ -1,11 +1,57 @@
-//! Menu-only feature persistence. Configured readback never replaces task state,
+//! Server-backed feature persistence. Configured readback never replaces task state,
 //! and an accepted save finishes even if its popup closes or the user navigates.
 
+use super::config_persistence::overridden_write_message;
 use super::*;
 use crate::experimental_features::FeatureWriteResult;
 use tokio::sync::oneshot;
 
 impl App {
+    pub(super) async fn enable_feature_for_new_threads(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &AppServerSession,
+        feature: Feature,
+    ) {
+        let label = match feature {
+            Feature::Collab => "Subagents",
+            Feature::MemoryTool => "Memories",
+            _ => return,
+        };
+        let mut edits = vec![crate::config_update::build_feature_enabled_edit(
+            feature.key(),
+            /*enabled*/ true,
+        )];
+        if feature == Feature::MemoryTool {
+            // Older app servers still use the legacy key for this feature.
+            edits.push(crate::config_update::build_feature_enabled_edit(
+                "memory_tool",
+                /*enabled*/ true,
+            ));
+        }
+        let notice: Box<dyn HistoryCell> = match crate::config_update::write_config_batch(
+            app_server.request_handle(),
+            edits,
+        )
+        .await
+        {
+            Ok(response) if response.status == WriteStatus::Ok => {
+                Box::new(history_cell::new_warning_event(format!(
+                    "{label} setting saved on the server for new threads. This thread is unchanged. Project or task settings may override it."
+                )))
+            }
+            Ok(response) => Box::new(history_cell::new_error_event(format!(
+                "{label} setting was saved but is overridden: {}",
+                overridden_write_message(&response)
+            ))),
+            Err(err) => Box::new(history_cell::new_error_event(format!(
+                "Failed to save {label} setting: {}",
+                crate::config_update::format_config_error(&err)
+            ))),
+        };
+        self.insert_history_cell(tui, notice);
+    }
+
     pub(super) fn fetch_experimental_features(
         &self,
         app_server: &AppServerSession,

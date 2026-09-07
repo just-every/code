@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -44,6 +46,9 @@ pub(crate) type ClientRequestResult = std::result::Result<Result, JSONRPCErrorEr
 static IN_FLIGHT_REQUESTS: Gauge = Gauge::new("app.requests.in_flight");
 static PENDING_SERVER_REQUESTS: Gauge = Gauge::new("app.server_requests.pending");
 
+#[path = "user_verification_auth.rs"]
+mod user_verification_auth;
+
 /// Stable identifier for a client request scoped to a transport connection.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ConnectionRequestId {
@@ -56,6 +61,7 @@ pub(crate) struct ConnectionRequestId {
 #[derive(Clone)]
 pub(crate) struct RequestContext {
     request_id: ConnectionRequestId,
+    pub(crate) cancellation: tokio_util::sync::CancellationToken,
     span: Span,
     parent_trace: Option<W3cTraceContext>,
     _diagnostics_guard: Arc<GaugeGuard>,
@@ -69,6 +75,7 @@ impl RequestContext {
     ) -> Self {
         Self {
             request_id,
+            cancellation: tokio_util::sync::CancellationToken::new(),
             span,
             parent_trace,
             _diagnostics_guard: Arc::new(IN_FLIGHT_REQUESTS.track()),
@@ -102,6 +109,8 @@ pub(crate) enum OutgoingEnvelope {
 
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
+    verification_auth: OnceLock<Arc<codex_login::AuthManager>>,
+    verification_connections: Mutex<HashSet<ConnectionId>>,
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
@@ -120,6 +129,9 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 }
 
 struct PendingCallbackEntry {
+    verification_owner: Option<ConnectionId>,
+    verification_auth_revision: Option<u64>,
+    verification_identity: Option<user_verification_auth::Identity>,
     callback: oneshot::Sender<ClientRequestResult>,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
@@ -221,6 +233,8 @@ impl OutgoingMessageSender {
         analytics_events_client: AnalyticsEventsClient,
     ) -> Self {
         Self {
+            verification_auth: OnceLock::new(),
+            verification_connections: Mutex::new(HashSet::new()),
             next_server_request_id: AtomicI64::new(0),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
@@ -240,6 +254,8 @@ impl OutgoingMessageSender {
     }
 
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
+        self.disconnect_user_verification_connection(connection_id)
+            .await;
         let mut request_contexts = self.request_contexts.lock().await;
         request_contexts.retain(|request_id, _| request_id.connection_id != connection_id);
     }
@@ -301,19 +317,68 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
-
+        let user_verification = matches!(
+            &request,
+            ServerRequest::McpServerElicitationRequest { params, .. }
+                if matches!(&params.request, codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. })
+        );
+        // Snapshot before waiting on eligibility or callback locks. A request cannot inherit
+        // whichever account happens to be current after an unrelated operation releases a lock.
+        let verification_auth_revision = user_verification
+            .then(|| self.verification_auth_revision())
+            .flatten();
+        let verification_identity = user_verification
+            .then(|| self.verification_identity())
+            .flatten();
+        let auth_changed = || {
+            user_verification
+                && (verification_auth_revision != self.verification_auth_revision()
+                    || verification_identity != self.verification_identity())
+        };
         let (tx_approve, rx_approve) = oneshot::channel();
+        // One app owns this ceremony. Reconnect and other subscribers cannot answer it.
+        let verification_owner = if user_verification {
+            let eligible = self.verification_connections.lock().await;
+            connection_ids
+                .and_then(|ids| ids.iter().find(|id| eligible.contains(*id)))
+                .copied()
+        } else {
+            None
+        };
+        if user_verification && (verification_owner.is_none() || auth_changed()) {
+            return (outgoing_message_id, rx_approve);
+        }
+        let connection_ids = if user_verification {
+            verification_owner.as_ref().map(std::slice::from_ref)
+        } else {
+            connection_ids
+        };
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
+                    verification_owner,
+                    verification_auth_revision,
+                    verification_identity: verification_identity.clone(),
                     callback: tx_approve,
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
                 },
             );
+        }
+        // Disconnect may finish its callback cleanup before registration acquires the lock.
+        // Recheck afterward so that ordering cannot leave an orphaned verification callback.
+        if let Some(owner) = verification_owner {
+            let eligible = self.verification_connections.lock().await.contains(&owner);
+            if !eligible || auth_changed() {
+                self.request_id_to_callback
+                    .lock()
+                    .await
+                    .remove(&outgoing_message_id);
+                return (outgoing_message_id, rx_approve);
+            }
         }
 
         let outgoing_message = OutgoingMessage::Request(request.clone());
@@ -380,13 +445,20 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn notify_client_response(&self, id: RequestId, result: Result) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn notify_client_response(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        result: Result,
+    ) {
+        let entry = self.take_connection_callback(connection_id, &id).await;
 
         match entry {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
-                if let Ok(response) = entry.request.response_from_result(result.clone()) {
+                if entry.verification_owner.is_none()
+                    && let Ok(response) = entry.request.response_from_result(result.clone())
+                {
                     tracing::info!("<- response: {response:?}");
                     if !matches!(response, ServerResponse::PermissionsRequestApproval { .. }) {
                         self.analytics_events_client
@@ -403,8 +475,13 @@ impl OutgoingMessageSender {
         }
     }
 
-    pub(crate) async fn notify_client_error(&self, id: RequestId, error: JSONRPCErrorError) {
-        let entry = self.take_request_callback(&id).await;
+    pub(crate) async fn notify_client_error(
+        &self,
+        connection_id: ConnectionId,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) {
+        let entry = self.take_connection_callback(connection_id, &id).await;
 
         match entry {
             Some((id, entry)) => {
@@ -462,6 +539,27 @@ impl OutgoingMessageSender {
         request_id_to_callback.remove_entry(id)
     }
 
+    async fn take_connection_callback(
+        &self,
+        connection_id: ConnectionId,
+        id: &RequestId,
+    ) -> Option<(RequestId, PendingCallbackEntry)> {
+        let mut callbacks = self.request_id_to_callback.lock().await;
+        let entry = callbacks.get(id)?;
+        if let Some(owner) = entry.verification_owner {
+            if owner != connection_id {
+                return None;
+            }
+            if entry.verification_identity != self.verification_identity()
+                || entry.verification_auth_revision != self.verification_auth_revision()
+            {
+                callbacks.remove(id);
+                return None;
+            }
+        }
+        callbacks.remove_entry(id)
+    }
+
     pub(crate) async fn pending_requests_for_thread(
         &self,
         thread_id: ThreadId,
@@ -470,7 +568,8 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id)).then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id) && entry.verification_owner.is_none())
+                    .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
@@ -539,6 +638,42 @@ impl OutgoingMessageSender {
     ) {
         self.send_response_as_inner(request_id, response, /*thread_originator*/ None)
             .await;
+    }
+
+    /// Revalidates a sensitive result after reserving queue capacity, with no
+    /// suspension between the identity check and handing off the response.
+    pub(crate) async fn send_response_as_checked(
+        &self,
+        request_id: ConnectionRequestId,
+        response: ClientResponsePayload,
+        check: impl FnOnce() -> std::result::Result<(), JSONRPCErrorError>,
+    ) {
+        let _context = self.take_request_context(&request_id).await;
+        let Ok(permit) = self.sender.reserve().await else {
+            return;
+        };
+        let message = match check() {
+            Ok(()) => {
+                self.analytics_events_client.track_response(
+                    request_id.connection_id.0,
+                    request_id.request_id.clone(),
+                    &response,
+                );
+                OutgoingMessage::Response(OutgoingResponse {
+                    id: request_id.request_id,
+                    result: Box::new(response),
+                })
+            }
+            Err(error) => OutgoingMessage::Error(OutgoingError {
+                id: request_id.request_id,
+                error,
+            }),
+        };
+        permit.send(OutgoingEnvelope::ToConnection {
+            connection_id: request_id.connection_id,
+            message,
+            write_complete_tx: None,
+        });
     }
 
     async fn send_response_as_inner(
@@ -737,6 +872,10 @@ fn timestamped_server_notification(notification: ServerNotification) -> Outgoing
         emitted_at_ms: Some(now_unix_timestamp_ms().try_into().unwrap_or_default()),
     })
 }
+
+#[cfg(test)]
+#[path = "user_verification_ownership_tests.rs"]
+mod user_verification_ownership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1316,7 +1455,7 @@ mod tests {
         let error = internal_error("refresh failed");
 
         outgoing
-            .notify_client_error(request_id, error.clone())
+            .notify_client_error(ConnectionId(1), request_id, error.clone())
             .await;
 
         let result = timeout(Duration::from_secs(1), wait_for_result)

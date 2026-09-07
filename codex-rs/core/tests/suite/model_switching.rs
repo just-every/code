@@ -3,7 +3,12 @@ use codex_config::types::Personality;
 use codex_core::CodexThread;
 use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
+use codex_core::config::Config;
 use codex_core::config::Constrained;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadLifecycleContributor;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
@@ -57,7 +62,10 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use test_case::test_case;
+use tokio::sync::Notify;
 use wiremock::MockServer;
 
 fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> TurnInputRequest {
@@ -120,6 +128,7 @@ fn test_model_info(
         input_modalities,
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        supports_experimental_context: false,
         use_responses_lite: false,
         guardian: None,
         node_repl_auto_review_required: false,
@@ -290,6 +299,29 @@ enum RollbackFollowup {
     ColdResume,
 }
 
+#[derive(Default)]
+struct RollbackReady {
+    idle: Notify,
+}
+
+impl ThreadLifecycleContributor<Config> for RollbackReady {
+    fn on_thread_idle<'a>(&'a self, _input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.idle.notify_one();
+        })
+    }
+}
+
+impl RollbackReady {
+    async fn wait(&self) {
+        // TurnComplete is delivered before the active turn is cleared. Rollback requires
+        // the later thread-idle callback so it cannot race with turn cleanup.
+        tokio::time::timeout(Duration::from_secs(10), self.idle.notified())
+            .await
+            .expect("thread should become idle before rollback");
+    }
+}
+
 #[test_case(RollbackFollowup::StartupModel; "return to startup model")]
 #[test_case(RollbackFollowup::SwitchedModel; "retry switched model")]
 #[test_case(RollbackFollowup::ColdResume; "retry switched model after cold resume")]
@@ -308,7 +340,12 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
 
     let initial_model = "gpt-5.2";
     let switched_model = "gpt-5.4";
-    let mut builder = test_codex().with_model(initial_model);
+    let rollback_ready = Arc::new(RollbackReady::default());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(rollback_ready.clone());
+    let mut builder = test_codex()
+        .with_model(initial_model)
+        .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
 
     submit_model_turn(
@@ -318,10 +355,14 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
     )
     .await?;
 
+    rollback_ready.wait().await;
     test.codex
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
     wait_for_event(&test.codex, |ev| {
+        if let EventMsg::Error(error) = ev {
+            panic!("rollback failed: {error:?}");
+        }
         matches!(ev, EventMsg::ThreadRolledBack(_))
     })
     .await;
@@ -1262,7 +1303,11 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
     )
     .await;
 
+    let rollback_ready = Arc::new(RollbackReady::default());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(rollback_ready.clone());
     let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config.model = Some(image_model_slug.to_string());
@@ -1288,10 +1333,14 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
+    rollback_ready.wait().await;
     test.codex
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
     wait_for_event(&test.codex, |ev| {
+        if let EventMsg::Error(error) = ev {
+            panic!("rollback failed: {error:?}");
+        }
         matches!(ev, EventMsg::ThreadRolledBack(_))
     })
     .await;
@@ -1358,6 +1407,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        supports_experimental_context: false,
         use_responses_lite: false,
         guardian: None,
         node_repl_auto_review_required: false,

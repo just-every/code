@@ -1,0 +1,5 @@
+---
+source: tui/src/app/experimental_features_tests.rs
+expression: "app.transcript_cells.last().unwrap().display_lines(120).iter().map(ToString::to_string).collect::<Vec<_>>().join(\"\\n\").replace(managed.display().to_string().as_str(),\n\"<managed config>\")"
+---
+■ Subagents setting was saved but is overridden: Overridden by legacy managed_config.toml: <managed config>

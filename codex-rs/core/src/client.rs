@@ -183,42 +183,6 @@ pub(crate) struct CompactConversationRequestSettings {
     pub(crate) service_tier: Option<String>,
 }
 
-fn reasoning_effort_for_request(
-    model_info: &ModelInfo,
-    effort: ReasoningEffortConfig,
-) -> ReasoningEffortConfig {
-    match effort {
-        ReasoningEffortConfig::Ultra => model_info
-            .multi_agent_reasoning_effort
-            .as_ref()
-            .filter(|effort| {
-                *effort != &ReasoningEffortConfig::Ultra
-                    && model_info
-                        .supported_reasoning_levels
-                        .iter()
-                        .any(|preset| &preset.effort == *effort)
-            })
-            .cloned()
-            .or_else(|| {
-                let supported_reasoning_levels = &model_info.supported_reasoning_levels;
-                supported_reasoning_levels
-                    .iter()
-                    .find(|preset| preset.effort == ReasoningEffortConfig::Max)
-                    .or_else(|| {
-                        supported_reasoning_levels
-                            .iter()
-                            .rev()
-                            .find(|preset| preset.effort != ReasoningEffortConfig::Ultra)
-                    })
-                    .map(|preset| preset.effort.clone())
-            })
-            .unwrap_or(ReasoningEffortConfig::Medium),
-        // Keep "persistent" in local settings; the Responses API calls it "disabled".
-        ReasoningEffortConfig::Persistent => ReasoningEffortConfig::Custom("disabled".to_string()),
-        effort => effort,
-    }
-}
-
 fn session_telemetry_for_request(
     session_telemetry: &SessionTelemetry,
     request: &ResponsesApiRequest,
@@ -806,7 +770,7 @@ impl ModelClient {
             model: model_info.slug.clone(),
             raw_memories,
             reasoning: effort
-                .map(|effort| reasoning_effort_for_request(model_info, effort))
+                .map(|effort| model_info.resolve_reasoning_effort(effort))
                 .map(|effort| Reasoning {
                     effort: Some(effort),
                     summary: None,
@@ -912,7 +876,7 @@ impl ModelClient {
         Reasoning {
             effort: effort
                 .or_else(|| model_info.default_reasoning_level.clone())
-                .map(|effort| reasoning_effort_for_request(model_info, effort)),
+                .map(|effort| model_info.resolve_reasoning_effort(effort)),
             summary: (model_info.supports_reasoning_summary_parameter
                 && summary != ReasoningSummaryConfig::None)
                 .then_some(summary),
@@ -1104,14 +1068,24 @@ impl ModelClient {
             && provider.aws.is_none()
     }
 
-    fn set_guardian_ticket_request(
+    fn set_guardian_metadata(
         &self,
         metadata: &mut Option<HashMap<String, String>>,
+        parent_response_id: Option<&str>,
         auth: Option<&CodexAuth>,
         endpoint: ResponsesEndpoint,
     ) {
         if let Some(metadata) = metadata.as_mut() {
-            metadata.remove("guardian_ticket_requested");
+            metadata.remove("guardian_credits_requested");
+            metadata.remove("parent_response_id");
+        }
+        if endpoint == ResponsesEndpoint::Guardian
+            && let Some(parent_response_id) = parent_response_id
+        {
+            metadata.get_or_insert_with(HashMap::new).insert(
+                "parent_response_id".to_owned(),
+                parent_response_id.to_owned(),
+            );
         }
         if self.free_guardian_enabled
             && endpoint == ResponsesEndpoint::Responses
@@ -1125,7 +1099,7 @@ impl ModelClient {
         {
             metadata
                 .get_or_insert_with(HashMap::new)
-                .insert("guardian_ticket_requested".to_owned(), "true".to_owned());
+                .insert("guardian_credits_requested".to_owned(), "true".to_owned());
         }
     }
 
@@ -1351,7 +1325,6 @@ impl ModelClientSession {
             },
             compression,
             turn_state: Some(Arc::clone(&self.turn_state)),
-            guardian_ticket: responses_metadata.guardian_ticket.clone(),
         }
     }
 
@@ -1641,8 +1614,9 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
-            self.client.set_guardian_ticket_request(
+            self.client.set_guardian_metadata(
                 &mut request.client_metadata,
+                responses_metadata.parent_response_id.as_deref(),
                 client_setup.auth.as_ref(),
                 endpoint,
             );
@@ -1900,8 +1874,9 @@ impl ModelClientSession {
                 ),
                 ..ResponseCreateWsRequest::from(&request)
             };
-            self.client.set_guardian_ticket_request(
+            self.client.set_guardian_metadata(
                 &mut ws_payload.client_metadata,
+                responses_metadata.parent_response_id.as_deref(),
                 client_setup.auth.as_ref(),
                 endpoint,
             );
@@ -1922,7 +1897,6 @@ impl ModelClientSession {
                     ws_request,
                     self.websocket_session.connection_reused(),
                     Some(Arc::clone(&self.turn_state)),
-                    responses_metadata.guardian_ticket.as_ref(),
                 )
                 .await;
             if let Some(original_item_ids) = original_item_ids {

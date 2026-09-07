@@ -53,6 +53,7 @@ async fn lifecycle_metadata_uses_local_prompt_history() -> Result<()> {
                 &config,
                 /*session_start_source*/ None,
                 /*remote_cwd_override*/ None,
+                /*selected_profile*/ None,
             )
             .await?;
         assert_eq!(started.session.message_history, expected);

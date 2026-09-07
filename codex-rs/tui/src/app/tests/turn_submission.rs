@@ -12,6 +12,132 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn worktree_creation_event_requires_feature() -> Result<()> {
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    while events.try_recv().is_ok() {}
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::StartManagedWorktree {
+            mode: crate::app_event::ManagedWorktreeMode::New,
+            name: None,
+        },
+    )
+    .await?;
+    drain_managed_worktree_start(&mut app, &mut app_server).await;
+    let message = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .expect("disabled feature message");
+    insta::assert_snapshot!(message, @"■ Enable worktrees in /experimental to create a worktree.");
+    assert!(!app.config.codex_home.join("worktrees").exists());
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_creation_rejects_untrusted_source_before_allocation() -> Result<()> {
+    use crate::app_event::ManagedWorktreeMode;
+
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    app.config.features.enable(Feature::Worktrees)?;
+    app.config.active_project.trust_level =
+        Some(codex_protocol::config_types::TrustLevel::Untrusted);
+    let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    for mode in [ManagedWorktreeMode::New, ManagedWorktreeMode::Fork] {
+        if mode == ManagedWorktreeMode::Fork {
+            app.config.active_project.trust_level =
+                Some(codex_protocol::config_types::TrustLevel::Trusted);
+            crate::legacy_core::config::set_project_trust_level(
+                &app.config.codex_home,
+                app.config.cwd.as_path(),
+                codex_protocol::config_types::TrustLevel::Untrusted,
+            )
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+        }
+        while events.try_recv().is_ok() {}
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::StartManagedWorktree { mode, name: None },
+        )
+        .await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
+        let message = std::iter::from_fn(|| events.try_recv().ok())
+            .find_map(|event| match event {
+                AppEvent::InsertHistoryCell(cell) => {
+                    Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+                }
+                _ => None,
+            })
+            .expect("source trust error");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(message, @"■ Cannot create a worktree from an explicitly untrusted source.");
+        }
+        assert!(!app.config.codex_home.join("worktrees").exists());
+    }
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_creation_rejects_running_agent_before_allocation() -> Result<()> {
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    let home = tempfile::tempdir()?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    app.config.features.enable(Feature::Worktrees)?;
+    app.config.active_project.trust_level = Some(codex_protocol::config_types::TrustLevel::Trusted);
+    let primary = ThreadId::new();
+    app.primary_thread_id = Some(primary);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(primary, app.config.cwd.to_path_buf()));
+    let child = ThreadId::new();
+    app.agent_navigation.upsert(
+        child, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation.set_running(child, /*is_running*/ true);
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    while events.try_recv().is_ok() {}
+
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::StartManagedWorktree {
+            mode: crate::app_event::ManagedWorktreeMode::New,
+            name: None,
+        },
+    )
+    .await?;
+    drain_managed_worktree_start(&mut app, &mut server).await;
+
+    assert!(!app.pending_managed_worktree_creation);
+    assert!(!home.path().join("worktrees").exists());
+    let message = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .expect("running agent message");
+    insta::assert_snapshot!(message, @"■ Cannot change: another agent is running.");
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -29,6 +155,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
     let op = next_user_turn_op(&mut op_rx);
     while let Ok(event) = app_event_rx.try_recv() {
         app.handle_event(&mut tui, &mut app_server, event).await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
     }
 
     let control = app
@@ -64,6 +191,32 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
 #[tokio::test]
 async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result<()> {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let checkout = tempfile::tempdir()?;
+    app.config.cwd = AbsolutePathBuf::from_absolute_path(checkout.path())?;
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(checkout.path())
+                .status()?
+                .success()
+        );
+    }
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
     let started = app_server.start_thread(&app.config).await?;
@@ -126,12 +279,17 @@ async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result
             user_message: Some("Do not fork this stopped thread".into()),
         },
         AppEvent::ForkCurrentSession { name: None },
+        AppEvent::StartManagedWorktree {
+            mode: crate::app_event::ManagedWorktreeMode::Fork,
+            name: None,
+        },
         AppEvent::OpenAgentPicker,
         AppEvent::SelectAgentThread(thread_id),
     ] {
         app.handle_event(&mut tui, &mut app_server, event).await?;
     }
 
+    assert!(!app.config.codex_home.join("worktrees").exists());
     assert_eq!(
         app_server.next_request_id(),
         AppServerRequestId::Integer(next_request_id + 1)

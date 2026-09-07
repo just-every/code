@@ -525,4 +525,4 @@ fn startup_draft_bottom_pane(
 
 #[cfg(test)]
 #[path = "startup_draft_tests.rs"]
-mod tests;
+pub(crate) mod tests;

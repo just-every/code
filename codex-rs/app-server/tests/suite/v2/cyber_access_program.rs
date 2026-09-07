@@ -2,7 +2,16 @@ use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
 use app_test_support::write_chatgpt_auth;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CyberAccessProgram;
+use codex_app_server_protocol::ThreadForkParams;
+use codex_app_server_protocol::ThreadForkResponse;
+use codex_app_server_protocol::ThreadMetadataUpdateParams;
+use codex_app_server_protocol::ThreadMetadataUpdateResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
@@ -11,8 +20,10 @@ use codex_login::AuthCredentialsStoreMode;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::path::Path;
 use tempfile::TempDir;
 use wiremock::Mock;
+use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::header;
 use wiremock::matchers::method;
@@ -22,11 +33,6 @@ use wiremock::matchers::path;
 async fn turn_start_forwards_explicit_cyber_access_program() -> Result<()> {
     core_test_support::skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(426))
-        .mount(&server)
-        .await;
     let programs = [
         None,
         Some(CyberAccessProgram::DaybreakBlue),
@@ -47,23 +53,7 @@ async fn turn_start_forwards_explicit_cyber_access_program() -> Result<()> {
     )
     .await;
     let home = TempDir::new()?;
-    std::fs::write(
-        home.path().join("config.toml"),
-        format!(
-            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n",
-            server.uri()
-        ),
-    )?;
-    write_chatgpt_auth(
-        home.path(),
-        ChatGptAuthFixture::new("chatgpt-test-token").plan_type("pro"),
-        AuthCredentialsStoreMode::File,
-    )?;
-    let mut app = TestAppServer::builder()
-        .with_codex_home(home.path())
-        .without_managed_config()
-        .build_initialized()
-        .await?;
+    let mut app = start_chatgpt_app(home.path(), &server).await?;
     let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
     for program in programs {
         let completed = app
@@ -92,6 +82,170 @@ async fn turn_start_forwards_explicit_cyber_access_program() -> Result<()> {
             None,
             Some(json!({"cyber": "standard"})),
             None,
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn daybreak_thread_metadata_persists_independently_across_restart_and_fork() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        (0..4)
+            .map(|index| responses::sse(vec![responses::ev_completed(&format!("resp-{index}"))]))
+            .collect(),
+    )
+    .await;
+    let home = TempDir::new()?;
+    let mut app = start_chatgpt_app(home.path(), &server).await?;
+    let first = app.start_thread(ThreadStartParams::default()).await?;
+    let second = app.start_thread(ThreadStartParams::default()).await?;
+    assert_eq!(
+        (
+            first.thread.daybreak_enabled,
+            second.thread.daybreak_enabled
+        ),
+        (None, None)
+    );
+
+    for (thread_id, enabled) in [(&first.thread.id, true), (&second.thread.id, false)] {
+        let updated: ThreadMetadataUpdateResponse = app
+            .request(|request_id| ClientRequest::ThreadMetadataUpdate {
+                request_id,
+                params: ThreadMetadataUpdateParams {
+                    thread_id: thread_id.clone(),
+                    project_id: None,
+                    git_info: None,
+                    daybreak_enabled: Some(enabled),
+                },
+            })
+            .await?;
+        assert_eq!(
+            (updated.thread.id, updated.thread.daybreak_enabled),
+            (thread_id.clone(), Some(enabled))
+        );
+    }
+    // Leave the second thread empty to exercise metadata durability without a rollout.
+    let completed = app
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: first.thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "start this task".to_owned(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    assert_eq!(requests.requests().len(), 1);
+    app.shutdown_gracefully().await?;
+
+    let mut restarted = start_chatgpt_app(home.path(), &server).await?;
+    for (thread_id, enabled) in [(&first.thread.id, true), (&second.thread.id, false)] {
+        let read: ThreadReadResponse = restarted
+            .request(|request_id| ClientRequest::ThreadRead {
+                request_id,
+                params: ThreadReadParams {
+                    thread_id: thread_id.clone(),
+                    include_turns: false,
+                },
+            })
+            .await?;
+        assert_eq!(
+            (read.thread.id, read.thread.daybreak_enabled),
+            (thread_id.clone(), Some(enabled))
+        );
+    }
+    let resumed: ThreadResumeResponse = restarted
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: first.thread.id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(resumed.thread.daybreak_enabled, Some(true));
+    let forked: ThreadForkResponse = restarted
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: first.thread.id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(forked.thread.daybreak_enabled, Some(true));
+    let updated: ThreadMetadataUpdateResponse = restarted
+        .request(|request_id| ClientRequest::ThreadMetadataUpdate {
+            request_id,
+            params: ThreadMetadataUpdateParams {
+                thread_id: first.thread.id.clone(),
+                project_id: None,
+                git_info: None,
+                daybreak_enabled: Some(false),
+            },
+        })
+        .await?;
+    assert_eq!(
+        (updated.thread.id, updated.thread.daybreak_enabled),
+        (first.thread.id.clone(), Some(false))
+    );
+    assert_eq!(requests.requests().len(), 1);
+    restarted.shutdown_gracefully().await?;
+
+    let mut restarted = start_chatgpt_app(home.path(), &server).await?;
+    for (thread_id, program, enabled) in [
+        (&forked.thread.id, Some(CyberAccessProgram::Standard), true),
+        (&forked.thread.id, None, true),
+        (&first.thread.id, None, false),
+    ] {
+        let resumed: ThreadResumeResponse = restarted
+            .request(|request_id| ClientRequest::ThreadResume {
+                request_id,
+                params: ThreadResumeParams {
+                    thread_id: thread_id.clone(),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(resumed.thread.daybreak_enabled, Some(enabled));
+        let completed = restarted
+            .start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: thread_id.clone(),
+                cyber_access_program: program,
+                input: vec![UserInput::Text {
+                    text: "hello".to_owned(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+        let resumed: ThreadResumeResponse = restarted
+            .request(|request_id| ClientRequest::ThreadResume {
+                request_id,
+                params: ThreadResumeParams {
+                    thread_id: thread_id.clone(),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(resumed.thread.daybreak_enabled, Some(enabled));
+    }
+    assert_eq!(
+        requests
+            .requests()
+            .iter()
+            .map(|request| request.body_json()["access_programs"].clone())
+            .collect::<Vec<_>>(),
+        [
+            json!(null),
+            json!({"cyber": "standard"}),
+            json!(null),
+            json!(null),
         ]
     );
     Ok(())
@@ -166,4 +320,29 @@ async fn turn_start_forwards_cyber_access_program_with_personal_access_token() -
         json!({"cyber": "daybreak_blue"})
     );
     Ok(())
+}
+
+async fn start_chatgpt_app(home: &Path, server: &MockServer) -> Result<TestAppServer> {
+    Mock::given(method("GET"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(/*s*/ 426))
+        .mount(server)
+        .await;
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n",
+            server.uri()
+        ),
+    )?;
+    write_chatgpt_auth(
+        home,
+        ChatGptAuthFixture::new("chatgpt-test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    TestAppServer::builder()
+        .with_codex_home(home)
+        .without_managed_config()
+        .build_initialized()
+        .await
 }

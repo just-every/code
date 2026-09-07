@@ -1,3 +1,4 @@
+use crate::context::GuardianContextMode;
 use crate::context::GuardianReviewEvidence;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
@@ -111,7 +112,7 @@ impl RequestUserInputHandler {
         // Capture and consumption use the same fixed thread feature setting. Legacy
         // threads must not construct retained answers, persist them, or advance their revision.
         if turn.config.features.enabled(Feature::GuardianApproval)
-            && session.enabled(Feature::GuardianThreadContext)
+            && session.guardian_context_mode == GuardianContextMode::ThreadOwned
         {
             let user_input = questions
                 .iter()
