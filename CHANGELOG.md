@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.181] - 2026-09-07
+
+- Core: accept upstream reasoning metadata in model responses. (835c0ddd)
+- Core: expose stable executor build identity in environment metadata. (dbe2f6d5)
+- Release: preserve standalone install pins during daemon updates and prevent published release replacement. (adee0b04, c0b62857)
+- Release: improve Bazel and Linux musl build stability with opt-in stamping and jemalloc flag fixes. (8d7cc24a, 53ba408a)
+
 ## [0.6.180] - 2026-09-04
 
 - CLI: use jemalloc for Linux musl binaries to improve allocator behavior. (8e4b7d31)

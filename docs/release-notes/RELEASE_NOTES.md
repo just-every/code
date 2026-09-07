@@ -1,13 +1,13 @@
-## @just-every/code v0.6.180
+## @just-every/code v0.6.181
 
-This release improves Linux packaging, TUI copy behavior, voice host setup, and bundled model metadata.
+This release improves model metadata handling, executor identity reporting, release pinning, and build stability.
 
 ### Changes
 
-- CLI: use jemalloc for Linux musl binaries to improve allocator behavior.
-- TUI: preserve Markdown formatting when copying assistant responses.
-- Voice: add WebRTC negotiation and initialize the packaged GStreamer runtime in the voice host.
-- Models: add GPT-6-Astra to the bundled model catalog.
+- Core: accept upstream reasoning metadata in model responses.
+- Core: expose stable executor build identity in environment metadata.
+- Release: preserve standalone install pins during daemon updates and prevent published release replacement.
+- Release: improve Bazel and Linux musl build stability with opt-in stamping and jemalloc flag fixes.
 
 ### Install
 
@@ -15,3 +15,5 @@ This release improves Linux packaging, TUI copy behavior, voice host setup, and 
 npm install -g @just-every/code@latest
 code
 ```
+
+Compare: https://github.com/just-every/code/compare/v0.6.180...v0.6.181
