@@ -250,6 +250,16 @@ impl CredentialBroker {
         }
     }
 
+    pub(crate) fn restore_and_disable_child_env(
+        &self,
+        env: &mut HashMap<String, String>,
+        command: &mut [String],
+    ) {
+        self.restore_child_env(env, command);
+        remove_env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
+        remove_env_value(env, BROKERED_CREDENTIALS_ENV_KEY);
+    }
+
     pub(crate) fn host_requires_mitm(&self, host: &str) -> bool {
         let normalized_host = normalize_host(host);
         let state = self.read_state();

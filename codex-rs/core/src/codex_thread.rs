@@ -138,6 +138,7 @@ impl ThreadConfigSnapshot {
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
     pub environments: Option<TurnEnvironmentSelections>,
+    pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub profile_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
@@ -535,9 +536,17 @@ impl CodexThread {
         self.session.update_settings(updates).await.map(|_| ())
     }
 
+    /// Persists current settings without emitting a live settings event.
+    ///
+    /// Serializes snapshot capture and persistence with accepted settings updates.
+    pub async fn checkpoint_thread_settings(&self) -> ThreadStoreResult<()> {
+        self.session.checkpoint_thread_settings().await
+    }
+
     fn thread_settings_update(overrides: CodexThreadSettingsOverrides) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
             environments,
+            runtime_workspace_roots,
             profile_workspace_roots,
             approval_policy,
             approvals_reviewer,
@@ -564,6 +573,7 @@ impl CodexThread {
                 approvals_reviewer,
             },
             environments,
+            runtime_workspace_roots,
             profile_workspace_roots,
             sandbox_policy,
             permission_profile,

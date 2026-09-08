@@ -460,6 +460,7 @@ mod tests {
             history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: None,
                 model_provider: "test-provider".to_string(),
@@ -663,6 +664,7 @@ mod tests {
                     permission_profile: permission_profile.clone(),
                     active_permission_profile: None,
                     cwd: cwd.clone().try_into().expect("absolute settings cwd"),
+                    runtime_workspace_roots: None,
                     reasoning_effort: Some(ReasoningEffort::Ultra),
                     reasoning_summary: Some(ReasoningSummary::Auto),
                     personality: None,

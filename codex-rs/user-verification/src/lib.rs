@@ -4,6 +4,13 @@ mod credential;
 mod error;
 mod guard;
 mod key_namespace;
+#[cfg(any(target_os = "macos", test))]
+mod lifecycle_lock;
+#[cfg(any(target_os = "macos", test))]
+mod native_operation;
+#[cfg(any(target_os = "macos", test))]
+mod platform_macos;
+#[cfg(not(target_os = "macos"))]
 mod unsupported;
 
 pub use credential::UserVerificationKeyCreation;
@@ -53,18 +60,32 @@ pub trait UserVerificationProvider: Send + Sync {
 
 /// Reports whether this build contains a native provider, independently of local readiness.
 pub fn platform_supported() -> bool {
-    false
+    cfg!(target_os = "macos")
 }
 
 /// Probes biometric hardware without reading credentials, prompting, or checking enrollment.
 /// This performs local OS work; async callers should run it off their executor during setup.
 pub fn device_supported() -> bool {
-    false
+    #[cfg(target_os = "macos")]
+    {
+        platform_macos::device_supported()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 pub fn platform_provider(
     namespace: UserVerificationKeyNamespace,
 ) -> Arc<dyn UserVerificationProvider> {
-    let _ = namespace.label;
-    Arc::new(unsupported::UnsupportedProvider)
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(platform_macos::NativeProvider { namespace })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = namespace.label;
+        Arc::new(unsupported::UnsupportedProvider)
+    }
 }

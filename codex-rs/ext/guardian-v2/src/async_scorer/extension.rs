@@ -1,3 +1,5 @@
+use super::transcript::ContextInput;
+use codex_core::context::ContextualUserFragment;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -31,8 +33,6 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
-use codex_guardian_context::ActionPresentation;
-use codex_guardian_context::ContextSection;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
@@ -58,7 +58,6 @@ use super::metrics::record_classification_risk;
 use super::metrics::sampler_failure_reason;
 use super::parent_compaction::ParentCompactionError;
 use super::parent_compaction::select_parent_compaction;
-use super::review_evidence::render_review_evidence;
 use super::sampler::LunaSampler;
 use super::sampler::LunaSamplerConfig;
 use super::sampler::LunaSamplerError;
@@ -69,6 +68,10 @@ use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
 use super::trusted_tools::trusted_tool_context;
 use super::wrapper_lag::WrapperLag;
+use codex_core::context::GuardianReviewEvidenceFragment;
+use codex_guardian_context::PreviousReviews;
+use codex_guardian_context::ReviewEvidence;
+use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
     Scored,
@@ -474,9 +477,6 @@ impl GuardianV2Extension {
         } else {
             Vec::new()
         };
-        let rendered_images = guardian_config
-            .transcript
-            .images(input.conversation_history.review_items(), node_repl_images);
         // Capture root evidence before background metadata resolution or model I/O.
         // Later root changes invalidate this sample through its captured authorization version.
         let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
@@ -548,13 +548,38 @@ impl GuardianV2Extension {
                 kind: PlannedActionKind::Command,
                 reason: None,
             };
-            let transcript = match guardian_config.transcript.build_context(
-                ContextTarget::Async,
-                history.as_ref(),
-                root_conversation.as_deref().unwrap_or_default(),
-                &trusted_user_inputs,
-                Some(&action_section),
-            ) {
+            let review_fragments = sync_reviews
+                .iter()
+                .filter(|review| {
+                    review.authorization_version == authorization_version
+                        && review.root_authorization_version == root_authorization_version
+                })
+                .map(|review| {
+                    let review = render_review_evidence(ReviewEvidence {
+                        correlation: &review.correlation,
+                        decision: &review.decision,
+                        action: &review.action,
+                        rationale: review.rationale.as_deref(),
+                    });
+                    truncations.extend(review.truncations);
+                    GuardianReviewEvidenceFragment::new(review.body).render()
+                })
+                .collect::<Vec<_>>();
+            let transcript =
+                PreviousReviews::try_from_fragments(review_fragments).and_then(|reviews| {
+                    guardian_config.transcript.build_context(ContextInput {
+                        target: ContextTarget::Async,
+                        history: history.as_ref(),
+                        root_conversation: root_conversation.as_deref().unwrap_or_default(),
+                        trusted_user_answers: &trusted_user_inputs,
+                        planned_action: Some(&action_section),
+                        previous_reviews: Some(&reviews),
+                        trusted_tool: trusted_tool_context.as_ref(),
+                        trusted_skill_paths: &trusted_skill_paths,
+                        node_repl_images: Some(&node_repl_images),
+                    })
+                });
+            let mut transcript = match transcript {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
@@ -573,44 +598,9 @@ impl GuardianV2Extension {
                 }
             };
             drop(history);
-            truncations.extend(transcript.truncations);
-            truncations.record(
-                "transcript_image",
-                rendered_images.omitted_bytes,
-                /*retained_bytes*/ 0,
-            );
-            let images = rendered_images.images;
-            let mut classification_input = Vec::new();
-            for section in transcript.sections {
-                match section {
-                    ContextSection::PermissionContext { items }
-                    | ContextSection::RootConversation { items }
-                    | ContextSection::RetainedUserInstructions { items }
-                    | ContextSection::TrustedUserAnswers { items } => {
-                        classification_input.extend(items)
-                    }
-                    ContextSection::ConversationTranscript { items } => {
-                        classification_input.push(">>> TRANSCRIPT START\n".to_owned());
-                        classification_input.extend(items);
-                        classification_input.push(">>> TRANSCRIPT END\n\n".to_owned());
-                    }
-                    ContextSection::PlannedAction(action) => {
-                        classification_input.extend(action.render(ActionPresentation::Async))
-                    }
-                }
-            }
-            let trusted_review_evidence = sync_reviews
-                .iter()
-                .filter(|review| {
-                    review.authorization_version == authorization_version
-                        && review.root_authorization_version == root_authorization_version
-                })
-                .map(|review| {
-                    let review = render_review_evidence(review);
-                    truncations.extend(review.truncations);
-                    review.text
-                })
-                .collect();
+            drop(node_repl_images);
+            truncations.extend(std::mem::take(&mut transcript.truncations));
+            let classification_input = transcript.into_messages();
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;
@@ -644,11 +634,7 @@ impl GuardianV2Extension {
                     .sample(LunaSamplingRequest {
                         parent_response_id,
                         instructions,
-                        trusted_review_evidence,
-                        trusted_tool_context,
-                        trusted_skill_paths,
                         input: classification_input,
-                        images,
                         parent_compaction,
                         parent_compaction_hash,
                         reasoning_effort: guardian_config.reasoning_effort.clone(),

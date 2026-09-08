@@ -111,6 +111,7 @@ pub enum RolloutRecorderParams {
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         selected_capability_roots: Vec<SelectedCapabilityRoot>,
+        runtime_workspace_roots: Option<Vec<PathBuf>>,
         multi_agent_version: Option<MultiAgentVersion>,
         history_mode: ThreadHistoryMode,
         history_base: Option<HistoryPosition>,
@@ -208,6 +209,7 @@ impl RolloutRecorderParams {
             base_instructions,
             dynamic_tools,
             selected_capability_roots: Vec::new(),
+            runtime_workspace_roots: None,
             multi_agent_version: None,
             history_mode: Default::default(),
             history_base: None,
@@ -247,6 +249,20 @@ impl RolloutRecorderParams {
         } = &mut self
         {
             *roots = selected_capability_roots;
+        }
+        self
+    }
+
+    pub fn with_runtime_workspace_roots(
+        mut self,
+        runtime_workspace_roots: Option<Vec<PathBuf>>,
+    ) -> Self {
+        if let Self::Create {
+            runtime_workspace_roots: roots,
+            ..
+        } = &mut self
+        {
+            *roots = runtime_workspace_roots;
         }
         self
     }
@@ -852,6 +868,7 @@ impl RolloutRecorder {
                 base_instructions,
                 dynamic_tools,
                 selected_capability_roots,
+                runtime_workspace_roots,
                 multi_agent_version,
                 history_mode,
                 history_base,
@@ -880,6 +897,7 @@ impl RolloutRecorder {
                     parent_thread_id,
                     timestamp,
                     cwd: cwd.clone(),
+                    runtime_workspace_roots,
                     originator,
                     cli_version: env!("CARGO_PKG_VERSION").to_string(),
                     agent_nickname: source.get_nickname(),

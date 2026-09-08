@@ -208,6 +208,116 @@ async fn guardian_history_survives_restart_and_user_fork(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_history_uses_deltas_between_eviction_batches() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Guardian approval actions require host-native paths"
+    );
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.features.enable(Feature::TokenBudget).unwrap();
+            config
+                .features
+                .disable(Feature::GuardianThreadContext)
+                .expect("use the retained legacy history");
+            config.update_plan_enabled = true;
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let plan = r#"{"plan":[{"step":"inspect the repository","status":"completed"}]}"#;
+    let mut inspection: Vec<_> = (0..130)
+        .map(|index| ev_function_call(&format!("initial-{index}"), "update_plan", plan))
+        .collect();
+    inspection.push(ev_completed("inspection"));
+    mount_sse_sequence(
+        &server,
+        vec![sse(inspection), sse(vec![ev_completed("inspected")])],
+    )
+    .await;
+    let restriction = "Only inspect the repository; do not publish it.";
+    test.submit_text_turn(restriction).await?;
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let mut responses = Vec::new();
+    for index in 0..3 {
+        if index == 1 {
+            // Force eviction after the first review has saved its transcript cursor.
+            let mut traffic: Vec<_> = (0..130)
+                .map(|index| ev_function_call(&format!("later-{index}"), "update_plan", plan))
+                .collect();
+            traffic.push(ev_completed("more-inspection"));
+            responses.push(sse(traffic));
+        }
+        responses.push(sse(vec![
+            ev_function_call(
+                &format!("review-{index}"),
+                "exec_command",
+                &json!({
+                    "cmd": format!("echo review-{index}"),
+                    "sandbox_permissions": "require_escalated"
+                })
+                .to_string(),
+            ),
+            ev_completed(&format!("action-{index}")),
+        ]));
+        // Three consecutive denials would interrupt the parent turn before its final response.
+        let decision = if index == 2 {
+            r#"{"risk_level":"low","user_authorization":"high","outcome":"allow"}"#
+        } else {
+            r#"{"outcome":"deny"}"#
+        };
+        responses.push(sse(vec![
+            ev_assistant_message(&format!("decision-{index}"), decision),
+            ev_completed(&format!("reviewed-{index}")),
+        ]));
+    }
+    responses.push(sse(vec![ev_completed("done")]));
+    let reviews = mount_sse_sequence(&server, responses).await;
+    test.submit_text_turn("Continue inspecting.").await?;
+    let requests = reviews.requests();
+    let guardian_requests = requests
+        .iter()
+        .filter(|request| request.body_json()["client_metadata"]["x-openai-subagent"] == "guardian")
+        .collect::<Vec<_>>();
+    let prompts = guardian_requests
+        .iter()
+        .map(|request| {
+            request
+                .message_input_text_groups("user")
+                .last()
+                .expect("Guardian review prompt")
+                .join("")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|prompt| (
+                prompt.contains(">>> TRANSCRIPT START\n"),
+                prompt.contains(">>> TRANSCRIPT DELTA START\n"),
+            ))
+            .collect::<Vec<_>>(),
+        vec![(true, false), (true, false), (false, true)]
+    );
+    assert!(prompts[1].contains(restriction));
+    assert!(prompts[2].contains("review-2"));
+    assert_eq!(
+        guardian_requests[1].body_json()["client_metadata"]["thread_id"],
+        guardian_requests[2].body_json()["client_metadata"]["thread_id"]
+    );
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_history_survives_compaction_and_eviction_but_not_rollback() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(

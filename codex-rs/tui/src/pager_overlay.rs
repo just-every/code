@@ -307,13 +307,17 @@ impl PagerView {
                 self.scroll_offset = self.scroll_offset.saturating_add(page_height);
             }
             e if self.keymap.half_page_down.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
-                let half_page = (area.height as usize).saturating_add(1) / 2;
+                let half_page = self
+                    .page_height(tui.terminal.viewport_area)
+                    .saturating_add(1)
+                    / 2;
                 self.scroll_offset = self.scroll_offset.saturating_add(half_page);
             }
             e if self.keymap.half_page_up.is_pressed(e) => {
-                let area = self.content_area(tui.terminal.viewport_area);
-                let half_page = (area.height as usize).saturating_add(1) / 2;
+                let half_page = self
+                    .page_height(tui.terminal.viewport_area)
+                    .saturating_add(1)
+                    / 2;
                 self.scroll_offset = self.scroll_offset.saturating_sub(half_page);
             }
             e if self.keymap.jump_top.is_pressed(e) => {
@@ -1052,6 +1056,7 @@ mod tests {
     use crate::history_cell::HistoryCell;
     use crate::history_cell::new_patch_event;
     use codex_protocol::parse_command::ParsedCommand;
+    use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::text::Text;
@@ -1775,6 +1780,41 @@ mod tests {
             before2, after2,
             "PageUp+PageDown from the top of the second page should round-trip"
         );
+    }
+
+    #[tokio::test]
+    async fn half_page_uses_the_last_rendered_content_height() -> Result<()> {
+        let mut overlay = transcript_overlay(
+            (0..50)
+                .map(|i| {
+                    Arc::new(TestCell {
+                        lines: vec![Line::from(format!("line-{i:02}"))],
+                    }) as Arc<dyn HistoryCell>
+                })
+                .collect(),
+        );
+        let transcript_area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 10,
+        );
+        let mut buf = Buffer::empty(transcript_area);
+        overlay.render(transcript_area, &mut buf);
+        let page_height = overlay.view.page_height(transcript_area);
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        tui.terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 24,
+        ));
+        overlay.view.scroll_offset = 10;
+
+        overlay.view.handle_key_event(
+            &mut tui,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        )?;
+
+        assert_eq!(
+            overlay.view.scroll_offset,
+            10 + page_height.saturating_add(1) / 2
+        );
+        Ok(())
     }
 
     #[test]

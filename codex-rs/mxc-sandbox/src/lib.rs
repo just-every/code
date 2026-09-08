@@ -13,6 +13,8 @@ pub struct MxcCommand {
     pub command: Vec<String>,
 }
 
+pub mod policy;
+
 /// Whether the executor can create a native MXC process security environment.
 /// This deliberately excludes MXC's older AppContainer fallback backends.
 pub fn is_available() -> bool {
@@ -25,3 +27,7 @@ pub fn is_available() -> bool {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;

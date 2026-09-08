@@ -9,6 +9,7 @@ pub(crate) use paragraph::HyperlinkParagraph;
 
 use std::num::NonZeroU16;
 use std::ops::Range;
+use std::path::Path;
 
 use ratatui::buffer::Buffer;
 use ratatui::buffer::CellDiffOption;
@@ -45,7 +46,50 @@ pub(crate) struct TerminalHyperlink {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DestinationKind {
     Web,
+    /// A generated visualization or a capability-validated spoken workspace artifact.
     TrustedFile,
+}
+
+/// An existing, inert source file proven to remain inside its session workspace.
+pub(crate) struct TrustedWorkspaceFile(Url);
+
+const SAFE_WORKSPACE_EXTENSIONS: &[&str] = &[
+    "rs", "go", "c", "cc", "cpp", "h", "hpp", "java", "kt", "swift", "toml", "json", "yaml", "yml",
+    "md", "txt", "css",
+];
+
+impl TrustedWorkspaceFile {
+    pub(crate) fn validate(workspace: &Path, candidate: &str) -> Option<Self> {
+        if candidate.is_empty()
+            || candidate.len() > 512
+            || candidate.contains(':')
+            || candidate.chars().any(char::is_control)
+        {
+            return None;
+        }
+        let normalized = candidate.replace('\\', "/");
+        let path = Path::new(&normalized);
+        if path.is_absolute()
+            || normalized
+                .split('/')
+                .any(|part| part.is_empty() || part.starts_with('.'))
+            || !SAFE_WORKSPACE_EXTENSIONS.contains(&path.extension()?.to_str()?)
+        {
+            return None;
+        }
+        let workspace = workspace.canonicalize().ok()?;
+        let target = workspace.join(path).canonicalize().ok()?;
+        let relative = target.strip_prefix(&workspace).ok()?;
+        if !target.metadata().ok()?.is_file()
+            || target.extension() != path.extension()
+            || relative
+                .iter()
+                .any(|part| part.to_string_lossy().starts_with('.'))
+        {
+            return None;
+        }
+        Url::from_file_path(target).ok().map(Self)
+    }
 }
 
 impl TerminalHyperlink {
@@ -58,11 +102,22 @@ impl TerminalHyperlink {
     }
 
     pub(crate) fn retarget_to_trusted_file(&mut self, destination: &Url) {
-        // Keep file URLs out of the general Markdown link path. Only generated visualization links
-        // are promoted to this destination kind.
+        // General Markdown never promotes file URLs. Only generated visualization links use this
+        // path; spoken workspace artifacts require a separately validated capability.
         debug_assert_eq!(destination.scheme(), "file");
         self.destination = destination.to_string();
         self.destination_kind = DestinationKind::TrustedFile;
+    }
+
+    pub(crate) fn trusted_workspace_file(
+        columns: Range<usize>,
+        file: TrustedWorkspaceFile,
+    ) -> Self {
+        Self {
+            columns,
+            destination: file.0.to_string(),
+            destination_kind: DestinationKind::TrustedFile,
+        }
     }
 
     fn with_columns(&self, columns: Range<usize>) -> Self {
@@ -1047,5 +1102,64 @@ mod tests {
             ))]
         );
         assert_eq!(osc8_hyperlink(file_url.as_str(), "view"), "view");
+    }
+
+    #[test]
+    fn trusted_workspace_files_require_confined_regular_inert_sources() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let source_directory = workspace.path().join("src");
+        std::fs::create_dir(&source_directory).expect("source directory");
+        std::fs::write(source_directory.join("safe.rs"), "fn safe() {}").expect("source");
+        std::fs::write(source_directory.join("run.py"), "print('no')").expect("script");
+        std::fs::write(source_directory.join(".hidden.rs"), "hidden").expect("hidden");
+        std::fs::create_dir(source_directory.join("directory.rs")).expect("directory");
+
+        let file = TrustedWorkspaceFile::validate(workspace.path(), "src/safe.rs")
+            .expect("workspace source should be trusted");
+        let windows_file = TrustedWorkspaceFile::validate(workspace.path(), "src\\safe.rs")
+            .expect("relative Windows separators should be trusted");
+        assert_eq!(file.0, windows_file.0);
+        let link = TerminalHyperlink::trusted_workspace_file(/*columns*/ 0..11, file);
+        assert!(link.destination.starts_with("file://"));
+        assert_eq!(osc8_hyperlink(&link.destination, "safe.rs"), "safe.rs");
+
+        for candidate in [
+            "../safe.rs",
+            "src/../src/safe.rs",
+            "/src/safe.rs",
+            "src\\\\safe.rs",
+            "src\\..\\safe.rs",
+            "\\src\\safe.rs",
+            "\\\\server\\share\\safe.rs",
+            "C:\\src\\safe.rs",
+            "file://src/safe.rs",
+            "src/safe.rs\u{7}",
+            "src/.hidden.rs",
+            "src/missing.rs",
+            "src/directory.rs",
+            "src/run.py",
+        ] {
+            assert!(
+                TrustedWorkspaceFile::validate(workspace.path(), candidate).is_none(),
+                "unsafe artifact was accepted: {candidate}"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().expect("outside directory");
+            let outside_file = outside.path().join("outside.rs");
+            std::fs::write(&outside_file, "outside").expect("outside source");
+            std::os::unix::fs::symlink(&outside_file, source_directory.join("escape.rs"))
+                .expect("escape symlink");
+            std::os::unix::fs::symlink(
+                source_directory.join("run.py"),
+                source_directory.join("disguised.rs"),
+            )
+            .expect("disguised script symlink");
+            for candidate in ["src/escape.rs", "src/disguised.rs"] {
+                assert!(TrustedWorkspaceFile::validate(workspace.path(), candidate).is_none());
+            }
+        }
     }
 }

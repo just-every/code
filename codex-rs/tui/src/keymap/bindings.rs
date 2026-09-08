@@ -10,11 +10,13 @@ use codex_config::types::KeybindingsSpec;
 use codex_config::types::TuiKeymap;
 use std::sync::Arc;
 
-/// Config context in which a keymap action is active.
+/// Runtime context in which a keymap action is active.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum KeymapContext {
     Global,
     Chat,
+    /// Voice-only chat action, inactive in pagers and other overlays.
+    Voice,
     Composer,
     Editor,
     VimNormal,
@@ -31,7 +33,7 @@ impl KeymapContext {
     pub(crate) const fn config_name(self) -> &'static str {
         match self {
             Self::Global => "global",
-            Self::Chat => "chat",
+            Self::Chat | Self::Voice => "chat",
             Self::Composer => "composer",
             Self::Editor => "editor",
             Self::VimNormal => "vim_normal",
@@ -61,6 +63,8 @@ impl KeymapContext {
             (self, other),
             (Self::VimSearch, Self::VimNormal | Self::VimOperator)
                 | (Self::VimNormal | Self::VimOperator, Self::VimSearch)
+                | (Self::Voice, Self::Pager)
+                | (Self::Pager, Self::Voice)
                 | (Self::List, Self::Approval)
                 | (Self::Approval, Self::List)
                 | (Self::List, Self::Agents)
@@ -73,7 +77,10 @@ impl KeymapContext {
     }
 
     const fn is_shared_main(self) -> bool {
-        matches!(self, Self::Global | Self::Chat | Self::Composer)
+        matches!(
+            self,
+            Self::Global | Self::Chat | Self::Voice | Self::Composer
+        )
     }
 
     const fn is_main_editor(self) -> bool {
@@ -262,6 +269,7 @@ define_runtime_action_bindings! {
         prompt_stack_back,
         skip_question,
     ],
+    "chat" => Voice, chat, chat [toggle_voice_mute],
     "composer" => Composer, composer, composer [
         submit,
         queue,

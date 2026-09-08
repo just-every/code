@@ -1318,6 +1318,9 @@ impl MessageProcessor {
             ClientRequest::ThreadMemoryModeSet { params, .. } => {
                 self.thread_processor.thread_memory_mode_set(params).await
             }
+            ClientRequest::MemoryStatus { params, .. } => {
+                self.thread_processor.memory_status(params).await
+            }
             ClientRequest::MemoryReset { .. } => self.thread_processor.memory_reset().await,
             ClientRequest::ThreadUnarchive { params, .. } => {
                 self.thread_processor

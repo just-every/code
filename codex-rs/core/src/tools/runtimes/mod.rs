@@ -17,6 +17,7 @@ use codex_core_plugins::PLUGIN_METRICS_OUTPUT_ENV_VAR;
 use codex_install_context::InstallContext;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ENV_KEYS;
@@ -200,14 +201,33 @@ fn prepare_powershell_command_for_elevated_windows_sandbox_with_fallback(
     command
 }
 
+pub(crate) fn prepare_brokered_shell_snapshot_env(
+    env: &mut HashMap<String, String>,
+    shell_snapshot: Option<&AbsolutePathBuf>,
+) {
+    if shell_snapshot.is_some()
+        && env
+            .get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+            .is_some_and(|active| active == "1")
+    {
+        env.remove("BASH_ENV");
+    }
+}
+
 /// POSIX-only helper: for commands produced by `Shell::derive_exec_args`
-/// for Bash/Zsh/sh of the form `[shell_path, "-lc", "<script>"]`, and
+/// for Bash/Zsh/sh of the form `[shell_path, "-lc", "<script>"]` or brokered
+/// `[shell_path, "-c", "<script>"]`, and
 /// when a snapshot is configured on the session shell, rewrite the argv
 /// to a single non-login shell that sources the snapshot before running
 /// the original script:
 ///
 ///   shell -lc "<script>"
 ///   => user_shell -c ". SNAPSHOT (best effort); exec shell -c <script>"
+///
+/// Brokered Bash and Zsh commands targeting the session shell run in that process
+/// to preserve captured shell functions and avoid asking patched Zsh to exec itself.
+/// Brokered Zsh wrappers use `-f` so startup files cannot overwrite credentials
+/// after the proxy has replaced them with dummies.
 ///
 /// This wrapper script uses POSIX constructs (`if`, `.`, `exec`) so it can
 /// be run by Bash/Zsh/sh. On non-matching commands, or when command cwd does
@@ -247,15 +267,31 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         return command.to_vec();
     }
 
+    let brokered = env
+        .get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+        .is_some_and(|active| active == "1");
     let flag = command[1].as_str();
-    if flag != "-lc" {
+    if flag != "-lc" && !(brokered && flag == "-c") {
         return command.to_vec();
     }
 
     let snapshot_path = snapshot.to_string_lossy();
     let shell_path = session_shell.shell_path.to_string_lossy();
+    let command_uses_session_zsh =
+        session_shell.shell_type == ShellType::Zsh && command[0] == shell_path.as_ref();
+    let reuse_session_shell = brokered
+        && command[0] == shell_path.as_ref()
+        && matches!(session_shell.shell_type, ShellType::Bash | ShellType::Zsh);
+    let original_shell_is_zsh = command_uses_session_zsh
+        || codex_shell_command::shell_detect::detect_shell_type(&command[0])
+            == Some(ShellType::Zsh);
+    let brokered_zsh_flag = if flag == "-lc" { "-lfc" } else { "-fc" };
+    let original_shell_flag = if brokered && original_shell_is_zsh {
+        brokered_zsh_flag
+    } else {
+        "-c"
+    };
     let original_shell = shell_single_quote(&command[0]);
-    let original_script = shell_single_quote(&command[2]);
     let snapshot_path = shell_single_quote(snapshot_path.as_ref());
     let trailing_args = command[3..]
         .iter()
@@ -292,17 +328,34 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         proxy_exports,
         runtime_path_prepend_exports,
     ]);
+    let run_original = if reuse_session_shell {
+        command[2].clone()
+    } else {
+        let original_script = shell_single_quote(&command[2]);
+        format!("exec '{original_shell}' {original_shell_flag} '{original_script}'{trailing_args}")
+    };
     let rewritten_script = if override_exports.is_empty() {
-        format!(
-            "if . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\nexec '{original_shell}' -c '{original_script}'{trailing_args}"
-        )
+        format!("if . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{run_original}")
     } else {
         format!(
-            "{override_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{override_exports}\n\nexec '{original_shell}' -c '{original_script}'{trailing_args}"
+            "{override_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{override_exports}\n\n{run_original}"
         )
     };
 
-    vec![shell_path.to_string(), "-c".to_string(), rewritten_script]
+    let wrapper_flag = if brokered && session_shell.shell_type == ShellType::Zsh {
+        brokered_zsh_flag
+    } else {
+        "-c"
+    };
+    let mut rewritten = vec![
+        shell_path.to_string(),
+        wrapper_flag.to_string(),
+        rewritten_script,
+    ];
+    if reuse_session_shell {
+        rewritten.extend_from_slice(&command[3..]);
+    }
+    rewritten
 }
 
 fn build_override_exports(
@@ -328,6 +381,11 @@ fn build_proxy_env_exports(env: &HashMap<String, String>) -> (String, String) {
         .copied()
         .chain(codex_network_proxy::brokered_credential_env_keys(env))
         .chain(CUSTOM_CA_ENV_KEYS)
+        .chain(
+            env.get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+                .filter(|active| active.as_str() == "1")
+                .map(|_| "BASH_ENV"),
+        )
         .filter(|key| is_valid_shell_variable_name(key))
         .collect::<Vec<_>>();
     keys.sort_unstable();
@@ -390,7 +448,7 @@ fn build_override_exports_for_keys(variable_prefix: &str, keys: &[&str]) -> (Str
             let set_var = format!("{variable_prefix}_SET_{idx}");
             let value_var = format!("{variable_prefix}_{idx}");
             format!(
-                "if [ -n \"${{{set_var}}}\" ]; then export {key}=\"${{{value_var}}}\"; else unset {key}; fi"
+                "if [ -n \"${{{set_var}}}\" ]; then\n  if [ -z \"${{{key}+x}}\" ] || [ \"${{{key}-}}\" != \"${{{value_var}}}\" ]; then export {key}=\"${{{value_var}}}\"; else export {key}; fi\nelse builtin unset {key} 2>/dev/null || command unset {key}; fi"
             )
         })
         .collect::<Vec<_>>()

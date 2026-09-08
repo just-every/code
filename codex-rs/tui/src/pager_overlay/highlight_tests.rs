@@ -83,6 +83,7 @@ fn moving_highlight_matches_full_rebuild_with_live_tail() {
                 text_elements: Vec::new(),
                 local_image_paths: Vec::new(),
                 remote_image_urls: Vec::new(),
+                spoken: false,
             }) as Arc<dyn HistoryCell>
         })
         .collect();

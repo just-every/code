@@ -6,6 +6,7 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 pub(super) async fn create_thread(
     store: &LocalThreadStore,
@@ -39,6 +40,12 @@ pub(super) async fn create_thread(
         )
         .with_session_id(params.session_id)
         .with_selected_capability_roots(params.selected_capability_roots)
+        .with_runtime_workspace_roots(params.runtime_workspace_roots.map(|roots| {
+            roots
+                .into_iter()
+                .map(AbsolutePathBuf::into_path_buf)
+                .collect()
+        }))
         .with_multi_agent_version(params.multi_agent_version)
         .with_history_mode(params.history_mode)
         .with_history_base(params.history_base)

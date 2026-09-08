@@ -135,10 +135,12 @@ impl ToolCallRuntime {
         let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
 
+        // Code-mode callbacks can resume outside the turn's local span ancestry.
         let dispatch_span = trace_span!(
             "dispatch_tool_call_with_code_mode_result",
             otel.name = %call.tool_name,
             tool_name = %call.tool_name,
+            thread.id = %session.thread_id,
             call_id = call.call_id.as_str(),
             aborted = false,
         );

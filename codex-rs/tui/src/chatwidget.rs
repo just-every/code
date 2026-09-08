@@ -408,6 +408,7 @@ mod reset_credits;
 pub(crate) use self::rate_limits::limit_label_for_window;
 mod completion;
 mod realtime;
+mod realtime_split_flap;
 pub(crate) use realtime::MAX_REPLAY_TRANSCRIPT_CELLS;
 pub(crate) use realtime::MAX_TRANSCRIPT_BYTES;
 pub(crate) use realtime::RealtimeTranscriptRecord;
@@ -1562,6 +1563,14 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn add_server_version_warning(
+        &mut self,
+        notice: crate::status::remote_connection::ServerVersionNotice,
+    ) {
+        self.add_to_history(history_cell::new_server_version_warning(notice));
+        self.request_redraw();
+    }
+
     pub(crate) fn add_error_message(&mut self, message: String) {
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
@@ -1963,7 +1972,9 @@ impl ChatWidget {
             is_stream_continuation: cell
                 .map(|cell| cell.is_stream_continuation())
                 .unwrap_or(false),
-            animation_tick: cell.and_then(|cell| cell.transcript_animation_tick()),
+            animation_tick: cell
+                .and_then(|cell| cell.transcript_animation_tick())
+                .or_else(|| realtime_cell.and_then(|cell| cell.transcript_animation_tick())),
         })
     }
 

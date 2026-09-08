@@ -41,6 +41,10 @@ pub(crate) use vim_search::VimSearchKeymap;
 #[path = "keymap/conflict_tests.rs"]
 mod conflict_tests;
 
+#[cfg(test)]
+#[path = "keymap/voice_tests.rs"]
+mod voice_tests;
+
 pub(crate) use bindings::KeymapContext;
 pub(crate) use bindings::bindings_for_action;
 pub(crate) use bindings::keymap_action_id;
@@ -111,6 +115,9 @@ pub(crate) struct AppKeymap {
 /// handler code, not here.
 #[derive(Clone, Debug)]
 pub(crate) struct ChatKeymap {
+    /// Toggle capture in the active voice session.
+    pub(crate) toggle_voice_mute: Vec<KeyBinding>,
+    chord_hints: Arc<RuntimeChordKeymap>,
     /// Interrupt the active turn.
     pub(crate) interrupt_turn: Vec<KeyBinding>,
     /// Decrease the active reasoning effort.
@@ -127,6 +134,14 @@ pub(crate) struct ChatKeymap {
     pub(crate) prompt_stack_back: Vec<KeyBinding>,
     /// Skip the focused question.
     pub(crate) skip_question: Vec<KeyBinding>,
+}
+
+impl ChatKeymap {
+    pub(crate) fn voice_mute_hint(&self) -> Option<ShortcutHint> {
+        let action = keymap_action_id("chat", "toggle_voice_mute")?;
+        self.chord_hints
+            .primary_hint(action, &self.toggle_voice_mute)
+    }
 }
 
 /// Composer-level keybindings validated in the second app-scope conflict pass.
@@ -608,6 +623,15 @@ impl RuntimeKeymap {
                     || configured_context_alias_is_used(&keymap.list, alias)
                     || configured_context_alias_is_used(&keymap.approval, alias)
             });
+        // Preserve existing Ctrl+X shortcuts and chord prefixes when adding this default.
+        let voice_mute_default_is_shadowed = keymap.chat.toggle_voice_mute.is_none()
+            && (configured_main_surface_alias_is_used(keymap, "ctrl-x")
+                || chords.bindings.iter().any(|binding| {
+                    binding.action.context.overlaps(KeymapContext::Voice)
+                        && binding.chord.prefix.parts()
+                            == key_hint::ctrl(KeyCode::Char('x')).parts()
+                }));
+
         let app = AppKeymap {
             open_agents: resolve_bindings(
                 keymap.global.open_agents.as_ref(),
@@ -661,6 +685,16 @@ impl RuntimeKeymap {
         };
 
         let mut chat = ChatKeymap {
+            toggle_voice_mute: if voice_mute_default_is_shadowed {
+                Vec::new()
+            } else {
+                resolve_bindings(
+                    keymap.chat.toggle_voice_mute.as_ref(),
+                    &defaults.chat.toggle_voice_mute,
+                    "tui.keymap.chat.toggle_voice_mute",
+                )?
+            },
+            chord_hints: Arc::clone(&chords),
             interrupt_turn: resolve_bindings(
                 keymap.chat.interrupt_turn.as_ref(),
                 &defaults.chat.interrupt_turn,
@@ -1499,6 +1533,8 @@ impl RuntimeKeymap {
             },
             chords: Arc::default(),
             chat: ChatKeymap {
+                toggle_voice_mute: default_bindings![ctrl(KeyCode::Char('x'))],
+                chord_hints: Arc::default(),
                 interrupt_turn: default_bindings![plain(KeyCode::Esc)],
                 decrease_reasoning_effort: default_bindings![
                     alt(KeyCode::Char(',')),
@@ -1846,6 +1882,10 @@ impl RuntimeKeymap {
             ("toggle_fast_mode", self.app.toggle_fast_mode.as_slice()),
             ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
             ("toggle_side_conversation", side_toggle_bindings.as_slice()),
+            (
+                "chat.toggle_voice_mute",
+                self.chat.toggle_voice_mute.as_slice(),
+            ),
             ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
             (
                 "chat.decrease_reasoning_effort",
@@ -1996,6 +2036,10 @@ impl RuntimeKeymap {
                 ),
                 ("copy", self.app.copy.as_slice()),
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
+                (
+                    "chat.toggle_voice_mute",
+                    self.chat.toggle_voice_mute.as_slice(),
+                ),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
                     "chat.decrease_reasoning_effort",
@@ -2094,10 +2138,11 @@ impl RuntimeKeymap {
             KeymapContext::VimNormal,
             KeymapContext::VimOperator,
             KeymapContext::VimTextObject,
-            KeymapContext::Pager,
         ] {
             validate_unique(context.config_name(), context_bindings(context))?;
         }
+
+        validate_unique("pager", context_bindings(KeymapContext::Pager))?;
 
         validate_no_reserved(
             "pager",

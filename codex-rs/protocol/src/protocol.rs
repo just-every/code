@@ -522,6 +522,10 @@ pub struct ThreadSettingsOverrides {
     /// Updated fallback `cwd` and environments supplied together as a complete pair.
     pub environments: Option<TurnEnvironmentSelections>,
 
+    /// Updated top-level runtime workspace roots for default environments.
+    /// Explicit environment selections own their roots separately.
+    pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
+
     /// Updated profile-defined workspace roots for status summaries and
     /// per-turn config reconstruction.
     pub profile_workspace_roots: Option<Vec<AbsolutePathBuf>>,
@@ -2203,6 +2207,12 @@ pub struct ThreadSettingsSnapshot {
     #[ts(optional)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
     pub cwd: AbsolutePathBuf,
+    /// Top-level runtime workspace roots for default environments, excluding roots
+    /// supplied by explicit environment selections or permission profiles.
+    /// An absent value means unknown; an empty list means no roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3051,6 +3061,13 @@ pub struct SessionMeta {
     pub parent_thread_id: Option<ThreadId>,
     pub timestamp: String,
     pub cwd: PathBuf,
+    /// Top-level runtime workspace roots at creation for default environments,
+    /// excluding roots supplied by explicit environment selections or permission profiles.
+    /// An absent value means unknown; an empty list means no roots.
+    /// Keep native paths parseable across hosts; validate them when restoring settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime_workspace_roots: Option<Vec<PathBuf>>,
     pub originator: String,
     pub cli_version: String,
     #[serde(default)]
@@ -3112,6 +3129,7 @@ impl Default for SessionMeta {
             parent_thread_id: None,
             timestamp: String::new(),
             cwd: PathBuf::new(),
+            runtime_workspace_roots: None,
             originator: String::new(),
             cli_version: String::new(),
             source: SessionSource::default(),

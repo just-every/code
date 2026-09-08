@@ -4,7 +4,8 @@
 //! without section composition.
 //! Contributor failures abort collection without returning partial context.
 //! Sections preserve source-specific evidence and share prompt framing, while
-//! hosts retain transcript selection, compaction and request lifecycles.
+//! profiles retain the consumer-specific transcript policy. Hosts own full/delta
+//! cursors, compaction and request lifecycles.
 //! Registered contributors declare their scope once and are collected only for
 //! matching context consumers. History and collection settings are borrowed for
 //! each request so the default registry can be reused without retaining state.
@@ -47,10 +48,36 @@ pub use verified_answers::render_verified_answers;
 mod retained_instructions;
 
 mod action;
+mod composition;
+mod profile;
+pub use composition::CollectedContext;
+pub use composition::ComposedContext;
+pub use composition::ContextPresentation;
+pub use composition::RenderedTranscript;
+pub use profile::ContextProfile;
 mod authorization;
 mod entry;
 mod history;
+mod images;
+mod node_repl;
+pub use node_repl::NodeReplContext;
+pub use node_repl::NodeReplResponse;
+pub use node_repl::NodeReplReviewEvidenceMode;
+pub use node_repl::RenderedNodeReplEvidence;
 mod permissions;
+pub use images::TranscriptImageInput;
+pub use images::TranscriptImages;
+mod trusted_skills;
+mod trusted_tool;
+pub use trusted_skills::TrustedSkills;
+pub use trusted_tool::TrustedTool;
+mod reviews;
+pub use reviews::MAX_PREVIOUS_REVIEWS;
+pub use reviews::PreviousReviews;
+pub use reviews::RenderedReviewEvidence;
+pub use reviews::ReviewEvidence;
+pub use reviews::render_review_evidence;
+pub use truncation::TruncationObservation;
 mod retention;
 mod section;
 pub use permissions::PermissionContext;
@@ -105,6 +132,16 @@ pub struct SectionInput<'a> {
     pub planned_action: Option<&'a PlannedAction>,
     /// Sync-only restrictions resolved from the parent execution environment.
     pub permissions: Option<&'a PermissionContext>,
+    /// Size-validated, host-attested reviews selected against the action's authorization snapshot.
+    pub previous_reviews: Option<&'a PreviousReviews>,
+    /// Metadata verified by the host for the exact action being classified.
+    pub trusted_tool: Option<&'a TrustedTool>,
+    /// Current-turn and delegated skill paths verified and bounded by the host.
+    pub trusted_skill_paths: &'a [String],
+    /// Optional consumer image policy; no history images are added implicitly.
+    pub images: Option<TranscriptImageInput<'a>>,
+    /// Sync-only frozen REPL snapshot selected by the host's delivery cursor.
+    pub node_repl: Option<&'a NodeReplContext<'a>>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -159,6 +196,10 @@ pub trait SectionContributor: Send + Sync {
 pub enum SectionError {
     /// Evidence required by this contributor for the current input is missing.
     MissingRequiredEvidence { section: &'static str },
+    /// A section cannot be delivered by the requested consumer.
+    UnsupportedDelivery { section: &'static str },
+    /// Supplied evidence exceeds the section's count or rendered-size limit.
+    EvidenceLimitExceeded { section: &'static str },
 }
 
 impl std::fmt::Display for SectionError {
@@ -166,6 +207,12 @@ impl std::fmt::Display for SectionError {
         match self {
             Self::MissingRequiredEvidence { section } => {
                 write!(formatter, "missing required evidence for section {section}")
+            }
+            Self::UnsupportedDelivery { section } => {
+                write!(formatter, "unsupported delivery for section {section}")
+            }
+            Self::EvidenceLimitExceeded { section } => {
+                write!(formatter, "evidence exceeds limits for section {section}")
             }
         }
     }
@@ -187,10 +234,15 @@ pub struct SectionRegistry {
 pub fn default_registry() -> &'static SectionRegistry {
     static REGISTRY: LazyLock<SectionRegistry> = LazyLock::new(|| {
         let mut registry = SectionRegistry::default();
+        registry.register(reviews::PreviousReviewsSection);
+        registry.register(trusted_tool::TrustedToolSection);
+        registry.register(trusted_skills::TrustedSkillsSection);
         registry.register(RootConversationSection);
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);
         registry.register(ConversationTranscriptSection);
+        registry.register(images::TranscriptImagesSection);
+        registry.register(node_repl::NodeReplEvidenceSection);
         registry.register(permissions::PermissionContextSection);
         registry.register(action::PlannedActionSection);
         registry
@@ -202,6 +254,13 @@ impl SectionRegistry {
     /// Adds a contributor to the end of the section collection order.
     pub fn register(&mut self, contributor: impl SectionContributor + 'static) {
         self.contributors.push(Arc::new(contributor));
+    }
+
+    /// Collects evidence for host transcript selection and shared composition.
+    pub fn prepare(&self, input: &SectionInput<'_>) -> Result<CollectedContext, SectionError> {
+        Ok(CollectedContext {
+            sections: self.collect(input)?,
+        })
     }
 
     /// Collects applicable sections in their original registration order.

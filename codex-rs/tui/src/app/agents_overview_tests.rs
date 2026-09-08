@@ -1,4 +1,64 @@
 use super::*;
+
+#[tokio::test]
+async fn older_server_notice_is_visible_in_agents_overview() {
+    let mut app = make_test_app().await;
+    app.update_server_version_overview_notice("0.153.0", Some("0.152.1"));
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    insta::assert_snapshot!(rendered.lines().take(2).collect::<Vec<_>>().join("\n"));
+}
+
+#[tokio::test]
+async fn server_version_overview_notice_updates_and_clears() {
+    let mut app = make_test_app().await;
+    app.update_server_version_overview_notice("0.153.0", Some("0.152.1"));
+    app.update_server_version_overview_notice("0.153.0", Some("0.151.0"));
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    insta::assert_snapshot!(rendered.lines().take(2).collect::<Vec<_>>().join("\n"), @"  Service v0.151.0 < Codex CLI v0.153.0
+  0 need input   0 working   0 ready");
+
+    app.update_server_version_overview_notice("0.153.0", /*older_server*/ None);
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    insta::assert_snapshot!(rendered.lines().take(2).collect::<Vec<_>>().join("\n"), @"  Agent command center
+  0 need input   0 working   0 ready");
+}
+
+#[tokio::test]
+async fn older_server_notice_wraps_in_narrow_overview() {
+    let mut app = make_test_app().await;
+    app.update_server_version_overview_notice("0.153.0", Some("0.152.1"));
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    insta::assert_snapshot!(
+        "older_server_narrow_overview",
+        render_bottom_popup(&app.chat_widget, /*width*/ 12)
+    );
+}
+
+#[tokio::test]
+async fn older_server_notice_falls_back_in_short_overview() {
+    let mut app = make_test_app().await;
+    app.update_server_version_overview_notice("0.153.0", Some("0.152.1"));
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    let area = ratatui::layout::Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 24, /*height*/ 8,
+    );
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    view.render(area, &mut buffer);
+    let header = buffer
+        .content()
+        .iter()
+        .take(usize::from(area.width))
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>();
+    insta::assert_snapshot!(header.trim_end(), @"  Old srv");
+}
 use crate::app::test_support::make_test_app;
 use crate::app_event::AgentsOverviewThreadRefresh;
 use crate::bottom_pane::BottomPaneView;

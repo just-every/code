@@ -777,7 +777,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Personality)
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let cache_path = codex_home.path().join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -874,7 +874,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let service_tier_model = all_model_presets()
         .iter()
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
@@ -998,7 +998,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -3978,7 +3978,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .disable_feature(Feature::RemoteModels)
         .disable_feature(Feature::ShellSnapshot)
         .write(&codex_home)?;
-    write_models_cache(&codex_home)?;
+    write_models_cache(&codex_home).await?;
     let cache_path = codex_home.join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -4368,7 +4368,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         .enable_feature(Feature::Goals)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()

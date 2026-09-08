@@ -336,8 +336,28 @@ impl McpConnectionSet {
             let shares_codex_apps_tools_cache = is_host_owned_codex_apps
                 && should_share_codex_apps_tools_cache(&server_name, uses_env_bearer_token);
             let codex_apps_tools_cache_context = shares_codex_apps_tools_cache.then(|| {
+                // Tools/list has no thread selection or UI capabilities. Only equivalent
+                // transport/auth and listing settings may share executable Apps tools.
+                let mut transport = configured_config.transport.clone();
+                if let McpServerTransportConfig::StreamableHttp {
+                    http_headers: Some(headers),
+                    ..
+                } = &mut transport
+                {
+                    // mcp_server_config_for_url in codex-rs/codex-mcp/src/mcp/mod.rs
+                    // adds thread attribution that threadless discovery does not carry.
+                    headers.retain(|name, _| !name.eq_ignore_ascii_case("originator"));
+                }
+                let mut scope = serde_json::json!([
+                    transport,
+                    &configured_config.auth,
+                    protocol_mode.preferred_protocol_version().as_str(),
+                    catalog_item_limit,
+                ]);
+                scope.sort_all_objects();
                 codex_apps_tools_cache
                     .context(codex_home.clone(), codex_apps_tools_cache_key.clone())
+                    .with_live_scope(scope.to_string())
             });
             // The reserved Codex Apps registration follows the shared
             // AuthManager across refreshes. In the hosted-plugin path, this

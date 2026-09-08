@@ -1963,6 +1963,7 @@ mod tests {
             history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: thread_metadata(),
         }
     }

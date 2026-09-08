@@ -1,0 +1,8 @@
+---
+source: tui/src/chatwidget/realtime/recording_controls_tests.rs
+expression: "meters.join(\"\\n\")"
+---
+mic ██████  codex ▅▅▅▅▅▅
+mic ██████  codex ▅▅▅▅▅▅
+mic ▁▁▁▁▁▁  codex ▅▅▅▅██
+mic ▁▁▁▁▁█  codex ▁▁▁▁▁▁

@@ -47,7 +47,7 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
     .await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
     let mut mcp = TestAppServer::builder()
@@ -289,7 +289,7 @@ async fn thread_settings_update_null_service_tier_uses_default() -> Result<()> {
     .await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let (model_id, service_tier_id) = service_tier_model_and_tier_id()?;
 
     let mut mcp = TestAppServer::builder()

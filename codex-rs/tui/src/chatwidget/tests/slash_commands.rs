@@ -1841,6 +1841,40 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
 }
 
 #[tokio::test]
+async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    complete_turn_with_message(&mut chat, "turn-1", Some("Previous final response"));
+    handle_turn_started(&mut chat, "active");
+    let commentary = "Here is the command:\n\n```sh\necho current\n```";
+    let current_thread_id = chat.thread_id.map(|id| id.to_string()).unwrap_or_default();
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: current_thread_id,
+            turn_id: "active".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::AgentMessage {
+                id: "active-commentary".to_string(),
+                text: commentary.to_string(),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.dispatch_command(SlashCommand::Copy);
+    insta::assert_snapshot!(render_bottom_popup(&chat, /*width*/ 80));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+    assert_eq!(
+        next_copy_selection(&mut rx),
+        (commentary.to_string(), "Whole response".to_string(),)
+    );
+}
+
+#[tokio::test]
 async fn slash_copy_state_tracks_plan_item_completion() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     complete_turn_with_message(&mut chat, "previous", Some("```rust\nstale();\n```"));

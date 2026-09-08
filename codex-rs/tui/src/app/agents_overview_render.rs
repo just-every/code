@@ -156,7 +156,22 @@ impl Renderable for AgentsOverviewView {
         let [header, summary, divider, body, title, prompt, footer] = self.layout_areas(area);
         let inset =
             |rect: Rect| rect.inner(Margin::new(/*horizontal*/ 2, /*vertical*/ 0));
-        Line::from("Agent command center".bold()).render(inset(header), buf);
+        if let Some(notice) = &self.state().server_version_notice {
+            let header = inset(header);
+            let lines = textwrap::wrap(notice, usize::from(header.width.max(1)));
+            if lines.len() > usize::from(header.height) {
+                Line::from("Old srv".cyan()).render(header, buf);
+            } else {
+                for (offset, line) in lines.iter().enumerate() {
+                    Line::from(line.as_ref().cyan()).render(
+                        Rect::new(header.x, header.y + offset as u16, header.width, 1),
+                        buf,
+                    );
+                }
+            }
+        } else {
+            Line::from("Agent command center".bold()).render(inset(header), buf);
+        }
         let (needs_you, working, ready) = self.rows.iter().fold((0, 0, 0), |counts, row| {
             let (needs_you, working, ready) = counts;
             match row.group {

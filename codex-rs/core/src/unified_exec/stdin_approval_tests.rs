@@ -163,7 +163,10 @@ async fn internal_grants_require_review_without_exposing_paths() -> anyhow::Resu
     environment.config_mut().permission_profile =
         PermissionProfileSnapshot::legacy(PermissionProfile::read_only());
     let grants = serde_json::from_value(json!({
-        "file_system": {"write": [turn.config.cwd.join("private-metrics")]}
+        "file_system": {
+            "read": [turn.config.cwd.join("private-snapshot")],
+            "write": [turn.config.cwd.join("private-metrics")]
+        }
     }))?;
     let permissions = TerminalPermissions::for_launch(
         &environment,
@@ -186,6 +189,34 @@ async fn internal_grants_require_review_without_exposing_paths() -> anyhow::Resu
     );
     assert_eq!(permissions.additional_permissions, None);
     insta::assert_snapshot!("internal_grant", permissions.approval_reason(expected)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn readable_snapshot_does_not_require_stdin_approval() -> anyhow::Result<()> {
+    let (_session, turn) = make_session_and_context().await;
+    let mut environment = turn.environments.primary().expect("environment").clone();
+    environment.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(PermissionProfile::read_only());
+    let snapshot = turn.config.cwd.join("shell-snapshot.sh");
+    let grant = crate::shell_snapshot::snapshot_read_permissions(
+        &snapshot,
+        &environment.permission_profile_with_workspace_roots(),
+        environment.cwd(),
+    );
+    assert_eq!(grant, None);
+    let permissions = TerminalPermissions::for_launch(
+        &environment,
+        &turn,
+        TerminalSandboxSource::Native,
+        SandboxPermissions::UseDefault,
+        /*additional_permissions*/ None,
+        grant.as_ref(),
+    );
+    assert_eq!(
+        permissions.review_requirement(&permissions.policy, environment.permission_profile()),
+        Ok(SandboxPermissions::UseDefault)
+    );
     Ok(())
 }
 

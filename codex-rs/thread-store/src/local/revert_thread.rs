@@ -170,6 +170,7 @@ async fn create_replacement_recorder(
     .with_session_id(source_meta.session_id)
     .with_rollout_id(rollout_id)
     .with_selected_capability_roots(source_meta.selected_capability_roots)
+    .with_runtime_workspace_roots(source_meta.runtime_workspace_roots)
     .with_multi_agent_version(source_meta.multi_agent_version)
     .with_history_mode(ThreadHistoryMode::Paginated)
     .with_history_base(history_base)

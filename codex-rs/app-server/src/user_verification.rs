@@ -48,8 +48,7 @@ impl Service {
             auth_manager,
             provider: Arc::new(native::platform_provider),
             platform_supported: native::platform_supported(),
-            // Host activation follows the bundled TUI integration.
-            device_supported: || false,
+            device_supported: native::device_supported,
             worker: Arc::new(Semaphore::new(/*permits*/ 1)),
         }
     }
@@ -257,3 +256,11 @@ mod rpc_tests;
 #[cfg(test)]
 #[path = "user_verification_test_support.rs"]
 mod test_support;
+
+#[cfg(test)]
+#[path = "user_verification_activation_tests.rs"]
+mod activation_tests;
+
+#[cfg(test)]
+#[path = "user_verification_connection_tests.rs"]
+mod connection_tests;

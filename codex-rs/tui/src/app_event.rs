@@ -350,6 +350,21 @@ pub(crate) enum AppEvent {
         prompt: UserMessage,
     },
 
+    /// Sign the challenge associated with an approved elicitation.
+    UserVerificationApproved {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+    },
+    /// Return a controller-owned verification result, never a native provider handle.
+    UserVerificationFinished {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+        attempt_id: Uuid,
+        result: Result<codex_app_server_protocol::UserVerificationProof, String>,
+    },
+
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
     RetrySafetyBufferedTurn {
         thread_id: ThreadId,
@@ -1372,6 +1387,11 @@ pub(crate) enum AppEvent {
 
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
+
+    /// Inspect the complete verification request without deciding it.
+    FullScreenUserVerificationRequest(
+        crate::bottom_pane::user_verification::UserVerificationRequest,
+    ),
 
     /// Open the feedback note entry overlay after the user selects a category.
     OpenFeedbackNote {

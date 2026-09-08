@@ -6,7 +6,9 @@ use crate::config::TokenBudgetConfig;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::AllowPrefixRules;
+use crate::shell_snapshot::ShellSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
+use crate::shell_snapshot::ShellSnapshotSandbox;
 use crate::tools::sandboxing::executor_windows_sandbox_level;
 use arc_swap::ArcSwap;
 use codex_core_plugins::PluginCommandAttribution;
@@ -56,6 +58,7 @@ pub(crate) struct TurnEnvironment {
     /// OS reported by the selected executor; `None` for legacy executors.
     pub(crate) executor_platform_os: Option<String>,
     pub(crate) shell_snapshot: ShellSnapshotTask,
+    pub(crate) shell_snapshot_builder: Option<Box<ShellSnapshot>>,
     pub(crate) shell_snapshot_v2_supported: bool,
 }
 
@@ -76,6 +79,7 @@ impl TurnEnvironment {
             shell,
             executor_platform_os: None,
             shell_snapshot: futures::future::ready(None).boxed().shared(),
+            shell_snapshot_builder: None,
             shell_snapshot_v2_supported: false,
         }
     }
@@ -99,14 +103,47 @@ impl TurnEnvironment {
         config
     }
 
-    pub(crate) fn shell_snapshot(&self, cwd: &AbsolutePathBuf) -> Option<AbsolutePathBuf> {
-        if self.selection.cwd != PathUri::from_abs_path(cwd) {
+    pub(crate) async fn shell_snapshot(
+        &self,
+        cwd: &AbsolutePathBuf,
+        command: &[String],
+        shell: &shell::Shell,
+        config: &Config,
+        sandbox: Option<ShellSnapshotSandbox>,
+    ) -> Option<Arc<ShellSnapshotFile>> {
+        let credential_broker_enabled = config
+            .permissions
+            .network
+            .as_ref()
+            .is_some_and(|spec| spec.enabled() && spec.credential_broker_enabled());
+        let cwd_matches_selection = self.selection.cwd == PathUri::from_abs_path(cwd);
+        if !config.features.enabled(Feature::ShellSnapshot)
+            || (!cwd_matches_selection && !credential_broker_enabled)
+            || command.len() < 3
+            || !matches!(command[1].as_str(), "-lc" | "-c")
+            || (command[1] == "-c" && !credential_broker_enabled)
+        {
             return None;
         }
-        self.shell_snapshot
-            .peek()?
-            .as_deref()
-            .map(ShellSnapshotFile::path)
+        if credential_broker_enabled {
+            let sandbox = sandbox?;
+            self.shell_snapshot_builder
+                .as_ref()?
+                .as_ref()
+                .clone()
+                .build(
+                    Arc::clone(&self.environment),
+                    PathUri::from_abs_path(cwd),
+                    Some(shell.clone()),
+                    command[1] == "-lc",
+                    self.shell_environment_policy().clone(),
+                    Some(sandbox),
+                )
+                .await
+                .filter(|snapshot| snapshot.is_brokered_for(self.shell_environment_policy()))
+        } else {
+            self.shell_snapshot.peek()?.clone()
+        }
     }
 
     pub(crate) fn cwd(&self) -> &PathUri {

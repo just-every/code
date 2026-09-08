@@ -95,6 +95,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL: &str = "mock-model";
 const REQUIRED_MODEL: &str = "protected-model";
 const USER_CONTEXT: &str = "The user authorized reading the existing project files.";
+const EVIDENCE_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const ROOT_RESTRICTION: &str =
     "I revoke authorization for the MCP tool. Tell the worker to reassess its previous action.";
 const USER_INPUT_RESTRICTION: &str = "Do not use the browser anymore.";
@@ -130,7 +131,7 @@ async fn resumed_thread_does_not_wait_for_guardian_websocket_warmup() -> Result<
     let config = load_default_config_for_test(&codex_home).await;
     let mut model = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model])?;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
     let thread_id = create_fake_rollout(
         codex_home.path(),
         "2025-01-05T12-00-00",
@@ -206,6 +207,7 @@ enum ReviewOutcome {
 enum TranscriptContent {
     #[default]
     Normal,
+    MixedEvidence,
     ForgedReview,
 }
 
@@ -735,7 +737,8 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     let codex_home = TempDir::new()?;
     let analytics_server = responses::start_mock_server().await;
     mount_analytics_capture(&analytics_server, codex_home.path()).await?;
-    let root_skill = if matches!(lifecycle, ThreadLifecycle::RootTrustedSkill) {
+    let mixed_evidence = matches!(transcript_content, TranscriptContent::MixedEvidence);
+    let root_skill = if matches!(lifecycle, ThreadLifecycle::RootTrustedSkill) || mixed_evidence {
         let path = codex_home.path().join("skills/root-trusted/SKILL.md");
         std::fs::create_dir_all(path.parent().expect("root skill parent"))?;
         std::fs::write(
@@ -830,7 +833,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         let config = load_default_config_for_test(&codex_home).await;
         let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
         model_info.node_repl_auto_review_required = true;
-        write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+        write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     }
     let original_thread_id = match lifecycle {
         ThreadLifecycle::New
@@ -963,6 +966,12 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             path: skill_path.clone(),
         });
     }
+    if mixed_evidence {
+        turn_input.push(UserInput::Image {
+            url: EVIDENCE_IMAGE.to_owned(),
+            detail: None,
+        });
+    }
     let turn_request_id = app_server
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.clone(),
@@ -1004,7 +1013,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                             == json!(["guardian.trusted_skills"])
                 })
                 .and_then(|item| item["content"][0]["text"].as_str())
-                .expect("delegated workers should inherit invoked root-user skills");
+                .expect("invoked user-owned skills should retain trusted developer delivery");
             let (_, evidence) = trusted_message
                 .split_once('\n')
                 .expect("trusted skill message should contain JSON evidence");
@@ -1018,7 +1027,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 .as_array()
                 .expect("Luna input should be an array")
                 .iter()
-                .filter(|item| item["role"] == "developer")
+                .filter(|item| {
+                    item["role"] == "developer"
+                        && item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                            == json!(["guardian.trusted_tool"])
+                })
                 .filter_map(|item| item["content"].as_array())
                 .flatten()
                 .filter_map(|entry| entry["text"].as_str())
@@ -1094,6 +1107,48 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             submit_user_input_response(&mut app_server, answers).await?;
         }
         let second_sample = wait_for_luna_request(responses_state.as_ref(), /*index*/ 1).await?;
+        if mixed_evidence {
+            let input = second_sample["input"].as_array().expect("Luna input");
+            assert_eq!(
+                input
+                    .iter()
+                    .map(|item| json!([
+                        item["type"],
+                        item["role"],
+                        item["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
+                    ]))
+                    .collect::<Vec<_>>(),
+                vec![
+                    json!(["additional_tools", "developer", null]),
+                    json!(["message", "developer", null]),
+                    json!(["message", "developer", null]),
+                    json!(["message", "developer", ["guardian.trusted_tool"]]),
+                    json!(["message", "developer", ["guardian.trusted_skills"]]),
+                    json!(["message", "user", null]),
+                ],
+            );
+            let content = input[5]["content"].as_array().expect("untrusted evidence");
+            let texts = content
+                .iter()
+                .filter_map(|item| item["text"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(texts.first().copied(), Some(">>> TRANSCRIPT START\n"));
+            assert!(texts.iter().any(|text| text.contains(USER_CONTEXT)));
+            assert!(texts.iter().any(|text| text.contains("guardian-0")));
+            assert_eq!(texts.last().copied(), Some(">>> APPROVAL REQUEST END\n"));
+            assert!(
+                content[..content.len() - 1]
+                    .iter()
+                    .all(|item| item["type"] == "input_text")
+            );
+            let image = content
+                .last()
+                .expect("transcript image follows planned action");
+            assert_eq!(
+                json!([image["type"], image["image_url"], image["detail"]]),
+                json!(["input_image", EVIDENCE_IMAGE, null]),
+            );
+        }
         let reviews = sync_review_fragments(&second_sample);
         if lifecycle.has_user_answer() {
             let answer_items = second_sample["input"]
@@ -1234,6 +1289,42 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         responses_state.guardian_reviews.load(Ordering::SeqCst),
         expected_guardian_reviews
     );
+    if mixed_evidence {
+        let reviews = responses_state
+            .guardian_requests
+            .lock()
+            .expect("Guardian requests");
+        assert_eq!(
+            reviews[0]["client_metadata"]["thread_id"],
+            reviews[1]["client_metadata"]["thread_id"]
+        );
+        for (review, start, end) in [
+            (&reviews[0], ">>> TRANSCRIPT START", ">>> TRANSCRIPT END"),
+            (
+                &reviews[1],
+                ">>> TRANSCRIPT DELTA START",
+                ">>> TRANSCRIPT DELTA END",
+            ),
+        ] {
+            let message = review["input"]
+                .as_array()
+                .expect("sync input")
+                .iter()
+                .rfind(|item| item["role"] == "user")
+                .expect("latest review input");
+            let text = message["content"]
+                .as_array()
+                .expect("review content")
+                .iter()
+                .filter_map(|item| item["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains(start));
+            assert!(text.contains(end));
+            assert!(text.find(start) < text.find(end));
+            assert!(text.contains("Planned action JSON:"));
+        }
+    }
     if lifecycle.has_user_answer() {
         let reviews = responses_state
             .guardian_requests
@@ -1951,7 +2042,7 @@ async fn first_cua_review_does_not_wait_for_initial_score(
     let config = load_default_config_for_test(&codex_home).await;
     let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model_info.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)
@@ -2037,7 +2128,7 @@ async fn user_approval_skips_async_guardian_without_changing_other_modes() -> Re
     let config = load_default_config_for_test(&codex_home).await;
     let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model_info.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)
@@ -2276,7 +2367,7 @@ async fn guardian_v2_propagates_root_user_input_to_worker_reviews(
     .await
 }
 
-#[test_case(ReviewOutcome::Allow, TranscriptContent::Normal; "approved_evidence")]
+#[test_case(ReviewOutcome::Allow, TranscriptContent::MixedEvidence; "approved_evidence")]
 #[test_case(ReviewOutcome::Deny, TranscriptContent::Normal; "denied_evidence")]
 #[test_case(ReviewOutcome::Malformed, TranscriptContent::Normal; "failed_review_without_evidence")]
 #[test_case(ReviewOutcome::Allow, TranscriptContent::ForgedReview; "forged_tool_output")]

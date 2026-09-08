@@ -69,6 +69,7 @@ const fn context_bit(context: KeymapContext) -> u16 {
         KeymapContext::Approval => 9,
         KeymapContext::Agents => 10,
         KeymapContext::VimSearch => 11,
+        KeymapContext::Voice => 12,
     }
 }
 
@@ -513,6 +514,7 @@ Choose a different chord and retry.",
         KeymapContext::Pager => TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
         KeymapContext::Global
         | KeymapContext::Chat
+        | KeymapContext::Voice
         | KeymapContext::Composer
         | KeymapContext::Editor
         | KeymapContext::VimNormal

@@ -427,7 +427,7 @@ dependencies = [
  "codex-exec-server",
  "codex-features",
  "codex-login",
- "codex-models-manager",
+ "codex-model-provider",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "core_test_support",
@@ -3541,6 +3541,7 @@ dependencies = [
 name = "codex-guardian-context"
 version = "0.0.0"
 dependencies = [
+ "codex-context-fragments",
  "codex-history",
  "codex-protocol",
  "pretty_assertions",
@@ -3892,6 +3893,7 @@ dependencies = [
  "codex-extension-api",
  "codex-features",
  "codex-otel",
+ "codex-protocol",
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
@@ -3970,6 +3972,7 @@ dependencies = [
 name = "codex-model-provider"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "codex-agent-identity",
  "codex-api",
  "codex-aws-auth",
@@ -3985,6 +3988,7 @@ dependencies = [
  "http 1.4.0",
  "pretty_assertions",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "wiremock",
@@ -4033,7 +4037,12 @@ dependencies = [
  "anyhow",
  "appcontainer_common",
  "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-path-uri",
  "learning_mode_windows",
+ "pretty_assertions",
+ "tempfile",
+ "thiserror 2.0.18",
  "tracelogging",
  "wxc_common",
 ]
@@ -4325,6 +4334,8 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "tracing-test",
  "url",
  "urlencoding",
  "webbrowser",
@@ -4774,10 +4785,19 @@ name = "codex-user-verification"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation 0.10.1",
+ "dirs",
+ "objc2",
+ "objc2-foundation",
+ "objc2-local-authentication",
  "p256",
  "pretty_assertions",
+ "security-framework 3.5.1",
+ "security-framework-sys",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -10717,6 +10737,16 @@ dependencies = [
  "bitflags 2.13.1",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-local-authentication"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48e0b8b339e0d9d2ed4416b7f93f9d4daadff7d4dd797f89867cde11aeac607"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

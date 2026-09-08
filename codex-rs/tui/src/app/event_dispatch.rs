@@ -67,6 +67,13 @@ impl App {
         }
 
         match event {
+            AppEvent::UserVerificationApproved { thread_id, server_name, request_id } => {
+                Box::pin(self.start_user_verification(app_server, thread_id, server_name, request_id)).await?;
+            }
+            AppEvent::UserVerificationFinished { thread_id, server_name, request_id, attempt_id, result } => {
+                // Keep this RPC future out of the event loop's stack frame.
+                Box::pin(self.finish_user_verification(app_server, thread_id, server_name, request_id, attempt_id, result)).await?;
+            }
             AppEvent::ReviewMisalignment(review) => {
                 self.open_misalignment_review(tui, review);
             }
@@ -2982,6 +2989,14 @@ impl App {
             }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();
+            }
+            AppEvent::FullScreenUserVerificationRequest(request) => {
+                let _ = tui.enter_alt_screen();
+                self.overlay = Some(Overlay::new_static_with_renderables(
+                    vec![crate::bottom_pane::user_verification::prompt_header(&request)],
+                    "U S E R  V E R I F I C A T I O N".to_string(),
+                    self.keymap.pager.clone(),
+                ));
             }
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch(request) => {

@@ -870,6 +870,7 @@ mod tests {
 
         let url = "https://example.test/forwarded/threads/10930?page=1&queue=customer_support_unprocessed&forwardedScope=all";
         let cell = UserHistoryCell {
+            spoken: false,
             message: url.to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),

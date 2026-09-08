@@ -681,6 +681,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMemoryModeSetResponse,
     },
+    #[experimental("memory/status")]
+    MemoryStatus => "memory/status" {
+        params: v2::MemoryStatusParams,
+        serialization: global("memory"),
+        response: v2::MemoryStatusResponse,
+    },
     #[experimental("memory/reset")]
     MemoryReset => "memory/reset" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,

@@ -44,6 +44,7 @@ pub fn memories_usage_kinds_from_command(command: &str) -> Vec<MemoriesUsageKind
 }
 
 fn get_memory_kind(path: String) -> Option<MemoriesUsageKind> {
+    let path = path.replace("memories_v2/", "memories/");
     if path.contains("memories/MEMORY.md") {
         Some(MemoriesUsageKind::MemoryMd)
     } else if path.contains("memories/memory_summary.md") {
@@ -58,3 +59,7 @@ fn get_memory_kind(path: String) -> Option<MemoriesUsageKind> {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "usage_tests.rs"]
+mod tests;

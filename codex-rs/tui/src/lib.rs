@@ -225,7 +225,6 @@ pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
 mod update_prompt;
-#[cfg(any(not(debug_assertions), test))]
 mod update_versions;
 mod updates;
 #[cfg(any(not(debug_assertions), test))]

@@ -2081,6 +2081,10 @@
           "description": "When `true`, external context sources mark the thread `memory_mode` as `\"polluted\"`.",
           "type": "boolean"
         },
+        "dual_write": {
+          "description": "Generate both versions while the selected version supplies context.",
+          "type": "boolean"
+        },
         "extract_model": {
           "description": "Model used for thread summarisation.",
           "type": "string"
@@ -2128,9 +2132,24 @@
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
           "type": "boolean"
+        },
+        "version": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MemoryVersion"
+            }
+          ],
+          "description": "Selects the memory pipeline; v1 remains the default."
         }
       },
       "type": "object"
+    },
+    "MemoryVersion": {
+      "enum": [
+        "v1",
+        "v2"
+      ],
+      "type": "string"
     },
     "ModelAvailabilityNuxConfig": {
       "additionalProperties": {
@@ -4118,6 +4137,11 @@
           ],
           "default": null,
           "description": "Preferred layout for resume/fork session picker results."
+        },
+        "show_server_version_notice": {
+          "default": true,
+          "description": "Show an informational notice when the connected app server is an older stable release. Defaults to `true`; this does not control compatibility errors or version status.",
+          "type": "boolean"
         },
         "show_tooltips": {
           "default": true,

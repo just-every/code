@@ -1066,15 +1066,34 @@ async fn shell_snapshot_deleted_after_shutdown_with_skills() -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+#[test_case::test_case(false; "default")]
+#[test_case::test_case(true; "disabled_proxy_with_broker_configured")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn macos_unified_exec_resolves_command_from_tied_path_snapshot() -> Result<()> {
+async fn macos_unified_exec_resolves_command_from_tied_path_snapshot(
+    disabled_proxy: bool,
+) -> Result<()> {
     let builder = test_codex()
         .with_user_shell(get_shell_by_model_provided_path(&PathBuf::from("/bin/zsh")))
-        .with_config(|config| {
+        .with_config(move |config| {
             config
                 .features
                 .enable(Feature::ShellSnapshot)
                 .expect("test config should allow feature update");
+            if disabled_proxy {
+                let mut network = codex_network_proxy::NetworkProxyConfig {
+                    enabled: false,
+                    ..Default::default()
+                };
+                network.set_credential_broker_enabled(/*enabled*/ true);
+                config.permissions.network = Some(
+                    codex_core::config::NetworkProxySpec::from_config_and_constraints(
+                        network,
+                        Some(Default::default()),
+                        config.permissions.permission_profile(),
+                    )
+                    .expect("disabled proxy configuration"),
+                );
+            }
         });
     let harness = TestCodexHarness::with_builder(builder).await?;
     let command_dir = harness

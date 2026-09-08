@@ -196,6 +196,7 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             parent_thread_id: None,
             timestamp: "2026-01-27T12:34:56Z".to_string(),
             cwd: home.path().to_path_buf(),
+            runtime_workspace_roots: None,
             originator: "test".to_string(),
             cli_version: "test".to_string(),
             source: SessionSource::Cli,

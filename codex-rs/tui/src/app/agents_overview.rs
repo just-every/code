@@ -494,6 +494,7 @@ impl App {
                             == RuntimePermissionProfileTurnOverride::LegacySandbox
                 });
             self.local_settings = local_settings;
+            self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
             self.config = resume_config;
             tui.set_notification_settings(
                 self.local_settings.tui.notification_settings.method,

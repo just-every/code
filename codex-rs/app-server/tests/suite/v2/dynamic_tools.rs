@@ -601,7 +601,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
     let mut model_info =
         codex_core::test_support::construct_model_info_offline("mock-model", &config);
     model_info.input_modalities.push(InputModality::Audio);
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())

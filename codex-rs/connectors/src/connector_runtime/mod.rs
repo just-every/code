@@ -4,6 +4,8 @@
 //! workspace. Disk is best-effort cold-start persistence; a context reads it
 //! once when created and never rereads it. Full connector metadata is
 //! owned by the connector metadata store, not by this module.
+//! Live catalog subscriptions publish only successful fetches from a matching
+//! discovery scope, never disk snapshots or another scope's discovery winner.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,6 +24,7 @@ use codex_protocol::mcp::McpServerInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::sync::watch;
 
 use self::persistence::load_cached_codex_apps_server_info;
 use self::persistence::load_cached_connector_runtime_for_identity;
@@ -30,6 +33,8 @@ use self::persistence::server_info_cache_path;
 use self::persistence::tools_cache_path;
 
 const MCP_TOOLS_CACHE_PUBLISH_DURATION_METRIC: &str = "codex.mcp.tools.cache_publish.duration_ms";
+
+type LiveCatalog<T> = watch::Sender<Option<Arc<ConnectorRuntimeSnapshot<T>>>>;
 
 /// Values stored in the connector runtime's persisted tool snapshot.
 ///
@@ -93,6 +98,7 @@ pub fn connector_runtime_cache_path(codex_home: &Path, auth: Option<&CodexAuth>)
 pub struct ConnectorRuntimeSnapshot<T> {
     tools: Vec<T>,
     refreshed_at: SystemTime,
+    generation: u64,
 }
 
 impl<T> ConnectorRuntimeSnapshot<T> {
@@ -166,24 +172,47 @@ impl<T: ConnectorRuntimePayload> ConnectorRuntimeManager<T> {
             .entry(identity.clone())
             .or_insert_with(|| Arc::new(ConnectorRuntimeEntry::new(identity, self.disk_cache)))
             .clone();
-        ConnectorRuntimeContext { entry }
+        ConnectorRuntimeContext {
+            entry,
+            live_catalog: None,
+        }
     }
 }
 
 /// Handle to one shared account/workspace connector runtime.
 pub struct ConnectorRuntimeContext<T: ConnectorRuntimePayload> {
     entry: Arc<ConnectorRuntimeEntry<T>>,
+    live_catalog: Option<LiveCatalog<T>>,
 }
 
 impl<T: ConnectorRuntimePayload> Clone for ConnectorRuntimeContext<T> {
     fn clone(&self) -> Self {
         Self {
             entry: Arc::clone(&self.entry),
+            live_catalog: self.live_catalog.clone(),
         }
     }
 }
 
 impl<T: ConnectorRuntimePayload> ConnectorRuntimeContext<T> {
+    /// Groups executable catalogs by equivalent discovery inputs within this account/home.
+    /// The caller must include the endpoint, auth configuration and listing protocol in `scope`.
+    /// Account-wide discovery reads are unaffected.
+    pub fn with_live_scope(mut self, scope: String) -> Self {
+        self.live_catalog = Some(
+            lock_unpoisoned(&self.entry.live_catalogs)
+                .entry(scope)
+                .or_insert_with(|| watch::channel(None).0)
+                .clone(),
+        );
+        self
+    }
+
+    /// Subscribes to accepted live tools without refetching or waiting for other clients.
+    pub fn subscribe(&self) -> Option<watch::Receiver<Option<Arc<ConnectorRuntimeSnapshot<T>>>>> {
+        self.live_catalog.as_ref().map(watch::Sender::subscribe)
+    }
+
     pub fn current_snapshot(&self) -> Option<Arc<ConnectorRuntimeSnapshot<T>>> {
         self.entry.current_snapshot.load_full()
     }
@@ -254,6 +283,23 @@ impl<T: ConnectorRuntimePayload> ConnectorRuntimeContext<T> {
     ) -> Arc<ConnectorRuntimeSnapshot<T>> {
         let publish_start = Instant::now();
         let mut last_accepted_generation = lock_unpoisoned(&self.entry.last_accepted_generation);
+        let snapshot = Arc::new(ConnectorRuntimeSnapshot {
+            tools,
+            refreshed_at: SystemTime::now(),
+            generation: ticket.generation,
+        });
+        if let Some(live_catalog) = &self.live_catalog {
+            live_catalog.send_if_modified(|current| {
+                if current
+                    .as_ref()
+                    .is_some_and(|current| current.generation >= ticket.generation)
+                {
+                    return false;
+                }
+                *current = Some(Arc::clone(&snapshot));
+                true
+            });
+        }
         if ticket.generation <= *last_accepted_generation
             && let Some(snapshot) = self.current_snapshot()
         {
@@ -265,11 +311,6 @@ impl<T: ConnectorRuntimePayload> ConnectorRuntimeContext<T> {
             );
             return snapshot;
         }
-
-        let snapshot = Arc::new(ConnectorRuntimeSnapshot {
-            tools,
-            refreshed_at: SystemTime::now(),
-        });
 
         *last_accepted_generation = ticket.generation;
         self.entry
@@ -326,6 +367,7 @@ struct ConnectorRuntimeEntry<T: ConnectorRuntimePayload> {
     current_snapshot: ArcSwapOption<ConnectorRuntimeSnapshot<T>>,
     next_fetch_generation: AtomicU64,
     last_accepted_generation: Mutex<u64>,
+    live_catalogs: Mutex<HashMap<String, LiveCatalog<T>>>,
 }
 
 impl<T: ConnectorRuntimePayload> ConnectorRuntimeEntry<T> {
@@ -342,6 +384,7 @@ impl<T: ConnectorRuntimePayload> ConnectorRuntimeEntry<T> {
             current_snapshot: ArcSwapOption::from(current_snapshot),
             next_fetch_generation: AtomicU64::new(0),
             last_accepted_generation: Mutex::new(0),
+            live_catalogs: Mutex::new(HashMap::new()),
         }
     }
 }

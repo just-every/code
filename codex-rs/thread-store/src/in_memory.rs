@@ -20,6 +20,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutItem;
 use codex_rollout::persisted_rollout_items;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -144,6 +145,7 @@ mod tests {
                     history_base: None,
                     subagent_history_start_ordinal: None,
                     initial_window_id: uuid::Uuid::now_v7().to_string(),
+                    runtime_workspace_roots: None,
                     metadata: ThreadPersistenceMetadata {
                         cwd: None,
                         model_provider: "test-provider".to_string(),
@@ -437,6 +439,7 @@ mod tests {
             history_base: None,
             subagent_history_start_ordinal: None,
             initial_window_id: uuid::Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: thread_metadata(),
         }
     }
@@ -549,6 +552,10 @@ impl InMemoryThreadStore {
             forked_from_id: params.forked_from_id,
             parent_thread_id: params.parent_thread_id,
             cwd: params.metadata.cwd.clone().unwrap_or_default(),
+            runtime_workspace_roots: params
+                .runtime_workspace_roots
+                .as_ref()
+                .map(|roots| roots.iter().map(AbsolutePathBuf::to_path_buf).collect()),
             agent_nickname: params.source.get_nickname(),
             agent_role: params.source.get_agent_role(),
             agent_path: params.source.get_agent_path().map(Into::into),

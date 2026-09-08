@@ -1,7 +1,7 @@
 mod common;
 
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
@@ -181,6 +181,7 @@ async fn codex_home_symlink_opt_out_respects_host_config_and_scope() -> Result<(
 #[test_case(true, true, false, false, "bash"; "remote_tty")]
 #[test_case(true, false, true, false, "bash"; "remote_sandbox")]
 #[test_case(false, false, false, false, "sh"; "local_sh_pipe")]
+#[test_case(false, false, false, false, "bash-sh"; "local_bash_backed_sh")]
 #[test_case(false, false, false, true, "bash"; "local_bash_env")]
 #[test_case(true, false, false, true, "bash"; "remote_bash_env")]
 #[cfg_attr(
@@ -219,6 +220,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         "bash" if automatic_startup => ("/bin/bash", ".bash-env"),
         "bash" => ("/bin/bash", ".bashrc"),
         "sh" => ("/bin/sh", ".snapshot-env"),
+        "bash-sh" => ("/bin/bash", ".snapshot-env"),
         "zsh" if automatic_startup => ("/bin/zsh", ".zshenv"),
         "zsh" => ("/bin/zsh", ".zshrc"),
         name => anyhow::bail!("unsupported test shell {name}"),
@@ -226,6 +228,14 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     let profile_path = home.path().join(profile_name);
     let profile_path_entry = home.path().join("profile-bin");
     let runtime_path_entry = home.path().join("runtime-bin");
+    std::fs::create_dir(&profile_path_entry)?;
+    let wc = profile_path_entry.join("wc");
+    std::fs::write(
+        &wc,
+        "#!/bin/sh\nprintf x >> \"$HOME/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
+    )?;
+    std::fs::set_permissions(&wc, std::fs::Permissions::from_mode(0o755))?;
+    let posix_shell = matches!(shell_name, "sh" | "bash-sh");
     let padding = if !use_remote && !tty && shell_name == "bash" {
         format!(
             "snapshot_padding() {{ printf '%s' '{}'; }}\n",
@@ -234,7 +244,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     } else {
         String::new()
     };
-    let shadowed_builtins = if shell_name == "sh" {
+    let shadowed_builtins = if posix_shell {
         ""
     } else {
         "unset() { exit 41; }\nbuiltin() { :; }\n"
@@ -242,7 +252,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     std::fs::write(
         &profile_path,
         format!(
-            "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\n{shadowed_builtins}{padding}"
+            "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
         ),
     )?;
     if shell_name == "zsh" && automatic_startup {
@@ -255,16 +265,27 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         "HOME".to_string(),
         home.path().to_string_lossy().into_owned(),
     )]);
-    if shell_name == "sh" {
+    if posix_shell {
         configured_environment.insert(
             "ENV".to_string(),
-            profile_path.to_string_lossy().into_owned(),
+            "${XDG_CONFIG_HOME:-$HOME}/.snapshot-env".to_string(),
         );
+        // Keep coverage for large values alongside the many-small-entry case below.
+        for index in 0..3 {
+            configured_environment.insert(format!("PROFILE_SDK_{index}"), "x".repeat(60 * 1024));
+        }
     }
     if shell_name == "bash" && automatic_startup {
         configured_environment.insert(
             "BASH_ENV".to_string(),
             profile_path.to_string_lossy().into_owned(),
+        );
+    }
+    // Many small entries exercise capture overhead separately from the byte limit above.
+    let many_entries = !use_remote && !tty && !automatic_startup;
+    if many_entries {
+        configured_environment.extend(
+            (0..1_000).map(|index| (format!("PROFILE_ENTRY_{index}"), format!("value-{index}"))),
         );
     }
     let policy = ExecEnvPolicy {
@@ -283,10 +304,15 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     let (command_prefix, expected_prefix) = if shell_name == "sh" {
         ("", "")
     } else {
-        ("profile_helper; ", "helper")
+        ("profile_helper FOObar; ", "helper")
+    };
+    let entry_check = if many_entries {
+        "[ \"${PROFILE_ENTRY_999-missing}\" = value-999 ] || exit 43; "
+    } else {
+        ""
     };
     let command = format!(
-        "export PATH='{}':\"$PATH\"; {command_prefix}printf '|%s|%s|%s|%s|%s|%s' \"$PROFILE_ALLOWED\" \"${{PROFILE_SECRET-missing}}\" \"${{PROFILE_DENIED-missing}}\" \"$PATH\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_0-missing}}\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_1-missing}}\"",
+        "case $- in *u*) ;; *) exit 42 ;; esac; {entry_check}export PATH='{}':\"$PATH\"; {command_prefix}printf '|%s|%s|%s|%s|%s|%s' \"$PROFILE_ALLOWED\" \"${{PROFILE_SECRET-missing}}\" \"${{PROFILE_DENIED-missing}}\" \"$PATH\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_0-missing}}\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_1-missing}}\"",
         runtime_path_entry.display(),
     );
     let expected_stdout = format!(
@@ -307,14 +333,14 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 shell_snapshot: Some(ShellSnapshotRequest {
                     scope_id: "attachment-1".to_string(),
                     shell: ShellInfo {
-                        name: shell_name.to_string(),
+                        name: if posix_shell { "sh" } else { shell_name }.to_string(),
                         path: shell_path.to_string(),
                     },
                 }),
                 env: HashMap::new(),
                 tty,
                 pipe_stdin: false,
-                arg0: None,
+                arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
                 sandbox: (use_sandbox && attempt == 0).then(|| {
                     FileSystemSandboxContext::from_permission_profile_with_cwd(
                         PermissionProfile::read_only(),
@@ -335,6 +361,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     }
 
     assert_eq!(std::fs::read_to_string(home.path().join("captures"))?, "x");
+    assert!(!std::fs::read(home.path().join("tool-captures"))?.is_empty());
     if let Some(server) = context._server {
         assert!(!server.codex_home().join("shell_snapshots").exists());
     }

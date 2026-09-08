@@ -475,6 +475,48 @@ async fn stored_values_are_shared_between_cells_but_not_sessions() {
 }
 
 #[tokio::test]
+async fn storing_undefined_preserves_the_previous_value() {
+    let service = InProcessCodeModeSession::new();
+
+    let response = execute(
+        &service,
+        ExecuteRequest {
+            source: r#"
+store("key", null);
+try {
+  store("key", undefined);
+} catch (error) {
+  text(String(error));
+}
+text(load("key"));
+"#
+            .to_string(),
+            yield_time_ms: None,
+            ..execute_request("")
+        },
+    )
+    .await;
+
+    assert_eq!(
+        response,
+        RuntimeResponse::Result {
+            code_mode_host_duration: None,
+            cell_id: cell_id("1"),
+            content_items: vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "Unable to store \"key\". Only plain serializable objects can be stored."
+                        .to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "null".to_string(),
+                },
+            ],
+            error_text: None,
+        }
+    );
+}
+
+#[tokio::test]
 async fn shutdown_interrupts_cpu_bound_cells() {
     let service = InProcessCodeModeSession::new();
 

@@ -7,11 +7,11 @@ use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::ModelsEndpointFuture;
+use codex_models_manager::manager::ModelsEndpointResponse;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CoreResult;
-use codex_protocol::openai_models::ModelInfo;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -46,6 +46,10 @@ impl TestModelsEndpoint {
 }
 
 impl ModelsEndpointClient for TestModelsEndpoint {
+    fn identity(&self) -> Option<String> {
+        Some("test-provider".to_string())
+    }
+
     fn has_command_auth(&self) -> bool {
         true
     }
@@ -58,7 +62,7 @@ impl ModelsEndpointClient for TestModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         _http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(async move {
             let fetch_index = self.fetch_count.fetch_add(1, Ordering::SeqCst);
             self.fetched.notify_one();
@@ -68,7 +72,11 @@ impl ModelsEndpointClient for TestModelsEndpoint {
             if fetch_index == 1 {
                 self.release_second_fetch.notified().await;
             }
-            Ok((Vec::new(), None))
+            Ok(ModelsEndpointResponse {
+                models: Vec::new(),
+                etag: None,
+                identity: self.identity().expect("test endpoint identity"),
+            })
         })
     }
 }

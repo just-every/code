@@ -1,4 +1,5 @@
 use super::*;
+use crate::ThreadParamsMode;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
@@ -1048,6 +1049,115 @@ async fn startup_thread_started_submits_queued_startup_input() {
         ),
         other => panic!("expected queued startup input submission, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn fresh_startup_notice_follows_session_attachment() {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    app.pending_startup_thread_start = true;
+    app.pending_server_version_notice =
+        Some(crate::status::remote_connection::ServerVersionNotice {
+            message: "Older server notice".to_string(),
+            offer_update: false,
+        });
+    assert!(events.try_recv().is_err());
+
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_startup_thread_started(
+        &mut app_server,
+        Ok(AppServerStartedThread {
+            session: test_thread_session(ThreadId::new(), test_path_buf("/tmp/project")),
+            turns: Vec::new(),
+            blocks_direct_input: false,
+            task_tools_available: false,
+        }),
+    )
+    .await
+    .expect("startup thread should attach");
+
+    let cells = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(cells.len() > 1, "session history should precede the notice");
+    insta::assert_snapshot!(lines_to_single_string(&cells.last().unwrap().display_lines(/*width*/ 80)), @"⚠ Older server notice");
+    assert_eq!(app.pending_server_version_notice, None);
+}
+
+#[tokio::test]
+async fn remote_overview_startup_hides_disabled_older_server_notice() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.local_settings.tui.show_server_version_notice = false;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: endpoint.clone(),
+    };
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        super::disconnect::serve_reconnect_requests(
+            tokio_tungstenite::accept_async(stream).await?,
+            |_request| std::future::ready(None),
+        )
+        .await
+    });
+    let session = AppServerSession::new(
+        crate::connect_remote_app_server(endpoint).await?,
+        ThreadParamsMode::Remote,
+    );
+
+    assert_eq!(
+        app.initialize_server_version_notice("2.1.0", session.server_version()),
+        None
+    );
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    insta::assert_snapshot!(rendered.lines().take(2).collect::<Vec<_>>().join("\n"), @"  Agent command center
+  0 need input   0 working   0 ready");
+    app.chat_widget.remote_connection =
+        crate::status::remote_connection::remote_connection_status_value(
+            &app.app_server_target,
+            session.server_version(),
+        );
+    assert_eq!(
+        app.chat_widget
+            .remote_connection
+            .as_ref()
+            .expect("remote status")
+            .version,
+        "v2.0.0"
+    );
+    app.local_settings.tui.show_server_version_notice = true;
+    app.refresh_server_version_overview_notice("2.1.0");
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    insta::assert_snapshot!(rendered.lines().take(2).collect::<Vec<_>>().join("\n"), @"  Service v2.0.0 < Codex CLI v2.1.0
+  0 need input   0 working   0 ready");
+    app.pending_server_version_notice =
+        Some(crate::status::remote_connection::ServerVersionNotice {
+            message: "Older service".to_string(),
+            offer_update: false,
+        });
+    app.reconnect.seen_version_notice = Some("old-key".to_string());
+    app.local_settings.tui.show_server_version_notice = false;
+    app.refresh_server_version_overview_notice("2.1.0");
+    assert_eq!(app.pending_server_version_notice, None);
+    assert_eq!(app.reconnect.seen_version_notice, None);
+    assert_eq!(
+        app.agents_overview
+            .view_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .server_version_notice,
+        None
+    );
+    session.shutdown().await?;
+    server.await??;
+    Ok(())
 }
 
 #[tokio::test]

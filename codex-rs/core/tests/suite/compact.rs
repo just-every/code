@@ -987,6 +987,129 @@ async fn manual_compact_uses_custom_prompt() {
     }
 }
 
+#[test_case::test_case(false; "success")]
+#[test_case::test_case(true; "failure")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_remote_v2_compaction_resets_pinned_effort(
+    fail_compaction: bool,
+) -> Result<()> {
+    use codex_protocol::openai_models::ReasoningEffort;
+
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "first reply"),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", "second reply"),
+                ev_completed("r2"),
+            ]),
+            if fail_compaction {
+                sse_failed("r3", "server_error", "compaction failed")
+            } else {
+                remote_v2_compaction_response()
+            },
+            sse(vec![
+                ev_assistant_message("m4", "third reply"),
+                ev_completed("r4"),
+            ]),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model_info_override("gpt-5.4", |model| {
+            model.use_responses_lite = true;
+        })
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::RemoteCompactionV2)
+                .expect("enable remote compaction v2");
+            config.model_provider.stream_max_retries = Some(0);
+            config.model_reasoning_effort = Some(ReasoningEffort::Medium);
+            config
+                .features
+                .enable(Feature::ReasoningEffortOverride)
+                .expect("test config should allow feature update");
+            set_test_compact_prompt(config);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_text_turn("first message").await?;
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("second message").await?;
+    test.codex.submit(Op::Compact).await?;
+    if fail_compaction {
+        wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.submit_text_turn("after compaction").await?;
+
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 4);
+    let first_body = requests[0].body_json();
+    let second_body = requests[1].body_json();
+    let post_compaction_body = requests[3].body_json();
+    assert_eq!(first_body["reasoning"]["effort"], "medium");
+    assert_eq!(second_body["reasoning"]["effort"], "medium");
+    assert_eq!(requests[2].body_json()["reasoning"]["effort"], "medium");
+    assert_eq!(
+        post_compaction_body["reasoning"]["effort"],
+        if fail_compaction { "medium" } else { "high" }
+    );
+    let updates = requests
+        .iter()
+        .map(|request| {
+            request
+                .input()
+                .into_iter()
+                .filter(|item| item["type"] == "configuration_update")
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let medium = json!({
+        "type": "configuration_update",
+        "reasoning": {"effort": "medium"},
+    });
+    let high = json!({
+        "type": "configuration_update",
+        "reasoning": {"effort": "high"},
+    });
+    assert_eq!(
+        updates,
+        [
+            vec![medium.clone()],
+            vec![medium.clone(), high.clone()],
+            vec![medium.clone(), high.clone()],
+            if fail_compaction {
+                vec![medium, high]
+            } else {
+                vec![]
+            },
+        ]
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_compact_records_durable_and_local_token_usage() {
     skip_if_no_network!();

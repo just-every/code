@@ -4,6 +4,7 @@
 //! completed slash commands to atomic elements, and handles Enter submission/newlines.
 //! It also shows Luna Reserve's yellow prompt arrow and detects unbracketed paste bursts
 //! from raw key streams, particularly on Windows.
+//! The live voice strip renders after decorative effects so its controls stay legible.
 //!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
@@ -281,6 +282,7 @@ use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
+use super::voice_strip::VoiceStrip;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::history_cell::sanitize_user_text;
 use crate::key_hint::KeyBindingListExt;
@@ -304,6 +306,7 @@ use codex_protocol::user_input::TextElement;
 mod agents_navigation;
 mod attachment_state;
 mod completion_target;
+mod composer_layout;
 mod draft_state;
 mod footer_state;
 mod history_search;
@@ -526,6 +529,7 @@ pub(crate) struct ChatComposer {
     effort_tier: Option<EffortTier>,
     effort_animation_style: Option<IgnitionStyle>,
     effort_ignition: Option<EffortIgnition>,
+    voice_strip: Option<VoiceStrip>,
     astra_sparkle: Option<sparkle::Sparkle>,
     effort_status_line_transition: Option<EffortStatusLineTransition>,
     effort_observed: bool,
@@ -695,6 +699,7 @@ impl ChatComposer {
             effort_tier: None,
             effort_animation_style: None,
             effort_ignition: None,
+            voice_strip: None,
             astra_sparkle: None,
             effort_status_line_transition: None,
             effort_observed: false,
@@ -1039,17 +1044,19 @@ impl ChatComposer {
         let footer_hint_height = self
             .custom_footer_height()
             .unwrap_or_else(|| footer_height(&footer_props));
-        let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing;
-        let popup_constraint = Constraint::Max(
-            self.popups
-                .active
-                .required_height(area.width, footer_total_height),
-        );
+        let footer_total_height = footer_hint_height + Self::footer_spacing(footer_hint_height);
+        let popup_height = self
+            .popups
+            .active
+            .required_height(area.width, footer_total_height);
+        let popup_constraint = Constraint::Max(popup_height);
+        let voice_rows = if self.voice_strip.is_some() { 3 } else { 0 };
         let [composer_rect, popup_rect] =
-            Layout::vertical([Constraint::Min(3), popup_constraint]).areas(area);
+            Layout::vertical([Constraint::Min(3 + voice_rows), popup_constraint]).areas(area);
+        // Keep the draft visible when clipped.
+        let voice_rows = voice_rows * u16::from(composer_rect.height >= 6);
         let mut textarea_rect = composer_rect.inset(Insets::tlbr(
-            /*top*/ 1,
+            /*top*/ 1 + voice_rows,
             LIVE_PREFIX_COLS,
             /*bottom*/ 1,
             /*right*/ 1u16.saturating_add(textarea_right_reserve),
@@ -4638,8 +4645,7 @@ impl ChatComposer {
         let footer_hint_height = self
             .custom_footer_height()
             .unwrap_or_else(|| footer_height(&footer_props));
-        let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing;
+        let footer_total_height = footer_hint_height + Self::footer_spacing(footer_hint_height);
         const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
         let inner_width =
             width.saturating_sub(COLS_WITH_MARGIN.saturating_add(textarea_right_reserve));
@@ -4654,6 +4660,7 @@ impl ChatComposer {
             + remote_images_height
             + remote_images_separator
             + 2
+            + if self.voice_strip.is_some() { 3 } else { 0 }
             + self
                 .popups
                 .active
@@ -5054,6 +5061,7 @@ impl ChatComposer {
                 buf,
             );
         }
+        self.render_voice_strip(composer_rect, buf);
     }
 }
 

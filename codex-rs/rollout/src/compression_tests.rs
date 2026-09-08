@@ -681,6 +681,7 @@ fn write_rollout(path: &std::path::Path, thread_id: ThreadId, message: &str) -> 
             parent_thread_id: None,
             timestamp: "2025-01-03T12:00:00Z".to_string(),
             cwd: parent.to_path_buf(),
+            runtime_workspace_roots: None,
             originator: "test".to_string(),
             cli_version: "test".to_string(),
             source: SessionSource::Cli,

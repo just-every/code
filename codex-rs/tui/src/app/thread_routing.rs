@@ -331,14 +331,18 @@ impl App {
                                 message: message.clone(),
                             }),
                         )),
-                        codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. } => {
-                            self.app_event_tx.resolve_elicitation(
-                                thread_id, params.server_name.clone(), request_id.clone(),
-                                codex_app_server_protocol::McpServerElicitationAction::Cancel,
-                                /*content*/ None, /*meta*/ None,
-                            );
-                            None
-                        }
+                        codex_app_server_protocol::McpServerElicitationRequest::UserVerification {
+                            title, description, ..
+                        } => Some(ThreadInteractiveRequest::UserVerification {
+                            thread_id,
+                            request: crate::bottom_pane::user_verification::UserVerificationRequest {
+                                thread_label,
+                                server_name: params.server_name.clone(),
+                                request_id: request_id.clone(),
+                                title: title.clone(),
+                                description: description.clone(),
+                            },
+                        }),
                         codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm {
                             ..
                         }
@@ -396,6 +400,10 @@ impl App {
                 if self.startup_protected_input_boundary && !self.chat_widget.has_active_view() {
                     self.startup_pending_protected_request = true;
                 }
+            }
+            ThreadInteractiveRequest::UserVerification { thread_id, request } => {
+                self.chat_widget
+                    .push_user_verification_request(thread_id, request);
             }
             ThreadInteractiveRequest::McpServerElicitation(request) => {
                 self.chat_widget
@@ -1914,9 +1922,7 @@ impl App {
         };
 
         match &params.request {
-            codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. } => {
-                false
-            }
+            codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. } => true,
             codex_app_server_protocol::McpServerElicitationRequest::Form { .. } => true,
             codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm { .. }
             | codex_app_server_protocol::McpServerElicitationRequest::OpenAiElicitationForm {

@@ -4,6 +4,8 @@
 //! Hosts append original items, restore bounded checkpoints, and trim rolled-back turns.
 //! Clones share immutable payloads; eviction changes the generation so readers cannot
 //! reuse an offset into a different retained prefix. Prompt selection remains caller-owned.
+//! Non-user overflow drops the oldest half, leaving room for appends without more evictions.
+//! User messages retain as much history as their separate limits allow.
 
 use std::collections::VecDeque;
 use std::io;
@@ -47,6 +49,7 @@ impl TranscriptHistory {
     }
 
     /// Appends one original item, evicting only older entries of the same kind.
+    /// Non-user overflow removes at least half the existing entries; byte limits may need more.
     /// Oversized user images fall back to bounded text; other oversized items are skipped.
     pub fn record(&mut self, item: &ResponseItem) {
         let mut size = BoundedSize {
@@ -117,9 +120,14 @@ impl TranscriptHistory {
                 (count + 1, bytes + size)
             });
         if count >= MAX_ITEMS_PER_KIND || bytes > MAX_BYTES_PER_KIND {
+            let retained_count = if is_user {
+                MAX_ITEMS_PER_KIND - 1
+            } else {
+                count / 2
+            };
             self.items.retain(|(item, size)| {
                 if item.is_user_message() == is_user
-                    && (count >= MAX_ITEMS_PER_KIND || bytes > MAX_BYTES_PER_KIND)
+                    && (count > retained_count || bytes > MAX_BYTES_PER_KIND)
                 {
                     count -= 1;
                     bytes -= size;

@@ -1,8 +1,8 @@
 //! Collects bounded conversation evidence before consumer-specific rendering.
 //!
 //! Both Guardian consumers receive the same role and tool-source attribution,
-//! with per-entry caps applied before accumulation. Consumers retain their own
-//! transcript selection, aggregate budgets, and formatting. Tool outputs with a
+//! with per-entry caps applied before accumulation. Resolved context profiles
+//! apply aggregate retention after the host selects its full/delta slice. Tool outputs with a
 //! call ID retain their generic label when the call is unavailable. Outputs
 //! without a call ID require an explicit name.
 
@@ -65,9 +65,8 @@ pub struct TranscriptEntryLimits {
 
 /// Aggregate limits for retaining rendered transcript entries.
 ///
-/// Sync and async consumers keep their existing selection rules. These limits
-/// configure those rules without introducing another sync/async policy selector.
-/// Collection applies per-entry caps; aggregate retention remains with the host.
+/// Context profiles apply the sync or async selection rules using these limits.
+/// Collection applies per-entry caps before profile retention.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TranscriptRetentionConfig {
     /// Budget for rendered user, developer, assistant, and reasoning entries.
@@ -106,7 +105,7 @@ impl SectionContributor for ConversationTranscriptSection {
 /// Extracts bounded transcript entries without composing other context sections.
 ///
 /// Entries preserve conversation order and role/tool attribution. Per-entry
-/// limits apply during collection; consumers own aggregate retention and rendering.
+/// limits apply during collection; context profiles own aggregate retention.
 pub fn collect_transcript(
     history: &dyn SectionHistory,
     config: &ConversationTranscriptConfig,

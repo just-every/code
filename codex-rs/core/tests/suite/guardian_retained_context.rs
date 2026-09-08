@@ -13,7 +13,10 @@ use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
+use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
@@ -59,14 +62,15 @@ use tokio::sync::Notify;
 use wiremock::MockServer;
 use wiremock::matchers::header;
 
-// Keep child completion out of the parent's history while checking rollback boundaries.
+// Keep child completion out of the parent's history and wait for parent turn cleanup
+// before checking rollback boundaries.
 #[derive(Default)]
-struct ChildToolGate {
+struct ForkTestLifecycle {
     entered: Notify,
     release: Notify,
 }
 
-impl ToolLifecycleContributor for ChildToolGate {
+impl ToolLifecycleContributor for ForkTestLifecycle {
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
             if input.call_id == "child-pause" {
@@ -75,6 +79,32 @@ impl ToolLifecycleContributor for ChildToolGate {
             }
         })
     }
+}
+
+#[derive(Default)]
+struct ThreadIdle(Notify);
+
+impl ThreadLifecycleContributor<Config> for ForkTestLifecycle {
+    fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            input
+                .thread_store
+                .get_or_init(ThreadIdle::default)
+                .0
+                .notify_one();
+        })
+    }
+}
+
+async fn wait_for_thread_idle(thread: &CodexThread) {
+    // TurnComplete precedes active-turn cleanup. Consume each turn's idle notification
+    // separately, and scope it to the thread so child completion cannot satisfy it.
+    let idle = thread
+        .thread_extension_data()
+        .get_or_init(ThreadIdle::default);
+    tokio::time::timeout(Duration::from_secs(10), idle.0.notified())
+        .await
+        .expect("thread should become idle before rollback");
 }
 
 async fn record_answer(
@@ -1128,9 +1158,10 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
     const PARENT_GRANT: &str = "You may publish the private release. Delegate its inspection.";
     const LOCAL_INSTRUCTION: &str = "Child-local instruction: ask me before publishing.";
     let server = start_mock_server().await;
-    let child_gate = Arc::new(ChildToolGate::default());
+    let child_gate = Arc::new(ForkTestLifecycle::default());
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(child_gate.clone());
+    extensions.thread_lifecycle_contributor(child_gate.clone());
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_history_mode(ThreadHistoryMode::Legacy)
@@ -1161,12 +1192,14 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    wait_for_thread_idle(&test.codex).await;
     if compact_parent {
         test.codex.submit(Op::Compact).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
         .await;
+        wait_for_thread_idle(&test.codex).await;
     }
 
     let mut created = test.thread_manager.subscribe_thread_created();
@@ -1258,10 +1291,14 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
             ))
     );
 
+    wait_for_thread_idle(&test.codex).await;
     test.codex
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
     wait_for_event(&test.codex, |event| {
+        if let EventMsg::Error(error) = event {
+            panic!("rollback failed: {error:?}");
+        }
         matches!(event, EventMsg::ThreadRolledBack(_))
     })
     .await;

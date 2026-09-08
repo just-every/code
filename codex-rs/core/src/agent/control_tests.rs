@@ -1211,6 +1211,7 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
                         permission_profile: PermissionProfile::workspace_write(),
                         active_permission_profile: None,
                         cwd: harness.config.cwd.clone(),
+                        runtime_workspace_roots: None,
                         reasoning_effort: None,
                         reasoning_summary: None,
                         personality: None,

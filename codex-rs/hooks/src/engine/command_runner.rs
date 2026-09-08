@@ -222,7 +222,12 @@ pub(crate) async fn run_command(
         .kill_on_drop(true);
 
     #[cfg(unix)]
-    command.process_group(0);
+    // Keep process-group cleanup without inheriting the controlling terminal, where
+    // shell startup can otherwise stop the hook on background terminal I/O.
+    // SAFETY: detach_from_tty only performs async-signal-safe process setup.
+    unsafe {
+        command.pre_exec(codex_utils_pty::process_group::detach_from_tty);
+    }
 
     #[cfg(windows)]
     let mut process_tree_job = JobObject::create().ok();

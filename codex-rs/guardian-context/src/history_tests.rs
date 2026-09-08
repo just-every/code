@@ -49,7 +49,7 @@ fn each_kind_evicts_its_own_oldest_entries_without_reordering() {
         history.items().collect::<Vec<_>>(),
         users[..2]
             .iter()
-            .chain(&tools)
+            .chain(&tools[63..])
             .chain(&users[2..])
             .collect::<Vec<_>>()
     );
@@ -62,7 +62,7 @@ fn each_kind_evicts_its_own_oldest_entries_without_reordering() {
     }
     assert_eq!(
         history.items().collect::<Vec<_>>(),
-        tools.iter().chain(&newer_users).collect::<Vec<_>>()
+        tools[63..].iter().chain(&newer_users).collect::<Vec<_>>()
     );
     assert!(history.generation() > generation);
 }

@@ -4486,6 +4486,7 @@ async fn set_rate_limits_retains_previous_credits() {
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -4605,6 +4606,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -4956,6 +4958,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
             subagent_history_start_ordinal: None,
             history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
@@ -5249,6 +5252,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -5640,8 +5644,12 @@ async fn session_configuration_apply_permission_profile_accepts_direct_write_roo
     );
 }
 
+#[test_case::test_case(false; "ordinary_proxy")]
+#[test_case::test_case(true; "credential_broker")]
 #[tokio::test]
-async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Result<()> {
+async fn active_profile_update_rebuilds_network_proxy_config(
+    credential_broker: bool,
+) -> std::io::Result<()> {
     let codex_home = tempfile::tempdir().expect("create codex home");
     let cwd = tempfile::tempdir().expect("create cwd");
     let permissions = PermissionsToml {
@@ -5686,7 +5694,14 @@ async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Resul
         ]),
     };
     let base_config = ConfigToml {
-        features: Some(toml::from_str("network_proxy = true").expect("valid features")),
+        features: Some(
+            toml::from_str(if credential_broker {
+                "network_proxy = { enabled = true, credential_broker = true }"
+            } else {
+                "network_proxy = true"
+            })
+            .expect("valid features"),
+        ),
         default_permissions: Some("locked-down".to_string()),
         permissions: Some(permissions),
         ..Default::default()
@@ -5748,6 +5763,7 @@ async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Resul
         .expect("selected profile proxy should become the session proxy config");
     assert_eq!(network.proxy_host_and_port(), "127.0.0.1:43128");
     assert!(!network.socks_enabled());
+    assert_eq!(network.credential_broker_enabled(), credential_broker);
     Ok(())
 }
 
@@ -5907,8 +5923,8 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
 }
 
 #[tokio::test]
-async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
-    let (mut session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
+    let (mut session, _turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
@@ -5957,13 +5973,17 @@ async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
             },
         ),
     ));
+    let mut settings_checkpoint = Box::pin(tokio::task::unconstrained(
+        session.checkpoint_thread_settings(),
+    ));
     assert!(futures::poll!(checkpoint.as_mut()).is_pending());
+    assert!(futures::poll!(settings_checkpoint.as_mut()).is_pending());
     assert_eq!(
         session.clone_history().await.annotated_items(),
         history_before.annotated_items()
     );
 
-    // Direct runtime restoration may overlap postcommit work. The checkpoint must wait
+    // Direct runtime restoration may overlap postcommit work. Both checkpoints must wait
     // for the accepted event, then capture current settings rather than its older commit.
     let restored = session
         .update_settings(SessionSettingsUpdate {
@@ -5980,8 +6000,18 @@ async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
     drop(refresh_guard);
     update.await.expect("accepted settings update");
     checkpoint.await;
+    settings_checkpoint
+        .await
+        .expect("checkpoint current settings");
 
-    session.flush_rollout().await.expect("flush checkpoint");
+    let live_snapshots = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event.msg {
+            EventMsg::ThreadSettingsApplied(event) => Some(event.thread_settings),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(live_snapshots, vec![committed.clone()]);
+
     let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
         .await
         .expect("read persisted settings");
@@ -5998,6 +6028,7 @@ async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
         snapshots,
         vec![
             (Some(session.thread_id), committed),
+            (Some(session.thread_id), restored.clone()),
             (Some(session.thread_id), restored),
         ]
     );
@@ -6304,6 +6335,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -6458,6 +6490,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -6760,6 +6793,7 @@ async fn make_session_with_config_and_rx(
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -6887,6 +6921,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -8222,6 +8257,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             subagent_history_start_ordinal: None,
             history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
@@ -8333,6 +8369,7 @@ async fn submission_loop_channel_close_runs_full_thread_teardown() {
             subagent_history_start_ordinal: None,
             history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),
@@ -8761,6 +8798,7 @@ where
         windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: config.features.use_legacy_landlock(),
         legacy_fallback_cwd: config.cwd.clone(),
+        runtime_workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         original_config_do_not_use: Arc::clone(&config),
@@ -10999,6 +11037,7 @@ async fn attach_in_memory_thread_store(
             subagent_history_start_ordinal: None,
             history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
+            runtime_workspace_roots: None,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
                 model_provider: config.model_provider_id.clone(),

@@ -556,6 +556,13 @@ impl AppServerSession {
         client.server_version()
     }
 
+    pub(crate) fn server_codex_home(&self) -> Option<&str> {
+        let AppServerClient::Remote(client) = &self.client else {
+            return None;
+        };
+        client.codex_home()
+    }
+
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;

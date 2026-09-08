@@ -460,6 +460,15 @@ impl NetworkProxyState {
         self.credential_broker.restore_child_env(env, command);
     }
 
+    pub(crate) fn restore_and_disable_child_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        command: &mut [String],
+    ) {
+        self.credential_broker
+            .restore_and_disable_child_env(env, command);
+    }
+
     pub(crate) fn virtualize_brokered_text(
         &self,
         text: &mut String,

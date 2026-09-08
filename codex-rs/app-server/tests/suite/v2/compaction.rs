@@ -33,6 +33,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Feature;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -269,6 +270,8 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let codex_home = TempDir::new()?;
     let initial_cwd = TempDir::new()?;
     let updated_cwd = TempDir::new()?;
+    let extra_root = TempDir::new()?;
+    let updated_roots = vec![updated_cwd.path().abs(), extra_root.path().abs()];
     compaction_config(&server.uri(), /*auto_compact_limit*/ 1_000_000).write(codex_home.path())?;
 
     // Top-level cwd restoration uses host-native paths, not a foreign executor's paths.
@@ -295,6 +298,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         mcp.start_turn_and_wait_for_completion(TurnStartParams {
             thread_id: thread_id.clone(),
             cwd: Some(updated_cwd.path().to_path_buf()),
+            runtime_workspace_roots: Some(updated_roots.clone()),
             input: vec![V2UserInput::Text {
                 text: "seed history".to_string(),
                 text_elements: Vec::new(),
@@ -354,7 +358,8 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     );
 
     // A completed turn after compaction permits bounded replay. Neither this turn nor
-    // resume resends settings, so restoring the updated cwd depends on the checkpoint.
+    // resume resends settings, so restoring the updated cwd and roots depends on the
+    // checkpoint; startup metadata does not contain the extra root.
     send_turn_and_wait(&mut mcp, &thread_id, "continue").await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
 
@@ -370,9 +375,15 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
             ..Default::default()
         })
         .await?;
-    let ThreadResumeResponse { cwd, .. } =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
-    assert_eq!(cwd.as_path(), updated_cwd.path());
+    let ThreadResumeResponse {
+        cwd,
+        runtime_workspace_roots,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+    assert_eq!(
+        (cwd.as_path(), runtime_workspace_roots),
+        (updated_cwd.path(), updated_roots)
+    );
 
     Ok(())
 }

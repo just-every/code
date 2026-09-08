@@ -1,6 +1,7 @@
 use crate::attribution::BindConnectionAttribution;
 use crate::config::NetworkMode;
 use crate::connect_policy::TargetCheckedTcpConnector;
+use crate::connection_lifecycle::CancelOnShutdown;
 use crate::mitm;
 use crate::network_policy::BlockDecisionAuditEventArgs;
 use crate::network_policy::NetworkDecision;
@@ -41,6 +42,7 @@ use rama_core::error::ErrorExt as _;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::ShutdownGuard;
 use rama_core::service::BoxService;
 use rama_core::service::service_fn;
 use rama_core::stream::Stream;
@@ -95,6 +97,7 @@ pub async fn run_http_proxy(
     addr: SocketAddr,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
+    guard: ShutdownGuard,
 ) -> Result<()> {
     let listener = TcpListener::build()
         .bind(addr)
@@ -107,7 +110,7 @@ pub async fn run_http_proxy(
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind HTTP proxy: {addr}"))?;
 
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id).await
+    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, guard).await
 }
 
 pub async fn run_http_proxy_with_std_listener(
@@ -115,10 +118,11 @@ pub async fn run_http_proxy_with_std_listener(
     listener: StdTcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
+    guard: ShutdownGuard,
 ) -> Result<()> {
     let listener =
         TcpListener::try_from(listener).context("convert std listener to HTTP proxy listener")?;
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id).await
+    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, guard).await
 }
 
 async fn run_http_proxy_with_listener(
@@ -126,6 +130,7 @@ async fn run_http_proxy_with_listener(
     listener: TcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
+    guard: ShutdownGuard,
 ) -> Result<()> {
     let addr = listener
         .local_addr()
@@ -134,7 +139,10 @@ async fn run_http_proxy_with_listener(
     info!("HTTP proxy listening on {addr}");
 
     listener
-        .serve(http_proxy_service(state, policy_decider, environment_id))
+        .serve_graceful(
+            guard,
+            CancelOnShutdown::new(http_proxy_service(state, policy_decider, environment_id)),
+        )
         .await;
     Ok(())
 }
@@ -161,7 +169,7 @@ pub(crate) fn http_proxy_service(
                         http_connect_accept(policy_decider.clone(), environment_id.clone(), req)
                     }
                 }),
-                service_fn(http_connect_proxy),
+                CancelOnShutdown::new(service_fn(http_connect_proxy)),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
         )
@@ -1445,8 +1453,13 @@ mod tests {
         let proxy_addr = listener
             .local_addr()
             .expect("proxy listener should expose local addr");
+        let lifecycle = crate::connection_lifecycle::ConnectionLifecycle::new();
         let proxy_task = tokio::spawn(run_http_proxy_with_std_listener(
-            state, listener, /*policy_decider*/ None, /*environment_id*/ None,
+            state,
+            listener,
+            /*policy_decider*/ None,
+            /*environment_id*/ None,
+            lifecycle.guard(),
         ));
 
         let mut stream = tokio::net::TcpStream::connect(proxy_addr)
@@ -1522,11 +1535,13 @@ mod tests {
         let proxy_addr = listener
             .local_addr()
             .expect("proxy listener should expose local addr");
+        let lifecycle = crate::connection_lifecycle::ConnectionLifecycle::new();
         let proxy_task = tokio::spawn(run_http_proxy_with_std_listener(
             state.clone(),
             listener,
             /*policy_decider*/ None,
             /*environment_id*/ None,
+            lifecycle.guard(),
         ));
 
         let mut stream = tokio::net::TcpStream::connect(proxy_addr)

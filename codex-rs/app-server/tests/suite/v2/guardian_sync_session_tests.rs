@@ -284,7 +284,7 @@ async fn inline_review_delegate_runs_strict_guardian_assessment() -> Result<()> 
     let mut model = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     // Strict MCP approvals must work under the inline delegate's `never` policy.
     model.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model])?;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)

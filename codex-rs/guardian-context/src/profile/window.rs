@@ -1,6 +1,9 @@
+//! Retains protected async messages and recent tools with chunked eviction.
+//! Entry pools preserve the existing async cache behavior and tool reservation.
+
 use std::collections::VecDeque;
 
-use codex_guardian_context::TranscriptRetentionConfig;
+use crate::TranscriptRetentionConfig;
 
 use super::TranscriptEntry;
 use super::TranscriptEntryKind;

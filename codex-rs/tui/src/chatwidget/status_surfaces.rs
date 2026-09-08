@@ -327,7 +327,12 @@ impl ChatWidget {
         now: Instant,
     ) -> Option<String> {
         if self.terminal_title_shows_action_required_with_selections(selections) {
-            return Some(self.action_required_terminal_title_text(selections, now));
+            let title = self.action_required_terminal_title_text(selections, now);
+            return Some(if self.realtime_microphone_is_listening() {
+                format!("● {title}")
+            } else {
+                title
+            });
         }
 
         let mut previous = None;
@@ -1001,15 +1006,17 @@ impl ChatWidget {
     }
 
     pub(super) fn terminal_title_spinner_text_at(&self, now: Instant) -> Option<String> {
-        if !self.local_settings.tui.animations {
-            return None;
+        let spinner = (self.local_settings.tui.animations
+            && self.terminal_title_has_active_progress())
+        .then(|| self.terminal_title_spinner_frame_at(now));
+        if self.realtime_microphone_is_listening() {
+            return Some(match spinner {
+                Some(frame) => format!("● {frame}"),
+                None => "●".to_string(),
+            });
         }
 
-        if !self.terminal_title_has_active_progress() {
-            return None;
-        }
-
-        Some(self.terminal_title_spinner_frame_at(now).to_string())
+        spinner.map(str::to_string)
     }
 
     pub(super) fn terminal_title_spinner_frame_at(&self, now: Instant) -> &'static str {

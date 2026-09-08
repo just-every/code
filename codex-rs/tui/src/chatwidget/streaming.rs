@@ -355,9 +355,7 @@ impl ChatWidget {
         } else {
             self.finalize_completed_assistant_message(Some(parsed.visible_markdown.as_str()));
         }
-        if matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
-            && !parsed.visible_markdown.is_empty()
-        {
+        if !parsed.visible_markdown.is_empty() {
             self.transcript
                 .record_agent_markdown(parsed.visible_markdown.clone(), message);
         }

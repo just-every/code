@@ -38,7 +38,7 @@ pub(super) struct TranscriptState {
     pub(super) active_cell_revision: u64,
     /// One bounded entry shared by layout and paint across unchanged active-cell frames.
     pub(super) active_cell_layout: Cell<Option<ActiveCellLayoutCache>>,
-    /// Markdown of the most recently completed agent response for whole-response copying.
+    /// Markdown of the most recently completed agent message for whole-response copying.
     pub(super) last_agent_markdown: Option<String>,
     /// Original source of that response, before display sanitization, for exact block copying.
     pub(super) last_agent_source: Option<String>,

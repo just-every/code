@@ -1,17 +1,25 @@
-//! Gated reasoning-effort updates appended after accepted input.
+//! Cache-preserving effort updates and the request-effort baseline for a context window.
 //!
-//! Only trusted harness items establish an effort. Updates append to surviving
-//! history without replacing the request-level reasoning effort.
+//! Only trusted harness items establish overrides. Replay invalidates the runtime pin;
+//! successful compaction retires the overrides and allows a fresh request baseline.
 
 use super::session::Session;
 use super::step_context::StepContext;
 use super::step_settings::ResolvedStepSettings;
+use crate::state::ReasoningEffortPin;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::ConfigurationReasoning;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+
+/// Sampling can establish a pin; compaction must not change live state before it succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestEffortUsage {
+    Sampling,
+    Compaction,
+}
 
 impl Session {
     /// Establishes the selected effort in surviving history, independent of replayed settings.
@@ -21,7 +29,14 @@ impl Session {
             return;
         };
         let should_skip = {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
+            if matches!(state.reasoning_effort_pin, ReasoningEffortPin::Compacted) {
+                // Replay leaves the pin Unset. Only successful compaction allows the
+                // request baseline to establish the selection without another update.
+                state
+                    .reasoning_effort_pin
+                    .pin(&settings.model_info.slug, effort.clone());
+            }
             let established_effort =
                 state
                     .history
@@ -43,7 +58,10 @@ impl Session {
                             _ => None,
                         }
                     });
-            established_effort == Some(&effort)
+            state
+                .reasoning_effort_pin
+                .get(&settings.model_info.slug)
+                .is_some_and(|pinned| established_effort.unwrap_or(&pinned) == &effort)
         };
         if should_skip {
             return;
@@ -62,6 +80,43 @@ impl Session {
             }],
         )
         .await;
+    }
+
+    /// Sampling and compaction share the original request effort for this context window.
+    pub(crate) async fn reasoning_effort_for_request(
+        &self,
+        settings: &ResolvedStepSettings,
+        usage: RequestEffortUsage,
+    ) -> Option<ReasoningEffort> {
+        let selected_effort = settings.reasoning_effort().cloned();
+        if !self.enabled(Feature::ReasoningEffortOverride) {
+            return selected_effort;
+        }
+        if usage == RequestEffortUsage::Compaction
+            && let Some(pinned) = self
+                .state
+                .lock()
+                .await
+                .reasoning_effort_pin
+                .get(&settings.model_info.slug)
+        {
+            return Some(pinned);
+        }
+        let effort = self.effort_for_configuration_update(settings).await;
+        let mut state = self.state.lock().await;
+        let Some(effort) = effort else {
+            if usage == RequestEffortUsage::Sampling {
+                state.reasoning_effort_pin = ReasoningEffortPin::Unset;
+            }
+            return selected_effort;
+        };
+        Some(match usage {
+            RequestEffortUsage::Sampling => state
+                .reasoning_effort_pin
+                .pin(&settings.model_info.slug, effort),
+            // Failed compaction and fallback-model lookups must not mutate the live pin.
+            RequestEffortUsage::Compaction => effort,
+        })
     }
 
     async fn effort_for_configuration_update(
@@ -85,3 +140,7 @@ impl Session {
         Some(effort)
     }
 }
+
+#[cfg(test)]
+#[path = "reasoning_effort_tests.rs"]
+mod tests;

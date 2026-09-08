@@ -60,6 +60,10 @@ impl ChatWidget {
             return;
         }
 
+        if self.handle_realtime_microphone_shortcut(key_event) {
+            return;
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),

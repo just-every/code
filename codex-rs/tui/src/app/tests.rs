@@ -44,6 +44,8 @@ mod plugin_catalog;
 mod rate_limits;
 #[path = "tests/realtime_handoff_e2e.rs"]
 mod realtime_handoff_e2e;
+#[path = "tests/realtime_requests.rs"]
+mod realtime_requests;
 #[path = "tests/realtime_start.rs"]
 mod realtime_start;
 #[path = "tests/recap_generation_tests.rs"]
@@ -63,6 +65,8 @@ mod thread_usage;
 mod transcript_composer;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
+#[path = "tests/user_verification_routes_tests.rs"]
+mod user_verification_routes;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
@@ -5663,6 +5667,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
 
     let user_cell = |text: &str| -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            spoken: false,
             message: text.to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
@@ -5878,6 +5883,7 @@ async fn make_test_app() -> App {
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
         pending_startup_thread_start: false,
+        pending_server_version_notice: None,
         pending_open_resume_picker: false,
         pending_managed_worktree_creation: false,
         pending_working_directory_change: None,
@@ -5975,6 +5981,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start: false,
+            pending_server_version_notice: None,
             pending_open_resume_picker: false,
             pending_managed_worktree_creation: false,
             pending_working_directory_change: None,
@@ -7092,6 +7099,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
                      remote_image_urls: Vec<String>|
      -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
+            spoken: false,
             message: text.to_string(),
             text_elements,
             local_image_paths,
@@ -9103,6 +9111,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.chat_widget
         .apply_external_edit("draft prompt".to_string());
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        spoken: false,
         message: "old message".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

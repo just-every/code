@@ -39,6 +39,7 @@ fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
     app.transcript_cells
         .push(Arc::new(crate::history_cell::UserHistoryCell {
             message: "Finish the recap implementation".to_string(),
+            spoken: false,
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
@@ -200,6 +201,7 @@ async fn manual_recap_works_when_auto_recap_disabled() -> Result<()> {
     app.transcript_cells
         .push(Arc::new(crate::history_cell::UserHistoryCell {
             message: "Summarize this conversation".to_string(),
+            spoken: false,
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
@@ -379,6 +381,7 @@ async fn recap_generation_uses_remote_workspace_cwd() -> Result<()> {
     app.transcript_cells
         .push(Arc::new(crate::history_cell::UserHistoryCell {
             message: "Finish the recap implementation".to_string(),
+            spoken: false,
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),

@@ -89,6 +89,7 @@ fn scrolled_test_renderables(lines: &[HyperlinkLine]) -> Vec<(&'static str, Box<
         lines: lines.to_vec(),
     });
     let user: Arc<dyn HistoryCell> = Arc::new(UserHistoryCell {
+        spoken: false,
         message: "highlighted 漢字 user message that wraps\nsecond user line".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

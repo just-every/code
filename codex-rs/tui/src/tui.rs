@@ -71,6 +71,7 @@ mod job_control;
 mod keyboard_modes;
 mod screen_size;
 mod scrollback;
+mod size_monitor;
 #[cfg(all(test, unix))]
 #[path = "tui_startup_tests.rs"]
 mod startup_tests;
@@ -637,12 +638,19 @@ impl Tui {
         // Cache this to avoid contention with the event reader.
         supports_color::on_cached(supports_color::Stream::Stdout);
         let _ = crate::terminal_palette::default_colors();
-        let scrollback = ScrollbackStrategy::detect(&codex_terminal_detection::terminal_info());
+        let terminal_info = codex_terminal_detection::terminal_info();
+        let scrollback = ScrollbackStrategy::detect(&terminal_info);
+        let mut event_broker = EventBroker::new();
+        event_broker.size_monitor = size_monitor::SizeMonitor::start(
+            &terminal_info,
+            terminal.last_known_screen_size,
+            draw_tx.clone(),
+        );
 
         Self {
             frame_requester,
             draw_tx,
-            event_broker: Arc::new(EventBroker::new()),
+            event_broker: Arc::new(event_broker),
             terminal,
             pending_history_lines: vec![],
             screen_size: ScreenSizePolicy::default(),
@@ -829,7 +837,7 @@ impl Tui {
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
     /// inline viewport for restoration when leaving.
     pub fn enter_alt_screen(&mut self) -> Result<()> {
-        if !self.alt_screen_enabled {
+        if !self.alt_screen_enabled || self.is_alt_screen_active() {
             return Ok(());
         }
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);

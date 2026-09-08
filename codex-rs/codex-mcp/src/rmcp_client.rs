@@ -1005,7 +1005,12 @@ async fn start_server_task(
         _auth_change_notifications: auth_change_notifications,
         client: Arc::clone(&client),
         server_info,
-        tool_catalog: Arc::new(ClientToolCatalog::new(client_tools)),
+        tool_catalog: Arc::new(ClientToolCatalog::new(
+            client_tools,
+            codex_apps_tools_cache_context
+                .as_ref()
+                .and_then(ConnectorRuntimeContext::subscribe),
+        )),
         tool_timeout: None,
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability,

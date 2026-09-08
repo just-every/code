@@ -446,7 +446,7 @@ impl McpConnectionSet {
             .client()
             .await
             .context("failed to get client")?;
-        let (client_tools, tools, list_start) = managed_client
+        let (tools, list_start) = managed_client
             .tool_catalog
             .refresh(
                 || async {
@@ -474,8 +474,8 @@ impl McpConnectionSet {
                     Ok((client_tools, (fetch_ticket, list_start)))
                 },
                 |client_tools, (fetch_ticket, list_start)| {
-                    // Discovery may accept another client's newer fetch. The catalog
-                    // retains the tools fetched through this exact connection.
+                    // Discovery can accept another scope's winner; executable catalogs
+                    // receive only the latest successful fetch from their own scope.
                     let tools = match (
                         managed_client.codex_apps_tools_cache_context.as_ref(),
                         fetch_ticket,
@@ -489,10 +489,14 @@ impl McpConnectionSet {
                         (None, None) => client_tools.to_vec(),
                         _ => unreachable!("Codex Apps fetch ticket requires cache context"),
                     };
-                    (client_tools.to_vec(), tools, list_start)
+                    (tools, list_start)
                 },
             )
             .await?;
+        let client_tools = managed_client
+            .tool_catalog
+            .read(|catalog| catalog.tools.clone())
+            .await;
         emit_duration(
             MCP_TOOLS_LIST_DURATION_METRIC,
             list_start.elapsed(),

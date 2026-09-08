@@ -86,3 +86,21 @@ fn memories_config_clamps_rate_limit_remaining_threshold() {
         }
     );
 }
+
+#[test]
+fn memories_version_selects_pipeline_without_changing_other_defaults() {
+    for (source, version) in [
+        ("", MemoryVersion::V1),
+        ("version = \"v2\"", MemoryVersion::V2),
+    ] {
+        let parsed: MemoriesToml = toml::from_str(source).expect("parse memories config");
+        assert_eq!(
+            MemoriesConfig::from(parsed),
+            MemoriesConfig {
+                version,
+                ..Default::default()
+            }
+        );
+    }
+    assert!(toml::from_str::<MemoriesToml>("version = \"v3\"").is_err());
+}

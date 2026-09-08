@@ -84,6 +84,7 @@ struct ThreadListFilters {
 #[derive(PartialEq)]
 struct ResumeConfigState {
     history_cwd: Option<PathBuf>,
+    workspace_roots: Option<Vec<AbsolutePathBuf>>,
     persisted_metadata: Option<ThreadMetadata>,
     persisted_settings: Option<PersistedResumeSettings>,
 }
@@ -1866,13 +1867,9 @@ impl ThreadRequestProcessor {
             .clone()
             .ok_or_else(|| internal_error("sqlite state db unavailable for memory reset"))?;
 
-        state_db
-            .memories()
-            .clear_memory_data()
-            .await
-            .map_err(|err| {
-                internal_error(format!("failed to clear memory rows in memories db: {err}"))
-            })?;
+        state_db.clear_all_memory_data().await.map_err(|err| {
+            internal_error(format!("failed to clear memory rows in memories db: {err}"))
+        })?;
 
         clear_memory_roots_contents(&self.config.codex_home)
             .await
@@ -2271,6 +2268,15 @@ impl ThreadRequestProcessor {
             .map_err(|err| {
                 internal_error(format!(
                     "failed to restore thread settings after revert: {err}"
+                ))
+            })?;
+        // Replace the resume-time checkpoint written from the original config.
+        codex_thread
+            .checkpoint_thread_settings()
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to persist restored thread settings after revert: {err}"
                 ))
             })?;
         Self::set_app_server_client_info(
@@ -3803,21 +3809,72 @@ impl ThreadRequestProcessor {
         }
 
         // Copied or referenced history can contain another thread's settings. Only snapshots
-        // explicitly owned by this thread can override its startup cwd.
-        let history_cwd = if let InitialHistory::Resumed(resumed) = &thread_history {
+        // explicitly owned by this thread can override its startup cwd and workspace folders.
+        let history_settings = if let InitialHistory::Resumed(resumed) = &thread_history {
             resumed.history.iter().rev().find_map(|item| match item {
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
                     if event.thread_id == Some(resumed.conversation_id) =>
                 {
-                    Some(event.thread_settings.cwd.to_path_buf())
+                    Some(&event.thread_settings)
                 }
                 _ => None,
             })
         } else {
             None
         };
-        let history_cwd = history_cwd.or_else(|| thread_history.session_cwd());
-        let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
+        let history_cwd = history_settings
+            .map(|settings| settings.cwd.to_path_buf())
+            .or_else(|| thread_history.session_cwd());
+        let mut runtime_workspace_roots =
+            runtime_workspace_roots.map(resolve_runtime_workspace_roots);
+        if runtime_workspace_roots.is_none() {
+            // A retained owned snapshot is authoritative. Only use startup metadata when
+            // no such snapshot exists; missing roots do not resurrect an older selection.
+            let saved_workspaces: Option<(&Path, Vec<&Path>)> = match history_settings {
+                Some(settings) => settings.runtime_workspace_roots.as_ref().map(|roots| {
+                    (
+                        settings.cwd.as_path(),
+                        roots.iter().map(AbsolutePathBuf::as_path).collect(),
+                    )
+                }),
+                None => {
+                    if let InitialHistory::Resumed(resumed) = &thread_history
+                        && let Some(RolloutItem::SessionMeta(meta)) = resumed.history.first()
+                        && meta.meta.id == resumed.conversation_id
+                        && let Some(roots) = &meta.meta.runtime_workspace_roots
+                    {
+                        Some((
+                            meta.meta.cwd.as_path(),
+                            roots.iter().map(PathBuf::as_path).collect(),
+                        ))
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some((saved_cwd, saved_roots)) = saved_workspaces {
+                let resume_cwd = resolve_request_cwd(cwd.as_ref().map(PathBuf::from))?;
+                // Retarget before validation so an explicit cwd can replace a
+                // startup cwd recorded on another operating system.
+                let restored_roots = path_utils::replace_path_and_deduplicate(
+                    saved_roots,
+                    saved_cwd,
+                    resume_cwd.as_ref().map_or(saved_cwd, AbsolutePathBuf::as_path),
+                )
+                    .into_iter()
+                    .map(|root| {
+                        AbsolutePathBuf::from_absolute_path_checked(root).map_err(|err| {
+                            invalid_params(format!(
+                                "cannot restore workspace root `{}` on this host: {err}. Pass `runtimeWorkspaceRoots` with valid local paths or an empty list.",
+                                root.display()
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Validation can normalize distinct saved paths to the same root.
+                runtime_workspace_roots = Some(resolve_runtime_workspace_roots(restored_roots));
+            }
+        }
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
             model_provider,
@@ -3869,6 +3926,7 @@ impl ThreadRequestProcessor {
                 .is_some_and(|metadata| metadata.reasoning_effort.is_none());
         let config_state = ResumeConfigState {
             history_cwd: history_cwd.clone(),
+            workspace_roots: typesafe_overrides.workspace_roots.clone(),
             persisted_metadata,
             persisted_settings: match &thread_history {
                 InitialHistory::Resumed(resumed) => {

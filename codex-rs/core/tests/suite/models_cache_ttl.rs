@@ -289,9 +289,19 @@ async fn uses_cache_when_version_matches() -> Result<()> {
     .await;
 
     let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let identity = codex_model_provider::test_support::models_cache_entry(
+        &codex_model_provider_info::ModelProviderInfo::create_openai_provider(Some(format!(
+            "{}/v1",
+            server.uri()
+        ))),
+        Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        Vec::new(),
+    )
+    .identity;
     builder = builder
         .with_pre_build_hook(move |home| {
             let mut cache = serde_json::to_value(ModelsCache {
+                identity,
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(client_version_to_whole()),
@@ -354,9 +364,19 @@ async fn refreshes_when_cache_version_missing() -> Result<()> {
     .await;
 
     let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let identity = codex_model_provider::test_support::models_cache_entry(
+        &codex_model_provider_info::ModelProviderInfo::create_openai_provider(Some(format!(
+            "{}/v1",
+            server.uri()
+        ))),
+        Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        Vec::new(),
+    )
+    .identity;
     builder = builder
         .with_pre_build_hook(move |home| {
             let cache = ModelsCache {
+                identity,
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: None,
@@ -404,10 +424,20 @@ async fn refreshes_when_cache_version_differs() -> Result<()> {
     }
 
     let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let identity = codex_model_provider::test_support::models_cache_entry(
+        &codex_model_provider_info::ModelProviderInfo::create_openai_provider(Some(format!(
+            "{}/v1",
+            server.uri()
+        ))),
+        Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        Vec::new(),
+    )
+    .identity;
     builder = builder
         .with_pre_build_hook(move |home| {
             let client_version = client_version_to_whole();
             let cache = ModelsCache {
+                identity,
                 fetched_at: Utc::now(),
                 etag: None,
                 client_version: Some(format!("{client_version}-diff")),
@@ -471,6 +501,8 @@ fn write_cache_sync(path: &Path, cache: &ModelsCache) -> Result<()> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelsCache {
+    #[serde(default)]
+    identity: Option<String>,
     fetched_at: DateTime<Utc>,
     #[serde(default)]
     etag: Option<String>,

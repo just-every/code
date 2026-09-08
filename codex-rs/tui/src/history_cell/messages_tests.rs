@@ -62,6 +62,51 @@ fn sanitizer_preallocates_owned_multi_fragment_text() {
     })
 }
 
+#[test]
+fn spoken_user_messages_have_a_red_chevron_without_changing_raw_text() {
+    let message = "  hello from voice";
+    let spoken = new_spoken_user_prompt(message.to_string());
+    let typed = new_user_prompt(message.to_string(), Vec::new(), Vec::new(), Vec::new());
+    let marker = spoken
+        .display_hyperlink_lines(/*width*/ 40)
+        .into_iter()
+        .flat_map(|line| line.line.spans)
+        .find(|span| span.content == "› ")
+        .expect("spoken user marker");
+
+    assert!(
+        spoken
+            .display_lines(/*width*/ 40)
+            .iter()
+            .any(|line| line.to_string() == "› hello from voice")
+    );
+    assert!(
+        typed
+            .display_lines(/*width*/ 40)
+            .iter()
+            .any(|line| { line.to_string() == "›   hello from voice" })
+    );
+    assert_eq!(marker.style.fg, Some(Color::Red));
+    assert!(marker.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(spoken.raw_lines(), vec![Line::from(message)]);
+    assert_eq!(
+        spoken.display_lines_for_mode(/*width*/ 40, HistoryRenderMode::Raw),
+        vec![Line::from(message)]
+    );
+    assert!(typed.display_lines(/*width*/ 40).iter().any(|line| {
+        line.spans
+            .iter()
+            .any(|span| span.content == "› " && span.style.fg != Some(Color::Red))
+    }));
+
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 3,
+    );
+    let mut buf = Buffer::empty(area);
+    Paragraph::new(spoken.display_lines(area.width)).render(area, &mut buf);
+    insta::assert_snapshot!("spoken_user_prompt", format!("{buf:?}"));
+}
+
 fn replace_cached_lines(
     cell: &AgentMarkdownCell,
     update_key: impl FnOnce(&mut MarkdownRenderCacheKey),
@@ -157,4 +202,87 @@ fn visualization_directives_are_not_cached() {
 
         assert!(cell.rendered_lines.is_none());
     }
+}
+
+#[test]
+fn spoken_artifacts_link_only_real_workspace_files_and_preserve_existing_urls() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let source_directory = workspace.path().join("src");
+    std::fs::create_dir(&source_directory).expect("source directory");
+    let source_file = source_directory.join("lib.rs");
+    std::fs::write(&source_file, "fn example() {}\n").expect("source file");
+    let markdown = "中 src/lib.rs:42 and https://example.com";
+    let spoken = AgentMarkdownCell::new_spoken(markdown.to_string(), workspace.path());
+    let lines = spoken.display_hyperlink_lines(/*width*/ 90);
+    let line = &lines[0];
+
+    let expected_destination =
+        url::Url::from_file_path(source_file.canonicalize().expect("canonical source file"))
+            .expect("workspace file URL")
+            .to_string();
+    assert_eq!(
+        line.hyperlinks
+            .iter()
+            .map(|link| (link.columns.clone(), link.destination.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (5..18, expected_destination.as_str()),
+            (23..42, "https://example.com"),
+        ]
+    );
+    assert!(line.line.spans.iter().any(|span| {
+        span.content == "src/lib.rs:42" && span.style.add_modifier.contains(Modifier::UNDERLINED)
+    }));
+    assert_eq!(spoken.raw_lines(), vec![Line::from(markdown)]);
+    insta::assert_snapshot!(
+        format!(
+            "{}\n{:?} -> <workspace>/src/lib.rs\n{:?} -> https://example.com",
+            line.line, line.hyperlinks[0].columns, line.hyperlinks[1].columns
+        ),
+        @r"
+    • 中 src/lib.rs:42 and https://example.com
+    5..18 -> <workspace>/src/lib.rs
+    23..42 -> https://example.com
+    "
+    );
+
+    let ordinary = AgentMarkdownCell::new(markdown.to_string(), workspace.path());
+    assert_eq!(
+        ordinary.display_hyperlink_lines(/*width*/ 90)[0].hyperlinks[0].destination,
+        "https://example.com"
+    );
+    let bare = AgentMarkdownCell::new_spoken("src/lib.rs".to_string(), workspace.path());
+    assert_eq!(
+        bare.display_hyperlink_lines(/*width*/ 40)[0]
+            .hyperlinks
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn spoken_windows_relative_paths_keep_original_text_and_link_the_workspace_file() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let source_directory = workspace.path().join("src");
+    std::fs::create_dir(&source_directory).expect("source directory");
+    let source_file = source_directory.join("lib.rs");
+    std::fs::write(&source_file, "fn example() {}\n").expect("source file");
+    let markdown = "Updated src\\lib.rs:42";
+    let spoken = AgentMarkdownCell::new_spoken(markdown.to_string(), workspace.path());
+    let lines = spoken.display_hyperlink_lines(/*width*/ 80);
+    let line = &lines[0];
+
+    assert_eq!(spoken.raw_lines(), vec![Line::from(markdown)]);
+    assert_eq!(line.hyperlinks.len(), 1);
+    assert_eq!(line.hyperlinks[0].columns, 10..23);
+    assert_eq!(
+        line.hyperlinks[0].destination,
+        url::Url::from_file_path(source_file.canonicalize().expect("canonical source file"))
+            .expect("workspace file URL")
+            .to_string()
+    );
+    assert!(line.line.spans.iter().any(|span| {
+        span.content == "src\\lib.rs:42" && span.style.add_modifier.contains(Modifier::UNDERLINED)
+    }));
+    insta::assert_snapshot!(line.line.to_string(), @"• Updated src\\lib.rs:42");
 }

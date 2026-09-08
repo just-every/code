@@ -951,8 +951,9 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         assert!(original.interaction_lock().try_lock_owned().is_err());
     }
     // Empty polling must complete without an approval response.
+    // The test deadline must allow the minimum empty-poll wait.
     tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 5),
+        Duration::from_millis(MIN_EMPTY_YIELD_TIME_MS) + Duration::from_secs(/*secs*/ 5),
         write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 250),
     )
     .await??;

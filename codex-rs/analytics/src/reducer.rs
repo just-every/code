@@ -2102,6 +2102,11 @@ impl AnalyticsReducer {
         out: &mut Vec<TrackEventRequest>,
     ) {
         let session_source: SessionSource = thread.source.into();
+        let is_worktree =
+            codex_git_utils::repository_identity(thread.cwd.as_path()).and_then(|_| {
+                codex_git_utils::get_git_repo_root(thread.cwd.canonicalize().ok()?.as_path())
+                    .map(|root| root.join(".git").is_file())
+            });
         let session_id = thread.session_id;
         let thread_id = thread.id;
         let parent_thread_id = thread.parent_thread_id;
@@ -2133,6 +2138,7 @@ impl AnalyticsReducer {
                     runtime: connection_state.runtime.clone(),
                     model,
                     ephemeral: thread.ephemeral,
+                    is_worktree,
                     thread_source: thread_metadata.thread_source,
                     initialization_mode,
                     subagent_source: thread_metadata.subagent_source.clone(),

@@ -88,6 +88,21 @@ pub(crate) fn new_warning_event(message: String) -> PrefixedWrappedHistoryCell {
     PrefixedWrappedHistoryCell::new(message.yellow(), "⚠ ".yellow(), "  ")
 }
 
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn new_server_version_warning(
+    notice: crate::status::remote_connection::ServerVersionNotice,
+) -> PrefixedWrappedHistoryCell {
+    let mut lines = vec![Line::from(notice.message.yellow())];
+    if notice.offer_update {
+        lines.push(Line::from("To update the service, run:".yellow()));
+        lines.push(Line::from("  codex app-server daemon update".cyan()));
+        lines.push(Line::from(
+            "Updating may interrupt active or queued work.".yellow(),
+        ));
+    }
+    PrefixedWrappedHistoryCell::new(Text::from(lines), "⚠ ".yellow(), "  ")
+}
+
 #[derive(Debug)]
 pub(crate) struct SafetyAccessBlockCell {
     title: &'static str,

@@ -49,6 +49,11 @@ impl Tui {
             }
             TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost => cached,
         };
+        if matches!(event, TuiEvent::Resize(_) | TuiEvent::Resume)
+            && let Some(monitor) = &self.event_broker.size_monitor
+        {
+            monitor.observe(size);
+        }
         self.screen_size.pending_draw_size = (!matches!(
             event,
             TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
@@ -72,6 +77,9 @@ impl Tui {
             return Ok(size);
         }
         let size = self.terminal.size()?;
+        if let Some(monitor) = &self.event_broker.size_monitor {
+            monitor.observe(size);
+        }
         self.screen_size.pending_recheck_at = None;
         self.screen_size.deferred_size = None;
         Ok(size)

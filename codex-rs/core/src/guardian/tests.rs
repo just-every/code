@@ -957,14 +957,11 @@ fn collect_guardian_transcript_entries(
         &[],
         /*planned_action*/ None,
         /*permissions*/ None,
+        /*node_repl*/ None,
     )
     .expect("collect Guardian context")
-    .into_iter()
-    .find_map(|section| match section {
-        codex_guardian_context::ContextSection::ConversationTranscript { items } => Some(items),
-        _ => None,
-    })
-    .unwrap_or_default()
+    .transcript_entries()
+    .to_vec()
 }
 
 #[test]

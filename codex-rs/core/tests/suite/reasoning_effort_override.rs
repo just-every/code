@@ -1,8 +1,16 @@
 //! Trusted reasoning-effort updates follow surviving history and the next turn's selected settings.
 
+use codex_core::config::Config;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadLifecycleContributor;
 use codex_features::Feature;
+use codex_login::CodexAuth;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use core_test_support::responses;
 use core_test_support::responses::ResponsesRequest;
@@ -10,9 +18,15 @@ use core_test_support::skip_if_no_network;
 use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::Duration;
 use test_case::test_case;
+use tokio::sync::Notify;
+use tokio::time::timeout;
+use wiremock::ResponseTemplate;
 
 fn override_builder() -> TestCodexBuilder {
     test_codex()
@@ -91,11 +105,19 @@ async fn reasoning_effort_override_persistent_transitions(
         .await?;
         test.submit_text_turn("continue").await?;
     }
+    let requests = mocks
+        .iter()
+        .map(responses::ResponseMock::single_request)
+        .collect::<Vec<_>>();
     assert_eq!(
-        mocks
+        requests
             .iter()
-            .map(|mock| effort_updates(&mock.single_request()))
+            .map(|request| request.body_json()["reasoning"]["effort"].clone())
             .collect::<Vec<_>>(),
+        vec![initial_update["reasoning"]["effort"].clone(); requests.len()],
+    );
+    assert_eq!(
+        requests.iter().map(effort_updates).collect::<Vec<_>>(),
         vec![
             vec![initial_update.clone()],
             vec![initial_update.clone(), changed_update.clone()],
@@ -160,12 +182,7 @@ async fn reasoning_effort_override_preserves_prefix_and_only_appends_on_change()
             .iter()
             .map(|request| request.body_json()["reasoning"]["effort"].clone())
             .collect::<Vec<_>>(),
-        vec![
-            Value::from("medium"),
-            Value::from("high"),
-            Value::from("high"),
-            Value::from("low"),
-        ],
+        vec![Value::from("medium"); requests.len()],
     );
     let cache_keys = requests
         .iter()
@@ -253,6 +270,171 @@ async fn reasoning_effort_override_normalizes_ultra_before_comparing_updates(
     Ok(())
 }
 
+#[test_case(true; "feature enabled")]
+#[test_case(false; "feature disabled")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
+    feature_enabled: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let websocket = responses::start_websocket_server(vec![vec![
+        vec![
+            responses::ev_response_created("warmup"),
+            responses::ev_completed("warmup"),
+        ],
+        vec![
+            responses::ev_response_created("first"),
+            responses::ev_completed("first"),
+        ],
+    ]])
+    .await;
+    let base_url = format!("{}/v1", websocket.uri());
+    let test = override_builder()
+        .with_config(move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.supports_websockets = true;
+            config
+                .features
+                .set_enabled(Feature::ReasoningEffortOverride, feature_enabled)
+                .expect("configure reasoning effort overrides");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let warmup = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 10),
+        websocket.wait_for_request(/*connection_index*/ 0, /*request_index*/ 0),
+    )
+    .await?;
+    assert_eq!(warmup.body_json()["generate"], false);
+    assert_eq!(warmup.body_json()["reasoning"]["effort"], "medium");
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("first message after changing effort")
+        .await?;
+
+    let connection = websocket.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first = connection[1].body_json();
+    let updates = first["input"]
+        .as_array()
+        .expect("first turn input")
+        .iter()
+        .filter(|item| item["type"] == "configuration_update")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (first["reasoning"]["effort"].clone(), updates),
+        if feature_enabled {
+            (
+                Value::from("medium"),
+                vec![effort_update(ReasoningEffort::High)],
+            )
+        } else {
+            (Value::from("high"), Vec::new())
+        },
+    );
+    websocket.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_websocket_appends_then_replays_after_reconnect()
+-> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let websocket = responses::start_websocket_server(vec![
+        vec![
+            vec![
+                responses::ev_response_created("warmup"),
+                responses::ev_completed("warmup"),
+            ],
+            vec![
+                responses::ev_response_created("first"),
+                responses::ev_completed("first"),
+            ],
+            vec![
+                responses::ev_response_created("changed"),
+                responses::ev_completed("changed"),
+            ],
+        ],
+        vec![vec![
+            responses::ev_response_created("replayed"),
+            responses::ev_completed("replayed"),
+        ]],
+    ])
+    .await;
+    let base_url = format!("{}/v1", websocket.uri());
+    let test = override_builder()
+        .with_config(move |config| {
+            config.model_provider.base_url = Some(base_url);
+            config.model_provider.supports_websockets = true;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let warmup = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 10),
+        websocket.wait_for_request(/*connection_index*/ 0, /*request_index*/ 0),
+    )
+    .await?;
+    assert_eq!(warmup.body_json()["generate"], false);
+    test.submit_text_turn("first message").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("changed effort").await?;
+    test.submit_text_turn("unchanged effort after reconnect")
+        .await?;
+
+    let connections = websocket.connections();
+    assert_eq!(connections.iter().map(Vec::len).collect::<Vec<_>>(), [3, 1]);
+    let first = connections[0][1].body_json();
+    let changed = connections[0][2].body_json();
+    let replayed = connections[1][0].body_json();
+    assert_eq!(changed["previous_response_id"], "first");
+    assert_eq!(replayed.get("previous_response_id"), None);
+    assert_eq!(
+        responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(
+            changed["input"].clone()
+        )),
+        serde_json::json!([
+            message("user", "changed effort"),
+            effort_update(ReasoningEffort::High),
+        ])
+    );
+    assert_eq!(
+        replayed["input"]
+            .as_array()
+            .expect("replayed input")
+            .iter()
+            .filter(|item| item["type"] == "configuration_update")
+            .cloned()
+            .collect::<Vec<_>>(),
+        [effort_update(ReasoningEffort::High)]
+    );
+    assert_eq!(
+        [&first, &changed, &replayed].map(|body| body["reasoning"]["effort"].clone()),
+        [
+            Value::from("medium"),
+            Value::from("medium"),
+            Value::from("medium")
+        ]
+    );
+    websocket.shutdown().await;
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum OverrideUnavailable {
     FeatureDisabled,
@@ -311,6 +493,599 @@ async fn reasoning_effort_override_unavailable_uses_request_effort(
     assert_eq!(
         requests.map(|request| request.body_json()["reasoning"]["effort"].clone()),
         [Value::from("medium"), Value::from("high")],
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_disabled_on_resume_retires_update_at_compaction()
+-> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let mut mocks = Vec::new();
+    for (id, reply) in [
+        ("initial", "initial reply"),
+        ("resumed", "resumed reply"),
+        ("after", "after compaction reply"),
+    ] {
+        mocks.push(
+            responses::mount_sse_once(
+                &server,
+                responses::sse(vec![
+                    responses::ev_assistant_message(id, reply),
+                    responses::ev_completed(id),
+                ]),
+            )
+            .await,
+        );
+    }
+    let compact = responses::mount_compact_json_once(
+        &server,
+        serde_json::json!({
+            "output": [{"type": "compaction", "encrypted_content": "compacted-history"}]
+        }),
+    )
+    .await;
+    let initial = override_builder().build_with_auto_env(&server).await?;
+    initial.submit_text_turn("before resume").await?;
+    let chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let resumed = override_builder()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            config
+                .features
+                .disable(Feature::ReasoningEffortOverride)
+                .expect("disable overrides");
+            config
+                .features
+                .disable(Feature::RemoteCompactionV2)
+                .expect("disable remote compaction v2");
+            config.model_reasoning_effort = Some(ReasoningEffort::High);
+            config.chatgpt_base_url = chatgpt_base_url;
+        })
+        .restart(&server, &initial)
+        .await?;
+    resumed.submit_text_turn("after resume").await?;
+    resumed.codex.submit(Op::Compact).await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    resumed.submit_text_turn("after compaction").await?;
+
+    let requests = [
+        mocks[0].single_request(),
+        mocks[1].single_request(),
+        compact.single_request(),
+        mocks[2].single_request(),
+    ];
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| (
+                request.body_json()["reasoning"]["effort"].clone(),
+                effort_updates(request),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                Value::from("medium"),
+                vec![effort_update(ReasoningEffort::Medium)]
+            ),
+            (
+                Value::from("high"),
+                vec![effort_update(ReasoningEffort::Medium)]
+            ),
+            (
+                Value::from("high"),
+                vec![effort_update(ReasoningEffort::Medium)]
+            ),
+            (Value::from("high"), Vec::new()),
+        ],
+    );
+    assert!(
+        requests[3]
+            .input()
+            .iter()
+            .any(|item| item["type"] == "compaction")
+    );
+    Ok(())
+}
+
+#[test_case(1, ReasoningEffort::High; "later turn keep changed selection")]
+#[test_case(1, ReasoningEffort::Medium; "later turn match restored settings")]
+#[test_case(2, ReasoningEffort::High; "through first turn")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_rollback_reestablishes_selected_effort(
+    num_turns: u32,
+    effort: ReasoningEffort,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    #[derive(Default)]
+    struct ThreadIdle {
+        ready: Notify,
+    }
+
+    impl ThreadLifecycleContributor<Config> for ThreadIdle {
+        fn on_thread_idle<'a>(&'a self, _input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.ready.notify_one();
+            })
+        }
+    }
+
+    let idle = Arc::new(ThreadIdle::default());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(idle.clone());
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("first")]),
+    )
+    .await;
+    let removed = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("removed")]),
+    )
+    .await;
+    let replacement = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("replacement")]),
+    )
+    .await;
+    let test = override_builder()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn("first turn").await?;
+    timeout(Duration::from_secs(/*secs*/ 10), idle.ready.notified()).await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("removed turn").await?;
+    // Completion can be delivered before the active slot is cleared. Wait for
+    // actual idle so this test exercises effort replay, not rollback admission.
+    timeout(Duration::from_secs(/*secs*/ 10), idle.ready.notified()).await?;
+    test.codex.submit(Op::ThreadRollback { num_turns }).await?;
+    let rollback = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_) | EventMsg::Error(_))
+    })
+    .await;
+    let EventMsg::ThreadRolledBack(rollback) = rollback else {
+        panic!("rollback failed: {rollback:?}");
+    };
+    assert_eq!(rollback.num_turns, num_turns);
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(effort.clone())),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("replacement turn").await?;
+    timeout(Duration::from_secs(/*secs*/ 10), idle.ready.notified()).await?;
+
+    assert_eq!(
+        effort_updates(&first.single_request()),
+        [effort_update(ReasoningEffort::Medium)]
+    );
+    assert_eq!(
+        effort_updates(&removed.single_request()),
+        [
+            effort_update(ReasoningEffort::Medium),
+            effort_update(ReasoningEffort::High)
+        ]
+    );
+    let request = replacement.single_request();
+    assert_eq!(request.body_json()["reasoning"]["effort"], effort.as_str());
+    let mut expected = if num_turns == 1 {
+        vec![effort_update(ReasoningEffort::Medium)]
+    } else {
+        Vec::new()
+    };
+    expected.push(effort_update(effort.clone()));
+    assert_eq!(effort_updates(&request), expected);
+    let input = request.input();
+    assert!(
+        !input
+            .iter()
+            .any(|item| item["content"][0]["text"] == "removed turn")
+    );
+    let tail = responses::strip_response_item_ids_from_json(responses::strip_metadata_from_json(
+        Value::Array(input[input.len() - 2..].to_vec()),
+    ));
+    assert_eq!(
+        tail,
+        serde_json::json!([
+            message("user", "replacement turn"),
+            effort_update(effort.clone()),
+        ])
+    );
+    Ok(())
+}
+
+#[test_case(ReasoningEffort::Medium; "same selection")]
+#[test_case(ReasoningEffort::High; "changed selection")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_model_switch_reestablishes_selected_effort(
+    effort: ReasoningEffort,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("first")]),
+    )
+    .await;
+    let second = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("second")]),
+    )
+    .await;
+    let test = override_builder()
+        .with_model_info_override("gpt-5.4", |model| model.comp_hash = None)
+        .with_model_info_override("gpt-5.5", |model| {
+            model.comp_hash = None;
+            model.use_responses_lite = true;
+        })
+        .with_model("gpt-5.4")
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn("first model").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("gpt-5.5".to_string()),
+            effort: Some(Some(effort.clone())),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("second model").await?;
+    assert_eq!(
+        effort_updates(&first.single_request()),
+        [effort_update(ReasoningEffort::Medium)]
+    );
+    let request = second.single_request();
+    assert_eq!(
+        effort_updates(&request),
+        [
+            effort_update(ReasoningEffort::Medium),
+            effort_update(effort.clone())
+        ]
+    );
+    assert_eq!(
+        serde_json::json!([
+            request.body_json()["model"],
+            request.body_json()["reasoning"]["effort"]
+        ]),
+        serde_json::json!(["gpt-5.5", effort])
+    );
+    Ok(())
+}
+
+#[test_case(ReasoningEffort::High; "unchanged effort")]
+#[test_case(ReasoningEffort::Medium; "changed effort")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_resume_refreshes_selected_effort(
+    effort: ReasoningEffort,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("first")]),
+    )
+    .await;
+    let second = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("second")]),
+    )
+    .await;
+    let resumed = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("resumed")]),
+    )
+    .await;
+    let test = override_builder().build_with_auto_env(&server).await?;
+    test.submit_text_turn("medium turn").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("high turn").await?;
+    let selected = effort.clone();
+    let restarted = override_builder()
+        .with_config(move |config| {
+            config.model_reasoning_effort = Some(selected);
+        })
+        .restart(&server, &test)
+        .await?;
+    restarted.submit_text_turn("after resume").await?;
+
+    assert_eq!(
+        [first.single_request(), second.single_request()]
+            .map(|request| request.body_json()["reasoning"]["effort"].clone()),
+        [Value::from("medium"), Value::from("medium")]
+    );
+    let request = resumed.single_request();
+    assert_eq!(request.body_json()["reasoning"]["effort"], effort.as_str());
+    // Even an unchanged selection must refresh the override when replay invalidates the pin.
+    assert_eq!(
+        effort_updates(&request),
+        [
+            effort_update(ReasoningEffort::Medium),
+            effort_update(ReasoningEffort::High),
+            effort_update(effort.clone())
+        ]
+    );
+    Ok(())
+}
+
+#[test_case(false; "success")]
+#[test_case(true; "failure")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_remote_v1_compaction_uses_pin(
+    fail_compaction: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("first")]),
+    )
+    .await;
+    let after = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("after")]),
+    )
+    .await;
+    let unchanged = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("unchanged")]),
+    )
+    .await;
+    let changed = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("changed")]),
+    )
+    .await;
+    let compact = responses::mount_compact_response_once(
+        &server,
+        if fail_compaction {
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {"code": "invalid_request_error", "message": "compaction failed"}
+            }))
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "output": [{"type": "compaction", "encrypted_content": "compacted-history"}]
+            }))
+        },
+    )
+    .await;
+    let chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let test = override_builder()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            config.chatgpt_base_url = chatgpt_base_url;
+            config
+                .features
+                .disable(Feature::RemoteCompactionV2)
+                .expect("disable remote compaction v2");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn("first").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.codex.submit(Op::Compact).await?;
+    if fail_compaction {
+        wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.submit_text_turn("after compaction").await?;
+    test.submit_text_turn("unchanged effort").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::Low)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("changed effort").await?;
+    let medium = effort_update(ReasoningEffort::Medium);
+    let after_updates = if fail_compaction {
+        vec![medium.clone(), effort_update(ReasoningEffort::High)]
+    } else {
+        Vec::new()
+    };
+    let mut changed_updates = after_updates.clone();
+    changed_updates.push(effort_update(ReasoningEffort::Low));
+    let after_effort = Value::from(if fail_compaction { "medium" } else { "high" });
+    assert_eq!(
+        [
+            first.single_request(),
+            compact.single_request(),
+            after.single_request(),
+            unchanged.single_request(),
+            changed.single_request(),
+        ]
+        .map(|request| (
+            request.body_json()["reasoning"]["effort"].clone(),
+            effort_updates(&request),
+        )),
+        [
+            (Value::from("medium"), vec![medium.clone()]),
+            (Value::from("medium"), vec![medium]),
+            (after_effort.clone(), after_updates.clone()),
+            (after_effort.clone(), after_updates),
+            (after_effort, changed_updates),
+        ],
+    );
+    Ok(())
+}
+
+#[test_case(false; "remote v1")]
+#[test_case(true; "remote v2")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort(
+    remote_v2: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let first = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("first")]),
+    )
+    .await;
+    let second = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("second")]),
+    )
+    .await;
+    let compaction = serde_json::json!({
+        "type": "compaction", "encrypted_content": "fallback-summary"
+    });
+    let failure = ResponseTemplate::new(/*s*/ 400).set_body_json(serde_json::json!({
+        "error": {"message": "previous model cannot compact this history"}
+    }));
+    let compactions = if remote_v2 {
+        responses::mount_response_sequence(
+            &server,
+            vec![
+                failure,
+                responses::sse_response(responses::sse(vec![
+                    serde_json::json!({"type": "response.output_item.done", "item": compaction}),
+                    responses::ev_completed("fallback"),
+                ])),
+            ],
+        )
+        .await
+    } else {
+        responses::mount_compact_response_sequence(
+            &server,
+            vec![
+                failure,
+                ResponseTemplate::new(/*s*/ 200).set_body_json(serde_json::json!({
+                    "output": [compaction]
+                })),
+            ],
+        )
+        .await
+    };
+    let after = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![responses::ev_completed("after")]),
+    )
+    .await;
+    let chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let test = override_builder()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model_info_override("gpt-5.4", |model| {
+            model.comp_hash = Some("original".to_string());
+        })
+        .with_model_info_override("gpt-5.2", |model| {
+            model.comp_hash = Some("fallback".to_string());
+            model.use_responses_lite = true;
+        })
+        .with_model("gpt-5.4")
+        .with_config(move |config| {
+            config.chatgpt_base_url = chatgpt_base_url;
+            config.model_provider.stream_max_retries = Some(0);
+            if remote_v2 {
+                config
+                    .features
+                    .enable(Feature::RemoteCompactionV2)
+                    .expect("enable remote compaction v2");
+            } else {
+                config
+                    .features
+                    .disable(Feature::RemoteCompactionV2)
+                    .expect("disable remote compaction v2");
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn("first").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("second").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("gpt-5.2".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.submit_text_turn("switch model").await?;
+
+    let compaction_requests = compactions.requests();
+    assert_eq!(compaction_requests.len(), 2);
+    let requests = [
+        first.single_request(),
+        second.single_request(),
+        compaction_requests[0].clone(),
+        compaction_requests[1].clone(),
+        after.single_request(),
+    ];
+    assert_eq!(
+        requests.each_ref().map(|request| {
+            let body = request.body_json();
+            serde_json::json!([body["model"], body["reasoning"]["effort"]])
+        }),
+        [
+            serde_json::json!(["gpt-5.4", "medium"]),
+            serde_json::json!(["gpt-5.4", "medium"]),
+            serde_json::json!(["gpt-5.4", "medium"]),
+            serde_json::json!(["gpt-5.2", "high"]),
+            serde_json::json!(["gpt-5.2", "high"]),
+        ]
+    );
+    assert_eq!(
+        requests.each_ref().map(effort_updates),
+        [
+            vec![effort_update(ReasoningEffort::Medium)],
+            vec![
+                effort_update(ReasoningEffort::Medium),
+                effort_update(ReasoningEffort::High)
+            ],
+            vec![
+                effort_update(ReasoningEffort::Medium),
+                effort_update(ReasoningEffort::High)
+            ],
+            vec![
+                effort_update(ReasoningEffort::Medium),
+                effort_update(ReasoningEffort::High)
+            ],
+            vec![],
+        ]
     );
     Ok(())
 }

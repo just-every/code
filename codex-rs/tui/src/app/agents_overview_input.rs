@@ -39,6 +39,16 @@ impl AgentsOverviewView {
         }
     }
     pub(super) fn layout_areas(&self, area: Rect) -> [Rect; 7] {
+        let header_height = self
+            .state()
+            .server_version_notice
+            .as_deref()
+            .map(|notice| {
+                textwrap::wrap(notice, usize::from(area.width.saturating_sub(4).max(1))).len()
+                    as u16
+            })
+            .unwrap_or(1)
+            .min(area.height.saturating_sub(7).max(1));
         let footer_height = if self.state().composing() {
             0
         } else {
@@ -79,7 +89,7 @@ impl AgentsOverviewView {
             3
         };
         Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(header_height),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),

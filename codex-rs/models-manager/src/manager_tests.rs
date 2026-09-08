@@ -27,6 +27,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
+#[path = "cache_identity_tests.rs"]
+mod cache_identity_tests;
+
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
 
@@ -164,6 +167,8 @@ impl ModelsCache for TestModelsCache {
     fn refresh_ttl<'a>(
         &'a self,
         _client_version: &'a str,
+        _identity: &'a str,
+        _etag: &'a str,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>> {
         Box::pin(async move {
             let refreshed = {
@@ -214,7 +219,7 @@ impl TestModelsEndpoint {
             .expect("observed proxy policy lock should not be poisoned")
     }
 
-    async fn list_models(&self) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    async fn list_models(&self) -> CoreResult<ModelsEndpointResponse> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
         let models = self
             .responses
@@ -222,7 +227,11 @@ impl TestModelsEndpoint {
             .expect("responses lock should not be poisoned")
             .pop_front()
             .unwrap_or_default();
-        Ok((models, None))
+        Ok(ModelsEndpointResponse {
+            models,
+            etag: None,
+            identity: self.identity().expect("test endpoint identity"),
+        })
     }
 }
 
@@ -259,6 +268,10 @@ impl ExternalAuth for TestUnresolvedExternalApiKeyAuth {
 }
 
 impl ModelsEndpointClient for TestModelsEndpoint {
+    fn identity(&self) -> Option<String> {
+        Some("test-provider".to_string())
+    }
+
     fn has_command_auth(&self) -> bool {
         self.has_command_auth
     }
@@ -271,7 +284,7 @@ impl ModelsEndpointClient for TestModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(async move {
             *self
                 .observed_proxy_policy
@@ -332,6 +345,7 @@ async fn file_cache_implements_models_cache_contract() {
     );
     let client_version = crate::client_version_to_whole();
     let entry = ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: Utc::now(),
         etag: Some("file-etag".to_string()),
         client_version: Some(client_version.clone()),
@@ -363,6 +377,7 @@ async fn file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale() 
     let client_version = crate::client_version_to_whole();
     let expired_at = Utc::now() - chrono::Duration::hours(1);
     let entry = ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: expired_at,
         etag: Some("expired-etag".to_string()),
         client_version: Some(client_version.clone()),
@@ -384,7 +399,11 @@ async fn file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale() 
     );
 
     cache
-        .refresh_ttl(&client_version)
+        .refresh_ttl(
+            &client_version,
+            entry.identity.as_deref().unwrap(),
+            entry.etag.as_deref().unwrap(),
+        )
         .await
         .expect("TTL refresh succeeds");
 
@@ -433,6 +452,7 @@ async fn manager_without_cache_fetches_on_every_refresh() {
 async fn injected_cache_hit_avoids_remote_fetch() {
     let cached_models = vec![remote_model("cached", "Cached", /*priority*/ 0)];
     let cache = TestModelsCache::with_entry(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: Utc::now(),
         etag: Some("cached-etag".to_string()),
         client_version: Some(crate::client_version_to_whole()),
@@ -486,6 +506,7 @@ async fn injected_cache_read_error_falls_back_and_persists_remote_models() {
     assert_eq!(
         stored_entries,
         vec![ModelsCacheEntry {
+            identity: Some("test-provider".to_string()),
             fetched_at: stored_entries[0].fetched_at,
             etag: None,
             client_version: Some(crate::client_version_to_whole()),
@@ -523,6 +544,7 @@ async fn injected_cache_ttl_refresh_preserves_cached_payload() {
     let cached_models = vec![remote_model("cached", "Cached", /*priority*/ 0)];
     let cached_at = Utc::now() - chrono::Duration::minutes(1);
     let cache = TestModelsCache::with_entry(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: cached_at,
         etag: Some("cached-etag".to_string()),
         client_version: Some(crate::client_version_to_whole()),
@@ -1268,7 +1290,7 @@ impl TestAuthAwareModelsEndpoint {
         }
     }
 
-    async fn list_models(&self) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    async fn list_models(&self) -> CoreResult<ModelsEndpointResponse> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
         let models = self
             .responses
@@ -1276,11 +1298,22 @@ impl TestAuthAwareModelsEndpoint {
             .expect("responses lock should not be poisoned")
             .pop_front()
             .unwrap_or_default();
-        Ok((models, None))
+        Ok(ModelsEndpointResponse {
+            models,
+            etag: None,
+            identity: self.identity().expect("test endpoint identity"),
+        })
     }
 }
 
 impl ModelsEndpointClient for TestAuthAwareModelsEndpoint {
+    fn identity(&self) -> Option<String> {
+        self.auth_manager
+            .as_ref()
+            .and_then(|manager| manager.auth_mode())
+            .map(|mode| format!("{mode:?}"))
+    }
+
     fn has_command_auth(&self) -> bool {
         false
     }
@@ -1293,7 +1326,7 @@ impl ModelsEndpointClient for TestAuthAwareModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         _http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(TestAuthAwareModelsEndpoint::list_models(self))
     }
 }

@@ -1695,18 +1695,23 @@ text(JSON.stringify(result));
     Ok(())
 }
 
+#[test_case("{}"; "object")]
+#[test_case(""; "omitted")]
+#[test_case("undefined"; "undefined")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_current_time_returns_structured_result() -> Result<()> {
+async fn code_mode_current_time_returns_structured_result(argument: &str) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn_with_config(
         &server,
         "use exec to get the current time",
-        r#"
-const result = await tools.clock__curr_time({});
+        &format!(
+            r#"
+const result = await tools.clock__curr_time({argument});
 text(JSON.stringify(result));
 "#,
+        ),
         |config| {
             config
                 .features

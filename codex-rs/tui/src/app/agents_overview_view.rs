@@ -132,6 +132,7 @@ pub(super) struct AgentsOverviewViewState {
     pub(super) key_chord_hint: Option<Vec<(String, String)>>,
     pub(super) focus: AgentsOverviewFocus,
     pub(super) connection_notice: Option<&'static str>,
+    pub(super) server_version_notice: Option<String>,
     search: String,
     searching: bool,
     pub(super) status_grouping: bool,

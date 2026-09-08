@@ -458,7 +458,7 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
                 .expect("create in-process RMCP client"),
         ),
         server_info: create_test_server_info("Ready"),
-        tool_catalog: Arc::new(ClientToolCatalog::new(tools)),
+        tool_catalog: Arc::new(ClientToolCatalog::new(tools, /*updates*/ None)),
         tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
@@ -758,7 +758,7 @@ pub(crate) async fn create_test_manager_with_ready_apps_client(
         _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Codex Apps"),
-        tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool])),
+        tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool], /*updates*/ None)),
         tool_timeout: Some(Duration::from_secs(5)),
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
@@ -4942,6 +4942,90 @@ async fn reconcile_reusable_server_with_mcp_config(
 }
 
 #[tokio::test]
+async fn apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let context = create_codex_apps_tools_cache_context(
+        codex_home.path().to_path_buf(),
+        /*account_id*/ None,
+        /*chatgpt_user_id*/ None,
+    )
+    .with_live_scope("apps".to_string());
+    let original = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "original")];
+    let updated = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "updated")];
+    let catalog = ClientToolCatalog::new(original.clone(), context.subscribe());
+
+    store_current_tools(&context, original.clone());
+    assert_eq!(
+        catalog.read(|catalog| catalog.revision).await,
+        0,
+        "an unchanged startup broadcast must not invalidate prepared calls"
+    );
+
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let running = catalog.run_with_revision(
+        /*expected_revision*/ 0,
+        || async { released.await.unwrap() },
+    );
+    tokio::pin!(running);
+    assert!(futures::poll!(&mut running).is_pending());
+    store_current_tools(&context, updated.clone());
+    let stale = catalog.run_with_revision(
+        /*expected_revision*/ 0,
+        || async { panic!("stale preparation") },
+    );
+    tokio::pin!(stale);
+    assert!(
+        futures::poll!(&mut stale).is_pending(),
+        "publication does not wait, but adoption must wait for the running call"
+    );
+    release.send(()).unwrap();
+    assert_eq!(running.await, Some(()));
+    assert_eq!(stale.await, None::<()>);
+    assert_eq!(
+        catalog
+            .read(|catalog| (catalog.revision, catalog.tools.clone()))
+            .await,
+        (1, updated.clone())
+    );
+
+    // A client whose startup finishes late adopts the already-published result.
+    let late = ClientToolCatalog::new(original, context.subscribe());
+    assert_eq!(late.read(|catalog| catalog.tools.clone()).await, updated);
+    Ok(())
+}
+
+#[tokio::test]
+async fn apps_catalog_broadcast_survives_an_older_local_refresh() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let context = create_codex_apps_tools_cache_context(
+        codex_home.path().to_path_buf(),
+        /*account_id*/ None,
+        /*chatgpt_user_id*/ None,
+    )
+    .with_live_scope("apps".to_string());
+    let catalog = ClientToolCatalog::new(Vec::new(), context.subscribe());
+    let older_ticket = context.begin_fetch(ConnectorRuntimeFetchSource::HardRefresh);
+    let newer = vec![create_test_tool(CODEX_APPS_MCP_SERVER_NAME, "newer")];
+    store_current_tools(&context, newer.clone());
+    assert_eq!(catalog.read(|catalog| catalog.tools.clone()).await, newer);
+    catalog
+        .refresh(
+            || async { Ok((Vec::new(), older_ticket)) },
+            |tools, ticket| {
+                context.publish_if_newest_accepted(
+                    ticket,
+                    &create_test_server_info("Apps"),
+                    tools.to_vec(),
+                )
+            },
+        )
+        .await?;
+    assert_eq!(catalog.read(|catalog| catalog.tools.clone()).await, newer);
+    Ok(())
+}
+
+#[tokio::test]
 async fn refreshed_catalog_follows_reused_client_without_mutating_old_bindings()
 -> anyhow::Result<()> {
     let codex_home = tempdir()?;
@@ -5083,7 +5167,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
         _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Mutable tools"),
-        tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools)),
+        tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools, /*updates*/ None)),
         tool_timeout: None,
         server_instructions: initialize.instructions,
         server_supports_sandbox_state_meta_capability: false,

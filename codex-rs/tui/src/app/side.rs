@@ -408,7 +408,14 @@ impl App {
         };
 
         self.select_agent_thread(tui, app_server, target_thread_id)
-            .await
+            .await?;
+        if self.active_thread_id == Some(target_thread_id)
+            && self.active_side_parent_thread_id().is_none()
+        {
+            self.surface_pending_inactive_thread_interactive_requests()
+                .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn discard_side_thread(
@@ -438,6 +445,9 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
+        self.abandoned_side_threads.insert(thread_id);
+        self.pending_app_server_requests
+            .cancel_thread_verification(&thread_id.to_string());
         let turn_id = self
             .active_turn_id_for_thread(thread_id)
             .await
@@ -447,7 +457,6 @@ impl App {
         let retry_interrupt_request_id = app_server.next_request_id();
         let unsubscribe_request_id = app_server.next_request_id();
 
-        self.abandoned_side_threads.insert(thread_id);
         self.discard_thread_local_state(thread_id).await;
 
         tokio::spawn(async move {
@@ -497,6 +506,8 @@ impl App {
     }
 
     pub(super) async fn discard_thread_local_state(&mut self, thread_id: ThreadId) {
+        self.pending_app_server_requests
+            .cancel_thread_verification(&thread_id.to_string());
         let app_event_tx = self.app_event_tx.clone();
         self.dynamic_tool_tasks
             .retain(|request_id, (source, task)| {

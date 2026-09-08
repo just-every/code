@@ -91,3 +91,31 @@ async fn validate_consolidation_artifacts_rejects_invalid_summary() {
 
     assert!(err.to_string().contains("does not start with v1"));
 }
+
+#[tokio::test]
+async fn v2_accepts_summary_only_and_checks_its_format_and_size() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let root = home.path();
+    fs::write(
+        root.join("memory_summary.md"),
+        "v1\n\n## User Profile\nProfile\n## User preferences\nPreferences\n## General Tips\nTips\n## What's in Memory\nIndex\n",
+    )?;
+    validate_consolidation_artifacts_for_version(root, MemoryVersion::V2).await?;
+    assert!(validate_consolidation_artifacts(root).await.is_err());
+    fs::write(root.join("memory_summary.md"), "v2\nsummary")?;
+    assert!(
+        validate_consolidation_artifacts_for_version(root, MemoryVersion::V2)
+            .await
+            .is_err()
+    );
+    fs::write(
+        root.join("memory_summary.md"),
+        format!("v1\n{}", "x".repeat(10_000)),
+    )?;
+    assert!(
+        validate_consolidation_artifacts_for_version(root, MemoryVersion::V2)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

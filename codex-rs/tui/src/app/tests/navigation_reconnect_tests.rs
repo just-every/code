@@ -306,8 +306,14 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             ReconnectPresentation::Overview,
         )
         .await?;
-        app.finish_reconnect(&mut tui, &mut session, &mut events, connected)
-            .await?;
+        app.finish_reconnect(
+            &mut tui,
+            &mut session,
+            &mut events,
+            connected,
+            CODEX_CLI_VERSION,
+        )
+        .await?;
         assert!(!app.reconnect.offline);
         assert_eq!(app.current_displayed_thread_id(), previous_thread);
 

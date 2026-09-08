@@ -2,6 +2,7 @@ mod execution_scope;
 
 use crate::attribution::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 use crate::config;
+use crate::connection_lifecycle::ProxyListeners;
 use crate::credential_broker::BROKERED_CREDENTIALS_ENV_KEY;
 use crate::credential_broker::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use crate::http_proxy;
@@ -35,7 +36,6 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
-use tokio::task::JoinHandle;
 use tracing::warn;
 
 use self::execution_scope::ExecutionScope;
@@ -470,7 +470,7 @@ pub struct PreparedManagedNetwork {
 
 struct EnvironmentProxy {
     addrs: EnvironmentProxyAddrs,
-    runtime: EnvironmentProxyRuntime,
+    runtime: ProxyRuntime,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -479,21 +479,40 @@ enum EnvironmentProxyClient {
     TrustedBridge,
 }
 
-enum EnvironmentProxyRuntime {
-    ListenerTasks {
-        http_task: JoinHandle<Result<()>>,
-        socks_task: Option<JoinHandle<Result<()>>>,
-    },
+enum ProxyRuntime {
+    Listeners(ProxyListeners),
     #[cfg(target_os = "windows")]
-    SharedIngress { _route: Arc<WindowsProxyRoute> },
+    SharedIngress {
+        route: Arc<WindowsProxyRoute>,
+    },
 }
 
-impl EnvironmentProxyRuntime {
+impl ProxyRuntime {
     #[cfg(target_os = "windows")]
     fn network_proxy_restricting_sid(&self) -> Option<String> {
         match self {
-            Self::ListenerTasks { .. } => None,
-            Self::SharedIngress { _route: route } => Some(route.sid().to_string()),
+            Self::Listeners(_) => None,
+            Self::SharedIngress { route } => Some(route.sid().to_string()),
+        }
+    }
+
+    async fn wait(&mut self) -> Result<()> {
+        match self {
+            Self::Listeners(listeners) => listeners.wait().await,
+            #[cfg(target_os = "windows")]
+            Self::SharedIngress { .. } => std::future::pending().await,
+        }
+    }
+
+    fn stop(self) -> Option<ProxyListeners> {
+        match self {
+            Self::Listeners(mut listeners) => {
+                listeners.cancel();
+                Some(listeners)
+            }
+            // Shared ingress owns its listeners; dropping the route unregisters it.
+            #[cfg(target_os = "windows")]
+            Self::SharedIngress { .. } => None,
         }
     }
 }
@@ -1109,6 +1128,17 @@ impl NetworkProxy {
         self.state.restore_child_credentials(env, command);
     }
 
+    /// Restores real credentials and removes brokerage markers for a child that cannot safely
+    /// consume brokered credentials while remaining on the managed network.
+    pub fn restore_and_disable_brokered_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        command: &mut [String],
+    ) {
+        self.state
+            .restore_and_disable_child_credentials(env, command);
+    }
+
     /// Replaces allowed credentials and removes credentials excluded from the environment.
     pub fn virtualize_brokered_text(
         &self,
@@ -1201,8 +1231,8 @@ impl NetworkProxy {
             anyhow::ensure!(
                 matches!(
                     (&proxy.runtime, uses_shared_ingress),
-                    (EnvironmentProxyRuntime::SharedIngress { .. }, true)
-                        | (EnvironmentProxyRuntime::ListenerTasks { .. }, false)
+                    (ProxyRuntime::SharedIngress { .. }, true)
+                        | (ProxyRuntime::Listeners(_), false)
                 ),
                 "network proxy for environment `{environment_id}` was prepared for a different client type"
             );
@@ -1244,13 +1274,13 @@ impl NetworkProxy {
                 environment_id,
                 EnvironmentProxy {
                     addrs,
-                    runtime: EnvironmentProxyRuntime::SharedIngress { _route: route },
+                    runtime: ProxyRuntime::SharedIngress { route },
                 },
             );
             return Ok(addrs);
         }
 
-        let runtime = tokio::runtime::Handle::try_current().with_context(|| {
+        tokio::runtime::Handle::try_current().with_context(|| {
             format!("failed to create network proxy for environment `{environment_id}`")
         })?;
         let listeners =
@@ -1272,49 +1302,47 @@ impl NetworkProxy {
             socks_listener,
         } = listeners;
 
+        let mut listeners = ProxyListeners::new();
         let environment_id = environment_id.to_string();
         let http_state = self.state.clone();
         let http_decider = self.policy_decider.clone();
         let http_environment_id = Some(environment_id.clone());
-        let http_task = runtime.spawn(async move {
+        listeners.spawn(move |guard| async move {
             http_proxy::run_http_proxy_with_std_listener(
                 http_state,
                 http_listener,
                 http_decider,
                 http_environment_id,
+                guard,
             )
             .await
         });
 
-        let socks_task = if self.socks_enabled {
+        if self.socks_enabled
+            && let Some(listener) = socks_listener
+        {
             let socks_state = self.state.clone();
             let socks_decider = self.policy_decider.clone();
             let socks_environment_id = Some(environment_id.clone());
             let socks5_udp_enabled = self.socks5_udp_enabled;
-            socks_listener.map(|listener| {
-                runtime.spawn(async move {
-                    socks5::run_socks5_with_std_listener(
-                        socks_state,
-                        listener,
-                        socks_decider,
-                        socks_environment_id,
-                        socks5_udp_enabled,
-                    )
-                    .await
-                })
-            })
-        } else {
-            None
-        };
+            listeners.spawn(move |guard| async move {
+                socks5::run_socks5_with_std_listener(
+                    socks_state,
+                    listener,
+                    socks_decider,
+                    socks_environment_id,
+                    socks5_udp_enabled,
+                    guard,
+                )
+                .await
+            });
+        }
 
         proxies.insert(
             environment_id,
             EnvironmentProxy {
                 addrs,
-                runtime: EnvironmentProxyRuntime::ListenerTasks {
-                    http_task,
-                    socks_task,
-                },
+                runtime: ProxyRuntime::Listeners(listeners),
             },
         );
         Ok(addrs)
@@ -1386,12 +1414,14 @@ impl NetworkProxy {
                 active_route.is_none(),
                 "shared managed Windows proxy route is already running"
             );
-            *active_route = Some(Arc::new(windows_runtime.ingress.register_route(
+            let route = Arc::new(windows_runtime.ingress.register_route(
                 windows_runtime.http_service.clone(),
                 windows_runtime.socks_service.clone(),
-            )));
+            ));
+            *active_route = Some(Arc::clone(&route));
             drop(active_route);
             return Ok(NetworkProxyHandle::windows_shared(
+                route,
                 Arc::clone(&windows_runtime.active_route),
                 Arc::clone(&self.environment_proxies),
             ));
@@ -1401,10 +1431,11 @@ impl NetworkProxy {
         let http_listener = reserved_listeners.and_then(|listeners| listeners.take_http());
         let socks_listener = reserved_listeners.and_then(|listeners| listeners.take_socks());
 
+        let mut listeners = ProxyListeners::new();
         let http_state = self.state.clone();
         let http_decider = self.policy_decider.clone();
         let http_addr = self.http_addr;
-        let http_task = tokio::spawn(async move {
+        listeners.spawn(move |guard| async move {
             match http_listener {
                 Some(listener) => {
                     http_proxy::run_http_proxy_with_std_listener(
@@ -1412,6 +1443,7 @@ impl NetworkProxy {
                         listener,
                         http_decider,
                         /*environment_id*/ None,
+                        guard,
                     )
                     .await
                 }
@@ -1421,18 +1453,19 @@ impl NetworkProxy {
                         http_addr,
                         http_decider,
                         /*environment_id*/ None,
+                        guard,
                     )
                     .await
                 }
             }
         });
 
-        let socks_task = if current_cfg.enable_socks5 {
+        if current_cfg.enable_socks5 {
             let socks_state = self.state.clone();
             let socks_decider = self.policy_decider.clone();
             let socks_addr = self.socks_addr;
             let enable_socks5_udp = current_cfg.enable_socks5_udp;
-            Some(tokio::spawn(async move {
+            listeners.spawn(move |guard| async move {
                 match socks_listener {
                     Some(listener) => {
                         socks5::run_socks5_with_std_listener(
@@ -1441,6 +1474,7 @@ impl NetworkProxy {
                             socks_decider,
                             /*environment_id*/ None,
                             enable_socks5_udp,
+                            guard,
                         )
                         .await
                     }
@@ -1451,20 +1485,17 @@ impl NetworkProxy {
                             socks_decider,
                             /*environment_id*/ None,
                             enable_socks5_udp,
+                            guard,
                         )
                         .await
                     }
                 }
-            }))
-        } else {
-            None
-        };
+            });
+        }
 
         Ok(NetworkProxyHandle {
-            http_task: Some(http_task),
-            socks_task,
-            environment_proxies: self.environment_proxies.clone(),
-            completed: false,
+            runtime: Some(ProxyRuntime::Listeners(listeners)),
+            environment_proxies: Some(Arc::clone(&self.environment_proxies)),
             #[cfg(target_os = "windows")]
             windows_active_route: None,
         })
@@ -1472,10 +1503,8 @@ impl NetworkProxy {
 }
 
 pub struct NetworkProxyHandle {
-    http_task: Option<JoinHandle<Result<()>>>,
-    socks_task: Option<JoinHandle<Result<()>>>,
-    environment_proxies: Arc<Mutex<HashMap<String, EnvironmentProxy>>>,
-    completed: bool,
+    runtime: Option<ProxyRuntime>,
+    environment_proxies: Option<Arc<Mutex<HashMap<String, EnvironmentProxy>>>>,
     #[cfg(target_os = "windows")]
     windows_active_route: Option<Arc<Mutex<Option<Arc<WindowsProxyRoute>>>>>,
 }
@@ -1483,10 +1512,8 @@ pub struct NetworkProxyHandle {
 impl NetworkProxyHandle {
     fn noop() -> Self {
         Self {
-            http_task: Some(tokio::spawn(async { Ok(()) })),
-            socks_task: None,
-            environment_proxies: Arc::new(Mutex::new(HashMap::new())),
-            completed: true,
+            runtime: None,
+            environment_proxies: None,
             #[cfg(target_os = "windows")]
             windows_active_route: None,
         }
@@ -1494,131 +1521,67 @@ impl NetworkProxyHandle {
 
     #[cfg(target_os = "windows")]
     fn windows_shared(
+        route: Arc<WindowsProxyRoute>,
         active_route: Arc<Mutex<Option<Arc<WindowsProxyRoute>>>>,
         environment_proxies: Arc<Mutex<HashMap<String, EnvironmentProxy>>>,
     ) -> Self {
         Self {
-            http_task: Some(tokio::spawn(async {
-                std::future::pending::<()>().await;
-                Ok(())
-            })),
-            socks_task: None,
-            environment_proxies,
-            completed: false,
+            runtime: Some(ProxyRuntime::SharedIngress { route }),
+            environment_proxies: Some(environment_proxies),
             windows_active_route: Some(active_route),
         }
     }
 
-    #[cfg(target_os = "windows")]
-    fn deactivate_windows_route(&mut self) {
+    pub async fn wait(mut self) -> Result<()> {
+        let result = match self.runtime.as_mut() {
+            Some(runtime) => runtime.wait().await,
+            None => Ok(()),
+        };
+        self.shutdown().await?;
+        result
+    }
+
+    pub async fn shutdown(mut self) -> Result<()> {
+        for listeners in self.stop_runtimes() {
+            listeners.shutdown().await;
+        }
+        Ok(())
+    }
+
+    fn stop_runtimes(&mut self) -> Vec<ProxyListeners> {
+        #[cfg(target_os = "windows")]
         if let Some(active_route) = self.windows_active_route.take() {
             active_route
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
         }
+
+        let environments = self
+            .environment_proxies
+            .take()
+            .map(|proxies| {
+                std::mem::take(
+                    &mut *proxies
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                )
+            })
+            .unwrap_or_default();
+        // Stop every runtime before awaiting any one of them. Cancellation of this
+        // cleanup future must not leave later environments accepting connections.
+        self.runtime
+            .take()
+            .into_iter()
+            .chain(environments.into_values().map(|proxy| proxy.runtime))
+            .filter_map(ProxyRuntime::stop)
+            .collect()
     }
-
-    pub async fn wait(mut self) -> Result<()> {
-        let http_task = self.http_task.take().context("missing http proxy task")?;
-        let socks_task = self.socks_task.take();
-        let http_result = http_task.await;
-        let socks_result = match socks_task {
-            Some(task) => Some(task.await),
-            None => None,
-        };
-        #[cfg(target_os = "windows")]
-        self.deactivate_windows_route();
-        self.completed = true;
-        abort_environment_proxies(self.environment_proxies.clone()).await;
-        http_result??;
-        if let Some(socks_result) = socks_result {
-            socks_result??;
-        }
-        Ok(())
-    }
-
-    pub async fn shutdown(mut self) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        self.deactivate_windows_route();
-        abort_tasks(self.http_task.take(), self.socks_task.take()).await;
-        abort_environment_proxies(self.environment_proxies.clone()).await;
-        self.completed = true;
-        Ok(())
-    }
-}
-
-async fn abort_task(task: Option<JoinHandle<Result<()>>>) {
-    if let Some(task) = task {
-        task.abort();
-        let _ = task.await;
-    }
-}
-
-async fn abort_tasks(
-    http_task: Option<JoinHandle<Result<()>>>,
-    socks_task: Option<JoinHandle<Result<()>>>,
-) {
-    abort_task(http_task).await;
-    abort_task(socks_task).await;
-}
-
-async fn abort_environment_proxies(
-    environment_proxies: Arc<Mutex<HashMap<String, EnvironmentProxy>>>,
-) {
-    let proxies = {
-        let mut guard = environment_proxies
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.drain().map(|(_, proxy)| proxy).collect::<Vec<_>>()
-    };
-    for proxy in proxies {
-        match proxy.runtime {
-            EnvironmentProxyRuntime::ListenerTasks {
-                http_task,
-                socks_task,
-            } => {
-                abort_task(Some(http_task)).await;
-                abort_task(socks_task).await;
-            }
-            #[cfg(target_os = "windows")]
-            EnvironmentProxyRuntime::SharedIngress { .. } => {}
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn unregister_windows_ingress_environment_routes(
-    environment_proxies: &Arc<Mutex<HashMap<String, EnvironmentProxy>>>,
-) {
-    environment_proxies
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|_, proxy| {
-            matches!(
-                &proxy.runtime,
-                EnvironmentProxyRuntime::ListenerTasks { .. }
-            )
-        });
 }
 
 impl Drop for NetworkProxyHandle {
     fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        let http_task = self.http_task.take();
-        let socks_task = self.socks_task.take();
-        let environment_proxies = self.environment_proxies.clone();
-        #[cfg(target_os = "windows")]
-        {
-            self.deactivate_windows_route();
-            unregister_windows_ingress_environment_routes(&environment_proxies);
-        }
-        tokio::spawn(async move {
-            abort_tasks(http_task, socks_task).await;
-            abort_environment_proxies(environment_proxies).await;
-        });
+        drop(self.stop_runtimes());
     }
 }
 

@@ -241,6 +241,8 @@ pub(crate) struct ThreadInitializedEventParams {
     pub(crate) runtime: CodexRuntimeMetadata,
     pub(crate) model: String,
     pub(crate) ephemeral: bool,
+    /// Whether the thread's checkout is a validated linked Git worktree, if known.
+    pub(crate) is_worktree: Option<bool>,
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) initialization_mode: ThreadInitializationMode,
     pub(crate) subagent_source: Option<String>,
@@ -1465,6 +1467,7 @@ pub(crate) fn subagent_thread_started_event_request(
         runtime: current_runtime_metadata(),
         model: input.model,
         ephemeral: input.ephemeral,
+        is_worktree: None,
         thread_source: input.thread_source,
         initialization_mode: ThreadInitializationMode::New,
         subagent_source: Some(subagent_source_name(&input.subagent_source)),

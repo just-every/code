@@ -15,6 +15,7 @@ use crate::client::ModelClientSession;
 use crate::guardian::routes_approval_to_guardian;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::INITIAL_SUBMIT_ID;
+use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
 use codex_features::Feature;
@@ -318,12 +319,15 @@ async fn schedule_startup_prewarm_inner(
         .await;
     let mut client_session = session.services.model_client.new_session();
     let websocket_warmup_started_at = Instant::now();
+    // Prewarm establishes the request baseline before the first turn can change effort.
     client_session
         .prewarm_websocket(
             &startup_prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
-            step_context.settings.reasoning_effort().cloned(),
+            session
+                .reasoning_effort_for_request(&step_context.settings, RequestEffortUsage::Sampling)
+                .await,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),
             &responses_metadata,

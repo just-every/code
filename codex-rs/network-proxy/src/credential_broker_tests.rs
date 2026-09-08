@@ -136,6 +136,28 @@ fn virtualize_child_env_replaces_supported_credentials() {
     assert_eq!(env.get("OPENAI_API_KEY"), Some(&github_dummy));
 }
 
+#[test]
+fn unsupported_children_restore_credentials_and_disable_brokerage() {
+    let broker = CredentialBroker::new(/*enabled*/ true);
+    let github_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    let mut env = env_map([("GH_TOKEN", github_token)]);
+    broker.virtualize_child_env(&mut env);
+
+    assert_ne!(env.get("GH_TOKEN").map(String::as_str), Some(github_token));
+    assert_eq!(
+        env.get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(env.contains_key(BROKERED_CREDENTIALS_ENV_KEY));
+
+    broker.restore_and_disable_child_env(&mut env, &mut []);
+
+    assert_eq!(env.get("GH_TOKEN").map(String::as_str), Some(github_token));
+    assert!(!env.contains_key(CREDENTIAL_BROKER_ACTIVE_ENV_KEY));
+    assert!(!env.contains_key(BROKERED_CREDENTIALS_ENV_KEY));
+}
+
 #[cfg(windows)]
 #[test]
 fn brokered_credentials_match_environment_keys_case_insensitively_on_windows() {

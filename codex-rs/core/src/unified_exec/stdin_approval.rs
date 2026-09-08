@@ -160,7 +160,7 @@ impl TerminalPermissions {
         };
         let mut reason = format!("Send input to an existing terminal. {authority}");
         if self.internal_permissions.is_some() {
-            reason.push_str(" It also has an internal plugin metrics write grant.");
+            reason.push_str(" It also has an internal filesystem grant.");
         }
         reason.push_str(" The cwd is its launch directory; the terminal's current directory and state may have changed.");
         if let Some(grants) = &self.additional_permissions {

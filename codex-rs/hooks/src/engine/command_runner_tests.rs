@@ -36,6 +36,116 @@ use super::build_command;
 use super::run_command;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn hook_shell_startup_does_not_stop_on_controlling_terminal() {
+    const CHILD_ENV: &str = "CODEX_HOOK_TERMINAL_TEST_CHILD";
+    const TEST_NAME: &str =
+        "engine::command_runner::tests::hook_shell_startup_does_not_stop_on_controlling_terminal";
+
+    if std::env::var_os(CHILD_ENV).is_none() {
+        // Re-exec under a controlling terminal even when the test runner has none.
+        let executable = std::env::current_exe().expect("current test executable");
+        let mut env = std::env::vars().collect::<HashMap<_, _>>();
+        env.insert(CHILD_ENV.to_string(), "1".to_string());
+        let codex_utils_pty::SpawnedProcess {
+            session: _session,
+            mut stdout_rx,
+            exit_rx,
+            ..
+        } = codex_utils_pty::spawn_pty_process(
+            executable.to_str().expect("UTF-8 test executable path"),
+            &[
+                TEST_NAME.to_string(),
+                "--exact".to_string(),
+                "--nocapture".to_string(),
+            ],
+            &std::env::current_dir().expect("current test directory"),
+            &env,
+            /*arg0*/ &None,
+            codex_utils_pty::TerminalSize::default(),
+            &[],
+        )
+        .await
+        .expect("spawn test with a controlling terminal");
+
+        let (exit_code, output) = timeout(Duration::from_secs(10), async {
+            let output = async {
+                let mut output = Vec::new();
+                while let Some(chunk) = stdout_rx.recv().await {
+                    output.extend_from_slice(&chunk);
+                }
+                output
+            };
+            tokio::join!(exit_rx, output)
+        })
+        .await
+        .expect("terminal hook test should finish");
+        let output = String::from_utf8_lossy(&output);
+        assert_eq!(
+            exit_code.expect("terminal hook test exit status"),
+            0,
+            "{output}"
+        );
+        assert!(
+            output.contains(TEST_NAME),
+            "child did not run test: {output}"
+        );
+        return;
+    }
+
+    std::fs::File::open("/dev/tty").expect("test process must have a controlling terminal");
+    let temp = tempdir().expect("create temp dir");
+    let startup_path = temp.path().join("bashenv");
+    std::fs::write(
+        &startup_path,
+        "command -v stty >/dev/null || exit 1\nstty sane < /dev/tty\n",
+    )
+    .expect("write shell startup fixture");
+    let command = "printf hook-ran";
+    let env = HashMap::from([(
+        "BASH_ENV".to_string(),
+        startup_path
+            .to_str()
+            .expect("UTF-8 startup path")
+            .to_string(),
+    )]);
+    let handler = ConfiguredHandler {
+        builtin: false,
+        event_name: HookEventName::SessionStart,
+        matcher: None,
+        timeout_sec: 2,
+        status_message: None,
+        additional_context_limit: Default::default(),
+        source_path: AbsolutePathBuf::try_from(temp.path().join("hooks.json"))
+            .expect("absolute hook configuration path")
+            .into(),
+        source: HookSource::User,
+        display_order: 0,
+        kind: ConfiguredHandlerKind::Command {
+            command: command.to_string(),
+            r#async: false,
+            env: env.clone(),
+        },
+    };
+    let (result_sender, _result_receiver) = async_channel::unbounded();
+    let runtime = CommandHookRuntime::new(
+        CommandShell {
+            program: "/bin/bash".to_string(),
+            args: vec!["-c".to_string()],
+        },
+        Arc::new(std::env::vars_os().collect()),
+        ThreadId::new(),
+        result_sender,
+    );
+
+    let result = run_command(&runtime, &handler, command, &env, "{}", temp.path()).await;
+
+    assert_eq!(result.exit_code, Some(0), "stderr: {}", result.stderr);
+    assert_eq!(result.stdout, "hook-ran");
+    assert_eq!(result.error, None);
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn cmd_shell_runs_quoted_hook_command_path() {

@@ -314,12 +314,12 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         info
     })
     .collect();
-    write_models_cache_with_models(codex_home.path(), models)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_models_cache_with_models(codex_home.path(), models).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .with_env_overrides(&[("OPENAI_API_KEY", None)])

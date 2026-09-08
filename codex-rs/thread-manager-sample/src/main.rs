@@ -227,6 +227,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         animations: true,
         tui_whimsy: true,
         show_tooltips: true,
+        tui_show_server_version_notice: true,
         tui_auto_recap: true,
         model_availability_nux: ModelAvailabilityNuxConfig::default(),
         tui_alternate_screen: AltScreenMode::Auto,

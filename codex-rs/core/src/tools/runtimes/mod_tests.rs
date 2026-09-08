@@ -455,6 +455,47 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
 }
 
 #[test]
+fn maybe_wrap_shell_lc_with_snapshot_reuses_brokered_session_zsh() {
+    let dir = tempdir().expect("create temp dir");
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Zsh, "/bin/zsh", snapshot_path.abs());
+    for (flag, expected_flag) in [("-c", "-fc"), ("-lc", "-lfc")] {
+        let command = vec![
+            "/bin/zsh".to_string(),
+            flag.to_string(),
+            "printf '%s %s' \"$0\" \"$1\"".to_string(),
+            "arg0".to_string(),
+            "arg1".to_string(),
+        ];
+        let env = HashMap::from([(
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        )]);
+
+        let rewritten = maybe_wrap_shell_lc_with_snapshot(
+            &command,
+            &session_shell,
+            Some(&shell_snapshot),
+            &HashMap::new(),
+            &env,
+            &RuntimePathPrepends::default(),
+        );
+
+        assert_eq!(rewritten[0], "/bin/zsh");
+        assert_eq!(rewritten[1], expected_flag);
+        assert!(rewritten[2].contains(&format!(
+            "if . '{}' >/dev/null 2>&1; then :; fi",
+            shell_single_quote(&shell_snapshot.to_string_lossy())
+        )));
+        assert!(rewritten[2].ends_with(&command[2]));
+        assert!(!rewritten[2].contains("exec '/bin/zsh'"));
+        assert_eq!(rewritten[3..], command[3..]);
+    }
+}
+
+#[test]
 fn maybe_wrap_shell_lc_with_snapshot_restores_explicit_override_precedence() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
@@ -758,14 +799,66 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env() {
 }
 
 #[tokio::test]
+async fn snapshot_wrapper_preserves_readonly_dummy_credentials() -> anyhow::Result<()> {
+    let proxy = test_credential_broker_network_proxy().await?;
+    let dir = tempdir()?;
+    let snapshot = dir.path().join("snapshot.sh");
+    std::fs::write(&snapshot, "# Snapshot file\ntypeset +x GH_TOKEN\n")?;
+    let mut env = HashMap::from([(
+        "GH_TOKEN".to_string(),
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_string(),
+    )]);
+    proxy.apply_to_env(&mut env);
+    let dummy = env["GH_TOKEN"].clone();
+    assert_ne!(dummy, "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    for (shell_type, path) in [(ShellType::Bash, "/bin/bash"), (ShellType::Zsh, "/bin/zsh")] {
+        if !std::path::Path::new(path).exists() {
+            continue;
+        }
+        let (shell, snapshot) = shell_with_snapshot(shell_type, path, snapshot.abs());
+        let command = vec![
+            path.to_string(),
+            "-c".to_string(),
+            "exec /bin/sh -c 'printf %s \"$GH_TOKEN\"'".to_string(),
+        ];
+        let mut rewritten = maybe_wrap_shell_lc_with_snapshot(
+            &command,
+            &shell,
+            Some(&snapshot),
+            &HashMap::new(),
+            &env,
+            &RuntimePathPrepends::default(),
+        );
+        // Global startup can mark an inherited dummy readonly before the wrapper runs.
+        rewritten[2].insert_str(0, "readonly GH_TOKEN\n");
+        let output = Command::new(&rewritten[0])
+            .args(&rewritten[1..])
+            .env_clear()
+            .envs(&env)
+            .output()?;
+        assert!(output.status.success(), "{path}: {output:?}");
+        assert_eq!(String::from_utf8(output.stdout)?, dummy);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -> anyhow::Result<()>
 {
     let proxy = test_credential_broker_network_proxy().await?;
     let dir = tempdir()?;
-    let snapshot = dir.path().join("snapshot.sh");
+    let startup = dir.path().join("startup.sh");
+    std::fs::write(&startup, "export OPENAI_API_KEY='sk-startup-secret'\n")?;
+    let snapshot_dir = dir.path().join("snapshots");
+    std::fs::create_dir(&snapshot_dir)?;
+    let snapshot = snapshot_dir.join("snapshot.sh");
     std::fs::write(
         &snapshot,
-        "# Snapshot file\nexport OPENAI_API_KEY='stale'\nexport GITHUB_TOKEN='ghp_snapshot_only'\nexport GH_HOST='github.example.com'\n",
+        format!(
+            "# Snapshot file\ncorp_auth() {{ printf '%s\\n%s\\n%s' \"$OPENAI_API_KEY\" \"${{GITHUB_TOKEN-unset}}\" \"$1\"; }}\nexport OPENAI_API_KEY='stale'\nexport GITHUB_TOKEN='ghp_snapshot_only'\nexport GH_HOST='github.example.com'\nexport BASH_ENV='{}'\nexport ZDOTDIR='{}'\n",
+            startup.display(),
+            dir.path().display()
+        ),
     )?;
     let (shell, snapshot) = shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot.abs());
     let mut env = HashMap::from([
@@ -774,14 +867,18 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
             "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_".to_string(),
         ),
         ("GITHUB_TOKEN".to_string(), String::new()),
+        ("BASH_ENV".to_string(), startup.display().to_string()),
     ]);
     proxy.apply_to_env(&mut env);
+    prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot));
+    assert!(!env.contains_key("BASH_ENV"));
     let dummy = env["OPENAI_API_KEY"].clone();
     let command = vec![
         "/bin/bash".to_string(),
-        "-lc".to_string(),
-        "printf '%s\\n%s\\n%s' \"$OPENAI_API_KEY\" \"${GITHUB_TOKEN-unset}\" \"$GH_HOST\""
-            .to_string(),
+        "-c".to_string(),
+        "corp_auth \"$1\"".to_string(),
+        "brokered-shell".to_string(),
+        "github.example.com".to_string(),
     ];
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
@@ -794,7 +891,7 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
         .env_clear()
-        .envs(env)
+        .envs(&env)
         .output()?;
 
     assert!(output.status.success(), "command failed: {output:?}");
@@ -802,6 +899,42 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
         String::from_utf8_lossy(&output.stdout),
         format!("{dummy}\nghp_snapshot_only\ngithub.example.com")
     );
+
+    if std::path::Path::new("/bin/zsh").exists() {
+        std::fs::write(
+            dir.path().join(".zshenv"),
+            "export OPENAI_API_KEY='sk-startup-secret'\n",
+        )?;
+        let renamed_zsh = dir.path().join("zsh.exe");
+        std::os::unix::fs::symlink("/bin/zsh", &renamed_zsh)?;
+        env.insert("ZDOTDIR".to_string(), dir.path().display().to_string());
+        let (zsh, _) = shell_with_snapshot(ShellType::Zsh, "/bin/zsh", snapshot.clone());
+        prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot));
+        let command = vec![
+            renamed_zsh.display().to_string(),
+            "-lc".to_string(),
+            "printf '%s\\n%s' \"$OPENAI_API_KEY\" \"$ZDOTDIR\"".to_string(),
+        ];
+        let rewritten = maybe_wrap_shell_lc_with_snapshot(
+            &command,
+            &zsh,
+            Some(&snapshot),
+            &HashMap::new(),
+            &env,
+            &RuntimePathPrepends::default(),
+        );
+        assert_eq!(rewritten[1], "-lfc");
+        let output = Command::new(&rewritten[0])
+            .args(&rewritten[1..])
+            .env_clear()
+            .envs(&env)
+            .output()?;
+        assert!(output.status.success(), "zsh command failed: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{dummy}\n{}", dir.path().display())
+        );
+    }
     Ok(())
 }
 

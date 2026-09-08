@@ -4,16 +4,22 @@
 //! catalog. Snapshot reads and revision-checked calls keep the locks private;
 //! successful refreshes publish after calls using the current catalog finish.
 //! Refresh results retain raw tools and eligibility from the same published runtime.
+//! Optional live updates are adopted before reading or starting another call.
 
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::Result;
+use codex_connectors::ConnectorRuntimeSnapshot;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::sync::RwLockReadGuard;
+use tokio::sync::watch;
 
 use crate::tools::ToolInfo;
+
+type ToolCatalogUpdates = watch::Receiver<Option<Arc<ConnectorRuntimeSnapshot<ToolInfo>>>>;
 
 /// The exact Apps catalog returned by an awaited refresh of one published runtime.
 pub struct CodexAppsToolSnapshot {
@@ -31,22 +37,63 @@ pub(crate) struct ClientToolCatalog {
 }
 
 pub(crate) struct ToolCatalogSnapshot {
-    /// Zero is the startup catalog; successful explicit refreshes advance it.
+    /// Advances on explicit refresh or adoption of changed live tools.
     pub(crate) revision: u64,
     pub(crate) tools: Vec<ToolInfo>,
+    updates: Option<ToolCatalogUpdates>,
 }
 
 impl ClientToolCatalog {
-    pub(crate) fn new(tools: Vec<ToolInfo>) -> Self {
+    pub(crate) fn new(tools: Vec<ToolInfo>, mut updates: Option<ToolCatalogUpdates>) -> Self {
+        let tools = updates
+            .as_mut()
+            .and_then(|updates| {
+                updates
+                    .borrow_and_update()
+                    .as_ref()
+                    .map(|snapshot| snapshot.tools().to_vec())
+            })
+            .unwrap_or(tools);
         Self {
-            current: RwLock::new(ToolCatalogSnapshot { revision: 0, tools }),
+            current: RwLock::new(ToolCatalogSnapshot {
+                revision: 0,
+                tools,
+                updates,
+            }),
             refresh_lock: Mutex::new(()),
         }
     }
 
     pub(crate) async fn read<R>(&self, read: impl FnOnce(&ToolCatalogSnapshot) -> R) -> R {
-        let current = self.current.read().await;
+        let current = self.read_current().await;
         read(&current)
+    }
+
+    async fn read_current(&self) -> RwLockReadGuard<'_, ToolCatalogSnapshot> {
+        loop {
+            {
+                let current = self.current.read().await;
+                if !current
+                    .updates
+                    .as_ref()
+                    .is_some_and(|updates| updates.has_changed().unwrap_or(false))
+                {
+                    return current;
+                }
+            }
+            let mut current = self.current.write().await;
+            if let Some(updates) = current.updates.as_mut()
+                && updates.has_changed().unwrap_or(false)
+            {
+                let snapshot = updates.borrow_and_update().clone();
+                if let Some(snapshot) = snapshot
+                    && current.tools != snapshot.tools()
+                {
+                    current.tools = snapshot.tools().to_vec();
+                    current.revision += 1;
+                }
+            }
+        }
     }
 
     /// Serialize fetching and publication, leaving the current catalog usable during the fetch.
@@ -65,7 +112,16 @@ impl ClientToolCatalog {
         let (tools, context) = fetch().await?;
         let mut current = self.current.write().await;
         let result = publish(&tools, context);
-        current.tools = tools;
+        current.tools = current
+            .updates
+            .as_mut()
+            .and_then(|updates| {
+                updates
+                    .borrow_and_update()
+                    .as_ref()
+                    .map(|snapshot| snapshot.tools().to_vec())
+            })
+            .unwrap_or(tools);
         current.revision += 1;
         Ok(result)
     }
@@ -84,7 +140,7 @@ impl ClientToolCatalog {
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
     {
-        let current = self.current.read().await;
+        let current = self.read_current().await;
         if current.revision != expected_revision {
             return None;
         }

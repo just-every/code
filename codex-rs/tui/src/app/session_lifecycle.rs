@@ -779,6 +779,7 @@ impl App {
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
         self.pending_startup_thread_start = false;
+        self.pending_server_version_notice = None;
         self.chat_widget.set_pending_thread_approvals(Vec::new());
         self.sync_active_agent_label();
     }
@@ -860,6 +861,9 @@ impl App {
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.apply_backend_banner_fallback(app_server).await;
+                if let Some(notice) = self.pending_server_version_notice.take() {
+                    self.chat_widget.add_server_version_warning(notice);
+                }
                 if !recovery_was_pending {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
@@ -940,6 +944,7 @@ impl App {
                     }
                 }
                 self.local_settings = crate::local_settings::LocalSettings::from(&config);
+                self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
                 self.config = config;
 
                 let name_error = if let Some(name) = new_thread_name {
@@ -1245,6 +1250,7 @@ impl App {
             self.shutdown_current_thread(app_server).await;
         }
         self.local_settings = local_settings;
+        self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         self.config = resume_config;
         tui.set_notification_settings(
             self.local_settings.tui.notification_settings.method,

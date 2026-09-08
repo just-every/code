@@ -1674,6 +1674,7 @@ fn thread_initialized_event_serializes_expected_shape() {
             },
             model: "gpt-5".to_string(),
             ephemeral: true,
+            is_worktree: Some(true),
             thread_source: Some(ThreadSource::Feature("automation".to_string())),
             initialization_mode: ThreadInitializationMode::New,
             subagent_source: None,
@@ -1707,6 +1708,7 @@ fn thread_initialized_event_serializes_expected_shape() {
                 },
                 "model": "gpt-5",
                 "ephemeral": true,
+                "is_worktree": true,
                 "thread_source": "automation",
                 "initialization_mode": "new",
                 "subagent_source": null,
@@ -1716,6 +1718,65 @@ fn thread_initialized_event_serializes_expected_shape() {
             }
         })
     );
+}
+
+#[tokio::test]
+async fn thread_initialized_classifies_validated_linked_worktrees() {
+    let root = std::env::temp_dir().join(format!(
+        "codex-analytics-worktree-{}",
+        codex_protocol::ThreadId::new()
+    ));
+    let primary = root.join("primary");
+    let linked = root.join("linked");
+    let admin = primary.join(".git/worktrees/linked");
+    std::fs::create_dir_all(&admin).expect("worktree administrative directory");
+    std::fs::create_dir_all(&linked).expect("linked checkout");
+    std::fs::write(primary.join(".git/HEAD"), "ref: refs/heads/main\n")
+        .expect("primary repository HEAD");
+    std::fs::write(admin.join("commondir"), "../..\n").expect("common directory");
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", linked.join(".git").display()),
+    )
+    .expect("linked checkout backlink");
+    std::fs::write(
+        linked.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )
+    .expect("linked checkout git file");
+
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+    ingest_initialize(&mut reducer, &mut events).await;
+    for (cwd, expected) in [
+        (primary.as_path(), json!(false)),
+        (linked.as_path(), json!(true)),
+        (root.as_path(), serde_json::Value::Null),
+    ] {
+        events.clear();
+        let mut response =
+            sample_thread_start_response("thread-1", /*ephemeral*/ false, "gpt-5");
+        let ClientResponsePayload::ThreadStart(start) = &mut response else {
+            panic!("expected thread/start response");
+        };
+        start.thread.cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(cwd)
+            .expect("absolute checkout path");
+        reducer
+            .ingest(
+                AnalyticsFact::ClientResponse {
+                    connection_id: 7,
+                    request_id: RequestId::Integer(1),
+                    response: Box::new(response),
+                    thread_originator: None,
+                },
+                &mut events,
+            )
+            .await;
+        let payload = serde_json::to_value(&events).expect("serialize thread event");
+        assert_eq!(payload[0]["event_params"]["is_worktree"], expected);
+    }
+
+    std::fs::remove_dir_all(root).expect("remove test checkout");
 }
 
 #[test]
