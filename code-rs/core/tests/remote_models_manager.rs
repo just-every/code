@@ -128,6 +128,41 @@ async fn refresh_remote_models_uses_cache_when_fresh() {
 }
 
 #[tokio::test]
+async fn remote_model_cache_is_not_reused_by_another_provider() {
+    if skip_if_no_network() {
+        return;
+    }
+
+    let server = MockServer::start().await;
+    let response = ModelsResponse {
+        models: vec![remote_model("first-provider", "First provider", 1)],
+    };
+
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let code_home = tempdir().expect("temp dir");
+    let first = RemoteModelsManager::new(
+        auth_manager_chatgpt(),
+        provider_for(server.uri()),
+        code_home.path().to_path_buf(),
+    );
+    first.refresh_remote_models().await;
+    assert_eq!(first.remote_models_snapshot().await[0].slug, "first-provider");
+
+    let second = RemoteModelsManager::new(
+        auth_manager_chatgpt(),
+        provider_for("https://different-provider.example/v1".to_string()),
+        code_home.path().to_path_buf(),
+    );
+    assert!(second.remote_models_snapshot().await.is_empty());
+}
+
+#[tokio::test]
 async fn refresh_remote_models_refetches_when_cache_stale() {
     if skip_if_no_network() {
         return;

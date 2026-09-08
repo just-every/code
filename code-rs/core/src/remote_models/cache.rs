@@ -11,6 +11,8 @@ pub(crate) struct ModelsCache {
     pub(crate) fetched_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) etag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity: Option<String>,
     pub(crate) models: Vec<ModelInfo>,
 }
 
@@ -55,4 +57,3 @@ fn tmp_path_for(path: &Path) -> PathBuf {
     tmp.push(".tmp");
     PathBuf::from(tmp)
 }
-

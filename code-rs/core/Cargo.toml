@@ -59,6 +59,7 @@ serde_ignored = "0.1"
 serde_json = { workspace = true }
 serde_yaml = "0.9"
 sha1 = { workspace = true }
+sha2 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
 strum_macros = { workspace = true }

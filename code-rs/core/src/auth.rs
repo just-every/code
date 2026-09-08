@@ -250,6 +250,21 @@ impl CodexAuth {
             .and_then(|t| t.id_token.chatgpt_plan_type.as_ref().map(|p| p.as_string()))
     }
 
+    pub(crate) fn get_account_email(&self) -> Option<String> {
+        self.get_current_token_data()
+            .and_then(|t| t.id_token.email.clone())
+    }
+
+    pub(crate) fn model_cache_credential(&self) -> Option<String> {
+        match self.mode {
+            AuthMode::ApiKey => self.api_key.clone(),
+            AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => self
+                .get_current_token_data()
+                .map(|tokens| tokens.access_token),
+            AuthMode::Headers => None,
+        }
+    }
+
     pub fn is_fedramp_account(&self) -> bool {
         self.get_current_token_data()
             .is_some_and(|t| t.id_token.is_fedramp_account())

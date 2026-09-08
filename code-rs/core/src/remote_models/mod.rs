@@ -27,6 +27,7 @@ use crate::tool_apply_patch::ApplyPatchToolType;
 use crate::CodexAuth;
 
 mod cache;
+mod identity;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -38,6 +39,7 @@ struct RemoteModelsState {
     loaded_from_disk: bool,
     fetched_at: Option<chrono::DateTime<Utc>>,
     etag: Option<String>,
+    identity: Option<String>,
     models: Vec<ModelInfo>,
 }
 
@@ -77,7 +79,9 @@ impl RemoteModelsManager {
     ///
     /// This loads from disk once (best-effort) but does not block on network.
     pub async fn remote_models_snapshot(&self) -> Vec<ModelInfo> {
-        self.ensure_loaded_from_disk().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
         self.state.read().await.models.clone()
     }
 
@@ -86,7 +90,9 @@ impl RemoteModelsManager {
     /// When the user did not explicitly choose a model, Code may adopt this
     /// server-provided default without persisting it.
     pub async fn default_model_slug(&self, auth_mode: Option<AuthMode>) -> Option<String> {
-        self.ensure_loaded_from_disk().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
 
         if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
             return None;
@@ -108,44 +114,66 @@ impl RemoteModelsManager {
     }
 
     pub async fn refresh_remote_models_with_cache(&self) {
-        self.ensure_loaded_from_disk().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
 
         let (stale_etag, should_fetch) = {
             let state = self.state.read().await;
-            let is_fresh = state
-                .fetched_at
-                .map(|t| cache::is_fresh(t, self.cache_ttl))
-                .unwrap_or(false);
-            (state.etag.clone(), !is_fresh)
+            let is_fresh = identity.is_some()
+                && state
+                    .fetched_at
+                    .map(|t| cache::is_fresh(t, self.cache_ttl))
+                    .unwrap_or(false)
+                && state.identity == identity;
+            let stale_etag = (state.identity == identity)
+                .then(|| state.etag.clone())
+                .flatten();
+            (stale_etag, !is_fresh)
         };
 
         if !should_fetch {
             return;
         }
 
-        self.refresh_remote_models_inner(stale_etag).await;
+        self.refresh_remote_models_inner(auth, identity, stale_etag).await;
     }
 
     pub async fn refresh_remote_models_no_cache(&self) {
-        self.ensure_loaded_from_disk().await;
-        let stale_etag = self.state.read().await.etag.clone();
-        self.refresh_remote_models_inner(stale_etag).await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
+        let stale_etag = self.get_etag(identity.as_deref()).await;
+        self.refresh_remote_models_inner(auth, identity, stale_etag).await;
     }
 
     pub async fn refresh_if_new_etag(&self, etag: String) {
-        let current_etag = self.get_etag().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
+        let current_etag = self.get_etag(identity.as_deref()).await;
         if current_etag.clone().is_some() && current_etag.as_deref() == Some(etag.as_str()) {
             return;
         }
-        self.refresh_remote_models_no_cache().await;
+        self.refresh_remote_models_inner(auth, identity, current_etag)
+            .await;
     }
 
-    async fn get_etag(&self) -> Option<String> {
-        self.state.read().await.etag.clone()
+    async fn get_etag(&self, identity: Option<&str>) -> Option<String> {
+        let state = self.state.read().await;
+        identity.and_then(|identity| {
+            (state.identity.as_deref() == Some(identity))
+                .then(|| state.etag.clone())
+                .flatten()
+        })
     }
 
-    async fn refresh_remote_models_inner(&self, stale_etag: Option<String>) {
-        let auth = self.auth_manager.auth();
+    async fn refresh_remote_models_inner(
+        &self,
+        auth: Option<CodexAuth>,
+        identity: Option<String>,
+        stale_etag: Option<String>,
+    ) {
         let auth_mode = auth.as_ref().map(|a| a.mode);
         if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
             // Only the ChatGPT backend exposes the Codex `/models` schema.
@@ -194,14 +222,24 @@ impl RemoteModelsManager {
         };
 
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            if self.cache_identity(&self.auth_manager.auth()) != identity {
+                return;
+            }
             let mut state = self.state.write().await;
+            if state.identity != identity {
+                return;
+            }
             state.fetched_at = Some(Utc::now());
-            if let Err(err) = cache::save_cache(&self.cache_path(), &cache::ModelsCache {
-                fetched_at: state.fetched_at.unwrap_or_else(Utc::now),
-                etag: state.etag.clone(),
-                models: state.models.clone(),
-            }) {
-                tracing::debug!("failed to persist /models cache on 304: {err}");
+            if let Some(identity) = identity {
+                let cache = cache::ModelsCache {
+                    fetched_at: state.fetched_at.unwrap_or_else(Utc::now),
+                    etag: state.etag.clone(),
+                    identity: Some(identity),
+                    models: state.models.clone(),
+                };
+                if let Err(err) = cache::save_cache(&self.cache_path(), &cache) {
+                    tracing::debug!("failed to persist /models cache on 304: {err}");
+                }
             }
             return;
         }
@@ -236,19 +274,29 @@ impl RemoteModelsManager {
         let etag = header_etag.filter(|value| !value.trim().is_empty());
 
         let fetched_at = Utc::now();
+        if self.cache_identity(&self.auth_manager.auth()) != identity {
+            return;
+        }
         {
             let mut state = self.state.write().await;
+            if state.identity != identity {
+                return;
+            }
             state.models = parsed.models;
             state.etag = etag.clone();
             state.fetched_at = Some(fetched_at);
         }
 
-        if let Err(err) = cache::save_cache(&self.cache_path(), &cache::ModelsCache {
-            fetched_at,
-            etag,
-            models: self.state.read().await.models.clone(),
-        }) {
-            tracing::debug!("failed to write /models cache: {err}");
+        if let Some(identity) = identity {
+            let cache = cache::ModelsCache {
+                fetched_at,
+                etag,
+                identity: Some(identity),
+                models: self.state.read().await.models.clone(),
+            };
+            if let Err(err) = cache::save_cache(&self.cache_path(), &cache) {
+                tracing::debug!("failed to write /models cache: {err}");
+            }
         }
     }
 
@@ -263,7 +311,9 @@ impl RemoteModelsManager {
         family: ModelFamily,
         personality: Option<ConfigPersonality>,
     ) -> ModelFamily {
-        self.ensure_loaded_from_disk().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
 
         let info = {
             let state = self.state.read().await;
@@ -282,7 +332,9 @@ impl RemoteModelsManager {
     }
 
     pub async fn has_model_slug(&self, model: &str) -> bool {
-        self.ensure_loaded_from_disk().await;
+        let auth = self.auth_manager.auth();
+        let identity = self.cache_identity(&auth);
+        self.ensure_loaded_from_disk(identity.as_deref()).await;
         self.state
             .read()
             .await
@@ -291,23 +343,44 @@ impl RemoteModelsManager {
             .any(|info| info.slug.eq_ignore_ascii_case(model))
     }
 
-    async fn ensure_loaded_from_disk(&self) {
+    fn cache_identity(&self, auth: &Option<CodexAuth>) -> Option<String> {
+        identity::model_cache_identity(&self.provider, auth.as_ref())
+    }
+
+    async fn ensure_loaded_from_disk(&self, identity: Option<&str>) {
         let loaded = { self.state.read().await.loaded_from_disk };
         if loaded {
+            let mut state = self.state.write().await;
+            if state.identity.as_deref() != identity {
+                state.fetched_at = None;
+                state.etag = None;
+                state.identity = identity.map(str::to_string);
+                state.models.clear();
+            }
             return;
         }
 
         let cache_path = self.cache_path();
-        let cache = match cache::load_cache(&cache_path) {
-            Ok(cache) => cache,
+        let cache = identity.and_then(|identity| match cache::load_cache(&cache_path) {
+            Ok(cache) => cache.filter(|cache| cache.identity.as_deref() == Some(identity)),
             Err(err) => {
                 tracing::debug!("failed to load /models cache: {err}");
                 None
             }
-        };
+        });
 
         let mut state = self.state.write().await;
+        if state.loaded_from_disk {
+            if state.identity.as_deref() != identity {
+                state.fetched_at = None;
+                state.etag = None;
+                state.identity = identity.map(str::to_string);
+                state.models.clear();
+            }
+            return;
+        }
         state.loaded_from_disk = true;
+        state.identity = identity.map(str::to_string);
         if let Some(cache) = cache {
             state.fetched_at = Some(cache.fetched_at);
             state.etag = cache.etag;

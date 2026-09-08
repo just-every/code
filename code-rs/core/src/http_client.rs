@@ -103,6 +103,7 @@ fn only_cloudflare_cookies(header: HeaderValue) -> Option<HeaderValue> {
 }
 
 fn is_allowed_cloudflare_cookie_name(name: &str) -> bool {
+    // `__oailb` is an OpenAI infrastructure routing cookie, not an authentication cookie.
     matches!(
         name,
         "__cf_bm"
@@ -110,11 +111,50 @@ fn is_allowed_cloudflare_cookie_name(name: &str) -> bool {
             | "__cfruid"
             | "__cfseq"
             | "__cfwaitingroom"
+            | "__oailb"
             | "_cfuvid"
             | "cf_clearance"
             | "cf_ob_info"
             | "cf_use_ob"
     ) || name.starts_with("cf_chl_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oailb_cookies_are_replayed_with_scope_and_expiration() {
+        let store = ChatGptCloudflareCookieStore::default();
+        let url = reqwest::Url::parse("https://chatgpt.com/backend-api/codex/responses")
+            .expect("valid ChatGPT URL");
+        let cookie = HeaderValue::from_static(
+            "__oailb=route; Path=/backend-api; Max-Age=3600; Secure; HttpOnly; SameSite=Lax",
+        );
+        store.set_cookies(&mut std::iter::once(&cookie), &url);
+
+        let followup_url = reqwest::Url::parse("https://chatgpt.com/backend-api/ps/mcp")
+            .expect("valid follow-up URL");
+        assert_eq!(
+            store.cookies(&followup_url),
+            Some(HeaderValue::from_static("__oailb=route"))
+        );
+        for outside_scope in [
+            "https://chatgpt.com/",
+            "https://other.chatgpt.com/backend-api/ps/mcp",
+            "https://api.openai.com/backend-api/ps/mcp",
+            "http://chatgpt.com/backend-api/ps/mcp",
+        ] {
+            let outside_scope = reqwest::Url::parse(outside_scope).expect("valid test URL");
+            assert_eq!(store.cookies(&outside_scope), None);
+        }
+
+        let expired = HeaderValue::from_static(
+            "__oailb=; Path=/backend-api; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
+        );
+        store.set_cookies(&mut std::iter::once(&expired), &url);
+        assert_eq!(store.cookies(&followup_url), None);
+    }
 }
 
 pub fn apply_extra_root_certificates(

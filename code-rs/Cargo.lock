@@ -1282,6 +1282,7 @@ dependencies = [
  "serde_yaml",
  "serial_test",
  "sha1",
+ "sha2",
  "shlex 1.3.0",
  "similar",
  "strum_macros 0.27.2",
