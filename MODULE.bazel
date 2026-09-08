@@ -118,6 +118,7 @@ osx.frameworks(names = [
     "IOSurface",
     "IOKit",
     "Kernel",
+    "LocalAuthentication",
     "Metal",
     "MetalKit",
     "OpenGL",
