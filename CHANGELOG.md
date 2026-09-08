@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.182] - 2026-09-08
+
+- Core: align model cache identity and routing cookie behavior. (007ac240)
+- Models: exclude base instructions from the bundled model catalog. (8e694e95)
+- macOS: add Secure Enclave-backed user verification support. (e7637306)
+
 ## [0.6.181] - 2026-09-07
 
 - Core: accept upstream reasoning metadata in model responses. (835c0ddd)

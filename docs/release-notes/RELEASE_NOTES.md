@@ -1,13 +1,12 @@
-## @just-every/code v0.6.181
+## @just-every/code v0.6.182
 
-This release improves model metadata handling, executor identity reporting, release pinning, and build stability.
+This release improves model routing behavior, bundled model metadata, and macOS user verification support.
 
 ### Changes
 
-- Core: accept upstream reasoning metadata in model responses.
-- Core: expose stable executor build identity in environment metadata.
-- Release: preserve standalone install pins during daemon updates and prevent published release replacement.
-- Release: improve Bazel and Linux musl build stability with opt-in stamping and jemalloc flag fixes.
+- Core: align model cache identity and routing cookie behavior.
+- Models: exclude base instructions from the bundled model catalog.
+- macOS: add Secure Enclave-backed user verification support.
 
 ### Install
 
@@ -16,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.180...v0.6.181
+Compare: https://github.com/just-every/code/compare/v0.6.181...v0.6.182
