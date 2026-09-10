@@ -240,6 +240,8 @@ pub enum ImageDetail {
     Original,
 }
 
+pub const DEFAULT_IMAGE_DETAIL: ImageDetail = ImageDetail::High;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 /// Classifies an assistant message as interim commentary or final answer text.

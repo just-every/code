@@ -962,7 +962,7 @@ pub fn default_auto_drive_model_routing_entries() -> Vec<AutoDriveModelRoutingEn
             description: "Hard planning and complex problem solving".to_string(),
         },
         AutoDriveModelRoutingEntry {
-            model: "gpt-5.4-mini".to_string(),
+            model: "gpt-5.6-luna".to_string(),
             enabled: true,
             reasoning_levels: vec![ReasoningEffort::High],
             description: "Fast implementation loops and failing-test iteration".to_string(),

@@ -771,8 +771,7 @@ impl ModelClient {
             });
         }
 
-        let mut input_with_instructions =
-            prompt.get_formatted_input_for_request(request_family.use_responses_lite);
+        let mut input_with_instructions = prompt.get_formatted_input_for_request(&request_family);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
         prepare_response_items_for_request(&mut input_with_instructions);
@@ -1262,8 +1261,7 @@ impl ModelClient {
                 });
         }
 
-        let mut input_with_instructions =
-            prompt.get_formatted_input_for_request(request_family.use_responses_lite);
+        let mut input_with_instructions = prompt.get_formatted_input_for_request(&request_family);
         rewrite_image_generation_calls_for_input(&mut input_with_instructions);
         replace_image_payloads_for_model(&mut input_with_instructions, request_model);
         prepare_response_items_for_request(&mut input_with_instructions);

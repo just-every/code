@@ -1287,7 +1287,7 @@ mod tests {
             true,
             model_routing_enabled,
             entries,
-            vec!["gpt-5.5".to_string(), "gpt-5.4-mini".to_string()],
+            vec!["gpt-5.5".to_string(), "gpt-5.6-luna".to_string()],
             AutoContinueMode::Manual,
         )
     }

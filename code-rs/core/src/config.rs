@@ -2957,7 +2957,7 @@ model_verbosity = "high"
         );
         assert_eq!(
             config.auto_drive.model_routing_entries[1].model,
-            "gpt-5.4-mini"
+            "gpt-5.6-luna"
         );
         assert_eq!(
             config.auto_drive.model_routing_entries[1].reasoning_levels,
@@ -3027,7 +3027,7 @@ model_verbosity = "high"
                 description: String::new(),
             },
             AutoDriveModelRoutingEntry {
-                model: "gpt-5.4-mini".to_string(),
+                model: "gpt-5.6-luna".to_string(),
                 enabled: false,
                 reasoning_levels: vec![ReasoningEffort::High],
                 description: String::new(),

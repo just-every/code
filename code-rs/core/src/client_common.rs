@@ -10,7 +10,9 @@ use crate::protocol::RateLimitSnapshotEvent;
 use crate::protocol::TokenUsage;
 use crate::user_instructions::UserInstructions;
 use code_protocol::models::ContentItem;
+use code_protocol::models::DEFAULT_IMAGE_DETAIL;
 use code_protocol::models::FunctionCallOutputContentItem;
+use code_protocol::models::ImageDetail;
 use code_protocol::models::ResponseItem;
 use futures::Stream;
 use once_cell::sync::Lazy;
@@ -238,12 +240,10 @@ impl Prompt {
 
     pub(crate) fn get_formatted_input_for_request(
         &self,
-        use_responses_lite: bool,
+        model_family: &ModelFamily,
     ) -> Vec<ResponseItem> {
         let mut input = self.get_formatted_input();
-        if use_responses_lite {
-            strip_function_output_image_details(&mut input);
-        }
+        normalize_function_output_image_details(&mut input, model_family);
         input
     }
 
@@ -262,7 +262,7 @@ impl Prompt {
     }
 }
 
-fn strip_function_output_image_details(items: &mut [ResponseItem]) {
+fn normalize_function_output_image_details(items: &mut [ResponseItem], model_family: &ModelFamily) {
     for item in items {
         match item {
             ResponseItem::FunctionCallOutput { output, .. }
@@ -272,13 +272,21 @@ fn strip_function_output_image_details(items: &mut [ResponseItem]) {
                         if let FunctionCallOutputContentItem::InputImage { detail, .. } =
                             content_item
                         {
-                            *detail = None;
+                            normalize_image_detail(detail, model_family);
                         }
                     }
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn normalize_image_detail(detail: &mut Option<ImageDetail>, model_family: &ModelFamily) {
+    if model_family.use_responses_lite {
+        *detail = None;
+    } else if *detail == Some(ImageDetail::Original) && !model_family.supports_image_detail_original {
+        *detail = Some(DEFAULT_IMAGE_DETAIL);
     }
 }
 
@@ -679,6 +687,67 @@ mod tests {
             ResponseItem::Message { content, .. }
                 if matches!(content.first(), Some(ContentItem::InputImage { .. }))
         ));
+    }
+
+    #[test]
+    fn request_format_normalizes_unsupported_original_image_detail() {
+        let mut model_family = find_family_for_model("gpt-5.3-codex").expect("known model");
+        model_family.use_responses_lite = false;
+        model_family.supports_image_detail_original = false;
+        let prompt = Prompt {
+            input: vec![ResponseItem::FunctionCallOutput {
+                call_id: "call_1".to_string(),
+                output: code_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                        detail: Some(ImageDetail::Original),
+                    },
+                ]),
+            }],
+            ..Default::default()
+        };
+
+        let input = prompt.get_formatted_input_for_request(&model_family);
+
+        assert!(input.iter().any(|item| matches!(
+            item,
+            ResponseItem::FunctionCallOutput { output, .. }
+                if matches!(
+                    output.content_items().and_then(|items| items.first()),
+                    Some(FunctionCallOutputContentItem::InputImage { detail, .. })
+                        if *detail == Some(DEFAULT_IMAGE_DETAIL)
+                )
+        )));
+    }
+
+    #[test]
+    fn request_format_strips_image_detail_for_responses_lite() {
+        let mut model_family = find_family_for_model("gpt-5.3-codex").expect("known model");
+        model_family.use_responses_lite = true;
+        let prompt = Prompt {
+            input: vec![ResponseItem::FunctionCallOutput {
+                call_id: "call_1".to_string(),
+                output: code_protocol::models::FunctionCallOutputPayload::from_content_items(vec![
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                        detail: Some(ImageDetail::Original),
+                    },
+                ]),
+            }],
+            ..Default::default()
+        };
+
+        let input = prompt.get_formatted_input_for_request(&model_family);
+
+        assert!(input.iter().any(|item| matches!(
+            item,
+            ResponseItem::FunctionCallOutput { output, .. }
+                if matches!(
+                    output.content_items().and_then(|items| items.first()),
+                    Some(FunctionCallOutputContentItem::InputImage { detail, .. })
+                        if detail.is_none()
+                )
+        )));
     }
 
     #[test]
