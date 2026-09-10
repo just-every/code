@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.184] - 2026-09-10
+
+- Release: update js-yaml to address Dependabot alert 149. (97f30b8f)
+- CLI: refresh package manifests and lockfile for the js-yaml security update. (97f30b8f)
+
 ## [0.6.182] - 2026-09-08
 
 - Core: align model cache identity and routing cookie behavior. (007ac240)
