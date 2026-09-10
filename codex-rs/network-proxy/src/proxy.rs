@@ -656,7 +656,7 @@ pub fn is_managed_proxy_env_var(key: &str, value: &str) -> bool {
 
 pub fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
     let brokered_credential_dummy_env_keys =
-        crate::credential_broker::brokered_credential_dummy_env_keys(env);
+        crate::credential_broker::marked_credential_dummy_env_keys(env);
     env.retain(|key, value| {
         !brokered_credential_dummy_env_keys.contains(key) && !is_managed_proxy_env_var(key, value)
     });
@@ -882,6 +882,11 @@ impl NetworkProxy {
         self.state.current_cfg().await
     }
 
+    /// Revision of credential configuration, excluding ordinary network policy changes.
+    pub fn credential_broker_config_revision(&self) -> u64 {
+        self.state.credential_broker_config_revision()
+    }
+
     /// Captures the static inputs needed to launch a matching executor-local proxy.
     pub async fn remote_launch_config(&self) -> Result<crate::RemoteNetworkProxyLaunchConfig> {
         let (mut config, brokerage_created_default_allowlist) =
@@ -889,7 +894,9 @@ impl NetworkProxy {
         // Proxy enablement and credential brokerage remain controller-owned.
         let mut broker_only_config = config::NetworkProxyConfig {
             enabled: config.enabled,
+            credential_providers: config.credential_providers.clone(),
             credential_broker_openai_host: config.credential_broker_openai_host.clone(),
+            credential_broker_context: config.credential_broker_context.clone(),
             dangerously_allow_plaintext_credential_injection: config
                 .dangerously_allow_plaintext_credential_injection,
             ..config::NetworkProxyConfig::default()
@@ -1026,6 +1033,7 @@ impl NetworkProxy {
         addrs: EnvironmentProxyAddrs,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         client: EnvironmentProxyClient,
+        environment_id: Option<&str>,
     ) -> PreparedManagedNetwork {
         #[cfg(target_os = "windows")]
         let shared_socks_addr = (client == EnvironmentProxyClient::SandboxedProcess)
@@ -1051,7 +1059,13 @@ impl NetworkProxy {
             runtime_settings.allow_local_binding,
             runtime_settings.mitm_ca_trust_bundle.as_ref(),
         );
-        self.state.virtualize_child_credentials(&mut env);
+        let credential_environment_id = environment_id.or_else(|| {
+            self.execution_scope
+                .as_ref()
+                .map(|scope| scope.environment_id.as_str())
+        });
+        self.state
+            .virtualize_child_credentials_for_environment(&mut env, credential_environment_id);
         if let Some(execution_scope) = self.execution_scope.as_ref() {
             env.insert(
                 PROXY_ATTRIBUTION_TOKEN_ENV_KEY.to_string(),
@@ -1100,11 +1114,13 @@ impl NetworkProxy {
         &self,
         env: &mut HashMap<String, String>,
         addrs: EnvironmentProxyAddrs,
+        environment_id: Option<&str>,
     ) {
         let prepared = self.prepare_for_addrs(
             std::mem::take(env),
             addrs,
             EnvironmentProxyClient::SandboxedProcess,
+            environment_id,
         );
         *env = prepared.env;
     }
@@ -1116,7 +1132,38 @@ impl NetworkProxy {
                 http_addr: self.http_addr,
                 socks_addr: self.socks_addr,
             },
+            /*environment_id*/ None,
         );
+    }
+
+    /// Prepares a snapshot for redaction, retaining dummies even for destinations that bypass
+    /// the proxy. Actual child execution must use `apply_to_env` instead.
+    pub fn apply_to_env_for_snapshot(&self, env: &mut HashMap<String, String>) {
+        self.apply_to_env(env);
+        let environment_id = self
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.environment_id.as_str());
+        self.state
+            .virtualize_snapshot_credentials(env, environment_id);
+    }
+
+    /// Checks a captured alias against registered child values, including scope-specific dummies
+    /// and credentials restored for direct destinations. This does not authorize new destinations.
+    pub fn child_credential_alias_matches(
+        &self,
+        key: &str,
+        value: &str,
+        snapshot_value: &str,
+        environment_id: Option<&str>,
+    ) -> bool {
+        let environment_id = environment_id.or_else(|| {
+            self.execution_scope
+                .as_ref()
+                .map(|scope| scope.environment_id.as_str())
+        });
+        self.state
+            .child_credential_alias_matches(key, value, snapshot_value, environment_id)
     }
 
     /// Restores known dummy credentials before a child intentionally leaves managed networking.
@@ -1148,6 +1195,51 @@ impl NetworkProxy {
         self.state.virtualize_brokered_text(text, env)
     }
 
+    /// Returns trusted provider metadata and active bindings for a child environment.
+    pub fn credential_broker_environment(
+        &self,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.state.credential_broker_environment(env)
+    }
+
+    /// Returns provider context for the dummy credentials contained in trusted text.
+    pub fn credential_broker_environment_for_text(
+        &self,
+        text: &str,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.state.credential_broker_environment_for_text(text, env)
+    }
+
+    /// Checks whether a registered provider source occurs in trusted captured text.
+    pub fn credential_broker_source_matches_text(
+        &self,
+        source: &str,
+        source_value: &str,
+        text: &str,
+    ) -> bool {
+        self.state
+            .credential_broker_source_matches_text(source, source_value, text)
+    }
+
+    /// Checks whether recognized credentials originate from permitted provider variables.
+    pub fn credential_broker_sources_allowed(
+        &self,
+        value: &str,
+        virtualized: &str,
+        source_env: &HashMap<String, String>,
+        is_allowed: impl Fn(&str) -> bool,
+    ) -> bool {
+        self.state
+            .credential_broker_sources_allowed(value, virtualized, source_env, is_allowed)
+    }
+
+    /// Restores known dummy credentials in trusted text captured for fail-open execution.
+    pub fn restore_brokered_text(&self, text: &mut String) -> bool {
+        self.state.restore_brokered_text(text)
+    }
+
     pub fn apply_to_env_for_environment(
         &self,
         env: &mut HashMap<String, String>,
@@ -1155,7 +1247,7 @@ impl NetworkProxy {
     ) -> Result<()> {
         let addrs =
             self.environment_proxy_addrs(environment_id, EnvironmentProxyClient::SandboxedProcess)?;
-        self.apply_to_env_for_addrs(env, addrs);
+        self.apply_to_env_for_addrs(env, addrs, Some(environment_id));
         Ok(())
     }
 
@@ -1190,7 +1282,12 @@ impl NetworkProxy {
                 socks_addr: self.socks_addr,
             },
         };
-        Ok(self.prepare_for_addrs(env, addrs, EnvironmentProxyClient::SandboxedProcess))
+        Ok(self.prepare_for_addrs(
+            env,
+            addrs,
+            EnvironmentProxyClient::SandboxedProcess,
+            environment_id,
+        ))
     }
 
     /// Prepares proxy settings for a remote executor whose connection reaches this process through
@@ -1202,7 +1299,12 @@ impl NetworkProxy {
     ) -> Result<PreparedManagedNetwork> {
         let addrs =
             self.environment_proxy_addrs(environment_id, EnvironmentProxyClient::TrustedBridge)?;
-        Ok(self.prepare_for_addrs(env, addrs, EnvironmentProxyClient::TrustedBridge))
+        Ok(self.prepare_for_addrs(
+            env,
+            addrs,
+            EnvironmentProxyClient::TrustedBridge,
+            Some(environment_id),
+        ))
     }
 
     fn environment_proxy_addrs(
@@ -2056,6 +2158,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_credential_context_prepares_spawn_ready_env() -> Result<()> {
+        #[cfg(target_os = "windows")]
+        let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();
+        let mut config = NetworkProxyConfig {
+            enabled: true,
+            ..NetworkProxyConfig::default()
+        };
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        let state = Arc::new(network_proxy_state_for_policy(config));
+        let proxy = NetworkProxy::builder()
+            .state(Arc::clone(&state))
+            .build()
+            .await?;
+        let handle = proxy.run().await?;
+        let real = "ghp-private-context-test";
+        for previous in [None, Some(""), Some("visible.example")] {
+            let mut env = HashMap::from([("GH_ENTERPRISE_TOKEN".to_string(), real.to_string())]);
+            if let Some(previous) = previous {
+                env.insert("GH_HOST".to_string(), previous.to_string());
+            }
+            let context = crate::CredentialBrokerContext::from(HashMap::from([(
+                "GH_HOST".to_string(),
+                "private.enterprise.example".to_string(),
+            )]));
+            let prepared =
+                context.prepare_child_environment(&proxy, env, Some("snapshot-context"))?;
+            assert_eq!(prepared.env.get("GH_HOST").map(String::as_str), previous);
+            let dummy = &prepared.env["GH_ENTERPRISE_TOKEN"];
+            assert_ne!(dummy, real);
+            for (host, expected) in [
+                ("private.enterprise.example", real),
+                ("visible.example", dummy.as_str()),
+            ] {
+                let mut headers = rama_http::HeaderMap::new();
+                headers.insert(
+                    rama_http::header::AUTHORIZATION,
+                    format!("Bearer {dummy}").parse()?,
+                );
+                state
+                    .for_environment_id(Some("snapshot-context"))
+                    .inject_request_credentials(host, &mut headers);
+                assert_eq!(
+                    headers[rama_http::header::AUTHORIZATION],
+                    format!("Bearer {expected}")
+                );
+            }
+        }
+        handle.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remote_launch_config_carries_execution_scope() -> Result<()> {
         #[cfg(target_os = "windows")]
         let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();
@@ -2064,6 +2218,10 @@ mod tests {
             ..NetworkProxyConfig::default()
         };
         config.set_credential_broker_enabled(/*enabled*/ true);
+        config.configure_credential_broker_environment(&HashMap::from([(
+            "GH_HOST".to_string(),
+            "local-github.example".to_string(),
+        )]));
         let state = Arc::new(network_proxy_state_for_policy(config));
         let proxy = match NetworkProxy::builder().state(state).build().await {
             Ok(proxy) => proxy,

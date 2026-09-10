@@ -15,6 +15,11 @@ impl ChatWidget {
             return;
         }
 
+        if replay_kind != Some(ReplayKind::ResumeInitialMessages)
+            && !self.recover_resumed_reasoning(&notification)
+        {
+            return;
+        }
         let was_replaying_turn_completion = self.thread_usage.replaying_turn_completion;
         self.thread_usage.replaying_turn_completion = replay_kind.is_some();
         let from_replay = replay_kind.is_some();
@@ -98,7 +103,9 @@ impl ChatWidget {
                 if !self.is_realtime_delegated_reasoning_item(
                     &notification.turn_id,
                     &notification.item_id,
-                ) {
+                ) && self.status_state.reasoning_item_id.as_deref()
+                    == Some(&notification.item_id)
+                {
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }
@@ -108,6 +115,7 @@ impl ChatWidget {
                         &notification.turn_id,
                         &notification.item_id,
                     )
+                    && self.status_state.reasoning_item_id.as_deref() == Some(&notification.item_id)
                 {
                     self.on_agent_reasoning_delta(notification.delta);
                 }
@@ -116,7 +124,9 @@ impl ChatWidget {
                 if !self.is_realtime_delegated_reasoning_item(
                     &notification.turn_id,
                     &notification.item_id,
-                ) {
+                ) && self.status_state.reasoning_item_id.as_deref()
+                    == Some(&notification.item_id)
+                {
                     self.on_reasoning_section_break();
                 }
             }
@@ -303,6 +313,7 @@ impl ChatWidget {
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadDeleted(_)
             | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadAttachmentUpdated(_)
             | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::RawResponseCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
@@ -333,6 +344,20 @@ impl ChatWidget {
             | ServerNotification::ProjectChanged(_)
             | ServerNotification::ThreadProjectUpdated(_) => {}
             ServerNotification::ContextCompacted(_) => {}
+        }
+        // Tool and hook activity can recreate a hidden row with its default
+        // heading. Restore the selected status before that row is rendered.
+        if self
+            .bottom_pane
+            .status_widget()
+            .is_some_and(|status| status.header() != self.status_state.current_status.header)
+        {
+            self.bottom_pane.update_status(
+                self.status_state.current_status.header.clone(),
+                self.status_state.current_status.details.clone(),
+                StatusDetailsCapitalization::Preserve,
+                self.status_state.current_status.details_max_lines,
+            );
         }
         self.thread_usage.replaying_turn_completion = was_replaying_turn_completion;
     }
@@ -461,16 +486,22 @@ impl ChatWidget {
             ThreadItem::AgentMessage { id, .. } if replay_kind.is_none() => {
                 self.is_realtime_delegated_agent_item(&notification.turn_id, &id);
             }
-            ThreadItem::Reasoning { id, .. }
+            ThreadItem::Reasoning { id, .. } => {
                 if replay_kind.is_none()
-                    && !self.is_realtime_delegated_reasoning_turn(&notification.turn_id) =>
-            {
-                // A later voice handoff can steer this turn without making an
-                // already-started typed reasoning item private.
-                self.realtime_conversation
-                    .agent_items
-                    .entry((notification.turn_id.clone(), id))
-                    .or_insert(realtime::RealtimeAgentItemOrigin::Typed);
+                    && !self.is_realtime_delegated_reasoning_turn(&notification.turn_id)
+                {
+                    // A later voice handoff can steer this turn without making an
+                    // already-started typed reasoning item private.
+                    self.realtime_conversation
+                        .agent_items
+                        .entry((notification.turn_id.clone(), id.clone()))
+                        .or_insert(realtime::RealtimeAgentItemOrigin::Typed);
+                }
+                if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages))
+                    && !self.is_realtime_delegated_reasoning_item(&notification.turn_id, &id)
+                {
+                    self.on_reasoning_item_started(id);
+                }
             }
             ThreadItem::ContextCompaction { id }
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) =>
@@ -551,6 +582,12 @@ impl ChatWidget {
             } = &notification.item
         {
             self.add_async_questions(id, questions);
+        }
+        if replay_kind.is_none()
+            && let ThreadItem::Reasoning { id, .. } = &notification.item
+            && self.status_state.reasoning_item_id.as_ref() != Some(id)
+        {
+            return;
         }
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),

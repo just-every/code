@@ -7,6 +7,7 @@ mod client;
 mod managed_install;
 mod remote_control_client;
 mod settings;
+mod thread_recovery;
 mod update_loop;
 
 use std::path::Path;
@@ -314,6 +315,15 @@ impl Daemon {
         })
     }
 
+    fn recovery_file(&self) -> Result<PathBuf> {
+        Ok(codex_app_server_transport::daemon_recovery_file_path(
+            self.settings_file
+                .parent()
+                .and_then(Path::parent)
+                .context("daemon settings path has no Codex home")?,
+        ))
+    }
+
     async fn run(&self, command: LifecycleCommand) -> Result<LifecycleOutput> {
         match command {
             LifecycleCommand::Start => {
@@ -326,7 +336,11 @@ impl Daemon {
             }
             LifecycleCommand::Stop => {
                 let _operation_lock = self.acquire_operation_lock().await?;
-                self.stop().await
+                let output = self.stop().await?;
+                if let Err(err) = thread_recovery::discard_pending(self) {
+                    eprintln!("warning: failed to clear saved threads after daemon stop: {err}");
+                }
+                Ok(output)
             }
             LifecycleCommand::Version => self.version().await,
         }
@@ -350,6 +364,10 @@ impl Daemon {
                 self.wait_until_ready().await?,
             )
         } else {
+            // A fresh start must ignore snapshots left by older stop clients.
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before start: {err}");
+            }
             self.ensure_managed_codex_bin()?;
             let pid = self.start_managed_backend(&settings).await?;
             (
@@ -386,6 +404,9 @@ impl Daemon {
 
         self.ensure_managed_codex_bin()?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before restart: {err}");
+            }
             backend
                 .stop_with_grace(settings.shutdown_grace_seconds)
                 .await?;
@@ -456,6 +477,11 @@ impl Daemon {
                 RestartDecision::Restart => {
                     #[cfg(windows)]
                     backend::windows::ensure_detached_launch(managed_codex_bin)?;
+                    if let Err(err) = thread_recovery::discard_pending(self) {
+                        eprintln!(
+                            "warning: failed to clear stale daemon recovery before update: {err}"
+                        );
+                    }
                     backend
                         .stop_with_grace(settings.shutdown_grace_seconds)
                         .await?;
@@ -654,6 +680,11 @@ impl Daemon {
         settings.save(&self.settings_file).await?;
 
         let app_server_version = if let Some(backend) = backend {
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!(
+                    "warning: failed to clear stale recovery before remote-control restart: {err}"
+                );
+            }
             backend
                 .stop_with_grace(settings.shutdown_grace_seconds)
                 .await?;
@@ -695,6 +726,9 @@ impl Daemon {
             .stop()
             .await?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
+            if let Err(err) = thread_recovery::discard_pending(self) {
+                eprintln!("warning: failed to clear stale daemon recovery before bootstrap: {err}");
+            }
             backend
                 .stop_with_grace(settings.shutdown_grace_seconds)
                 .await?;
@@ -1174,6 +1208,48 @@ mod tests {
                 .status,
             LifecycleStatus::NotRunning,
         );
+    }
+
+    #[tokio::test]
+    async fn stop_and_fresh_start_discard_pending_thread_restore() {
+        let home = TempDir::new().expect("home");
+        let state = home.path().join("app-server-daemon");
+        codex_uds::prepare_private_socket_directory(&state)
+            .await
+            .expect("private state directory");
+        let daemon = Daemon {
+            socket_path: home.path().join("server.sock"),
+            pid_file: state.join("server.pid"),
+            update_pid_file: state.join("updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: home.path().join("codex"),
+        };
+        codex_app_server_transport::daemon_recovery::write_candidates(
+            &daemon.recovery_file().expect("recovery path"),
+            &["thread".to_string()].into_iter().collect(),
+        )
+        .expect("saved threads");
+        assert_eq!(
+            daemon
+                .run(super::LifecycleCommand::Stop)
+                .await
+                .expect("stop")
+                .status,
+            LifecycleStatus::NotRunning
+        );
+        assert!(!daemon.recovery_file().expect("recovery path").exists());
+        // Simulate an older stop client leaving a snapshot behind.
+        std::fs::write(
+            daemon.recovery_file().expect("recovery path"),
+            r#"["thread"]"#,
+        )
+        .expect("legacy saved threads");
+        daemon
+            .run(super::LifecycleCommand::Start)
+            .await
+            .expect_err("missing backend binary");
+        assert!(!daemon.recovery_file().expect("recovery path").exists());
     }
 
     #[cfg(unix)]

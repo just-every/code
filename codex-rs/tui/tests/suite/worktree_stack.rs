@@ -16,7 +16,7 @@ use std::time::Instant;
 use wiremock::matchers::body_string_contains;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn picker_worktree_fork_and_cd_run_on_the_production_stack() -> Result<()> {
+async fn picker_side_worktree_fork_and_cd_run_on_the_production_stack() -> Result<()> {
     let repository = tempfile::tempdir_in("/tmp")?;
     let root = repository.path().canonicalize()?;
     let status = Command::new("git")
@@ -92,6 +92,12 @@ async fn picker_worktree_fork_and_cd_run_on_the_production_stack() -> Result<()>
     terminal.wait_for_startup()?;
     terminal.wait_for_screen("STACK_SAVED_HISTORY")?;
     terminal.wait_for_screen("Ask Codex to do anything")?;
+
+    submit(&mut terminal, "/side")?;
+    terminal.wait_for_screen("Side from main thread")?;
+    terminal.ensure_running()?;
+    terminal.write_input(b"\x03")?;
+    terminal.wait_for_screen("STACK_SAVED_HISTORY")?;
 
     submit(&mut terminal, "/resume")?;
     terminal.wait_for_screen("Resume a previous session")?;

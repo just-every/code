@@ -514,7 +514,7 @@ async fn snapshot_model_visible_layout_resume_with_personality_change() -> Resul
         .with_extensions(skills_extensions())
         .with_config(|config| {
             config.update_plan_enabled = true;
-            config.model = Some("gpt-5.2".to_string());
+            config.model = Some("gpt-5.5".to_string());
         });
     let initial = initial_builder.build(&server).await?;
     let codex = Arc::clone(&initial.codex);

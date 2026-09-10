@@ -1,12 +1,12 @@
 //! Installs the synchronous reviewer independently of async scorer startup.
-//! Reviewer state lives in the existing thread store and uses the shared ThreadManager.
+//! Reviewer policy and pool state live in the extension; core supplies context and runtime handles.
 
 use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_core::ThreadManager;
 use codex_core::config::Config;
-use codex_core::guardian_review::GuardianReviewSessionManager;
+use codex_core::guardian_review::GuardianReviewSessionHost;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadLifecycleContributor;
@@ -35,7 +35,7 @@ impl ThreadLifecycleContributor<Config> for GuardianExtension {
                 return;
             }
             input.thread_store.get_or_init(|| {
-                GuardianReviewSessionManager::with_thread_manager(self.thread_manager.clone())
+                GuardianReviewSessionHost::with_thread_manager(self.thread_manager.clone())
             });
         })
     }
@@ -45,7 +45,7 @@ impl ThreadLifecycleContributor<Config> for GuardianExtension {
         input: ThreadReadyInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            if let Some(sessions) = input.thread_store.get::<GuardianReviewSessionManager>() {
+            if let Some(sessions) = input.thread_store.get::<GuardianReviewSessionHost>() {
                 sessions.mark_ready();
             }
         })

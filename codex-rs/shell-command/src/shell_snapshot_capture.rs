@@ -1,8 +1,9 @@
 //! Capture native shell state and decode complete export records without applying credential policy.
-//! Retain native declaration flags and reject incomplete records.
+//! Retain native declaration flags and tied-array boundaries; reject incomplete records.
 
 use super::SnapshotStartup;
 use super::exports;
+use super::literals;
 use super::posix_env_path_expansion_function;
 use crate::shell_detect::ShellType;
 use std::borrow::Cow;
@@ -156,6 +157,8 @@ SNAPSHOT_ENVIRONMENT
     format!("{startup}{script}")
 }
 
+pub(super) const BASH_SH_SNAPSHOT_HEADER: &str = "# Snapshot file\n# Bash-backed sh\n";
+
 fn sh_snapshot_script(shell_startup: SnapshotStartup) -> String {
     let startup = match shell_startup {
         SnapshotStartup::Interactive => [
@@ -229,6 +232,7 @@ SNAPSHOT_ENVIRONMENT
 pub struct CapturedSnapshot<'a> {
     /// Resolved POSIX startup file and its environment immediately before sourcing it.
     pub startup_environment: Option<CapturedStartupEnvironment<'a>>,
+    pub(super) shell_type: ShellType,
     pub(super) state: &'a str,
     pub(super) aliases: &'a str,
     pub(super) exports: Vec<CapturedExport<'a>>,
@@ -238,13 +242,26 @@ pub struct CapturedSnapshot<'a> {
 
 /// Optional pre-startup state captured alongside the final snapshot records.
 pub struct CapturedStartupEnvironment<'a> {
-    pub path: &'a str,
+    pub path: Cow<'a, str>,
     pub environment: &'a [u8],
 }
 
 pub(super) struct CapturedExport<'a> {
     pub source: Cow<'a, str>,
     pub key: &'a str,
+    pub value: ExportValue,
+}
+
+pub(super) enum ExportValue {
+    Plain,
+    TiedArray(CapturedArray),
+    UnparsedArray,
+}
+
+pub(super) struct CapturedArray {
+    pub span: std::ops::Range<usize>,
+    pub values: Vec<Vec<u8>>,
+    pub separator: Vec<u8>,
 }
 
 impl<'a> CapturedSnapshot<'a> {
@@ -262,7 +279,7 @@ impl<'a> CapturedSnapshot<'a> {
                 .position(|part| part == startup_marker)
         {
             remaining = &remaining[start + startup_marker.len()..];
-            let path = std::str::from_utf8(take_record(&mut remaining)?).ok()?;
+            let path = String::from_utf8_lossy(take_record(&mut remaining)?);
             let environment = remaining;
             while !take_record(&mut remaining)?.is_empty() {}
             let environment = &environment[..environment.len() - remaining.len() - 1];
@@ -310,11 +327,13 @@ impl<'a> CapturedSnapshot<'a> {
                                 shlex::try_quote(&value).ok()?
                             )),
                             key,
+                            value: ExportValue::Plain,
                         });
                     }
                 }
                 return Some(Self {
                     startup_environment,
+                    shell_type,
                     state,
                     aliases,
                     exports: records,
@@ -322,7 +341,75 @@ impl<'a> CapturedSnapshot<'a> {
                 });
             }
             let source = String::from_utf8_lossy(take_record(&mut remaining)?);
-            records.push(CapturedExport { source, key });
+            // Only tied arrays need syntax decoding; scalar values remain native declarations.
+            let tied = shell_type == ShellType::Zsh
+                && source
+                    .split_whitespace()
+                    .skip(/*n*/ 1)
+                    .take_while(|word| word.starts_with('-'))
+                    .any(|flags| flags.contains('T'));
+            let tree = tied
+                .then(|| crate::bash::try_parse_shell(&source))
+                .flatten();
+            let array = tree.as_ref().and_then(|tree| {
+                if tree.root_node().has_error() {
+                    return None;
+                }
+                let mut cursor = tree.root_node().walk();
+                tree.root_node()
+                    .named_child(/*i*/ 0)?
+                    .named_children(&mut cursor)
+                    .find_map(|child| {
+                        child
+                            .child_by_field_name("value")
+                            .filter(|value| value.kind() == "array")
+                    })
+            });
+            let value = if let Some(array) = array {
+                let mut cursor = array.walk();
+                let values = array
+                    .named_children(&mut cursor)
+                    .map(|node| {
+                        literals::literal_word_bytes(
+                            node,
+                            &source,
+                            shell_type,
+                            literals::Quoting::Posix,
+                        )
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let separator = array.parent().and_then(|node| node.next_named_sibling());
+                let separator = if let Some(separator) = separator
+                    && separator.kind() == "variable_name"
+                {
+                    separator
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|value| value.as_bytes().to_vec())
+                } else if let Some(separator) = separator {
+                    literals::literal_word_bytes(
+                        separator,
+                        &source,
+                        shell_type,
+                        literals::Quoting::Posix,
+                    )
+                } else {
+                    Some(vec![b':'])
+                };
+                match (values, separator) {
+                    (Some(values), Some(separator)) => ExportValue::TiedArray(CapturedArray {
+                        span: array.byte_range(),
+                        values,
+                        separator,
+                    }),
+                    _ => ExportValue::UnparsedArray,
+                }
+            } else if tied {
+                ExportValue::UnparsedArray
+            } else {
+                ExportValue::Plain
+            };
+            records.push(CapturedExport { source, key, value });
         }
     }
 }

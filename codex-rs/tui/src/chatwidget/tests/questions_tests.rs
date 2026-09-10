@@ -59,6 +59,291 @@ async fn accepted_question_answer_uses_existing_delivery_and_keeps_main_draft() 
 }
 
 #[tokio::test]
+async fn ordinary_follow_up_clears_unanswered_questions_after_accepted_input() {
+    for queued in [false, true] {
+        let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.show_welcome_banner = false;
+        chat.add_async_questions("old", &questions());
+        if queued {
+            chat.on_task_started();
+        }
+        chat.bottom_pane
+            .set_composer_text("New prompt".into(), Vec::new(), Vec::new());
+        chat.handle_key_event(KeyEvent::from(if queued {
+            KeyCode::Tab
+        } else {
+            KeyCode::Enter
+        }));
+
+        assert_eq!(question_count(&chat), 0);
+        if queued {
+            assert_eq!(
+                chat.input_queue.queued_user_messages.front().unwrap().text,
+                "New prompt"
+            );
+            assert!(op_rx.try_recv().is_err());
+        } else {
+            assert_answer(op_rx.try_recv().unwrap(), "New prompt");
+            insta::assert_snapshot!(
+                "questions_cleared_by_follow_up",
+                render_bottom_popup(&chat, /*width*/ 80)
+                    .lines()
+                    .next()
+                    .unwrap()
+            );
+        }
+        chat.add_async_questions("old", &questions());
+        assert_eq!(question_count(&chat), 0);
+        chat.add_async_questions("new", &[question("New question?", /*options*/ None)]);
+        assert_eq!(question_count(&chat), 1);
+    }
+}
+
+#[tokio::test]
+async fn local_shell_command_preserves_unanswered_questions() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.bottom_pane
+        .set_composer_text("!echo hi".into(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(question_count(&chat), 2);
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::RunUserShellCommand { command }) if command == "echo hi"
+    );
+}
+
+#[tokio::test]
+async fn queued_prompt_clears_questions_arriving_after_enqueue_when_it_starts() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.add_async_questions("old", &questions());
+    chat.bottom_pane
+        .set_composer_text("New prompt".into(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(question_count(&chat), 0);
+
+    chat.add_async_questions("late", &questions());
+    assert_eq!(question_count(&chat), 2);
+    chat.turn_lifecycle.finish();
+    chat.update_task_running_state();
+    assert!(chat.maybe_send_next_queued_input());
+    assert_answer(op_rx.try_recv().unwrap(), "New prompt");
+    assert_eq!(question_count(&chat), 0);
+    chat.add_async_questions("late", &questions());
+    assert_eq!(question_count(&chat), 0);
+}
+
+#[tokio::test]
+async fn queued_question_answer_preserves_other_questions_on_delivery() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.input_queue.suppress_queue_autosend = true;
+    chat.add_async_questions("old", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.bottom_pane.handle_paste("answer".into());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(question_count(&chat), 1);
+
+    chat.input_queue.suppress_queue_autosend = false;
+    assert!(chat.maybe_send_next_queued_input());
+    assert_answer(op_rx.try_recv().unwrap(), "> Which way?\n\nanswer");
+    assert_eq!(question_count(&chat), 1);
+}
+
+#[tokio::test]
+async fn recovered_question_answers_preserve_other_questions() {
+    for restore_thread in [false, true] {
+        let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.on_task_started();
+        chat.add_async_questions("old", &questions());
+        chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        chat.bottom_pane.handle_paste("answer".into());
+        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        assert_answer(op_rx.try_recv().unwrap(), "> Which way?\n\nanswer");
+        assert_eq!(question_count(&chat), 1);
+        chat.add_async_questions("late", &[question("Late?", /*options*/ None)]);
+
+        if restore_thread {
+            let state = chat.capture_thread_input_state().unwrap();
+            chat.restore_thread_input_state(
+                Some(state),
+                ThreadInputStateRestoreMode {
+                    preserve_in_flight_turn: false,
+                },
+            );
+        } else {
+            assert!(chat.enqueue_rejected_steer());
+            chat.turn_lifecycle.finish();
+            chat.update_task_running_state();
+        }
+        assert!(chat.maybe_send_next_queued_input());
+        assert_answer(op_rx.try_recv().unwrap(), "> Which way?\n\nanswer");
+        assert_eq!(question_count(&chat), 2);
+    }
+}
+
+#[tokio::test]
+async fn slash_and_mode_prompts_clear_unanswered_questions_after_delivery() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.handle_composer_input_result(
+        InputResult::CommandWithArgs(SlashCommand::Plan, "New plan".into(), Vec::new()),
+        /*had_modal_or_popup*/ false,
+    );
+    assert_answer(op_rx.try_recv().unwrap(), "New plan");
+    assert_eq!(question_count(&chat), 0);
+
+    chat.input_queue.user_turn_pending_start = false;
+    chat.add_async_questions("next", &questions());
+    let mode = collaboration_modes::default_mask(chat.model_catalog.as_ref()).unwrap();
+    chat.submit_user_message_with_mode("Implement".to_string(), mode);
+    assert_answer(op_rx.try_recv().unwrap(), "Implement");
+    assert_eq!(question_count(&chat), 0);
+}
+
+#[tokio::test]
+async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.handle_composer_input_result(
+        InputResult::CommandWithArgs(SlashCommand::Review, "check this".into(), Vec::new()),
+        /*had_modal_or_popup*/ false,
+    );
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::Review {
+            target: ReviewTarget::Custom { instructions }
+        }) if instructions == "check this"
+    );
+    assert_eq!(question_count(&chat), 0);
+
+    chat.add_async_questions("new", &questions());
+    chat.blocks_direct_input = true;
+    chat.handle_composer_input_result(
+        InputResult::CommandWithArgs(SlashCommand::Review, "try again".into(), Vec::new()),
+        /*had_modal_or_popup*/ false,
+    );
+    assert_eq!(question_count(&chat), 2);
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does_not() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.add_async_questions("old", &questions());
+    for text in ["/model", "/goal clear"] {
+        chat.handle_composer_input_result(
+            InputResult::Queued {
+                text: text.into(),
+                text_elements: Vec::new(),
+                action: QueuedInputAction::ParseSlash,
+                pending_pastes: Vec::new(),
+            },
+            /*had_modal_or_popup*/ false,
+        );
+        assert_eq!(question_count(&chat), 2);
+    }
+    chat.handle_composer_input_result(
+        InputResult::Queued {
+            text: "/plan New work".into(),
+            text_elements: Vec::new(),
+            action: QueuedInputAction::ParseSlash,
+            pending_pastes: Vec::new(),
+        },
+        /*had_modal_or_popup*/ false,
+    );
+    assert_eq!(question_count(&chat), 0);
+    assert!(op_rx.try_recv().is_err());
+
+    chat.add_async_questions("new", &questions());
+    chat.handle_composer_input_result(
+        InputResult::Queued {
+            text: "/diff explain the change".into(),
+            text_elements: Vec::new(),
+            action: QueuedInputAction::ParseSlash,
+            pending_pastes: Vec::new(),
+        },
+        /*had_modal_or_popup*/ false,
+    );
+    assert_eq!(question_count(&chat), 0);
+}
+
+#[tokio::test]
+async fn rejected_synchronous_literal_prompt_keeps_questions() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.set_model("");
+    chat.handle_composer_input_result(
+        InputResult::Queued {
+            text: "literal prompt".into(),
+            text_elements: Vec::new(),
+            action: QueuedInputAction::Literal,
+            pending_pastes: Vec::new(),
+        },
+        /*had_modal_or_popup*/ false,
+    );
+    assert_eq!(question_count(&chat), 2);
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn reconnect_preserves_buffered_question_answer_source() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.bottom_pane.handle_paste("answer".into());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_answer(op_rx.try_recv().unwrap(), "> Which way?\n\nanswer");
+    assert_eq!(question_count(&chat), 1);
+    chat.pause_for_disconnect();
+    let state = chat.capture_thread_input_state();
+
+    let (mut restored, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    restored.thread_id = Some(ThreadId::new());
+    restored.restore_reconnected_input(state);
+    assert_eq!(
+        restored
+            .input_queue
+            .queued_user_messages
+            .front()
+            .unwrap()
+            .source,
+        UserMessageSource::QuestionAnswer,
+    );
+    // Recovered input stays paused until the user elects to retry it.
+    restored.input_queue.recovered_queue = false;
+    assert!(restored.maybe_send_next_queued_input());
+    assert_answer(op_rx.try_recv().unwrap(), "> Which way?\n\nanswer");
+    assert_eq!(question_count(&restored), 1);
+}
+
+#[tokio::test]
+async fn blocked_follow_up_keeps_unanswered_questions() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.add_async_questions("old", &questions());
+    chat.set_model("");
+    chat.bottom_pane
+        .set_composer_text("Blocked prompt".into(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(question_count(&chat), 2);
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn disconnected_questions_remain_editable_without_sending() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.add_async_questions("message", &questions());
@@ -376,7 +661,7 @@ async fn question_key_repeats_do_not_consume_another_question() {
 }
 
 #[tokio::test]
-async fn question_queue_pop_becomes_an_ordinary_composer_draft() {
+async fn question_queue_pop_becomes_an_ordinary_composer_draft_and_clears_questions_on_send() {
     let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
     for text in ["older", "newer"] {
         chat.input_queue
@@ -402,7 +687,8 @@ async fn question_queue_pop_becomes_an_ordinary_composer_draft() {
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
     assert_answer(ops.try_recv().unwrap(), "older");
     chat.handle_key_event(forward);
-    assert!(chat.bottom_pane.questions.as_ref().unwrap().expanded);
+    assert_eq!(question_count(&chat), 0);
+    assert!(!chat.bottom_pane.questions.as_ref().unwrap().expanded);
     assert!(
         !chat
             .bottom_pane

@@ -24,6 +24,7 @@ use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
@@ -164,9 +165,7 @@ pub(crate) fn start_streaming_output(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_exit_watcher(
     process: Arc<UnifiedExecProcess>,
-    session_ref: Arc<Session>,
-    turn_ref: Arc<TurnContext>,
-    call_id: String,
+    context: &UnifiedExecContext,
     command: Vec<String>,
     cwd: PathUri,
     process_id: i32,
@@ -176,6 +175,10 @@ pub(crate) fn spawn_exit_watcher(
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
 ) {
+    let session_ref = Arc::clone(&context.session);
+    let turn_ref = Arc::clone(&context.step_context.turn);
+    let model_info = Arc::clone(&context.step_context.settings.model_info);
+    let call_id = context.call_id.clone();
     let exit_token = process.cancellation_token();
     let output_drained = process.output_drained_notify();
     let interaction_lock = process.interaction_lock();
@@ -200,6 +203,7 @@ pub(crate) fn spawn_exit_watcher(
             emit_failed_exec_end_for_unified_exec(
                 session_ref,
                 turn_ref,
+                model_info,
                 call_id,
                 command,
                 cwd,
@@ -225,6 +229,7 @@ pub(crate) fn spawn_exit_watcher(
             emit_exec_end_for_unified_exec(
                 session_ref,
                 turn_ref,
+                model_info,
                 call_id,
                 command,
                 cwd,
@@ -337,6 +342,7 @@ impl Emitter {
 pub(crate) async fn emit_exec_end_for_unified_exec(
     session_ref: Arc<Session>,
     turn_ref: Arc<TurnContext>,
+    model_info: Arc<ModelInfo>,
     call_id: String,
     command: Vec<String>,
     cwd: PathUri,
@@ -360,6 +366,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),
+        &model_info,
         &call_id,
         /*turn_diff_tracker*/ None,
     );
@@ -385,6 +392,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
 pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     session_ref: Arc<Session>,
     turn_ref: Arc<TurnContext>,
+    model_info: Arc<ModelInfo>,
     call_id: String,
     command: Vec<String>,
     cwd: PathUri,
@@ -416,6 +424,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),
+        &model_info,
         &call_id,
         /*turn_diff_tracker*/ None,
     );

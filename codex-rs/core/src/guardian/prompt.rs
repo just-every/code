@@ -1,5 +1,7 @@
 use codex_extension_api::ConversationHistorySnapshot;
+use codex_guardian_context::Budgeted;
 use codex_guardian_context::CollectedContext;
+use codex_guardian_context::ComposedContext;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
 #[cfg(test)]
@@ -13,9 +15,10 @@ use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
 use codex_guardian_context::default_registry;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::user_input::UserInput;
 
+use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
+use crate::context::GuardianToolDescriptions;
 use crate::context::NodeReplReviewEvidence;
 use crate::context::NodeReplReviewEvidenceMode;
 use crate::context::node_repl_review_evidence_mode;
@@ -36,10 +39,9 @@ const GUARDIAN_MAX_APPROVAL_REASON_TOKENS: usize = 512;
 pub(super) const GUARDIAN_TRANSCRIPT_START: &str = ">>> TRANSCRIPT START\n";
 
 pub(crate) struct GuardianPromptItems {
-    pub(crate) items: Vec<UserInput>,
+    pub(crate) context: ComposedContext,
     pub(crate) transcript_cursor: GuardianTranscriptCursor,
     pub(crate) node_repl_evidence_sequence: u64,
-    pub(crate) reviewed_action_truncated: bool,
 }
 
 /// Points to the end of the transcript that the guardian has already reviewed.
@@ -117,7 +119,21 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .fragments;
     let planned_action_json = format_guardian_action_pretty(&request)?;
     let planned_action = PlannedAction {
-        json: planned_action_json.text,
+        json: planned_action_json,
+        tool_descriptions: if let GuardianApprovalRequest::McpToolCall {
+            tool_description,
+            connector_description,
+            ..
+        } = &request
+        {
+            GuardianToolDescriptions::new(
+                tool_description.as_deref(),
+                connector_description.as_deref(),
+            )
+            .map(|descriptions| descriptions.render())
+        } else {
+            None
+        },
         kind: match &request {
             GuardianApprovalRequest::NetworkAccess { trigger, .. } => PlannedActionKind::Network {
                 has_trigger: trigger.is_some(),
@@ -208,16 +224,15 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     let profile = ContextProfile::synchronous();
     let mut transcript = profile.render_transcript(transcript_entries, offset);
     if transcript_entries.is_empty() {
-        transcript.items.push(placeholder.to_owned());
+        transcript
+            .items
+            .push(Budgeted::required(placeholder.to_owned()));
     }
-    let items = sections
-        .compose(presentation, transcript)?
-        .into_user_inputs()?;
+    let context = sections.compose(presentation, transcript)?;
     Ok(GuardianPromptItems {
-        items,
+        context,
         transcript_cursor,
         node_repl_evidence_sequence,
-        reviewed_action_truncated: planned_action_json.truncated,
     })
 }
 
@@ -255,11 +270,18 @@ pub(crate) fn render_guardian_transcript_entries(
     let mut transcript =
         ContextProfile::synchronous().render_transcript(entries, /*entry_number_offset*/ 0);
     if entries.is_empty() {
+        transcript.items.push(Budgeted::required(
+            "<no retained transcript entries>".to_owned(),
+        ));
+    }
+    (
         transcript
             .items
-            .push("<no retained transcript entries>".to_owned());
-    }
-    (transcript.items, transcript.omission_note)
+            .into_iter()
+            .map(|item| item.content)
+            .collect(),
+        transcript.omission_note,
+    )
 }
 
 /// Retains the human-readable conversation plus recent tool call / result
@@ -336,8 +358,7 @@ pub(crate) fn guardian_truncate_text(content: &str, token_cap: usize) -> (String
     )
 }
 
-use super::assessment::guardian_output_contract_prompt;
-pub use super::assessment::parse_guardian_assessment;
+use codex_guardian_reviewer::guardian_output_contract_prompt;
 
 pub(crate) const BUNDLED_GUARDIAN_POLICY: &str = include_str!("../../assets/guardian/policy.md");
 pub(crate) const BUNDLED_GUARDIAN_POLICY_TEMPLATE: &str =

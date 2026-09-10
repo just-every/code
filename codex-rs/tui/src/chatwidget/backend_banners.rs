@@ -6,6 +6,7 @@
 //! Its entry notice is shared across chats until the backend confirms ordinary usage has recovered.
 
 use super::ChatWidget;
+use super::QueuedUserMessage;
 use super::luna_reserve_return::ReserveReturnModel;
 use crate::app_command::AppCommand;
 use crate::backend_banners::BackendBanner;
@@ -221,7 +222,10 @@ impl ChatWidget {
             self.finalize_turn();
             self.input_queue
                 .queued_user_messages
-                .push_front(prompt.into());
+                .push_front(QueuedUserMessage {
+                    source: self.safety_buffering_source,
+                    ..QueuedUserMessage::from(prompt)
+                });
             self.input_queue
                 .queued_user_message_history_records
                 .push_front(super::UserMessageHistoryRecord::UserMessageText);

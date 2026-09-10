@@ -1,17 +1,25 @@
 use codex_core::NotSubmittedReason;
 use codex_core::RecoverTurnRequest;
 use codex_core::StartIfIdleSubmission;
+use codex_core::StartThreadOptions;
 use codex_core::SteerSubmission;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
 use codex_core::config::Constrained;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::TurnStartAdmission;
+use codex_protocol::AgentPath;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
@@ -27,11 +35,324 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::Barrier;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+#[derive(Debug)]
+struct TestAdmission(AtomicBool);
+
+impl TurnStartAdmission for TestAdmission {
+    fn admit_turn_start(&self) -> Option<Box<dyn Send>> {
+        if self.0.load(Ordering::SeqCst) {
+            None
+        } else {
+            Some(Box::new(()))
+        }
+    }
+}
+
+#[tokio::test]
+async fn host_drain_rejects_turn_start_paths_without_recording_input() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("allowed")).await;
+    let admission = Arc::new(TestAdmission(AtomicBool::new(true)));
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(admission.clone());
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    assert_eq!(
+        test.codex
+            .start_or_steer_turn(user_message_request("rejected direct input"))
+            .await?,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining
+        },
+    );
+    for request in [
+        user_message_request("rejected queued input"),
+        TurnInputRequest::user_input(Vec::new()),
+        TurnInputRequest::new(TurnInput::ResponseItem(responses::user_message_item(
+            "rejected continuation",
+        ))),
+    ] {
+        assert_eq!(
+            test.codex.start_turn_if_idle(request).await?,
+            StartIfIdleSubmission::NotSubmitted {
+                reason: NotSubmittedReason::ServerDraining
+            },
+        );
+    }
+    assert!(response.requests().is_empty());
+    admission.0.store(false, Ordering::SeqCst);
+    test.codex
+        .start_turn_if_idle(user_message_request("allowed input"))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let request = response.single_request();
+    assert!(request.body_contains_text("allowed input"));
+    assert!(!request.body_contains_text("rejected direct input"));
+    assert!(!request.body_contains_text("rejected queued input"));
+    assert!(!request.body_contains_text("rejected continuation"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_drain_allows_spawned_agent_input_but_not_automatic_work() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("child")).await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    let child = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: test.session_configured.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            environments: Some(test.codex.environment_selections().await),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?
+        .thread;
+    for request in [
+        user_message_request("queued child input"),
+        TurnInputRequest::user_input(Vec::new()),
+    ] {
+        assert_eq!(
+            child.start_turn_if_idle(request).await?,
+            StartIfIdleSubmission::NotSubmitted {
+                reason: NotSubmittedReason::ServerDraining
+            },
+        );
+    }
+    assert_eq!(
+        child
+            .start_or_steer_turn(user_message_request("external child input"))
+            .await?,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining
+        },
+    );
+    assert!(matches!(
+        child
+            .start_or_steer_turn(user_message_request("delegated input").on_start(
+                TurnStartOptions {
+                    parent_turn_id: Some("parent-turn".to_string()),
+                    ..Default::default()
+                }
+            ))
+            .await?,
+        TurnInputSubmission::Started { .. }
+    ));
+    wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    assert!(
+        response
+            .single_request()
+            .body_contains_text("delegated input")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_drain_allows_running_review_to_finish_its_delegate() -> anyhow::Result<()> {
+    use codex_protocol::protocol::ReviewOutputEvent;
+    use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::ReviewTarget;
+
+    let server = responses::start_mock_server().await;
+    let expected = ReviewOutputEvent {
+        overall_explanation: "review completed during drain".to_string(),
+        ..Default::default()
+    };
+    let response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            ev_response_created("review"),
+            responses::ev_assistant_message("result", &serde_json::to_string(&expected)?),
+            ev_completed("review"),
+        ]),
+    )
+    .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    // The host already admitted the parent review; only its child start hits Core admission.
+    test.codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "review these changes".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await?;
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ExitedReviewMode(_))
+    })
+    .await;
+    let EventMsg::ExitedReviewMode(event) = event else {
+        unreachable!()
+    };
+    assert_eq!(event.review_output, Some(expected));
+    response.single_request();
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_drain_closes_realtime_after_handoff_error() -> anyhow::Result<()> {
+    use codex_protocol::protocol::ConversationStartParams;
+    use codex_protocol::protocol::RealtimeConversationClosedEvent;
+    use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
+    use codex_protocol::protocol::RealtimeEvent;
+    use codex_protocol::protocol::RealtimeHandoffRequested;
+    use codex_protocol::protocol::RealtimeTranscriptEntry;
+
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("unexpected")).await;
+    let realtime = responses::start_websocket_server(vec![vec![vec![
+        serde_json::json!({
+            "type": "session.updated",
+            "session": { "id": "draining", "instructions": "backend prompt" }
+        }),
+        serde_json::json!({
+            "type": "conversation.handoff.requested",
+            "handoff_id": "rejected",
+            "item_id": "rejected",
+            "input_transcript": "must not start"
+        }),
+    ]]])
+    .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config({
+            let realtime_url = realtime.uri().to_string();
+            move |config| {
+                config.experimental_realtime_ws_base_url = Some(realtime_url);
+                config.realtime.version = codex_config::config_toml::RealtimeWsVersion::V1;
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            client_managed_handoffs: false,
+            delegation_ack_filler: None,
+            flush_transcript_tail_on_session_end: false,
+            codex_responses_as_items: false,
+            codex_response_item_prefix: None,
+            codex_response_handoff_mode:
+                codex_protocol::protocol::CodexResponseHandoffMode::Thinking,
+            codex_response_handoff_channel_prefixes: None,
+            model: None,
+            output_modality: codex_protocol::protocol::RealtimeOutputModality::Audio,
+            include_startup_context: false,
+            initial_items: Vec::new(),
+            realtime_start_instructions: None,
+            realtime_end_instructions: None,
+            prompt: Some(Some("backend prompt".to_string())),
+            realtime_session_id: None,
+            transport: None,
+            version: None,
+            voice: None,
+        }))
+        .await?;
+    for expected in [
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::HandoffRequested(RealtimeHandoffRequested {
+                handoff_id: "rejected".to_string(),
+                item_id: "rejected".to_string(),
+                input_transcript: "must not start".to_string(),
+                active_transcript: vec![RealtimeTranscriptEntry {
+                    role: "user".to_string(),
+                    text: "must not start".to_string(),
+                }],
+            }),
+        }),
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::Error(
+                "Server is draining; retry the turn after reconnecting".to_string(),
+            ),
+        }),
+        EventMsg::RealtimeConversationClosed(RealtimeConversationClosedEvent {
+            reason: Some("error".to_string()),
+        }),
+    ] {
+        let event = wait_for_event(&test.codex, |event| match event {
+            EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                payload: RealtimeEvent::HandoffRequested(_) | RealtimeEvent::Error(_),
+            })
+            | EventMsg::RealtimeConversationClosed(_) => true,
+            EventMsg::TurnStarted(_) | EventMsg::Error(_) => panic!("unexpected event: {event:?}"),
+            _ => false,
+        })
+        .await;
+        assert_eq!(
+            serde_json::to_value(event)?,
+            serde_json::to_value(expected)?
+        );
+    }
+    assert!(response.requests().is_empty());
+    realtime.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_drain_allows_mailbox_work_to_start_a_turn() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("mailbox")).await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    // Mailbox input is memory-only and must be processed before the host exits.
+    test.codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("valid agent path"),
+                AgentPath::root(),
+                Vec::new(),
+                "mail while draining".to_string(),
+                /*trigger_turn*/ true,
+            ),
+            start_options: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        response
+            .single_request()
+            .body_contains_text("mail while draining")
+    );
+    Ok(())
+}
 
 fn user_message_request(text: &str) -> TurnInputRequest {
     TurnInputRequest::user_input(vec![UserInput::Text {

@@ -338,6 +338,12 @@ async fn delegated_reasoning_never_enters_live_history() {
         }
     }
     assert!(!chat.is_realtime_delegated_reasoning_turn(turn_id));
+    let typed_reasoning = ThreadItem::Reasoning {
+        id: "typed-reasoning".into(),
+        summary: vec!["ordinary summary".into()],
+        content: Vec::new(),
+    };
+    start_item(&mut chat, thread_id, "typed-turn", typed_reasoning.clone());
     chat.handle_server_notification(
         ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
             thread_id: thread_id.to_string(),
@@ -348,16 +354,7 @@ async fn delegated_reasoning_never_enters_live_history() {
         }),
         /*replay_kind*/ None,
     );
-    complete_item(
-        &mut chat,
-        thread_id,
-        "typed-turn",
-        ThreadItem::Reasoning {
-            id: "typed-reasoning".into(),
-            summary: vec!["ordinary summary".into()],
-            content: Vec::new(),
-        },
-    );
+    complete_item(&mut chat, thread_id, "typed-turn", typed_reasoning);
     let rendered = std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event {
             AppEvent::InsertHistoryCell(cell) => Some(

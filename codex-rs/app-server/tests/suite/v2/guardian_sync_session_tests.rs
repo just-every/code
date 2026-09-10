@@ -16,10 +16,13 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnInterruptResponse;
 use codex_protocol::protocol::SubAgentSource;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
+use test_case::test_case;
 use tokio::sync::oneshot;
 
 const ALLOW: &str = r#"{"outcome":"allow","rationale":"completed seed assessment"}"#;
@@ -48,31 +51,44 @@ fn tool_response(server: &str, tool: &str, calls: &[&str]) -> String {
     responses::sse(events)
 }
 
+#[derive(Clone, Copy)]
+enum ReviewEnding {
+    Complete,
+    Interrupt,
+}
+
+#[test_case(ReviewEnding::Complete; "completed reviews")]
+#[test_case(ReviewEnding::Interrupt; "cancelled concurrent reviews")]
 #[tokio::test]
-async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Result<()> {
+async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
+    ending: ReviewEnding,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let (continue_parent, parent_gate) = oneshot::channel();
     let (finish_first, first_gate) = oneshot::channel();
     let (finish_second, second_gate) = oneshot::channel();
+    let mut replies = vec![
+        (
+            tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["seed"]),
+            None,
+        ),
+        (assistant_response(ALLOW)?, None),
+        (
+            tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["first", "second"]),
+            Some(parent_gate),
+        ),
+        (assistant_response(ALLOW)?, Some(first_gate)),
+        (assistant_response(ALLOW)?, Some(second_gate)),
+    ];
+    if matches!(ending, ReviewEnding::Complete) {
+        replies.push((assistant_response("Done.")?, None));
+    }
+    replies.push((assistant_response("The user authorized the checks.")?, None));
     let (server, _completions) = start_streaming_sse_server(
-        vec![
-            (
-                tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["seed"]),
-                None,
-            ),
-            (assistant_response(ALLOW)?, None),
-            (
-                tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &["first", "second"]),
-                Some(parent_gate),
-            ),
-            (assistant_response(ALLOW)?, Some(first_gate)),
-            (assistant_response(ALLOW)?, Some(second_gate)),
-            (assistant_response("Done.")?, None),
-            (assistant_response("The user authorized the checks.")?, None),
-        ]
-        .into_iter()
-        .map(|(body, gate)| vec![StreamingSseChunk { gate, body }])
-        .collect(),
+        replies
+            .into_iter()
+            .map(|(body, gate)| vec![StreamingSseChunk { gate, body }])
+            .collect(),
     )
     .await;
     let (mcp_url, mcp_server) = start_mcp_server(/*sensitive_action*/ None).await?;
@@ -91,7 +107,7 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
         .build_initialized_with_timeout(TIMEOUT)
         .await?;
     let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
-    let _: TurnStartResponse = app
+    let started: TurnStartResponse = app
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
@@ -108,6 +124,12 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
     // The seed review finished; pause the parent before it requests concurrent approvals.
     timeout(TIMEOUT, server.wait_for_request_count(/*count*/ 3)).await?;
     let seed: Value = serde_json::from_slice(&server.requests().await[1])?;
+    assert!(
+        !seed["tools"]
+            .to_string()
+            .contains(&format!("mcp__{TEST_SERVER_NAME}")),
+        "reviewers must not inherit the parent's configured MCP tools"
+    );
     let reviewer_id = seed["client_metadata"]["thread_id"]
         .as_str()
         .expect("reviewer ID")
@@ -184,11 +206,27 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
                 .contains("completed seed assessment")
         );
     }
-    finish_first.send(()).expect("finish first review");
-    finish_second.send(()).expect("finish second review");
+    if matches!(ending, ReviewEnding::Interrupt) {
+        let _: TurnInterruptResponse = app
+            .request(|request_id| ClientRequest::TurnInterrupt {
+                request_id,
+                params: TurnInterruptParams {
+                    thread_id: parent.id.clone(),
+                    turn_id: started.turn.id.clone(),
+                },
+            })
+            .await?;
+    } else {
+        finish_first.send(()).expect("finish first review");
+        finish_second.send(()).expect("finish second review");
+    }
     let completed: TurnCompletedNotification =
         timeout(TIMEOUT, app.read_notification("turn/completed")).await??;
-    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let expected_status = match ending {
+        ReviewEnding::Complete => TurnStatus::Completed,
+        ReviewEnding::Interrupt => TurnStatus::Interrupted,
+    };
+    assert_eq!(completed.turn.status, expected_status);
 
     let read: ThreadReadResponse = app
         .request(|request_id| ClientRequest::ThreadRead {
@@ -246,7 +284,13 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown() -> Resu
     )
     .await??;
     assert_eq!(completed.turn.status, TurnStatus::Completed);
-    assert_eq!(server.requests().await.len(), 7);
+    assert_eq!(
+        server.requests().await.len(),
+        match ending {
+            ReviewEnding::Complete => 7,
+            ReviewEnding::Interrupt => 6,
+        }
+    );
     // Once the owner releases it, the resumed reviewer follows normal client removal.
     for method in ["thread/archive", "thread/delete"] {
         let id = app

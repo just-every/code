@@ -8,6 +8,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::with_serialization_allowance;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -147,9 +148,8 @@ impl ToolCall<'_> {
     /// Callers must include serialization overhead when fitting a response to this budget.
     pub fn response_byte_budget(&self, max_response_bytes: usize) -> usize {
         match &self.source {
-            ToolCallSource::Direct => {
-                max_response_bytes.min((self.truncation_policy * 1.2).byte_budget())
-            }
+            ToolCallSource::Direct => max_response_bytes
+                .min(with_serialization_allowance(self.truncation_policy).byte_budget()),
             ToolCallSource::CodeMode {
                 cell_id: _,
                 runtime_tool_call_id: _,

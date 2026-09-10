@@ -6,4 +6,4 @@ expression: terminal.backend()
 "› /ar                                                       "
 "                                                            "
 "                                                            "
-"  /archive  archive this session and exit                   "
+"  /archive  archive this session                            "

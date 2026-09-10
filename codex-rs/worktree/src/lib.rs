@@ -280,6 +280,53 @@ impl WorktreeManager {
         metadata::owner(&checkout)
     }
 
+    /// Remove a currently registered checkout from this repository, refusing local changes.
+    pub fn remove(&self, source_cwd: &Path, root: &Path) -> Result<()> {
+        let checkout = self
+            .list(source_cwd)?
+            .into_iter()
+            .find(|checkout| checkout.root == root)
+            .with_context(|| {
+                format!(
+                    "{} is not a managed worktree in this repository",
+                    root.display()
+                )
+            })?;
+        let source_cwd = dunce::canonicalize(source_cwd).with_context(|| {
+            format!("cannot resolve current directory {}", source_cwd.display())
+        })?;
+        let checkout_root = dunce::canonicalize(&checkout.root)
+            .with_context(|| format!("cannot resolve worktree {}", checkout.root.display()))?;
+        if source_cwd.starts_with(&checkout_root) {
+            bail!("switch to another checkout before deleting the current worktree");
+        }
+        let ignored = git_output(
+            &checkout.root,
+            GitOperation::WorkingTree,
+            [
+                OsStr::new("ls-files"),
+                OsStr::new("--others"),
+                OsStr::new("--ignored"),
+                OsStr::new("--exclude-standard"),
+                OsStr::new("-z"),
+            ],
+        )?;
+        if !ignored.stdout.is_empty() {
+            bail!("worktree contains ignored local files; remove them before deleting it");
+        }
+        git_output(
+            &checkout.source_root,
+            GitOperation::WorkingTree,
+            [
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                root.as_os_str(),
+            ],
+        )?;
+        remove_empty_bucket(root);
+        Ok(())
+    }
+
     fn managed_checkout(&self, checkout: &Path) -> Result<PathBuf> {
         let managed_root = dunce::canonicalize(&self.settings.root).with_context(|| {
             format!(

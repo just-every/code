@@ -411,6 +411,9 @@ pub(crate) struct AgentsKeymap {
     pub(crate) new_task: Vec<KeyBinding>,
     pub(crate) rename: Vec<KeyBinding>,
     pub(crate) stop: Vec<KeyBinding>,
+    pub(crate) archive: Vec<KeyBinding>,
+    pub(crate) delete: Vec<KeyBinding>,
+    pub(crate) hide: Vec<KeyBinding>,
     pub(crate) toggle_grouping: Vec<KeyBinding>,
     chord_hints: Arc<RuntimeChordKeymap>,
 }
@@ -1289,9 +1292,35 @@ impl RuntimeKeymap {
             new_task: resolve_local!(keymap, defaults, agents, new_task),
             rename: resolve_local!(keymap, defaults, agents, rename),
             stop: resolve_local!(keymap, defaults, agents, stop),
+            archive: resolve_local!(keymap, defaults, agents, archive),
+            delete: resolve_local!(keymap, defaults, agents, delete),
+            hide: resolve_local!(keymap, defaults, agents, hide),
             toggle_grouping: resolve_local!(keymap, defaults, agents, toggle_grouping),
             chord_hints: Arc::clone(&chords),
         };
+
+        // Newly added defaults yield to existing user bindings in the dashboard.
+        for (configured, bindings, alias) in [
+            (
+                keymap.agents.archive.as_ref(),
+                &mut agents.archive,
+                "ctrl-e",
+            ),
+            (keymap.agents.delete.as_ref(), &mut agents.delete, "delete"),
+            (keymap.agents.hide.as_ref(), &mut agents.hide, "ctrl-w"),
+        ] {
+            if configured.is_none()
+                && (configured_context_alias_is_used(&keymap.agents, alias)
+                    || configured_context_alias_is_used(&keymap.list, alias)
+                    || configured_context_alias_is_used(&keymap.global, alias)
+                    || chords.bindings.iter().any(|chord| {
+                        chord.action.context.overlaps(KeymapContext::Agents)
+                            && bindings.contains(&chord.chord.prefix)
+                    }))
+            {
+                bindings.clear();
+            }
+        }
 
         let approval = ApprovalKeymap {
             open_fullscreen: resolve_local!(keymap, defaults, approval, open_fullscreen),
@@ -1425,6 +1454,9 @@ impl RuntimeKeymap {
             (keymap.agents.new_task.as_ref(), &mut agents.new_task),
             (keymap.agents.rename.as_ref(), &mut agents.rename),
             (keymap.agents.stop.as_ref(), &mut agents.stop),
+            (keymap.agents.archive.as_ref(), &mut agents.archive),
+            (keymap.agents.delete.as_ref(), &mut agents.delete),
+            (keymap.agents.hide.as_ref(), &mut agents.hide),
             (
                 keymap.agents.toggle_grouping.as_ref(),
                 &mut agents.toggle_grouping,
@@ -1789,6 +1821,9 @@ impl RuntimeKeymap {
                 new_task: default_bindings![ctrl(KeyCode::Char('n'))],
                 rename: default_bindings![ctrl(KeyCode::Char('r'))],
                 stop: default_bindings![ctrl(KeyCode::Char('x'))],
+                archive: default_bindings![ctrl(KeyCode::Char('e'))],
+                delete: default_bindings![plain(KeyCode::Delete)],
+                hide: default_bindings![ctrl(KeyCode::Char('w'))],
                 toggle_grouping: default_bindings![ctrl(KeyCode::Char('s'))],
                 chord_hints: Arc::default(),
             },

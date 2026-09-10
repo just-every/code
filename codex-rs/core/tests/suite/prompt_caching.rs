@@ -2,17 +2,21 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use codex_core::TurnInputRequest;
 use codex_core::shell::default_user_shell;
 use codex_features::Feature;
+use codex_models_manager::bundled_models_response;
 use codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
@@ -135,6 +139,25 @@ async fn prompt_tools_are_consistent_across_requests(
 
     const CUSTOM_BASE_INSTRUCTIONS: &str =
         "Custom base.\r\n## Plan tool\r\nPreserve this custom workflow.\r\n";
+    const MODEL_BASE_INSTRUCTIONS: &str = "Model base.\n\n## Planning\nYou have access to an `update_plan` tool which tracks steps.\n\n## Work\nKeep working.\n\n## `update_plan`\nUpdate the plan.\n";
+
+    let mut model = bundled_models_response()?
+        .models
+        .into_iter()
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5 model");
+    model
+        .model_messages
+        .as_mut()
+        .expect("bundled model messages")
+        .instructions_template = Some(MODEL_BASE_INSTRUCTIONS.to_string());
+    // Supply model instructions without making them an explicit config catalog override.
+    let models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        ModelsResponse {
+            models: vec![model],
+        },
+    ));
 
     let server = start_mock_server().await;
     let req1 = mount_sse_once(
@@ -154,9 +177,10 @@ async fn prompt_tools_are_consistent_across_requests(
         thread_manager,
         ..
     } = test_codex()
+        .with_models_manager(models_manager)
         .with_pre_build_hook(write_global_instructions)
         .with_config(move |config| {
-            config.model = Some("gpt-5.2".to_string());
+            config.model = Some("gpt-5.5".to_string());
             if let Some(update_plan_enabled) = update_plan_enabled {
                 config.update_plan_enabled = update_plan_enabled;
             }
@@ -220,7 +244,7 @@ async fn prompt_tools_are_consistent_across_requests(
                 collaboration_mode: Some(CollaborationMode {
                     mode: ModeKind::Plan,
                     settings: Settings {
-                        model: "gpt-5.2".to_string(),
+                        model: "gpt-5.5".to_string(),
                         reasoning_effort: None,
                         developer_instructions: Some(mode_instructions.clone()),
                     },

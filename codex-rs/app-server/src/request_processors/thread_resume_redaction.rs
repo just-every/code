@@ -112,6 +112,7 @@ mod tests {
                 failure: None,
                 saved_path: Some(test_path_buf("/tmp/ig-1.png").abs()),
                 imagegen_request_id: None,
+                generation_id: None,
             }),
         ]);
 

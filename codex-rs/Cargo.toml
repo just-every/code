@@ -62,6 +62,7 @@ members = [
     "ext/extension-api",
     "ext/goal",
     "ext/git-attribution",
+    "ext/guardian-reviewer",
     "ext/guardian-v2",
     "ext/history-notes",
     "ext/image-generation",
@@ -213,6 +214,7 @@ codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-goal-extension = { path = "ext/goal" }
 codex-git-attribution = { path = "ext/git-attribution" }
+codex-guardian-reviewer = { path = "ext/guardian-reviewer" }
 codex-guardian-v2 = { path = "ext/guardian-v2" }
 codex-history-notes-extension = { path = "ext/history-notes" }
 codex-image-generation-extension = { path = "ext/image-generation" }
@@ -409,6 +411,7 @@ pretty_assertions = "1.4.1"
 pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
 rand = "0.9"
+rand_regex = "0.18.1"
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
     "layout-cache",
@@ -420,7 +423,9 @@ rcgen = { version = "0.14.7", default-features = false, features = [
     "pem",
 ] }
 regex = "1.12.3"
+regex-automata = { version = "0.4.13", default-features = false, features = ["std", "syntax", "unicode", "nfa-pikevm"] }
 regex-lite = "0.1.8"
+regex-syntax = "0.8.8"
 reqwest = { version = "0.12", features = ["cookies"] }
 rmcp = { version = "=3.2.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
@@ -446,6 +451,7 @@ sha1 = "0.10.6"
 scopeguard = "1.2.0"
 sha2 = "0.10"
 shlex = "1.3.0"
+signal-hook = "0.3.18"
 similar = "2.7.0"
 symphonia = { version = "0.6.0", default-features = false, features = [
     "isomp4",

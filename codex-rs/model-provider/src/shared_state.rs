@@ -6,10 +6,12 @@ use std::sync::Weak;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
 
 use crate::amazon_bedrock::AwsAuthRecovery;
+use crate::amazon_bedrock::AwsCredentialExport;
 
 /// Provider-owned runtime state shared across independently configured sessions.
 #[derive(Debug, Default)]
 pub(crate) struct ModelProviderSharedState {
+    aws_credential_exports: Mutex<Vec<(ModelProviderAwsAuthInfo, Weak<AwsCredentialExport>)>>,
     aws_auth_recoveries: Mutex<Vec<(ModelProviderAwsAuthInfo, Weak<AwsAuthRecovery>)>>,
 }
 
@@ -19,6 +21,30 @@ pub(crate) fn process_shared_state() -> &'static ModelProviderSharedState {
 }
 
 impl ModelProviderSharedState {
+    pub(crate) fn aws_credential_export(
+        &self,
+        aws: &ModelProviderAwsAuthInfo,
+    ) -> Option<Arc<AwsCredentialExport>> {
+        let config = aws.credential_export.as_ref()?;
+        let mut exports = self
+            .aws_credential_exports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        exports.retain(|(_, export)| export.strong_count() != 0);
+
+        if let Some(export) = exports
+            .iter()
+            .find(|(cached_aws, _)| cached_aws == aws)
+            .and_then(|(_, export)| export.upgrade())
+        {
+            return Some(export);
+        }
+
+        let export = Arc::new(AwsCredentialExport::new(config.clone()));
+        exports.push((aws.clone(), Arc::downgrade(&export)));
+        Some(export)
+    }
+
     pub(crate) fn aws_auth_recovery(
         &self,
         aws: &ModelProviderAwsAuthInfo,

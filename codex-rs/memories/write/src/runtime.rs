@@ -7,6 +7,7 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::TurnInputRequest;
+use codex_core::TurnStartOptions;
 use codex_core::config::Config;
 use codex_core::content_items_to_text;
 use codex_core::detached_memory_responses_metadata;
@@ -379,7 +380,12 @@ impl MemoryStartupContext {
         let agent = SpawnedConsolidationAgent { thread_id, thread };
         let submit_result = match agent
             .thread
-            .start_turn_if_idle(TurnInputRequest::user_input(prompt))
+            .start_turn_if_idle(
+                TurnInputRequest::user_input(prompt).on_start(TurnStartOptions {
+                    turn_trigger: Some("memory_consolidation".to_owned()),
+                    ..Default::default()
+                }),
+            )
             .await
         {
             Ok(StartIfIdleSubmission::Started { .. }) => Ok(()),

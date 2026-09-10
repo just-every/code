@@ -80,6 +80,60 @@ fn create_worktree(
     })
 }
 
+#[test]
+fn removing_managed_worktree_refuses_dirty_or_unrelated_checkouts() {
+    let fixture = RepositoryFixture::new();
+    let manager = fixture.manager();
+    let checkout = create_worktree(&manager, &fixture.repository, /*base*/ None)
+        .expect("create managed checkout");
+    let other = RepositoryFixture::new();
+    assert!(manager.remove(&other.repository, &checkout.root).is_err());
+    assert!(
+        manager
+            .remove(&fixture.repository, &fixture.repository)
+            .is_err()
+    );
+    let aliased_current = checkout
+        .root
+        .join("..")
+        .join(checkout.root.file_name().expect("managed checkout name"));
+    assert!(
+        manager
+            .remove(&aliased_current, &checkout.root)
+            .expect_err("cannot remove current checkout via alias")
+            .to_string()
+            .contains("current worktree")
+    );
+    assert!(checkout.root.exists());
+    fs::write(checkout.root.join("unsaved.txt"), "local work\n").expect("write untracked file");
+    assert!(manager.remove(&fixture.repository, &checkout.root).is_err());
+    assert!(checkout.root.join("unsaved.txt").exists());
+
+    fs::remove_file(checkout.root.join("unsaved.txt")).expect("remove untracked file");
+    fs::write(fixture.repository.join(".git/info/exclude"), ".env\n")
+        .expect("ignore local settings file");
+    fs::write(checkout.root.join(".env"), "local settings\n").expect("write ignored file");
+    assert!(
+        manager
+            .remove(&fixture.repository, &checkout.root)
+            .expect_err("refuse ignored local files")
+            .to_string()
+            .contains("ignored local files")
+    );
+    assert!(checkout.root.join(".env").exists());
+    fs::remove_file(checkout.root.join(".env")).expect("remove ignored file");
+    manager
+        .remove(&fixture.repository, &checkout.root)
+        .expect("remove clean checkout");
+    assert!(!checkout.root.exists());
+    assert!(
+        manager
+            .list(&fixture.repository)
+            .expect("list remaining")
+            .is_empty()
+    );
+}
+
 fn git_output(repository: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .current_dir(repository)

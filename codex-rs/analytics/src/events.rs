@@ -209,7 +209,6 @@ pub(crate) struct SkillInvocationEventParams {
     pub(crate) skill_scope: Option<String>,
     pub(crate) plugin_id: Option<String>,
     pub(crate) remote_plugin_id: Option<String>,
-    pub(crate) repo_url: Option<String>,
     pub(crate) thread_id: Option<String>,
     pub(crate) turn_id: Option<String>,
     pub(crate) invoke_type: Option<InvocationType>,
@@ -337,16 +336,40 @@ pub enum GuardianApprovalRequestSource {
     DelegatedSubagent,
 }
 
+/// Path-free permission metadata for a Guardian reviewed action.
+#[derive(Clone, Debug, Serialize)]
+pub struct GuardianAdditionalPermissions {
+    network: Option<GuardianNetworkPermissions>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GuardianNetworkPermissions {
+    enabled: Option<bool>,
+}
+
+impl From<&AdditionalPermissionProfile> for GuardianAdditionalPermissions {
+    fn from(permissions: &AdditionalPermissionProfile) -> Self {
+        Self {
+            network: permissions
+                .network
+                .as_ref()
+                .map(|network| GuardianNetworkPermissions {
+                    enabled: network.enabled,
+                }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GuardianReviewedAction {
     Shell {
         sandbox_permissions: SandboxPermissions,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
     },
     UnifiedExec {
         sandbox_permissions: SandboxPermissions,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
         tty: bool,
     },
     WriteStdin {
@@ -354,8 +377,7 @@ pub enum GuardianReviewedAction {
     },
     Execve {
         source: GuardianCommandSource,
-        program: String,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
     },
     ApplyPatch {},
     NetworkAccess {
@@ -903,6 +925,7 @@ pub(crate) struct CodexImageGenerationEventParams {
     pub(crate) saved_path_present: bool,
     pub(crate) transparent_background: Option<bool>,
     pub(crate) imagegen_request_id: Option<String>,
+    pub(crate) generation_id: Option<String>,
 }
 
 #[derive(Serialize)]

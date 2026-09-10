@@ -1,11 +1,61 @@
-//! Request-effort lookup must leave live state untouched during compaction.
+//! Request-effort pins across initial replay and compaction lookups.
 
 use super::RequestEffortUsage;
+use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::tests::make_session_and_context;
 use codex_features::Feature;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
+use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use test_case::test_case;
+
+#[test_case(InitialHistory::Forked(Vec::new()); "fork")]
+#[test_case(InitialHistory::Resumed(ResumedHistory {
+    conversation_id: ThreadId::default(),
+    history: Arc::new(Vec::new()),
+    rollout_path: None,
+}); "resume")]
+#[tokio::test]
+async fn initial_replay_preserves_prewarmed_effort(history: InitialHistory) {
+    let (mut session, turn_context) = make_session_and_context().await;
+    session
+        .features
+        .enable(Feature::ReasoningEffortOverride)
+        .unwrap();
+    let mut model_info = Arc::clone(&turn_context.initial_settings.model_info);
+    Arc::make_mut(&mut model_info).use_responses_lite = true;
+    let mut selected = turn_context.initial_settings.selected().clone();
+    selected.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffort::Medium);
+    let prewarm_settings = ResolvedStepSettings::new(
+        Arc::new(selected.clone()),
+        Arc::clone(&model_info),
+        /*fast_mode_enabled*/ false,
+    );
+    // Force the ordering where prewarm pins its request before initial replay finishes.
+    assert_eq!(
+        session
+            .reasoning_effort_for_request(&prewarm_settings, RequestEffortUsage::Sampling)
+            .await,
+        Some(ReasoningEffort::Medium),
+    );
+    session.record_initial_history(history).await;
+
+    selected.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffort::High);
+    let turn_settings = ResolvedStepSettings::new(
+        Arc::new(selected),
+        model_info,
+        /*fast_mode_enabled*/ false,
+    );
+    assert_eq!(
+        session
+            .reasoning_effort_for_request(&turn_settings, RequestEffortUsage::Sampling)
+            .await,
+        Some(ReasoningEffort::Medium),
+    );
+}
 
 #[tokio::test]
 async fn compaction_effort_lookup_preserves_pin_for_fallback_models() {

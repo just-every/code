@@ -34,6 +34,9 @@ use wiremock::matchers::path;
 const MODERN_VERSION: &str = "2026-07-28";
 const OPAQUE_STATE: &str = " opaque/\u{2603}/=?base64?literal?=\n";
 
+#[path = "mcp_2026_mrtr/native_verification_tests.rs"]
+mod native_verification;
+
 fn discover_response(body: &Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
         "jsonrpc": "2.0",

@@ -589,6 +589,7 @@ async fn execute_verified_patch(
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),
         tool_ctx.step_context.turn.as_ref(),
+        &tool_ctx.step_context.settings.model_info,
         &tool_ctx.call_id,
         tracker,
     );
@@ -616,6 +617,7 @@ async fn execute_verified_patch(
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),
         tool_ctx.step_context.turn.as_ref(),
+        &tool_ctx.step_context.settings.model_info,
         &tool_ctx.call_id,
         tracker,
     );

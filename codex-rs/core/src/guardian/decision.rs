@@ -59,9 +59,10 @@ pub(crate) async fn decide_approval(
     let context = context.into();
     let request = request.into();
     let turn = context.turn();
-    let requirements = turn.config.config_layer_stack.requirements();
+    let live_config = session.get_config().await;
+    let requirements = live_config.config_layer_stack.requirements();
     let model_requires_review =
-        requirements.auto_review_required_for_model(&turn.model_info().slug);
+        requirements.auto_review_required_for_model(&context.model_info.slug);
     let require_guardian = options.require_guardian
         || model_requires_review
         || requirements
@@ -79,9 +80,6 @@ pub(crate) async fn decide_approval(
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled)
         || reasons.retry.is_some()
-        || request.request.as_ref().is_ok_and(|request| {
-            super::approval_request::format_guardian_action_compact(request).is_err()
-        })
         || matches!(&request.request, Ok(GuardianApprovalRequest::ExecCommand { sandbox_permissions, .. })
             if sandbox_permissions.requires_escalated_permissions());
     let full_access = context.environments().has_full_access(
@@ -109,14 +107,17 @@ pub(crate) async fn decide_approval(
             ));
         }
     };
-    let runtime = ReviewRuntime {
+    let runtime = codex_guardian_reviewer::SynchronousReview::new(ReviewRuntime {
         session: Arc::clone(&session),
         context: context.clone(),
         review_id: review_id.clone(),
         request: request.clone(),
         reasons,
-        options,
-    };
+        options: GuardianReviewOptions {
+            require_guardian,
+            ..options
+        },
+    });
     let input = ApprovalDecisionInput {
         approval_id: &review_id,
         tool_call_id: request
@@ -179,9 +180,7 @@ pub(crate) async fn decide_approval(
             record_guardian_non_denial(&session, turn_id).await;
             Some(ReviewDecision::Approved)
         }
-        Some(ApprovalDecision::Allow) => {
-            Some(runtime.review(GuardianReviewReason::FreshRequired).await)
-        }
+        Some(ApprovalDecision::Allow) => runtime.review(GuardianReviewReason::FreshRequired).await,
         Some(ApprovalDecision::AskUser) if !require_guardian => None,
         None if !require_guardian
             && !super::review::routes_approval_policy_to_guardian(
@@ -192,7 +191,7 @@ pub(crate) async fn decide_approval(
             None
         }
         None | Some(ApprovalDecision::AskUser) => {
-            Some(runtime.review(GuardianReviewReason::Policy).await)
+            runtime.review(GuardianReviewReason::Policy).await
         }
     }
 }

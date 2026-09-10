@@ -312,6 +312,90 @@ fn network_proxy_feature_overrides_preserve_credential_broker_configuration() {
     assert_eq!(base, expected);
 }
 
+#[test]
+fn higher_priority_credential_provider_replaces_overlapping_sources() {
+    for (feature_path, base_source, overlay_source, keep_default) in [
+        ("features", "VENDOR_TOKEN", "VENDOR_TOKEN", false),
+        (
+            "profiles.work.features",
+            "VENDOR_TOKEN",
+            "VENDOR_TOKEN",
+            false,
+        ),
+        ("features", "vendor_token", "VENDOR_TOKEN", !cfg!(windows)),
+    ] {
+        let default_provider = format!(
+            "[{feature_path}.network_proxy.credentials.default]\n\
+             env = ['{base_source}']\n\
+             url_prefixes = ['https://default.example']\n"
+        );
+        let shared_provider = format!(
+            "[{feature_path}.network_proxy.credentials.shared]\n\
+             env = ['SHARED_TOKEN']\n\
+             patterns = ['shared_[a-z]+']\n"
+        );
+        let mut base = parse_toml(&format!("{default_provider}\n{shared_provider}"));
+        let overlay = parse_toml(&format!(
+            "[{feature_path}.network_proxy.credentials.override]\n\
+             env = ['{overlay_source}']\n\
+             url_prefixes = ['https://override.example']\n\
+             [{feature_path}.network_proxy.credentials.shared]\n\
+             url_prefixes = ['https://shared.example']\n"
+        ));
+
+        merge_toml_values(&mut base, &overlay);
+
+        let retained_default = if keep_default { &default_provider } else { "" };
+        let expected = parse_toml(&format!(
+            "{retained_default}\n\
+             [{feature_path}.network_proxy.credentials.override]\n\
+             env = ['{overlay_source}']\n\
+             url_prefixes = ['https://override.example']\n\
+             [{feature_path}.network_proxy.credentials.shared]\n\
+             env = ['SHARED_TOKEN']\n\
+             patterns = ['shared_[a-z]+']\n\
+             url_prefixes = ['https://shared.example']\n"
+        ));
+        assert_eq!(base, expected, "feature path: {feature_path}");
+    }
+}
+
+#[test]
+fn credential_provider_remapping_preserves_inherited_settings() {
+    let base = parse_toml(
+        r#"
+[features.network_proxy.credentials.a]
+env = ["OLD_AUTH"]
+patterns = ["acme_[a-z]{24}"]
+url_prefixes = ["https://a.example"]
+auth = ["token"]
+[features.network_proxy.credentials.b]
+env = ["OTHER_AUTH"]
+patterns = ["other_[a-z]{24}"]
+url_prefixes = ["https://b.example"]
+auth = ["bearer"]
+"#,
+    );
+
+    for new_a in ["NEW_AUTH", "OTHER_AUTH"] {
+        let mut merged = base.clone();
+        let mut expected = base.clone();
+        let providers = &mut expected["features"]["network_proxy"]["credentials"];
+        providers["a"]["env"] = TomlValue::Array(vec![new_a.into()]);
+        providers["b"]["env"] = TomlValue::Array(vec!["OLD_AUTH".into()]);
+        let overlay = parse_toml(&format!(
+            "[features.network_proxy.credentials.a]\n\
+             env = ['{new_a}']\n\
+             [features.network_proxy.credentials.b]\n\
+             env = ['OLD_AUTH']\n"
+        ));
+
+        merge_toml_values(&mut merged, &overlay);
+
+        assert_eq!(merged, expected);
+    }
+}
+
 /// Repeated opaque desktop overrides continue to replace their previous value.
 #[test]
 fn multi_agent_v2_cli_compatibility_excludes_opaque_desktop_paths() {
@@ -373,6 +457,84 @@ exclude = ["HIGH_*"]
     merge_toml_values(&mut base, &overlay);
 
     assert_eq!(base, overlay);
+}
+
+#[test]
+fn shell_environment_policy_set_overlay_preserves_case_distinct_keys() {
+    let mut base = parse_toml(
+        r#"
+[features.network_proxy.credentials.stripe]
+env = ["STRIPE_API_KEY"]
+patterns = ["stripe_[a-z]+"]
+url_prefix_from_env = "STRIPE_HOST"
+
+[shell_environment_policy.set]
+stripe_api_key = "stale"
+stripe_host = "stale.example"
+foo = "lowercase"
+"#,
+    );
+    let overlay = parse_toml(
+        r#"
+[shell_environment_policy.set]
+STRIPE_API_KEY = "trusted"
+STRIPE_HOST = "trusted.example"
+FOO = "uppercase"
+"#,
+    );
+
+    merge_toml_values(&mut base, &overlay);
+
+    let values = base["shell_environment_policy"]["set"]
+        .as_table()
+        .expect("shell environment overrides");
+    assert_eq!(
+        values.get("foo").and_then(TomlValue::as_str),
+        Some("lowercase")
+    );
+    assert_eq!(
+        values.get("FOO").and_then(TomlValue::as_str),
+        Some("uppercase")
+    );
+    assert_eq!(values.len(), 6);
+}
+
+#[test]
+fn later_credential_provider_preserves_case_distinct_environment_overrides() {
+    let mut base = parse_toml(
+        "[shell_environment_policy.set]\n\
+         stripe_api_key = 'stale'\n\
+         stripe_host = 'stale.example'",
+    );
+    let override_layer = parse_toml(
+        "[shell_environment_policy.set]\n\
+         STRIPE_API_KEY = 'previous'\n\
+         STRIPE_HOST = 'previous.example'",
+    );
+    let final_override_layer = parse_toml(
+        "[shell_environment_policy.set]\n\
+         stripe_api_key = 'trusted'\n\
+         stripe_host = 'current.example'",
+    );
+    let provider_layer = parse_toml(
+        "[features.network_proxy.credentials.stripe]\n\
+         env = ['STRIPE_API_KEY']\n\
+         url_prefix_from_env = 'STRIPE_HOST'",
+    );
+
+    merge_toml_values(&mut base, &override_layer);
+    merge_toml_values(&mut base, &final_override_layer);
+    merge_toml_values(&mut base, &provider_layer);
+
+    assert_eq!(
+        base["shell_environment_policy"]["set"],
+        parse_toml(
+            "stripe_api_key = 'trusted'\n\
+             stripe_host = 'current.example'\n\
+             STRIPE_API_KEY = 'previous'\n\
+             STRIPE_HOST = 'previous.example'",
+        )
+    );
 }
 
 #[test]

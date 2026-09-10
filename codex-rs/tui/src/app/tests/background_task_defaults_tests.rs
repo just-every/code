@@ -5,9 +5,219 @@ use crate::app::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 use crate::app::tests::session_lifecycle_requests::HistoryCapabilities;
 use crate::app::tests::session_lifecycle_requests::recorded_params;
 use crate::app::tests::session_lifecycle_requests::start_recording_app_server_with_history;
+use crate::bottom_pane::BottomPaneView;
+use crate::bottom_pane::LocalImageAttachment;
+use crate::chatwidget::UserMessage;
+use crate::chatwidget::tests::helpers::render_bottom_popup;
+use crate::model_catalog::ModelCatalog;
 use crate::test_support::PathBufExt;
+use codex_app_server_protocol::UserInput;
+use codex_protocol::openai_models::InputModality;
 use codex_state::SqliteConfig;
+use crossterm::event::KeyCode;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn background_task_sends_pasted_image_with_first_prompt() -> Result<()> {
+    let (mut app, mut events, _) = make_test_app_with_channels().await;
+    let image_dir = tempdir()?;
+    let image_path = image_dir.path().join("pasted.png");
+    image::RgbImage::new(1, 1).save(&image_path)?;
+    let pasted_path = pathdiff::diff_paths(&image_path, std::env::current_dir()?)
+        .unwrap_or_else(|| image_path.clone());
+    let mut view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    assert!(view.handle_paste(pasted_path.to_string_lossy().into_owned()));
+    assert!(view.handle_paste("Describe this".into()));
+    let rendered_view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget
+        .show_bottom_pane_view(Box::new(rendered_view));
+    insta::assert_snapshot!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .lines()
+            .find(|line| line.contains("[Image #1]"))
+            .expect("image attachment visible"),
+        @"› [Image #1] Describe this"
+    );
+    view.handle_key_event(KeyCode::Enter.into());
+    let prompt = match events.try_recv()? {
+        AppEvent::DispatchAgentsOverviewTask { prompt, .. } => prompt,
+        event => panic!("expected task dispatch, got {event:?}"),
+    };
+    assert_eq!(prompt.local_images[0].path, pasted_path);
+    assert_eq!(
+        prompt.text_elements[0].placeholder(&prompt.text),
+        Some("[Image #1]")
+    );
+
+    let (mut server, requests, proxy) = start_recording_app_server_with_history(
+        &app.config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        LoaderOverrides::default(),
+    )
+    .await?;
+    app.dispatch_agents_overview_task(&mut server, prompt.clone(), /*cwd*/ None)
+        .await;
+    let turns = recorded_params(&requests, "turn/start");
+    assert_eq!(turns.len(), 1);
+    assert_eq!(
+        turns[0]["input"],
+        serde_json::to_value(vec![
+            UserInput::LocalImage {
+                path: std::path::absolute(&pasted_path)?,
+                detail: None
+            },
+            UserInput::Text {
+                text: prompt.text.clone(),
+                text_elements: prompt
+                    .text_elements
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect(),
+            },
+        ])?
+    );
+
+    app.cli_kv_overrides = vec![("model".into(), toml::Value::Integer(1))];
+    app.dispatch_agents_overview_task(&mut server, prompt.clone(), Some(app.config.cwd.clone()))
+        .await;
+    let restored = app
+        .agents_overview
+        .view_state
+        .lock()
+        .unwrap()
+        .composer
+        .as_ref()
+        .unwrap()
+        .draft_snapshot();
+    assert_eq!(
+        (restored.text, restored.text_elements, restored.local_images),
+        (
+            prompt.text.clone(),
+            prompt.text_elements.clone(),
+            prompt.local_images.clone()
+        )
+    );
+    view.handle_key_event(KeyCode::Enter.into());
+    assert!(view.handle_paste("A newer draft".into()));
+    app.dispatch_agents_overview_task(&mut server, prompt.clone(), Some(app.config.cwd.clone()))
+        .await;
+    let current = app
+        .agents_overview
+        .view_state
+        .lock()
+        .unwrap()
+        .composer
+        .as_ref()
+        .unwrap()
+        .draft_snapshot();
+    assert_eq!(current.text, "A newer draft");
+    let notice = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 200)))
+            }
+            _ => None,
+        })
+        .find(|message| message.contains("Reattach images from:"))
+        .expect("attachment recovery notice");
+    assert!(notice.contains(&pasted_path.display().to_string()));
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_background_task_sends_clipboard_image_bytes() -> Result<()> {
+    let mut app = make_test_app_with_channels().await.0;
+    let image_dir = tempdir()?;
+    let image_path = image_dir.path().join("pasted.png");
+    image::RgbImage::new(1, 1).save(&image_path)?;
+    let mut prompt = UserMessage::from("Describe this image");
+    prompt.local_images.push(LocalImageAttachment {
+        placeholder: "[Image #1]".into(),
+        path: image_path,
+    });
+    let (mut server, requests, proxy) = start_recording_app_server_with_history(
+        &app.config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Remote,
+        LoaderOverrides::default(),
+    )
+    .await?;
+    app.dispatch_agents_overview_task(&mut server, prompt, /*cwd*/ None)
+        .await;
+    let turns = recorded_params(&requests, "turn/start");
+    assert_eq!(turns.len(), 1);
+    let image = &turns[0]["input"][0];
+    assert_eq!(image["type"], "image");
+    assert!(
+        image["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+    );
+    assert_eq!(turns[0]["input"][1]["text"], "Describe this image");
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_task_rejects_images_for_text_only_model() -> Result<()> {
+    let (mut app, mut events, _) = make_test_app_with_channels().await;
+    let mut preset = app.model_catalog.models[0].clone();
+    preset.model = "text-only-test-model".into();
+    preset.input_modalities = vec![InputModality::Text];
+    app.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![preset]));
+    app.harness_overrides.model = Some("text-only-test-model".into());
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let mut prompt = UserMessage::from("[Image #1] Describe this");
+    prompt.local_images.push(LocalImageAttachment {
+        placeholder: "[Image #1]".into(),
+        path: "/tmp/test-pasted.png".into(),
+    });
+    let (mut server, requests, proxy) = start_recording_app_server_with_history(
+        &app.config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        LoaderOverrides::default(),
+    )
+    .await?;
+    app.dispatch_agents_overview_task(&mut server, prompt.clone(), /*cwd*/ None)
+        .await;
+    assert!(recorded_params(&requests, "thread/start").is_empty());
+    let draft = app
+        .agents_overview
+        .view_state
+        .lock()
+        .unwrap()
+        .composer
+        .as_ref()
+        .unwrap()
+        .draft_snapshot();
+    assert_eq!(draft.local_images, prompt.local_images);
+    let error = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .find(|message| message.contains("does not support image inputs"))
+        .expect("visible model rejection");
+    insta::assert_snapshot!(error, @"■ Model text-only-test-model does not support image inputs. Remove images or switch models.");
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
 
 #[tokio::test]
 async fn background_task_reads_server_defaults_for_actual_destination() -> Result<()> {

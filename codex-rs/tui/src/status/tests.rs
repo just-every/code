@@ -744,6 +744,7 @@ async fn status_uses_server_provider_id_and_auth_requirement() {
         ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
             profile: None,
             region: Some("eu-west-1".to_string()),
+            credential_export: None,
             auth_refresh: None,
         }));
     config.model_provider.base_url =

@@ -170,7 +170,13 @@ pub use acl::ensure_allow_write_aces;
 #[cfg(target_os = "windows")]
 pub use acl::fetch_dacl_handle;
 #[cfg(target_os = "windows")]
+pub use acl::path_has_standard_user_mutation_allow;
+#[cfg(target_os = "windows")]
+pub use acl::path_has_trusted_system_owner;
+#[cfg(target_os = "windows")]
 pub use acl::path_mask_allows;
+#[cfg(target_os = "windows")]
+pub use acl::path_or_child_file_has_standard_user_mutation_allow;
 #[cfg(target_os = "windows")]
 pub use acl::path_write_aces_need_refresh;
 #[cfg(target_os = "windows")]

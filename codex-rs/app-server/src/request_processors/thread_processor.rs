@@ -1,3 +1,6 @@
+#[path = "daemon_snapshot.rs"]
+mod daemon_snapshot;
+
 use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
@@ -457,10 +460,16 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
 }
 
+/// Whether resume attaches a client or restores a cold runtime during daemon startup.
+pub(crate) enum ThreadResumeTarget {
+    Client(ConnectionRequestId),
+    DaemonRecovery,
+}
+
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
 enum RunningThreadResumeResult {
     /// The request was delegated to the loaded thread.
-    Handled,
+    Handled(tokio::sync::oneshot::Receiver<()>),
     /// No loaded thread handled the request.
     ///
     /// The optional stored thread contains the history-bearing probe that cold
@@ -544,24 +553,24 @@ impl ThreadRequestProcessor {
 
     pub(crate) async fn thread_resume(
         &self,
-        request_id: ConnectionRequestId,
+        target: ThreadResumeTarget,
         params: ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let mut prepared_config = None;
-        while self
-            .thread_resume_inner(
-                request_id.clone(),
-                &params,
-                app_server_client_name.clone(),
-                app_server_client_version.clone(),
-                client_mcp_extensions.clone(),
-                &mut prepared_config,
-            )
-            .await?
-            .is_continue()
+        // Keep the resume future off the request handler's stack.
+        while Box::pin(self.thread_resume_inner(
+            &target,
+            &params,
+            app_server_client_name.clone(),
+            app_server_client_version.clone(),
+            client_mcp_extensions.clone(),
+            &mut prepared_config,
+        ))
+        .await?
+        .is_continue()
         {}
         Ok(None)
     }
@@ -574,13 +583,14 @@ impl ThreadRequestProcessor {
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_fork_inner(
+        // Keep the large fork future out of the shared request dispatcher's stack frame.
+        Box::pin(self.thread_fork_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
-        )
+        ))
         .await
         .map(|()| None)
     }
@@ -1267,7 +1277,9 @@ impl ThreadRequestProcessor {
             }
         };
         self.background_tasks
-            .spawn(thread_start_task.instrument(request_context.span()));
+            .spawn(thread_start_task.instrument(request_context.span()))
+            .await
+            .map_err(|_| internal_error("thread startup task stopped before completing"))?;
         Ok(())
     }
 
@@ -2353,6 +2365,7 @@ impl ThreadRequestProcessor {
         }
 
         let request = request_id.clone();
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
 
         let rollback_already_in_progress = {
             let thread_state = self.thread_state_manager.thread_state(thread_id).await;
@@ -2360,7 +2373,7 @@ impl ThreadRequestProcessor {
             if thread_state.pending_rollbacks.is_some() {
                 true
             } else {
-                thread_state.pending_rollbacks = Some(request.clone());
+                thread_state.pending_rollbacks = Some((request, completion_tx));
                 false
             }
         };
@@ -2385,6 +2398,9 @@ impl ThreadRequestProcessor {
 
             return Err(internal_error(format!("failed to start rollback: {err}")));
         }
+        // The listener drops the sender after queuing the response, including errors.
+        // Keep the RPC's drain admission alive until then, without holding thread state.
+        let _ = completion_rx.await;
         Ok(())
     }
 
@@ -3624,7 +3640,7 @@ impl ThreadRequestProcessor {
 
     async fn thread_resume_inner(
         &self,
-        request_id: ConnectionRequestId,
+        target: &ThreadResumeTarget,
         params: &ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
@@ -3638,51 +3654,47 @@ impl ThreadRequestProcessor {
                 .await
                 .contains(&thread_id)
         {
-            self.outgoing
-                .send_error(
-                    request_id,
-                    invalid_request(format!(
-                        "thread {thread_id} is closing; retry thread/resume after the thread is closed"
-                    )),
-                )
-                .await;
-            return Ok(ControlFlow::Break(()));
+            return Err(invalid_request(format!(
+                "thread {thread_id} is closing; retry thread/resume after the thread is closed"
+            )));
         }
 
         if params.sandbox.is_some() && params.permissions.is_some() {
-            self.outgoing
-                .send_error(
-                    request_id,
-                    invalid_request("`permissions` cannot be combined with `sandbox`"),
-                )
-                .await;
-            return Ok(ControlFlow::Break(()));
+            return Err(invalid_request(
+                "`permissions` cannot be combined with `sandbox`",
+            ));
         }
         let redact_resume_payloads =
             should_redact_thread_resume_payloads(app_server_client_name.as_deref());
 
-        let _thread_list_state_permit = match self.acquire_thread_list_state_permit().await {
-            Ok(permit) => permit,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return Ok(ControlFlow::Break(()));
-            }
-        };
-        let stored_thread_from_running_probe = match self
-            .resume_running_thread(
-                &request_id,
-                params,
-                app_server_client_name.clone(),
-                app_server_client_version.clone(),
-                /*cold_resume_history*/ None,
-            )
-            .await
-        {
-            Ok(RunningThreadResumeResult::Handled) => return Ok(ControlFlow::Break(())),
-            Ok(RunningThreadResumeResult::NotRunning(stored_thread)) => stored_thread,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return Ok(ControlFlow::Break(()));
+        let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
+        let stored_thread_from_running_probe = match target {
+            ThreadResumeTarget::Client(request_id) => match self
+                .resume_running_thread(
+                    request_id,
+                    params,
+                    app_server_client_name.clone(),
+                    app_server_client_version.clone(),
+                    /*cold_resume_history*/ None,
+                )
+                .await?
+            {
+                RunningThreadResumeResult::Handled(completion) => {
+                    // The listener may need this permit to finish the response.
+                    drop(_thread_list_state_permit);
+                    let _ = completion.await;
+                    return Ok(ControlFlow::Break(()));
+                }
+                RunningThreadResumeResult::NotRunning(stored_thread) => stored_thread,
+            },
+            ThreadResumeTarget::DaemonRecovery => {
+                let thread_id = ThreadId::from_string(&params.thread_id)
+                    .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+                // Recheck under the same permit as client resume, including after config loading.
+                if self.thread_manager.get_thread(thread_id).await.is_ok() {
+                    return Ok(ControlFlow::Break(()));
+                }
+                None
             }
         };
 
@@ -3732,13 +3744,7 @@ impl ThreadRequestProcessor {
                 Err(error) => Err(error),
             }
         };
-        let (thread_history, resume_source_thread) = match resume_result {
-            Ok(value) => value,
-            Err(error) => {
-                self.outgoing.send_error(request_id, error).await;
-                return Ok(ControlFlow::Break(()));
-            }
-        };
+        let (thread_history, resume_source_thread) = resume_result?;
         if let InitialHistory::Resumed(resumed) = &thread_history
             && self
                 .pending_thread_unloads
@@ -3755,7 +3761,11 @@ impl ThreadRequestProcessor {
             matches!(thread.history_mode, ThreadHistoryMode::Paginated).then_some(thread.thread_id)
         });
         let paginated_resume = paginated_thread_id.is_some();
-        if paginated_resume && include_turns && prepared_config.is_none() {
+        if paginated_resume
+            && include_turns
+            && prepared_config.is_none()
+            && let ThreadResumeTarget::Client(request_id) = target
+        {
             self.send_deprecation_notice(
                 request_id.connection_id,
                 PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
@@ -3768,6 +3778,9 @@ impl ThreadRequestProcessor {
             && let Some((source, _)) = thread_history.get_resumed_session_sources()
             && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
         {
+            let ThreadResumeTarget::Client(request_id) = target else {
+                return Ok(ControlFlow::Break(()));
+            };
             let child_thread_id = resumed_history.conversation_id;
             self.thread_manager
                 .ensure_multi_agent_v2_child_loaded(child_thread_id)
@@ -3793,7 +3806,7 @@ impl ThreadRequestProcessor {
             };
             return match self
                 .resume_running_thread(
-                    &request_id,
+                    request_id,
                     &attach_params,
                     app_server_client_name,
                     app_server_client_version,
@@ -3801,7 +3814,11 @@ impl ThreadRequestProcessor {
                 )
                 .await?
             {
-                RunningThreadResumeResult::Handled => Ok(ControlFlow::Break(())),
+                RunningThreadResumeResult::Handled(completion) => {
+                    drop(_thread_list_state_permit);
+                    let _ = completion.await;
+                    Ok(ControlFlow::Break(()))
+                }
                 RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
                     "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
                 )),
@@ -3894,20 +3911,9 @@ impl ThreadRequestProcessor {
                 .as_mut()
                 .and_then(|overrides| overrides.remove("approval_policy"))
         {
-            let approval_policy = match serde_json::from_value(value) {
-                Ok(approval_policy) => approval_policy,
-                Err(err) => {
-                    self.outgoing
-                        .send_error(
-                            request_id,
-                            invalid_params(format!(
-                                "invalid `approval_policy` config override: {err}"
-                            )),
-                        )
-                        .await;
-                    return Ok(ControlFlow::Break(()));
-                }
-            };
+            let approval_policy = serde_json::from_value(value).map_err(|err| {
+                invalid_params(format!("invalid `approval_policy` config override: {err}"))
+            })?;
             typesafe_overrides.approval_policy = Some(approval_policy);
         }
         let has_explicit_model_resume_override =
@@ -3940,19 +3946,11 @@ impl ThreadRequestProcessor {
             _ => {
                 // Config loading can call back into Desktop; release the permit during host work.
                 drop(_thread_list_state_permit);
-                let config = match self
+                let config = self
                     .config_manager
                     .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
                     .await
-                {
-                    Ok(config) => config,
-                    Err(err) => {
-                        self.outgoing
-                            .send_error(request_id, config_load_error(&err))
-                            .await;
-                        return Ok(ControlFlow::Break(()));
-                    }
-                };
+                    .map_err(|err| config_load_error(&err))?;
                 *prepared_config = Some(PreparedResumeConfig {
                     state: config_state,
                     config,
@@ -3973,7 +3971,12 @@ impl ThreadRequestProcessor {
                 config,
                 thread_history,
                 self.auth_manager.clone(),
-                self.request_trace_context(&request_id).await,
+                match target {
+                    ThreadResumeTarget::Client(request_id) => {
+                        self.request_trace_context(request_id).await
+                    }
+                    ThreadResumeTarget::DaemonRecovery => None,
+                },
                 client_mcp_extensions,
             )
             .await
@@ -3984,6 +3987,21 @@ impl ThreadRequestProcessor {
                 session_configured,
                 ..
             }) => {
+                let ThreadResumeTarget::Client(request_id) = target else {
+                    // Observe lifecycle events without attaching a client subscription.
+                    self.thread_watch_manager
+                        .upsert_thread(&thread_id.to_string())
+                        .await;
+                    // Invoke idle work before arming subscriber-based unloading.
+                    codex_thread
+                        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+                        .await;
+                    let state = self.thread_state_manager.thread_state(thread_id).await;
+                    self.ensure_listener_task_running(thread_id, Arc::clone(&codex_thread), state)
+                        .await?;
+                    return Ok(ControlFlow::Break(()));
+                };
+                let request_id = request_id.clone();
                 if let Err(err) = Self::set_app_server_client_info(
                     codex_thread.as_ref(),
                     app_server_client_name,
@@ -4194,7 +4212,7 @@ impl ThreadRequestProcessor {
                     CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
                     _ => internal_error(format!("error resuming thread: {err}")),
                 };
-                self.outgoing.send_error(request_id, error).await;
+                return Err(error);
             }
         }
         Ok(ControlFlow::Break(()))
@@ -4496,8 +4514,9 @@ impl ThreadRequestProcessor {
             };
             let resume_cursor_store = paginated_resume.then(|| Arc::clone(&self.thread_store));
 
-            let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
-                Box::new(crate::thread_state::PendingThreadResumeRequest {
+            let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+            let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse {
+                request: Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),
                     history_items,
                     cold_resume_token_usage_turn_id,
@@ -4514,13 +4533,14 @@ impl ThreadRequestProcessor {
                     resume_cursor_store,
                     redact_resume_payloads,
                 }),
-            );
+                completion_tx,
+            };
             if listener_command_tx.send(command).is_err() {
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
                 )));
             }
-            return Ok(RunningThreadResumeResult::Handled);
+            return Ok(RunningThreadResumeResult::Handled(completion_rx));
         }
         Ok(RunningThreadResumeResult::NotRunning(None))
     }
@@ -5145,31 +5165,27 @@ impl ThreadRequestProcessor {
             .await?
         };
 
+        let fork_options = StartThreadOptions {
+            thread_source,
+            parent_trace,
+            client_mcp_extensions,
+            reserved_thread_id,
+            ..StartThreadOptions::new(config)
+        };
         let new_thread = if let Some(prepared_fork) = prepared_fork {
             self.thread_manager
-                .fork_prepared_thread(
-                    config,
-                    prepared_fork,
-                    thread_source,
-                    parent_trace,
-                    client_mcp_extensions,
-                    reserved_thread_id,
-                )
+                .fork_prepared_thread(fork_options, prepared_fork)
                 .await
         } else {
             self.thread_manager
                 .fork_thread_from_history(
                     ForkSnapshot::Interrupted,
-                    config,
+                    fork_options,
                     InitialHistory::Resumed(ResumedHistory {
                         conversation_id: source_thread_id,
                         history: history_items,
                         rollout_path: source_thread.rollout_path.clone(),
                     }),
-                    thread_source,
-                    parent_trace,
-                    client_mcp_extensions,
-                    reserved_thread_id,
                 )
                 .await
         };

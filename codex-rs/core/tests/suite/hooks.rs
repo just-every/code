@@ -7,6 +7,7 @@ use anyhow::Result;
 use codex_config::HookStateToml;
 use codex_config::McpServerConfig;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_core::ForkSnapshot;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
@@ -15,12 +16,14 @@ use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ThreadStoreConfig;
 use codex_features::Feature;
+use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
 use codex_plugin::PluginHookSource;
 use codex_plugin::PluginId;
 use codex_protocol::items::parse_hook_prompt_fragment;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -1609,6 +1612,157 @@ async fn session_start_runs_before_user_prompt_submit_on_first_turn() -> Result<
         Some("hello")
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn forked_thread_matches_fork_session_start_without_repeating_startup_context() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("resp-1")]),
+            sse(vec![ev_completed("resp-2")]),
+            sse(vec![ev_completed("resp-fork")]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            let script_path = home.join("session_start_hook.py");
+            fs::write(
+                &script_path,
+                r#"import json
+import sys
+
+source = json.load(sys.stdin)["source"]
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": source + " hook context"
+}}))
+"#,
+            )
+            .expect("write session start hook");
+            let groups = ["^startup$", "^fork$"].map(|matcher| {
+                serde_json::json!({
+                    "matcher": matcher,
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("python3 {}", script_path.display()),
+                    }],
+                })
+            });
+            fs::write(
+                home.join("hooks.json"),
+                serde_json::json!({"hooks": {"SessionStart": groups}}).to_string(),
+            )
+            .expect("write hooks.json");
+        })
+        .with_config(trust_discovered_hooks);
+    // Command hooks run on the host and require a host-native working directory.
+    let test = builder.build(&server).await?;
+    test.submit_turn("first prompt").await?;
+    test.submit_turn("second prompt").await?;
+    test.codex.flush_rollout().await?;
+
+    let forked = test
+        .thread_manager
+        .fork_thread(
+            ForkSnapshot::TruncateBeforeNthUserMessage(1),
+            StartThreadOptions::new(test.config.clone()),
+            test.codex.rollout_path().expect("parent rollout path"),
+        )
+        .await?
+        .thread;
+    forked
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "edited second prompt".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&forked, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let hook_contexts = requests[2]
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|message| {
+            matches!(
+                message.as_str(),
+                "startup hook context" | "fork hook context"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hook_contexts,
+        vec!["startup hook context", "fork hook context"]
+    );
+
+    forked.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_history_runs_resume_session_start_hook() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(&server, sse(vec![ev_completed("resp-resume")])).await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            write_resume_and_compact_session_start_hook_with_context(
+                home,
+                "resume hook context",
+                "compact hook context",
+            )
+            .expect("write resume session start hook");
+        })
+        .with_config(trust_discovered_hooks);
+    // Command hooks run on the host and require a host-native working directory.
+    let test = builder.build(&server).await?;
+    let history = InitialHistory::Forked(vec![RolloutItem::ResponseItem(
+        responses::user_message_item("supplied history").into(),
+    )]);
+    let resumed = test
+        .thread_manager
+        .resume_thread_with_history(
+            test.config.clone(),
+            history,
+            test.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?
+        .thread;
+    resumed
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&resumed, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let hook_inputs = read_session_start_hook_inputs(test.codex_home_path())?;
+    assert_eq!(
+        hook_inputs
+            .iter()
+            .filter_map(|input| input.get("source").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["resume"],
+    );
+    assert!(
+        response
+            .single_request()
+            .message_input_texts("developer")
+            .iter()
+            .any(|message| message == "resume hook context"),
+    );
+
+    resumed.shutdown_and_wait().await?;
     Ok(())
 }
 

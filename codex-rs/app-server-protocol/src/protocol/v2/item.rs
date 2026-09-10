@@ -994,6 +994,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     failure: None,
                     saved_path: image.saved_path,
                     imagegen_request_id: None,
+                    generation_id: None,
                 })
             }
             CoreTurnItem::EnteredReviewMode(review) => ThreadItem::EnteredReviewMode {

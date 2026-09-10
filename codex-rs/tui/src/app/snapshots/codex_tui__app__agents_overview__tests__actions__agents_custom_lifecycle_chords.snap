@@ -1,0 +1,28 @@
+---
+source: tui/src/app/agents_overview_actions_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 48)"
+---
+  Agent command center
+  0 need input   0 working   1 ready
+  ────────────────────────────────────────────
+  /tmp/project  1
+  › ○ Task  Ready
+
+
+
+
+
+
+
+
+
+
+
+  New task
+
+› Describe a new task
+
+  ↑↓ navigate ctrl+o resume → open
+  ctrl+n new task ctrl+f search ctrl+s group
+  ctrl+r rename ctrl+x stop f5 f8 hide
+  f5 f6 archive f5 f7 delete esc back

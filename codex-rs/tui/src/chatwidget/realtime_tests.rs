@@ -3,6 +3,8 @@
 
 #[path = "realtime/recording_controls_tests.rs"]
 mod recording_controls_tests;
+#[path = "realtime/session_metrics_tests.rs"]
+mod session_metrics_tests;
 
 use super::RealtimeConversationPhase;
 use crate::app_command::AppCommand;

@@ -117,13 +117,18 @@ impl ChatWidget {
                         && !self.turn_lifecycle.agent_turn_running
                     || self.only_user_shell_commands_running()
                 {
-                    self.queue_user_message(UserMessage::from(text));
-                    true
+                    self.queue_user_message_with_options_and_source(
+                        UserMessage::from(text),
+                        QueuedInputAction::Plain,
+                        Vec::new(),
+                        UserMessageSource::QuestionAnswer,
+                    )
                 } else {
                     self.submit_user_message_with_history_and_shell_escape_policy(
                         UserMessage::from(text),
                         UserMessageHistoryRecord::UserMessageText,
                         ShellEscapePolicy::Disallow,
+                        UserMessageSource::QuestionAnswer,
                     )
                     .0
                 };

@@ -16,7 +16,7 @@ expression: commands
 /review - review my current changes and find issues
 /rename - rename the current thread
 /new - start a new chat during a conversation
-/archive - archive this session and exit
+/archive - archive this session
 /delete - permanently delete this session and exit
 /resume - resume a saved chat
 /fork - fork the current chat

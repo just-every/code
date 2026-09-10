@@ -57,7 +57,10 @@ pub(crate) struct PendingThreadResumeRequest {
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
-    SendThreadResumeResponse(Box<PendingThreadResumeRequest>),
+    SendThreadResumeResponse {
+        request: Box<PendingThreadResumeRequest>,
+        completion_tx: oneshot::Sender<()>,
+    },
     // EmitThreadGoalUpdated is used to order goal updates with running-thread resume responses and goal clears.
     EmitThreadGoalUpdated {
         turn_id: Option<String>,
@@ -95,7 +98,7 @@ pub(crate) struct TurnSummary {
 #[derive(Default)]
 pub(crate) struct ThreadState {
     pub(crate) pending_interrupts: PendingInterruptQueue,
-    pub(crate) pending_rollbacks: Option<ConnectionRequestId>,
+    pub(crate) pending_rollbacks: Option<(ConnectionRequestId, oneshot::Sender<()>)>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
     /// Lets an internal runtime replacement wait until the old listener has processed Core's
@@ -143,6 +146,7 @@ impl ThreadState {
             let _ = cancel_tx.send(());
         }
         self.shutdown_drain_waiter = None;
+        self.pending_rollbacks = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
         self.listener_thread = None;
@@ -246,6 +250,28 @@ mod tests {
     use codex_protocol::config_types::Settings;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn clear_listener_releases_pending_rollback() {
+        let (completion_tx, mut completion_rx) = oneshot::channel();
+        let mut state = ThreadState {
+            pending_rollbacks: Some((
+                ConnectionRequestId {
+                    connection_id: ConnectionId(1),
+                    request_id: RequestId::Integer(1),
+                },
+                completion_tx,
+            )),
+            ..Default::default()
+        };
+
+        state.clear_listener();
+
+        assert_eq!(
+            completion_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        );
+    }
 
     #[test]
     fn note_thread_settings_reports_only_effective_changes() {

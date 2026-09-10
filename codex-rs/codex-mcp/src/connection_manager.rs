@@ -21,6 +21,7 @@ use startup::emit_update;
 use startup::mcp_init_error_display;
 use startup::mcp_startup_failure_reason;
 use startup::should_share_codex_apps_tools_cache;
+pub(crate) use tool_catalog::BindingCatalogRevision;
 pub use tool_catalog::tool_is_model_visible;
 
 use std::collections::HashMap;
@@ -159,6 +160,7 @@ impl Drop for McpServerConnection {
 #[derive(Clone)]
 struct McpServerView {
     connection: Arc<McpServerConnection>,
+    protocol_mode: crate::McpProtocolMode,
     metadata: McpServerMetadata,
     tool_filter: ToolFilter,
     tool_timeout: Option<Duration>,
@@ -185,7 +187,6 @@ pub(crate) struct McpConnectionSet {
     servers: HashMap<String, McpServerView>,
     pub(crate) event_stream_connection: Option<Arc<EventStreamConnectionSettings>>,
     disabled_servers: Vec<String>,
-    protocol_mode: crate::McpProtocolMode,
     required_servers: Vec<String>,
     optional_startup_deadline: OnceLock<tokio::time::Instant>,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
@@ -230,7 +231,8 @@ impl McpConnectionSet {
         let codex_home = config.codex_home.clone();
         let prefix_mcp_tool_names = config.prefix_mcp_tool_names;
         let non_prefixed_mcp_tool_servers = config.non_prefixed_mcp_tool_servers.clone();
-        let protocol_mode = config.protocol_mode;
+        let default_protocol_mode = config.protocol_mode;
+        let host_owned_apps_protocol_mode = config.host_owned_apps_protocol_mode;
         let client_elicitation_capability = config.client_elicitation_capability.clone();
         let tool_plugin_provenance = crate::mcp::tool_plugin_provenance(&config);
         let auth = auth.as_ref();
@@ -312,6 +314,20 @@ impl McpConnectionSet {
             };
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
+            let protocol_mode = if matches!(
+                &configured_config.transport,
+                McpServerTransportConfig::StreamableHttp { .. }
+            ) {
+                registration
+                    .and_then(crate::ResolvedMcpServer::protocol_mode)
+                    .unwrap_or(if is_host_owned_codex_apps {
+                        host_owned_apps_protocol_mode
+                    } else {
+                        default_protocol_mode
+                    })
+            } else {
+                default_protocol_mode
+            };
             let configured_tool_filter = ToolFilter::from_config(&configured_config);
             let startup_timeout = configured_config
                 .startup_timeout_sec
@@ -444,13 +460,11 @@ impl McpConnectionSet {
                     && !connection.client.cancel_token.is_cancelled()
                     && previous_view.catalog_item_limit == catalog_item_limit
                     && expected_protocol_mode.is_some()
-                    && reusable_previous
-                        .is_some_and(|previous| previous.protocol_mode == protocol_mode);
+                    && previous_view.protocol_mode == protocol_mode;
                 let unchanged_auth_failure = if connection.identity.as_ref()
                     == Some(&connection_identity)
                     && connection_identity.oauth_store_was_contended
-                    && reusable_previous
-                        .is_some_and(|previous| previous.protocol_mode == protocol_mode)
+                    && previous_view.protocol_mode == protocol_mode
                     && connection.client.startup_complete.load(Ordering::Acquire)
                 {
                     connection
@@ -479,6 +493,7 @@ impl McpConnectionSet {
                         server_name.clone(),
                         McpServerView {
                             connection,
+                            protocol_mode,
                             metadata,
                             tool_filter: configured_tool_filter,
                             tool_timeout: configured_tool_timeout,
@@ -613,6 +628,7 @@ impl McpConnectionSet {
                         startup_trigger,
                         _diagnostics_guard: LIVE_CONNECTIONS.track(),
                     }),
+                    protocol_mode,
                     metadata,
                     tool_filter: configured_tool_filter,
                     tool_timeout: configured_tool_timeout,
@@ -737,7 +753,6 @@ impl McpConnectionSet {
             servers,
             event_stream_connection,
             disabled_servers,
-            protocol_mode,
             required_servers,
             optional_startup_deadline: OnceLock::new(),
             tool_plugin_provenance,
@@ -796,7 +811,6 @@ impl McpConnectionSet {
             servers: HashMap::new(),
             event_stream_connection: None,
             disabled_servers: Vec::new(),
-            protocol_mode: crate::McpProtocolMode::Legacy,
             required_servers: Vec::new(),
             optional_startup_deadline: OnceLock::new(),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),

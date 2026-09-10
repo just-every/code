@@ -128,6 +128,11 @@ impl LocalFileSystem {
         file_system.canonicalize(path, sandbox).await
     }
 
+    #[tracing::instrument(
+        name = "fs.read_file",
+        skip_all,
+        fields(sandboxed = sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox))
+    )]
     async fn read_file(
         &self,
         path: &PathUri,
@@ -170,6 +175,11 @@ impl LocalFileSystem {
         file_system.create_directory(path, options, sandbox).await
     }
 
+    #[tracing::instrument(
+        name = "fs.get_metadata",
+        skip_all,
+        fields(sandboxed = sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox))
+    )]
     async fn get_metadata(
         &self,
         path: &PathUri,

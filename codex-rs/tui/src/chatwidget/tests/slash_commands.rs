@@ -122,8 +122,8 @@ fn next_copy_selection(
 
 #[tokio::test]
 async fn service_tier_commands_lowercase_catalog_names() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    let mut preset = get_available_model(&chat, "gpt-5.4");
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
+    let mut preset = get_available_model(&chat, "gpt-5.5");
     let expected_description = preset
         .service_tiers
         .iter()
@@ -2068,7 +2068,7 @@ async fn slash_copy_picker_previews_whole_response_code_blocks_and_blockquotes()
 
 #[tokio::test]
 async fn slash_copy_picker_copies_status_fields_and_preserves_source_after_copying() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
     let session_id = "00000000-0000-0000-0000-000000000123";
     chat.thread_id = Some(ThreadId::from_string(session_id).expect("valid thread ID"));
     chat.thread_name = Some("Clipboard example".to_string());
@@ -2098,7 +2098,7 @@ async fn slash_copy_picker_copies_status_fields_and_preserves_source_after_copyi
     );
     let expected = [
         ("Whole status", whole_status.as_str()),
-        ("Model", "gpt-5.4"),
+        ("Model", "gpt-5.5"),
         ("Directory", directory.as_str()),
         ("Thread name", "Clipboard example"),
         ("Session ID", session_id),

@@ -27,6 +27,7 @@ use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
 use codex_otel::MetricsClient;
 use codex_protocol::ThreadId;
+use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -271,6 +272,23 @@ where
         })
     }
 
+    fn on_item_completed<'a>(
+        &'a self,
+        thread_store: &'a ExtensionData,
+        turn_store: &'a ExtensionData,
+        item: &'a TurnItem,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(runtime) = goal_runtime_handle(thread_store)
+                && runtime.is_enabled()
+            {
+                runtime
+                    .accounting_state()
+                    .record_item(turn_store.level_id(), item);
+            }
+        })
+    }
+
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
@@ -294,6 +312,14 @@ where
                 tracing::warn!(
                     "failed to stop active goal after repeated execution failures for {turn_id}: {err}"
                 );
+                return;
+            }
+            if let Err(err) = runtime
+                .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)
+                .await
+            {
+                input.thread_store.remove::<TurnStartOptions>();
+                tracing::warn!("failed to stop goal after empty responses for {turn_id}: {err}");
                 return;
             }
             if let Err(err) = runtime
@@ -334,6 +360,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            runtime.accounting_state().reset_empty_responses();
             if !runtime.is_enabled() {
                 return;
             }

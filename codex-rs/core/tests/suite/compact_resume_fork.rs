@@ -929,10 +929,8 @@ async fn fork_thread(
 ) -> Arc<CodexThread> {
     Box::pin(manager.fork_thread(
         nth_user_message,
-        config.clone(),
+        codex_core::StartThreadOptions::new(config.clone()),
         path,
-        /*thread_source*/ None,
-        /*parent_trace*/ None,
     ))
     .await
     .expect("fork conversation")

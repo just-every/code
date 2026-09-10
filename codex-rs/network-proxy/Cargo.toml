@@ -23,6 +23,11 @@ codex-utils-rustls-provider = { workspace = true }
 globset = { workspace = true }
 opentelemetry = { workspace = true }
 rand = { workspace = true }
+rand_regex = { workspace = true }
+regex = { workspace = true }
+regex-automata = { workspace = true }
+regex-syntax = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

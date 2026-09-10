@@ -90,6 +90,12 @@ impl ResolvedStepSettings {
             .cloned()
     }
 
+    pub(crate) fn effective_collaboration_mode(&self) -> CollaborationMode {
+        let mut collaboration_mode = self.selected.collaboration_mode.clone();
+        collaboration_mode.settings.model = self.model_info.slug.clone();
+        collaboration_mode
+    }
+
     pub(crate) fn approval_policy(&self) -> AskForApproval {
         self.selected.approval_policy.value()
     }
@@ -107,7 +113,7 @@ impl ResolvedStepSettings {
         &self.selected.collaboration_mode
     }
 
-    pub(super) fn personality(&self) -> Option<Personality> {
+    pub(crate) fn personality(&self) -> Option<Personality> {
         self.selected.personality
     }
 

@@ -57,8 +57,8 @@ fn activation_models() -> Vec<ModelInfo> {
         .expect("bundled models")
         .models
         .into_iter()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("bundled gpt-5.4");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5");
     [MODEL_A, MODEL_B]
         .into_iter()
         .map(|slug| ModelInfo {
@@ -433,6 +433,27 @@ async fn submitted_sparse_updates_preserve_captured_steps_and_ordering() {
         ]
     );
     assert!(Arc::ptr_eq(&before.turn, &after.turn));
+    assert_eq!(
+        turn.to_turn_context_item().summary,
+        ReasoningSummary::Concise
+    );
+    // Even after the live update, an already-captured request retains its own
+    // summary setting in the durable context.
+    for step in [&before, &during, &after] {
+        let world_state = session
+            .record_context_updates_and_set_reference_context_item(step)
+            .await
+            .expect("record captured settings");
+        assert_eq!(
+            session.reference_context_item().await.unwrap().summary,
+            step.settings.reasoning_summary,
+        );
+        session.start_new_context_window(step, world_state).await;
+        assert_eq!(
+            session.reference_context_item().await.unwrap().summary,
+            step.settings.reasoning_summary,
+        );
+    }
     assert_eq!(after.settings.model_info.as_ref(), &expected_destination);
     let initial_budget = turn
         .config

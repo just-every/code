@@ -40,6 +40,7 @@ pub(super) struct BlockingProvider {
     pub(super) entered: Mutex<Option<oneshot::Sender<()>>>,
     pub(super) released: AtomicBool,
     pub(super) calls: AtomicUsize,
+    pub(super) ignore_cancellation: AtomicBool,
 }
 
 impl native::UserVerificationProvider for BlockingProvider {
@@ -77,7 +78,9 @@ impl native::UserVerificationProvider for BlockingProvider {
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
         while !self.released.load(Ordering::Acquire) {
-            guard.check()?;
+            if !self.ignore_cancellation.load(Ordering::Acquire) {
+                guard.check()?;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "test failed to release native worker"

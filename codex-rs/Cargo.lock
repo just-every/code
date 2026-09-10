@@ -2212,6 +2212,7 @@ dependencies = [
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
+ "codex-network-proxy",
  "codex-otel",
  "codex-plugin",
  "codex-protocol",
@@ -2225,6 +2226,7 @@ dependencies = [
  "codex-state",
  "codex-thread-store",
  "codex-tools",
+ "codex-uds",
  "codex-user-verification",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
@@ -2409,6 +2411,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "signal-hook",
  "tempfile",
  "time",
  "tokio",
@@ -2865,6 +2868,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-path-uri",
  "codex-utils-redacted-string",
+ "codex-windows-sandbox",
  "core-foundation 0.9.4",
  "dns-lookup",
  "dunce",
@@ -2988,6 +2992,7 @@ dependencies = [
  "codex-file-system",
  "codex-git-utils",
  "codex-guardian-context",
+ "codex-guardian-reviewer",
  "codex-history",
  "codex-home",
  "codex-hooks",
@@ -3404,6 +3409,7 @@ dependencies = [
 name = "codex-features"
 version = "0.0.0"
 dependencies = [
+ "codex-network-proxy",
  "codex-otel",
  "codex-protocol",
  "pretty_assertions",
@@ -3422,6 +3428,7 @@ dependencies = [
  "codex-http-client",
  "codex-login",
  "codex-protocol",
+ "codex-rollout",
  "flate2",
  "http 1.4.0",
  "httpdate",
@@ -3546,6 +3553,30 @@ dependencies = [
  "codex-protocol",
  "pretty_assertions",
  "serde_json",
+]
+
+[[package]]
+name = "codex-guardian-reviewer"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-analytics",
+ "codex-extension-api",
+ "codex-features",
+ "codex-feedback",
+ "codex-mcp",
+ "codex-otel",
+ "codex-protocol",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "pretty_assertions",
+ "rand 0.9.3",
+ "serde",
+ "serde_json",
+ "test-case",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -3973,6 +4004,7 @@ name = "codex-model-provider"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "codex-agent-identity",
  "codex-api",
  "codex-aws-auth",
@@ -3987,8 +4019,10 @@ dependencies = [
  "codex-utils-redacted-string",
  "http 1.4.0",
  "pretty_assertions",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tracing",
  "wiremock",
@@ -4039,11 +4073,15 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
+ "codex-windows-sandbox",
  "learning_mode_windows",
  "pretty_assertions",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tracelogging",
+ "windows-sys 0.61.2",
  "wxc_common",
 ]
 
@@ -4071,8 +4109,13 @@ dependencies = [
  "rama-tls-rustls",
  "rama-unix",
  "rand 0.9.3",
+ "rand_regex",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
  "rustls-native-certs",
  "schannel",
+ "schemars 0.8.22",
  "security-framework 3.5.1",
  "serde",
  "serde_json",
@@ -12467,6 +12510,16 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_regex"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04db2e382d13679a1e42400e90e306cdbb79dc5cd41bb035ba4eae72e78cdf37"
+dependencies = [
+ "rand 0.9.3",
+ "regex-syntax",
+]
 
 [[package]]
 name = "rand_xorshift"

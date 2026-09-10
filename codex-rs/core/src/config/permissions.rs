@@ -192,6 +192,9 @@ pub(crate) fn apply_network_proxy_feature_config(
     if let Some(credential_broker) = feature_config.credential_broker {
         config.set_credential_broker_enabled(credential_broker);
     }
+    if let Some(credentials) = feature_config.credentials.as_ref() {
+        config.credential_providers.clone_from(credentials);
+    }
 }
 
 /// Resolves a named permission profile and its inherited configuration.

@@ -34,6 +34,7 @@ async fn user_verification_methods_require_experimental_opt_in() -> Result<()> {
         ("userVerification/status", json!({})),
         ("userVerification/enroll", json!({})),
         ("userVerification/delete", json!({})),
+        ("userVerification/cancel", json!({"requestId": 1})),
         (
             "userVerification/verify",
             json!({"challenge": "AQ", "title": "Approve", "description": ""}),
@@ -72,6 +73,49 @@ async fn user_verification_status_without_account_returns_local_readiness() -> R
             "unavailableMessage": "User verification is not available in this build or account."
         })
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_verification_cancel_stdio_validates_and_acknowledges_unknown_requests() -> Result<()>
+{
+    let mut app_server = TestAppServer::builder().build().await?;
+    let id = app_server
+        .send_raw_request(
+            "userVerification/cancel",
+            Some(json!({"requestId": "verify"})),
+        )
+        .await?;
+    let error = app_server
+        .read_stream_until_error_message(RequestId::Integer(id))
+        .await?;
+    assert_eq!(error.error.message, "Not initialized");
+    app_server.initialize().await?;
+    for params in [
+        json!({}),
+        json!({"requestId": null}),
+        json!({"requestId": 1.5}),
+        json!({"requestId": 1, "connectionId": 2}),
+    ] {
+        let id = app_server
+            .send_raw_request("userVerification/cancel", Some(params))
+            .await?;
+        app_server
+            .read_stream_until_error_message(RequestId::Integer(id))
+            .await?;
+    }
+    for request_id in [json!(100), json!("100"), json!("100")] {
+        let id = app_server
+            .send_raw_request(
+                "userVerification/cancel",
+                Some(json!({"requestId": request_id})),
+            )
+            .await?;
+        let response = app_server
+            .read_stream_until_response_message(RequestId::Integer(id))
+            .await?;
+        assert_eq!(response.result, json!({}));
+    }
     Ok(())
 }
 

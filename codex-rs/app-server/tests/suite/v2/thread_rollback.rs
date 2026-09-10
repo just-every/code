@@ -230,6 +230,15 @@ async fn thread_rollback_drops_last_turns_and_persists_to_rollout() -> Result<()
             num_turns: 1,
         })
         .await?;
+    // Pipeline resume while the listener may still be handling rollback. Waiting for
+    // its response must not retain the thread-list permit needed by that listener.
+    let pipelined_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
     let deprecation_notice = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
     let JSONRPCMessage::Notification(deprecation_notice) = deprecation_notice else {
         panic!("thread/rollback should emit deprecationNotice before its response");
@@ -297,7 +306,10 @@ async fn thread_rollback_drops_last_turns_and_persists_to_rollout() -> Result<()
         other => panic!("expected user message item, got {other:?}"),
     }
 
-    // Resume and confirm the history is pruned.
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(pipelined_resume_id)).await??;
+
+    // Resume after rollback completes to verify the pruned history.
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id,

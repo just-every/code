@@ -7,6 +7,7 @@ mod extension;
 mod metrics;
 mod parent_compaction;
 mod sampler;
+mod startup;
 mod transcript;
 mod truncation;
 mod trusted_skills;

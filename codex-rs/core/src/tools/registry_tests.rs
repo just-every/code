@@ -609,6 +609,7 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                     meta: None,
                 },
                 tool_input: serde_json::json!({}),
+                result_metadata_capture_allowed: false,
                 wall_time: Duration::ZERO,
                 original_image_detail_supported: false,
                 truncation_policy,
@@ -629,7 +630,7 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                 output: FunctionCallOutputPayload::from_text("hook feedback".to_string()),
             }),
             metadata: Some(CodexHarnessMetadata {
-                fallback_token_limit_override: Some(expected_token_limit),
+                history_truncation_token_limit: Some(expected_token_limit),
                 ..Default::default()
             }),
         }
@@ -689,6 +690,43 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
         result.code_mode_result(),
         serde_json::json!({ "typed": true })
     );
+}
+
+#[test_case::test_case(false; "success")]
+#[test_case::test_case(true; "tool error")]
+fn post_tool_use_feedback_output_preserves_mcp_result_metadata(tool_error: bool) {
+    let metadata = serde_json::json!({
+        "openai/resource_access": { "resources": [] },
+        "provider/custom": { "items": [1, null, { "value": true }] },
+    });
+    let result = PostToolUseFeedbackOutput {
+        original: Box::new(crate::tools::context::McpToolOutput {
+            result: codex_protocol::mcp::CallToolResult {
+                content: vec![serde_json::json!({
+                    "type": "text",
+                    "text": "original result",
+                })],
+                structured_content: None,
+                is_error: Some(tool_error),
+                meta: Some(metadata.clone()),
+            },
+            tool_input: serde_json::json!({ "query": "rewritten query" }),
+            result_metadata_capture_allowed: true,
+            wall_time: std::time::Duration::ZERO,
+            original_image_detail_supported: false,
+            truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(64),
+        }),
+        model_visible: FunctionToolOutput::from_text(
+            "unrelated hook feedback".to_string(),
+            /*success*/ None,
+        ),
+    };
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let original_result = result.original.code_mode_result(&payload);
+    assert_eq!(result.tool_result_metadata(), Some(&metadata));
+    assert_eq!(result.code_mode_result(&payload), original_result);
 }
 
 #[tokio::test]

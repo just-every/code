@@ -9,7 +9,6 @@ use codex_core::config::Constrained;
 use codex_core::config::ThreadStoreConfig;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_features::Feature;
-use codex_models_manager::bundled_models_response;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
@@ -644,7 +643,6 @@ struct ScenarioSpec {
     action: ActionKind,
     sandbox_permissions: SandboxPermissions,
     features: Vec<Feature>,
-    model_override: Option<&'static str>,
     outcome: Outcome,
     expectation: Expectation,
 }
@@ -927,7 +925,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_on_request.txt"),
@@ -944,7 +941,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_on_request_5_1.txt"),
@@ -961,7 +957,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkSuccess {
                 body_contains: "danger-network-ok",
@@ -977,7 +972,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkSuccessNoExitCode {
                 body_contains: "danger-network-ok",
@@ -992,7 +986,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("blocked in untrusted project"),
                 expected_reason: None,
@@ -1010,7 +1003,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("blocked in untrusted project"),
                 expected_reason: None,
@@ -1028,7 +1020,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("blocked by distinctive approval policy"),
                 expected_reason: None,
@@ -1046,7 +1037,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1064,7 +1054,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApprovalWithAmendment {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1092,7 +1081,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApprovalWithAmendment {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1120,7 +1108,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandFailure {
                 output_contains: "you cannot ask for escalated permissions",
@@ -1136,7 +1123,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApprovalWithAmendment {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1158,7 +1144,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1179,7 +1164,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1200,7 +1184,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApprovalWithAmendment {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1220,7 +1203,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1240,7 +1222,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1260,7 +1241,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::OutsideWorkspace("dfa_never.txt"),
@@ -1277,7 +1257,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreatedNoExitCode {
                 target: TargetPath::OutsideWorkspace("dfa_never_5_1.txt"),
@@ -1294,7 +1273,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1314,7 +1292,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1333,7 +1310,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "trusted-read-only",
@@ -1348,7 +1324,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccessNoExitCode {
                 stdout_contains: "trusted-read-only",
@@ -1364,7 +1339,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkFailure { expect_tag: "ERR:" },
         },
@@ -1378,7 +1352,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: None,
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1398,7 +1371,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1417,7 +1389,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1436,7 +1407,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::PatchApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1456,7 +1426,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::PatchApplied {
                 target: TargetPath::Workspace("apply_patch_freeform.txt"),
@@ -1473,7 +1442,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::PatchApplied {
                 target: TargetPath::OutsideWorkspace("apply_patch_freeform_danger.txt"),
@@ -1490,7 +1458,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::PatchApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1510,7 +1477,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::PatchApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1530,7 +1496,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::PatchApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1550,7 +1515,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::PatchApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1570,7 +1534,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.4"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::OutsideWorkspace("apply_patch_freeform_never.txt"),
@@ -1589,7 +1552,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::Auto,
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::Workspace("ro_never.txt"),
@@ -1612,7 +1574,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "trusted-never",
@@ -1628,7 +1589,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::FileCreated {
                 target: TargetPath::Workspace("ww_on_request.txt"),
@@ -1645,7 +1605,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkFailure { expect_tag: "ERR:" },
         },
@@ -1659,7 +1618,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: None,
@@ -1679,7 +1637,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::NetworkSuccess {
                 body_contains: "workspace-network-ok",
@@ -1695,7 +1652,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: None,
             outcome: Outcome::Auto,
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::OutsideWorkspace("ww_never.txt"),
@@ -1719,7 +1675,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![Feature::UnifiedExec],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::Auto,
             expectation: Expectation::CommandSuccess {
                 stdout_contains: "hello unified exec",
@@ -1737,7 +1692,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![Feature::UnifiedExec],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::Approved,
                 expected_reason: Some(DEFAULT_UNIFIED_EXEC_JUSTIFICATION),
@@ -1756,7 +1710,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![Feature::UnifiedExec],
-            model_override: None,
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1775,7 +1728,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![Feature::UnifiedExec],
-            model_override: None,
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1794,7 +1746,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             features: vec![Feature::UnifiedExec],
-            model_override: None,
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected by user"),
                 expected_reason: None,
@@ -1814,7 +1765,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1832,7 +1782,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1851,7 +1800,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1870,7 +1818,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1888,7 +1835,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1906,7 +1852,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1924,7 +1869,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1943,7 +1887,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("rejected dynamic shell word"),
                 expected_reason: None,
@@ -1961,7 +1904,6 @@ fn scenarios() -> Vec<ScenarioSpec> {
             },
             sandbox_permissions: SandboxPermissions::UseDefault,
             features: vec![],
-            model_override: Some("gpt-5.2"),
             outcome: Outcome::ExecApproval {
                 decision: ReviewDecision::denied("blocked in untrusted project"),
                 expected_reason: None,
@@ -2027,29 +1969,27 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
     let approval_policy = scenario.approval_policy;
     let sandbox_policy = scenario.sandbox_policy.clone();
     let features = scenario.features.clone();
-    let model_override = scenario.model_override;
-    let model = model_override.unwrap_or("gpt-5.4");
     let policy_src = scenario.action.policy_src();
     let thread_store_id = format!("approval-scenario-{}", scenario.name);
-    let model_catalog = bundled_models_response()?;
 
-    let mut builder = test_codex().with_model(model).with_config(move |config| {
-        config.model_catalog = Some(model_catalog);
-        // These scenarios assert tool behavior, not rollout persistence.
-        config.experimental_thread_store = ThreadStoreConfig::InMemory {
-            id: thread_store_id,
-        };
-        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-        config
-            .set_legacy_sandbox_policy(sandbox_policy.clone())
-            .expect("set sandbox policy");
-        for feature in features {
+    let mut builder = test_codex()
+        .with_model("gpt-5.5")
+        .with_config(move |config| {
+            // These scenarios assert tool behavior, not rollout persistence.
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: thread_store_id,
+            };
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
             config
-                .features
-                .enable(feature)
-                .expect("test config should allow feature update");
-        }
-    });
+                .set_legacy_sandbox_policy(sandbox_policy.clone())
+                .expect("set sandbox policy");
+            for feature in features {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("test config should allow feature update");
+            }
+        });
     if let Some(policy_src) = policy_src {
         builder = builder.with_pre_build_hook(move |home| {
             let rules_dir = home.join("rules");
@@ -2805,6 +2745,9 @@ async fn spawned_subagent_execpolicy_amendment_propagates_to_parent_session() ->
 #[test_case("direct", false, false; "explicit_zsh")]
 #[test_case("direct", true, false; "non_login_in_login_enabled_session")]
 #[test_case("direct", true, true; "login_startup")]
+#[test_case("filtered_startup", false, false; "filtered_global_startup")]
+#[test_case("startup_override", false, false; "global_startup_overrides")]
+#[test_case("additional_permissions", false, false; "filtered_host_additional_permissions")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_startup_credentials_are_brokered(
     shell_mode: &'static str,
@@ -2816,6 +2759,16 @@ async fn shell_startup_credentials_are_brokered(
     const GH_HOST: &str = "github.example.com";
     const REAL_GITHUB_TOKEN: &str =
         "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const CUSTOM_HOST: &str = "api.custom.example";
+    const REAL_CUSTOM_TOKEN: &str = "custom_abcdefghijklmnopqrstuvwx";
+    let request_extra_permissions = shell_mode == "additional_permissions";
+    let approval_policy = if request_extra_permissions {
+        AskForApproval::OnRequest
+    } else {
+        AskForApproval::Never
+    };
+    let global_startup = matches!(shell_mode, "filtered_startup" | "startup_override");
+    let direct = shell_mode == "direct" || global_startup || request_extra_permissions;
 
     let builder = if shell_mode == "zsh_fork" {
         let Some(runtime) = zsh_fork_runtime("zsh-fork credential broker environment test")? else {
@@ -2826,10 +2779,12 @@ async fn shell_startup_credentials_are_brokered(
         let Some(zsh) = codex_core::shell::get_shell(codex_core::shell::ShellType::Zsh) else {
             return Ok(());
         };
-        test_codex().with_user_shell(zsh).with_config(|config| {
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config.features.enable(Feature::ShellTool).unwrap();
-        })
+        test_codex()
+            .with_user_shell(zsh)
+            .with_config(move |config| {
+                config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+                config.features.enable(Feature::ShellTool).unwrap();
+            })
     };
 
     let outside_dir = tempfile::tempdir_in(std::env::current_dir()?)?;
@@ -2844,7 +2799,10 @@ async fn shell_startup_credentials_are_brokered(
         format!(
             "export GH_HOST='{GH_HOST}'\n\
              if [[ ! -o login ]]; then export GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'; fi\n\
+             export CUSTOM_API_KEY='{REAL_CUSTOM_TOKEN}'\n\
+             export CUSTOM_HOST='{CUSTOM_HOST}'\n\
              export APP_SETTING EXCLUDED_SETTING\n\
+             export AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\n\
              export BROKERED_STARTUP_CWD=\"$PWD\"\n\
              if {untrusted_snapshot_condition}; then\n\
                  print -r -- escaped > {outside_path_arg} 2>/dev/null || true\n\
@@ -2860,19 +2818,46 @@ async fn shell_startup_credentials_are_brokered(
     fs::write(
         startup_dir.join(".zshrc"),
         format!(
-            "export LOGIN_SNAPSHOT_READY=ready\nexport GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'\n"
+            "export LOGIN_SNAPSHOT_READY=ready\nexport GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'\n\
+             export AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\n"
         ),
     )?;
     fs::write(
         startup_dir.join(".zprofile"),
         "export LOGIN_SHELL_READY=ready\n",
     )?;
+    let startup_shell = if global_startup {
+        let Some(zsh) = codex_core::shell::get_shell(codex_core::shell::ShellType::Zsh) else {
+            return Ok(());
+        };
+        let zsh_path = zsh.derive_exec_args("", /*use_login_shell*/ false)[0].clone();
+        let path = startup_dir.join("zsh");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nexport GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'\nexport CUSTOM_API_KEY='{REAL_CUSTOM_TOKEN}'\nexport AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\nexec {} \"$@\"\n",
+                shlex::try_quote(&zsh_path)?
+            ),
+        )?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(/*mode*/ 0o700))?;
+        Some(path)
+    } else {
+        None
+    };
     fs::write(
         home.path().join("config.toml"),
         format!(
             r#"default_permissions = "brokered"
-features = {{ network_proxy = {{ enabled = true, credential_broker = true }} }}
 permissions = {{ brokered = {{ extends = ":workspace", network = {{ enabled = true, allow_local_binding = true }} }} }}
+
+[features.network_proxy]
+enabled = true
+credential_broker = true
+
+[features.network_proxy.credentials.custom]
+env = ["CUSTOM_API_KEY"]
+patterns = ["custom_[a-z]{{24}}"]
+url_prefix_from_env = "CUSTOM_HOST"
 
 [shell_environment_policy.set]
 ZDOTDIR = "{}"
@@ -2883,7 +2868,7 @@ ZDOTDIR = "{}"
     let mut builder = builder
         .with_home(home)
         .with_cloud_config_bundle(managed_network_requirements_loader());
-    if shell_mode == "direct" && !allow_login_shell {
+    if direct && !allow_login_shell {
         let Some(bash) = codex_core::shell::get_shell(codex_core::shell::ShellType::Bash) else {
             return Ok(());
         };
@@ -2894,11 +2879,35 @@ ZDOTDIR = "{}"
         config.permissions.shell_environment_policy.exclude.push(
             EnvironmentVariablePattern::new_case_insensitive("EXCLUDED_SETTING"),
         );
+        if request_extra_permissions {
+            config
+                .features
+                .enable(Feature::ExecPermissionApprovals)
+                .unwrap();
+            config
+                .features
+                .enable(Feature::RequestPermissionsTool)
+                .unwrap();
+            config.permissions.shell_environment_policy.exclude.push(
+                EnvironmentVariablePattern::new_case_insensitive("CUSTOM_HOST"),
+            );
+        } else if shell_mode == "filtered_startup" {
+            config.permissions.shell_environment_policy.exclude.extend([
+                EnvironmentVariablePattern::new_case_insensitive("GH_ENTERPRISE_TOKEN"),
+                EnvironmentVariablePattern::new_case_insensitive("CUSTOM_API_KEY"),
+            ]);
+        } else if shell_mode == "startup_override" {
+            config.permissions.shell_environment_policy.r#set.extend([
+                ("GH_ENTERPRISE_TOKEN".to_string(), String::new()),
+                ("CUSTOM_API_KEY".to_string(), String::new()),
+                ("AUTH_HEADER".to_string(), "enterprise-header".to_string()),
+            ]);
+        }
         config
             .features
             .enable(Feature::ShellSnapshot)
             .expect("test config should allow ShellSnapshot override");
-        if shell_mode == "direct" {
+        if direct {
             config
                 .features
                 .disable(Feature::ShellZshFork)
@@ -2916,19 +2925,28 @@ ZDOTDIR = "{}"
         workdir
     };
     let call_id = "zsh-fork-brokered-github-credential";
-    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}""#;
+    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CUSTOM_HOST" "$CUSTOM_API_KEY" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}" "$AUTH_HEADER""#;
     let command = format!(
         "APP_SETTING=production; EXCLUDED_SETTING=denied; [ \"$(/usr/bin/printenv APP_SETTING)\" = production ] || exit 1; if /usr/bin/printenv EXCLUDED_SETTING >/dev/null; then exit 1; fi; {command}"
     );
+    let command = if request_extra_permissions {
+        let script = format!("{command}\nprintf escaped 2>/dev/null > {outside_path_arg} || true");
+        format!("/bin/sh -c {}", shlex::try_quote(&script)?)
+    } else {
+        command.to_string()
+    };
     let snapshot_dir_arg = shlex::try_join([snapshot_dir.to_string_lossy().as_ref()])?;
     let command = format!("{command}; /bin/cat {snapshot_dir_arg}/*.sh > captured-snapshot");
-    let arguments = if shell_mode == "direct" {
+    let mut arguments = if direct {
         let Some(zsh) = codex_core::shell::get_shell(codex_core::shell::ShellType::Zsh) else {
             return Ok(());
         };
         json!({
             "cmd": command,
-            "shell": zsh.derive_exec_args("", /*use_login_shell*/ false)[0],
+            "shell": startup_shell.map_or_else(
+                || zsh.derive_exec_args("", /*use_login_shell*/ false)[0].clone(),
+                |path| path.display().to_string(),
+            ),
             "workdir": workdir,
             "login": login,
             "yield_time_ms": 10_000,
@@ -2941,6 +2959,12 @@ ZDOTDIR = "{}"
             "yield_time_ms": 10_000,
         })
     };
+    if request_extra_permissions {
+        let approved_dir = test.home.path().join("approved-command");
+        fs::create_dir(&approved_dir)?;
+        arguments["sandbox_permissions"] = json!(SandboxPermissions::WithAdditionalPermissions);
+        arguments["additional_permissions"] = json!({"file_system": {"write": [approved_dir]}});
+    }
     let event = ev_function_call(call_id, "exec_command", &serde_json::to_string(&arguments)?);
     let responses = mount_sse_sequence(
         &server,
@@ -2961,10 +2985,35 @@ ZDOTDIR = "{}"
     submit_turn_preserving_active_permission_profile(
         &test,
         "show the brokered GitHub environment",
-        AskForApproval::Never,
+        approval_policy,
     )
     .await?;
-    wait_for_completion_without_approval(&test).await;
+    if request_extra_permissions {
+        let mut approvals = 0;
+        loop {
+            let event = wait_for_event(&test.codex, |event| {
+                matches!(
+                    event,
+                    EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+                )
+            })
+            .await;
+            let EventMsg::ExecApprovalRequest(approval) = event else {
+                break;
+            };
+            approvals += 1;
+            test.codex
+                .submit(Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: None,
+                    decision: ReviewDecision::Approved,
+                })
+                .await?;
+        }
+        assert!(approvals > 0, "additional permissions must be approved");
+    } else {
+        wait_for_completion_without_approval(&test).await;
+    }
 
     let output = responses.requests()[1].function_call_output(call_id);
     if shell_mode == "zsh_fork" {
@@ -2977,16 +3026,42 @@ ZDOTDIR = "{}"
     let result = parse_result(&output);
     assert_eq!(result.exit_code, Some(0), "command failed: {result:?}");
     assert!(!result.stdout.contains(REAL_GITHUB_TOKEN));
+    assert!(!result.stdout.contains(REAL_CUSTOM_TOKEN));
     let values = result.stdout.lines().collect::<Vec<_>>();
-    assert_eq!(values.len(), 6, "unexpected command output: {result:?}");
+    assert_eq!(values.len(), 9, "unexpected command output: {result:?}");
     assert_eq!(values[0], GH_HOST);
     assert_ne!(values[1], REAL_GITHUB_TOKEN);
-    assert!(values[1].starts_with("ghp_"));
-    assert_eq!(values[1].len(), REAL_GITHUB_TOKEN.len());
-    assert_eq!(values[2], "1");
-    assert_eq!(PathBuf::from(values[3]), fs::canonicalize(&workdir)?);
-    assert_eq!(PathBuf::from(values[4]), fs::canonicalize(&workdir)?);
-    assert_eq!(values[5], if login { "ready" } else { "unset" });
+    if global_startup {
+        assert_eq!(values[1], "");
+        assert_eq!(values[3], "");
+        assert_eq!(
+            values[8],
+            if shell_mode == "startup_override" {
+                "enterprise-header"
+            } else {
+                ""
+            }
+        );
+    } else {
+        assert!(values[1].starts_with("ghp_"));
+        assert_eq!(values[1].len(), REAL_GITHUB_TOKEN.len());
+        assert!(values[3].starts_with("custom_"));
+        assert_eq!(values[3].len(), REAL_CUSTOM_TOKEN.len());
+        assert_eq!(values[8], format!("Bearer {}", values[1]));
+    }
+    assert_eq!(
+        values[2],
+        if request_extra_permissions {
+            ""
+        } else {
+            CUSTOM_HOST
+        }
+    );
+    assert_ne!(values[3], REAL_CUSTOM_TOKEN);
+    assert_eq!(values[4], "1");
+    assert_eq!(PathBuf::from(values[5]), fs::canonicalize(&workdir)?);
+    assert_eq!(PathBuf::from(values[6]), fs::canonicalize(&workdir)?);
+    assert_eq!(values[7], if login { "ready" } else { "unset" });
     assert!(
         !outside_path.exists(),
         "shell snapshot startup wrote outside the command sandbox"
@@ -2997,6 +3072,10 @@ ZDOTDIR = "{}"
     assert!(
         !snapshot.contains(REAL_GITHUB_TOKEN),
         "shell snapshot persisted a real GitHub credential"
+    );
+    assert!(
+        !snapshot.contains(REAL_CUSTOM_TOKEN),
+        "shell snapshot persisted a real configured credential"
     );
 
     Ok(())
@@ -3141,6 +3220,61 @@ GH_TOKEN = "{REAL_GITHUB_TOKEN}"
             output.contains("credential brokerage could not create a protected shell snapshot")
         );
         assert!(!output.contains(REAL_GITHUB_TOKEN));
+        if mode == "failed" {
+            fs::remove_file(test.home.path().join("shell_snapshots"))?;
+            let mut first_snapshot_paths = None;
+            for call_id in ["brokered-startup-retry", "brokered-startup-reuse"] {
+                let event = shell_event(
+                    call_id,
+                    "printenv GH_TOKEN",
+                    /*timeout_ms*/ 5_000,
+                    SandboxPermissions::UseDefault,
+                )?;
+                let retry = mount_sse_sequence(
+                    &server,
+                    vec![
+                        sse(vec![
+                            ev_response_created(call_id),
+                            event,
+                            ev_completed(call_id),
+                        ]),
+                        sse(vec![
+                            ev_response_created("resp-brokered-startup-done"),
+                            ev_assistant_message("msg-brokered-startup-done", "done"),
+                            ev_completed("resp-brokered-startup-done"),
+                        ]),
+                    ],
+                )
+                .await;
+                submit_turn_preserving_active_permission_profile(
+                    &test,
+                    "run the command after repairing snapshot storage",
+                    approval_policy,
+                )
+                .await?;
+                wait_for_completion_without_approval(&test).await;
+                let result = parse_result(&retry.requests()[1].function_call_output(call_id));
+                assert_eq!(
+                    result.exit_code,
+                    Some(0),
+                    "snapshot retry failed: {result:?}"
+                );
+                assert!(result.stdout.starts_with("ghp_"));
+                assert!(!result.stdout.contains(REAL_GITHUB_TOKEN));
+                let mut snapshot_paths = fs::read_dir(test.home.path().join("shell_snapshots"))?
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|extension| extension == "sh"))
+                    .collect::<Vec<_>>();
+                snapshot_paths.sort();
+                assert_eq!(snapshot_paths.len(), 1);
+                if let Some(first_snapshot_paths) = &first_snapshot_paths {
+                    assert_eq!(&snapshot_paths, first_snapshot_paths);
+                } else {
+                    first_snapshot_paths = Some(snapshot_paths);
+                }
+            }
+        }
         return Ok(());
     }
     let result = parse_result(&output);
@@ -3195,6 +3329,117 @@ GH_TOKEN = "{REAL_GITHUB_TOKEN}"
         );
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test_case(true; "credential_startup")]
+#[test_case(false; "ordinary_application_env")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn brokered_posix_startup_preserves_application_env(credential_startup: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    const REAL_TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let Some(shell) = codex_core::shell::get_shell(codex_core::shell::ShellType::Sh) else {
+        return Ok(());
+    };
+    let home = Arc::new(TempDir::new()?);
+    let startup = home.path().join("startup.sh");
+    let credential_export = format!("export GH_TOKEN='{REAL_TOKEN}'\n");
+    fs::write(
+        &startup,
+        format!(
+            "export CORP_REGION=west\n{}",
+            if credential_startup {
+                credential_export.as_str()
+            } else {
+                ""
+            }
+        ),
+    )?;
+    fs::write(
+        home.path().join("config.toml"),
+        format!(
+            r#"default_permissions = "brokered"
+features = {{ network_proxy = {{ enabled = true, credential_broker = true }} }}
+permissions = {{ brokered = {{ extends = ":workspace", network = {{ enabled = true, allow_local_binding = true }} }} }}
+[shell_environment_policy.set]
+ENV = "{}"
+"#,
+            startup.display()
+        ),
+    )?;
+    let shell_path = shell.derive_exec_args("", /*use_login_shell*/ false)[0].clone();
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_home(home)
+        .with_user_shell(shell)
+        .with_cloud_config_bundle(managed_network_requirements_loader())
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+            config.permissions.allow_login_shell = true;
+            config.features.enable(Feature::ShellSnapshot).unwrap();
+            config.features.disable(Feature::ShellZshFork).unwrap();
+            if !credential_startup {
+                config
+                    .permissions
+                    .shell_environment_policy
+                    .r#set
+                    .insert("GH_TOKEN".to_string(), REAL_TOKEN.to_string());
+            }
+        })
+        .build(&server)
+        .await?;
+    let script = r#"printf '%s\n%s\n%s\n%s\n' "$GH_TOKEN" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "${ENV-unset}" "$CORP_REGION""#;
+    let command = format!(
+        "{} 2>/dev/null",
+        shlex::try_join([shell_path.as_str(), "-i", "-c", script])?
+    );
+    let call_id = "brokered-posix-startup";
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("posix-startup-1"),
+                shell_event(
+                    call_id,
+                    &command,
+                    /*timeout_ms*/ 5_000,
+                    SandboxPermissions::UseDefault,
+                )?,
+                ev_completed("posix-startup-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("posix-startup-done", "done"),
+                ev_completed("posix-startup-2"),
+            ]),
+        ],
+    )
+    .await;
+    submit_turn_preserving_active_permission_profile(
+        &test,
+        "show the POSIX startup environment",
+        AskForApproval::Never,
+    )
+    .await?;
+    wait_for_completion_without_approval(&test).await;
+    let result = parse_result(&responses.requests()[1].function_call_output(call_id));
+    assert_eq!(result.exit_code, Some(0), "command failed: {result:?}");
+    assert!(!result.stdout.contains(REAL_TOKEN));
+    let values = result.stdout.lines().collect::<Vec<_>>();
+    assert_eq!(values.len(), 4, "unexpected command output: {result:?}");
+    assert!(values[0].starts_with("ghp_"));
+    assert_eq!(
+        &values[1..],
+        &[
+            "1",
+            if credential_startup {
+                "unset"
+            } else {
+                startup.to_str().unwrap()
+            },
+            "west"
+        ]
+    );
     Ok(())
 }
 

@@ -152,6 +152,7 @@ pub struct CodexThreadSettingsOverrides {
     pub service_tier: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub personality: Option<Personality>,
+    pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
 pub use codex_guardian_context::GuardianRootMessage;
@@ -560,6 +561,7 @@ impl CodexThread {
             service_tier,
             collaboration_mode,
             personality,
+            disabled_plugin_ids,
         } = overrides;
         SessionSettingsUpdate {
             step_settings: StepSettingsUpdate {
@@ -579,12 +581,21 @@ impl CodexThread {
             permission_profile,
             active_permission_profile,
             windows_sandbox_level,
+            disabled_plugin_ids,
             ..Default::default()
         }
     }
 
     pub async fn next_event(&self) -> CodexResult<Event> {
         self.io.next_event().await
+    }
+
+    /// Returns the event count for a finite drain before transferring the receiver.
+    ///
+    /// The caller must own the only event reader until it consumes this many events.
+    /// Events queued after this snapshot remain for the next reader.
+    pub fn queued_event_count(&self) -> usize {
+        self.io.rx_event.len()
     }
 
     pub async fn agent_status(&self) -> AgentStatus {
@@ -676,7 +687,9 @@ impl CodexThread {
     pub async fn guardian_trunk_rollout_path(&self) -> Option<PathBuf> {
         self.session
             .guardian_review_session()
-            .trunk_rollout_path()
+            .trunk()
+            .await?
+            .rollout_path()
             .await
     }
 

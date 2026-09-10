@@ -466,10 +466,33 @@ impl ConfigLayerStack {
     pub fn origins(&self) -> HashMap<String, ConfigLayerMetadata> {
         let mut origins = HashMap::new();
         let mut path = Vec::new();
+        let mut provider_paths = vec!["features.network_proxy.credentials.".to_string()];
 
         for layer in self.layers_low_to_high() {
             let config = normalized_with_key_aliases(&layer.config, &[]);
+            if let Some(profiles) = config.get("profiles").and_then(TomlValue::as_table) {
+                provider_paths.extend(
+                    profiles
+                        .keys()
+                        .map(|name| format!("profiles.{name}.features.network_proxy.credentials.")),
+                );
+            }
             record_origins(&config, &layer.metadata(), &mut path, &mut origins);
+        }
+
+        if let Some(layer) = self.layers_low_to_high().next_back() {
+            let effective = self.effective_config();
+            let mut effective_origins = HashMap::new();
+            record_origins(
+                &effective,
+                &layer.metadata(),
+                &mut path,
+                &mut effective_origins,
+            );
+            origins.retain(|path, _| {
+                !provider_paths.iter().any(|prefix| path.starts_with(prefix))
+                    || effective_origins.contains_key(path)
+            });
         }
 
         origins

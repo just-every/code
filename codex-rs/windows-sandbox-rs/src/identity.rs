@@ -26,6 +26,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
 
+#[cfg(test)]
+#[path = "identity_integration_tests.rs"]
+mod integration_tests;
+
 #[derive(Debug, Clone)]
 struct SandboxIdentity {
     username: String,
@@ -178,6 +182,48 @@ pub fn require_logon_sandbox_creds(
     proxy_enforced: bool,
     proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
 ) -> Result<SandboxCreds> {
+    require_logon_sandbox_creds_with_setup(
+        permissions,
+        command_cwd,
+        env_map,
+        codex_home,
+        read_roots_override,
+        read_roots_include_platform_defaults,
+        write_roots_override,
+        deny_read_paths_override,
+        deny_write_paths_override,
+        proxy_enforced,
+        proxy_settings_mode,
+        run_elevated_setup_with_proxy_settings,
+        run_setup_refresh_with_overrides_and_proxy_settings,
+        local_user_flags,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn require_logon_sandbox_creds_with_setup(
+    permissions: &ResolvedWindowsSandboxPermissions,
+    command_cwd: &Path,
+    env_map: &HashMap<String, String>,
+    codex_home: &Path,
+    read_roots_override: Option<&[PathBuf]>,
+    read_roots_include_platform_defaults: bool,
+    write_roots_override: Option<&[PathBuf]>,
+    deny_read_paths_override: &[PathBuf],
+    deny_write_paths_override: &[PathBuf],
+    proxy_enforced: bool,
+    proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
+    run_full_setup: impl FnOnce(
+        crate::setup::SandboxSetupRequest<'_>,
+        &crate::setup::OfflineProxySettings,
+    ) -> Result<()>,
+    run_refresh_setup: impl FnOnce(
+        crate::setup::SandboxSetupRequest<'_>,
+        crate::setup::SetupRootOverrides,
+        &crate::setup::OfflineProxySettings,
+    ) -> Result<()>,
+    read_local_user_flags: impl Fn(&str) -> Result<Option<u32>>,
+) -> Result<SandboxCreds> {
     let sandbox_dir = crate::setup::sandbox_dir(codex_home);
     let needed_read = read_roots_override
         .map(<[PathBuf]>::to_vec)
@@ -225,7 +271,7 @@ pub fn require_logon_sandbox_creds(
         // Cleanup may also have removed the group, so repair missing or disabled accounts before ACL
         // refresh can fail, not only after a later logon reports ERROR_ACCOUNT_DISABLED.
         for username in [OFFLINE_USERNAME, ONLINE_USERNAME] {
-            let needs_repair = match local_user_flags(username) {
+            let needs_repair = match read_local_user_flags(username) {
                 Ok(Some(flags)) => flags & UF_ACCOUNTDISABLE != 0,
                 Ok(None) => true,
                 Err(_) => false,
@@ -247,7 +293,7 @@ pub fn require_logon_sandbox_creds(
         } else {
             crate::logging::log_note("sandbox setup required", Some(&sandbox_dir));
         }
-        run_elevated_setup_with_proxy_settings(
+        run_full_setup(
             crate::setup::SandboxSetupRequest {
                 permissions,
                 command_cwd,
@@ -260,7 +306,7 @@ pub fn require_logon_sandbox_creds(
         identity = select_identity(network_identity, codex_home)?;
     }
     // Always refresh ACLs (non-elevated) for current roots via the setup binary.
-    run_setup_refresh_with_overrides_and_proxy_settings(
+    run_refresh_setup(
         crate::setup::SandboxSetupRequest {
             permissions,
             command_cwd,

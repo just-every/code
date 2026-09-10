@@ -407,7 +407,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.model_info().truncation_policy.into(),
+                truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                 max_output_tokens,
                 process_id: None,
                 exit_code: None,
@@ -417,7 +417,7 @@ impl ExecCommandHandler {
             }));
         }
 
-        emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
+        emit_unified_exec_tty_metric(&step_context.session_telemetry, tty);
         let request = ExecCommandRequest {
             command,
             shell_type,
@@ -461,7 +461,7 @@ impl ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.model_info().truncation_policy.into(),
+                    truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.

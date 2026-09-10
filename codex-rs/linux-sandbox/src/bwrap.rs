@@ -55,6 +55,7 @@ const LINUX_PLATFORM_DEFAULT_READ_ROOTS: &[&str] = &[
 ];
 
 const MAX_UNREADABLE_GLOB_MATCHES: usize = 8192;
+pub(crate) const WSL_INTEROP_DIR: &str = "/run/WSL";
 
 /// Options that control how bubblewrap is invoked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub(crate) struct BwrapOptions {
     pub mount_proc: bool,
     /// How networking should be configured inside the bubblewrap sandbox.
     pub network_mode: BwrapNetworkMode,
+    /// Hide the WSL Windows interop socket from commands with restricted filesystem access.
+    pub mask_wsl_interop: bool,
     /// Optional maximum depth for expanding unreadable glob patterns with ripgrep.
     ///
     /// Keep this uncapped by default so existing nested deny-read matches are
@@ -78,6 +81,7 @@ impl Default for BwrapOptions {
         Self {
             mount_proc: true,
             network_mode: BwrapNetworkMode::FullAccess,
+            mask_wsl_interop: false,
             glob_scan_max_depth: None,
         }
     }
@@ -329,6 +333,19 @@ fn create_bwrap_flags(
     args.push("--new-session".to_string());
     args.push("--die-with-parent".to_string());
     args.extend(filesystem_args);
+    if options.mask_wsl_interop {
+        // WSL's Windows-process bridge uses Unix sockets under /run/WSL.
+        // Mask them after all filesystem binds so network access cannot bypass
+        // the Linux filesystem policy by launching an unrestricted Windows process.
+        args.push("--tmpfs".to_string());
+        args.push(WSL_INTEROP_DIR.to_string());
+        if !options.mount_proc {
+            // Without a fresh procfs, the root bind retains the host procfs.
+            // Hide it so /proc/<host-pid>/root cannot alias the interop sockets.
+            args.push("--tmpfs".to_string());
+            args.push("/proc".to_string());
+        }
+    }
     // Request a user namespace explicitly rather than relying on bubblewrap's
     // auto-enable behavior, which is skipped when the caller runs as uid 0.
     args.push("--unshare-user".to_string());

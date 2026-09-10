@@ -16,6 +16,605 @@ use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
 #[test]
+fn provider_batch_remapping_preserves_ordered_edits() {
+    let initial = serde_json::json!({
+        "features": { "network_proxy": { "credentials": {
+            "a": { "env": ["A_AUTH"], "patterns": ["alpha"], "url_prefixes": ["https://a.example"] },
+            "b": { "env": ["B_AUTH"], "patterns": ["bravo"], "url_prefixes": ["https://b.example"], "auth": ["bearer"] },
+        } } },
+    });
+    let retained = serde_json::json!({
+        "env": ["A_AUTH"], "patterns": ["bravo"], "url_prefixes": ["https://b.example"],
+    });
+    let mut changed_auth = retained.clone();
+    changed_auth["auth"] = serde_json::json!(["token"]);
+    for (path, value, strategy, expected_b) in [
+        (
+            "b.auth",
+            serde_json::json!(["token"]),
+            MergeStrategy::Upsert,
+            changed_auth,
+        ),
+        ("b.auth", JsonValue::Null, MergeStrategy::Replace, retained),
+        (
+            "b",
+            JsonValue::Null,
+            MergeStrategy::Replace,
+            serde_json::json!({ "env": ["A_AUTH"] }),
+        ),
+        (
+            "b",
+            serde_json::json!({ "patterns": ["replacement"], "url_prefixes": ["https://new.example"] }),
+            MergeStrategy::Replace,
+            serde_json::json!({ "env": ["A_AUTH"], "patterns": ["replacement"], "url_prefixes": ["https://new.example"] }),
+        ),
+        (
+            "",
+            JsonValue::Null,
+            MergeStrategy::Replace,
+            serde_json::json!({ "env": ["A_AUTH"] }),
+        ),
+    ] {
+        let mut config: TomlValue = serde_json::from_value(initial.clone()).unwrap();
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join(CONFIG_TOML_FILE);
+        std::fs::write(&file, toml::to_string(&config).unwrap()).unwrap();
+        let mut providers = CredentialProviderEdits::new(&config);
+        let mut persistence = Vec::new();
+        let path = if path.is_empty() {
+            "features.network_proxy.credentials".to_string()
+        } else {
+            format!("features.network_proxy.credentials.{path}")
+        };
+        for (key_path, value, strategy) in [
+            (
+                "features.network_proxy.credentials.a.env",
+                serde_json::json!(["B_AUTH"]),
+                MergeStrategy::Upsert,
+            ),
+            (path.as_str(), value, strategy),
+            (
+                "features.network_proxy.credentials.b.env",
+                serde_json::json!(["A_AUTH"]),
+                MergeStrategy::Upsert,
+            ),
+        ] {
+            persistence.extend(
+                providers
+                    .apply(
+                        &mut config,
+                        &parse_key_path(key_path).unwrap(),
+                        parse_value(value).unwrap().as_ref(),
+                        strategy,
+                    )
+                    .unwrap(),
+            );
+        }
+        persistence.extend(providers.remapping_edits(&config).unwrap());
+        ConfigEditsBuilder::for_config_path(&file)
+            .with_edits(persistence)
+            .apply_blocking()
+            .unwrap();
+        assert_eq!(
+            toml::from_str::<TomlValue>(&std::fs::read_to_string(&file).unwrap()).unwrap(),
+            config
+        );
+        let mut expected = serde_json::json!({ "b": expected_b });
+        if path != "features.network_proxy.credentials" {
+            expected["a"] = initial["features"]["network_proxy"]["credentials"]["a"].clone();
+            expected["a"]["env"] = serde_json::json!(["B_AUTH"]);
+        }
+        assert_eq!(
+            config["features"]["network_proxy"]["credentials"],
+            serde_json::from_value::<TomlValue>(expected).unwrap(),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn provider_edits_preserve_another_writers_sibling_update() -> Result<()> {
+    let initial: TomlValue = toml::from_str(
+        r#"
+[features.network_proxy.credentials.a]
+env = ['A_AUTH']
+patterns = ['^alpha_[a-z]{8}$']
+url_prefixes = ['https://a.example']
+auth = ['bearer']
+[features.network_proxy.credentials.b]
+env = ['B_AUTH']
+patterns = ['^bravo_[a-z]{8}$']
+url_prefixes = ['https://b.example']
+auth = ['bearer']
+[features.network_proxy.credentials.c]
+env = ['C_AUTH']
+patterns = ['^charlie_[a-z]{8}$']
+url_prefixes = ['https://c.example']
+auth = ['bearer']
+"#,
+    )?;
+    for updates in [
+        vec![("a.auth", serde_json::json!(["token"]))],
+        vec![("a.env", serde_json::json!(["C_AUTH"]))],
+        vec![
+            ("a.env", serde_json::json!(["C_AUTH"])),
+            ("c.env", serde_json::json!(["A_AUTH"])),
+        ],
+    ] {
+        let tmp = tempdir()?;
+        let file = tmp.path().join(CONFIG_TOML_FILE);
+        std::fs::write(&file, toml::to_string(&initial)?)?;
+        let mut config = initial.clone();
+        let mut providers = CredentialProviderEdits::new(&config);
+        let mut persistence = Vec::new();
+        for (path, value) in updates {
+            persistence.extend(providers.apply(
+                &mut config,
+                &parse_key_path(&format!("features.network_proxy.credentials.{path}")).unwrap(),
+                parse_value(value).unwrap().as_ref(),
+                MergeStrategy::Upsert,
+            )?);
+        }
+        persistence.extend(providers.remapping_edits(&config)?);
+
+        // W1 has prepared its edits; W2 updates B before W1's persistence reread.
+        ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf())
+            .write_value(ConfigValueWriteParams {
+                file_path: None,
+                key_path: "features.network_proxy.credentials.b.auth".to_string(),
+                value: serde_json::json!(["token"]),
+                merge_strategy: MergeStrategy::Upsert,
+                expected_version: None,
+            })
+            .await?;
+        ConfigEditsBuilder::for_config_path(&file)
+            .with_edits(persistence)
+            .apply()
+            .await?;
+
+        config["features"]["network_proxy"]["credentials"]["b"]["auth"] =
+            TomlValue::Array(vec![TomlValue::String("token".to_string())]);
+        assert_eq!(
+            toml::from_str::<TomlValue>(&std::fs::read_to_string(&file)?)?,
+            config
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn provider_remapping_respects_lower_layer_eviction() -> Result<()> {
+    let tmp = tempdir()?;
+    let file = AbsolutePathBuf::try_from(tmp.path().join(CONFIG_TOML_FILE))?;
+    let complete = |id: &str| -> TomlValue {
+        toml::from_str(&format!(
+            "[features.network_proxy.credentials.{id}]\nenv = ['VENDOR_PASSWORD']\npatterns = ['^pin_[a-z]{{8}}$']\nurl_prefixes = ['https://old.example']\n"
+        )).unwrap()
+    };
+    // The middle layer must not let an evicted definition's fields reappear later.
+    for (lower_id, middle, user, valid, strategy, move_source) in [
+        ("a_working", None, "", false, MergeStrategy::Upsert, false),
+        ("a_working", None, "", false, MergeStrategy::Replace, false),
+        ("z_new", None, "", true, MergeStrategy::Upsert, false),
+        ("z_new", None, "", true, MergeStrategy::Replace, false),
+        (
+            "z_new",
+            Some("a_working"),
+            "",
+            false,
+            MergeStrategy::Upsert,
+            false,
+        ),
+        (
+            "z_new",
+            Some("a_working"),
+            "a_working",
+            false,
+            MergeStrategy::Upsert,
+            false,
+        ),
+        ("a_working", None, "", false, MergeStrategy::Upsert, true),
+        (
+            "a_working",
+            None,
+            "a_working",
+            false,
+            MergeStrategy::Upsert,
+            true,
+        ),
+    ] {
+        let mut user_config = if user.is_empty() {
+            TomlValue::Table(Default::default())
+        } else {
+            complete(user)
+        };
+        let original_user_config = user_config.clone();
+        let mut edits = CredentialProviderEdits::new(&user_config);
+        if move_source {
+            edits
+                .apply(
+                    &mut user_config,
+                    &parse_key_path("features.network_proxy.credentials.a_working.env").unwrap(),
+                    Some(&TomlValue::Array(vec![TomlValue::String(
+                        "OTHER_PASSWORD".into(),
+                    )])),
+                    MergeStrategy::Upsert,
+                )
+                .unwrap();
+        }
+        edits
+            .apply(
+                &mut user_config,
+                &parse_key_path("features.network_proxy.credentials.z_new.env").unwrap(),
+                Some(&TomlValue::Array(vec![TomlValue::String(
+                    "VENDOR_PASSWORD".into(),
+                )])),
+                strategy,
+            )
+            .unwrap();
+        let mut layers = vec![ConfigLayerEntry::new(
+            ConfigLayerSource::System { file: file.clone() },
+            complete(lower_id),
+        )];
+        if let Some(id) = middle {
+            layers.push(ConfigLayerEntry::new(
+                ConfigLayerSource::EnterpriseManaged {
+                    id: "test".into(),
+                    name: "test".into(),
+                },
+                complete(id),
+            ));
+        }
+        layers.push(ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: file.clone(),
+                profile: None,
+            },
+            user_config.clone(),
+        ));
+        let layers = ConfigLayerStack::new(layers, Default::default(), Default::default())?;
+        assert_eq!(
+            edits
+                .validate_remapping(&original_user_config, &user_config, &layers)
+                .is_ok(),
+            valid,
+            "{lower_id} / {middle:?} / {user}",
+        );
+    }
+    for pattern in ["[", "^pin_[a-z]{8}$"] {
+        for reverse in [false, true] {
+            let original = complete("a_working");
+            let mut config = original.clone();
+            let mut edits = CredentialProviderEdits::new(&config);
+            let mut updates = [
+                ("a_working.env", serde_json::json!(["OTHER_PASSWORD"])),
+                ("z_new.patterns", serde_json::json!([pattern])),
+            ];
+            if reverse {
+                updates.reverse();
+            }
+            for (path, value) in updates {
+                edits
+                    .apply(
+                        &mut config,
+                        &parse_key_path(&format!("features.network_proxy.credentials.{path}"))
+                            .unwrap(),
+                        parse_value(value).unwrap().as_ref(),
+                        MergeStrategy::Upsert,
+                    )
+                    .unwrap();
+            }
+            let layers = ConfigLayerStack::new(
+                vec![
+                    ConfigLayerEntry::new(
+                        ConfigLayerSource::System { file: file.clone() },
+                        complete("z_new"),
+                    ),
+                    ConfigLayerEntry::new(
+                        ConfigLayerSource::User {
+                            file: file.clone(),
+                            profile: None,
+                        },
+                        config.clone(),
+                    ),
+                ],
+                Default::default(),
+                Default::default(),
+            )?;
+            assert_eq!(
+                edits
+                    .validate_remapping(&original, &config, &layers)
+                    .is_ok(),
+                pattern != "[",
+                "{pattern}, reverse={reverse}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn provider_updates_preserve_working_definitions_and_drafts() -> Result<()> {
+    let tmp = tempdir()?;
+    let file = AbsolutePathBuf::try_from(tmp.path().join(CONFIG_TOML_FILE))?;
+    let pattern = "^pin_[a-z]{8}$";
+    for (lower_pattern, initial, path, value, valid, managed_pattern) in [
+        (
+            pattern,
+            serde_json::json!({}),
+            "a.patterns",
+            serde_json::json!(["["]),
+            false,
+            None,
+        ),
+        (
+            pattern,
+            serde_json::json!({}),
+            "a.auth",
+            serde_json::json!(["token"]),
+            true,
+            None,
+        ),
+        (
+            "[",
+            serde_json::json!({"a": {"patterns": [pattern]}}),
+            "a",
+            JsonValue::Null,
+            true,
+            None,
+        ),
+        (
+            pattern,
+            serde_json::json!({"a": {"patterns": ["["]}}),
+            "a.patterns",
+            serde_json::json!(["("]),
+            true,
+            None,
+        ),
+        (
+            pattern,
+            serde_json::json!({"b": {"env": ["NEW_PASSWORD"]}}),
+            "b.patterns",
+            serde_json::json!(["["]),
+            true,
+            None,
+        ),
+        (
+            pattern,
+            serde_json::json!({"b": {"env": ["NEW_PASSWORD"]}}),
+            "b",
+            serde_json::json!({"env": ["NEW_PASSWORD"], "patterns": [pattern]}),
+            true,
+            None,
+        ),
+        (
+            pattern,
+            serde_json::json!({"b": {"env": ["NEW_PASSWORD"]}}),
+            "",
+            serde_json::json!({"b": {"env": ["NEW_PASSWORD"], "patterns": [pattern]}}),
+            true,
+            None,
+        ),
+        (
+            "[",
+            serde_json::json!({"a": {"env": ["VENDOR_PASSWORD"]}}),
+            "a.env",
+            serde_json::json!([]),
+            false,
+            Some(pattern),
+        ),
+    ] {
+        let lower: TomlValue = serde_json::from_value(serde_json::json!({
+            "features": {"network_proxy": {"credentials": {"a": {
+                "env": ["VENDOR_PASSWORD"], "patterns": [lower_pattern],
+                "url_prefixes": ["https://api.vendor.example"],
+            }}}}
+        }))?;
+        let original: TomlValue = serde_json::from_value(serde_json::json!({
+            "features": {"network_proxy": {"credentials": initial}}
+        }))?;
+        let mut config = original.clone();
+        let mut edits = CredentialProviderEdits::new(&config);
+        let key_path = if path.is_empty() {
+            "features.network_proxy.credentials".to_string()
+        } else {
+            format!("features.network_proxy.credentials.{path}")
+        };
+        edits
+            .apply(
+                &mut config,
+                &parse_key_path(&key_path).unwrap(),
+                parse_value(value).unwrap().as_ref(),
+                MergeStrategy::Replace,
+            )
+            .unwrap();
+        let mut layers = vec![
+            ConfigLayerEntry::new(ConfigLayerSource::System { file: file.clone() }, lower),
+            ConfigLayerEntry::new(
+                ConfigLayerSource::User {
+                    file: file.clone(),
+                    profile: None,
+                },
+                config.clone(),
+            ),
+        ];
+        if let Some(pattern) = managed_pattern {
+            layers.push(ConfigLayerEntry::new(
+                ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: file.clone() },
+                serde_json::from_value(serde_json::json!({"features": {"network_proxy": {"credentials": {"a": {"patterns": [pattern]}}}}}))?,
+            ));
+        }
+        let layers = ConfigLayerStack::new(layers, Default::default(), Default::default())?;
+        assert_eq!(
+            edits
+                .validate_remapping(&original, &config, &layers)
+                .is_ok(),
+            valid,
+            "{path}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn provider_draft_remapping_uses_final_source_ownership() -> Result<()> {
+    let tmp = tempdir()?;
+    let file = AbsolutePathBuf::try_from(tmp.path().join(CONFIG_TOML_FILE))?;
+    let config = |providers| -> TomlValue {
+        serde_json::from_value(serde_json::json!({
+            "features": {"network_proxy": {"credentials": providers}}
+        }))
+        .unwrap()
+    };
+    let complete = serde_json::json!({
+        "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"],
+        "url_prefixes": ["https://api.vendor.example"],
+    });
+    let lower = config(serde_json::json!({"b": complete}));
+    let inherited_draft = config(serde_json::json!({
+        "a": complete, "b": {"url_prefixes": []},
+    }));
+    let inherited_only_draft = config(serde_json::json!({
+        "b": {"env": ["VENDOR_PASSWORD"]},
+    }));
+    let mut multi_source = serde_json::json!({"a": complete, "c": complete});
+    multi_source["a"]["env"] = serde_json::json!(["VENDOR_PASSWORD", "VENDOR_ALIAS"]);
+    multi_source["c"]["env"] = serde_json::json!(["OTHER_PASSWORD"]);
+    let mut actual = Vec::new();
+    let mut expected = Vec::new();
+    for (name, lower, original, updates, strategy, valid) in [
+        (
+            "automatic eviction reveals an inherited draft",
+            inherited_only_draft.clone(),
+            config(multi_source.clone()),
+            vec![("c.env", serde_json::json!(["VENDOR_ALIAS"]))],
+            MergeStrategy::Upsert,
+            false,
+        ),
+        (
+            "explicit deletion after remapping remains allowed",
+            inherited_only_draft.clone(),
+            config(multi_source),
+            vec![
+                ("c.env", serde_json::json!(["VENDOR_ALIAS"])),
+                ("a", JsonValue::Null),
+            ],
+            MergeStrategy::Upsert,
+            true,
+        ),
+        (
+            "inherited-only draft receives the source",
+            inherited_only_draft.clone(),
+            config(serde_json::json!({"a": complete})),
+            vec![("a.env", serde_json::json!(["OTHER_PASSWORD"]))],
+            MergeStrategy::Replace,
+            false,
+        ),
+        (
+            "deletion may reveal an inherited-only draft",
+            inherited_only_draft.clone(),
+            config(serde_json::json!({"a": complete})),
+            vec![("a", JsonValue::Null)],
+            MergeStrategy::Replace,
+            true,
+        ),
+        (
+            "deleting both providers may reveal an inherited draft",
+            inherited_only_draft,
+            config(serde_json::json!({"a": complete, "b": {}})),
+            vec![("a", JsonValue::Null), ("b", JsonValue::Null)],
+            MergeStrategy::Replace,
+            true,
+        ),
+        (
+            "inherited draft receives the source",
+            lower.clone(),
+            inherited_draft.clone(),
+            vec![("a.env", serde_json::json!(["OTHER_PASSWORD"]))],
+            MergeStrategy::Replace,
+            false,
+        ),
+        (
+            "whole provider deletion remains allowed",
+            lower.clone(),
+            inherited_draft.clone(),
+            vec![("a", JsonValue::Null)],
+            MergeStrategy::Replace,
+            true,
+        ),
+        (
+            "deletion with an unchanged draft edit",
+            lower.clone(),
+            inherited_draft.clone(),
+            vec![
+                ("a", JsonValue::Null),
+                ("b.url_prefixes", serde_json::json!([])),
+            ],
+            MergeStrategy::Replace,
+            true,
+        ),
+        (
+            "batch completes the recipient",
+            lower,
+            inherited_draft,
+            vec![
+                ("a.env", serde_json::json!(["OTHER_PASSWORD"])),
+                ("b.url_prefixes", serde_json::json!(["https://new.example"])),
+            ],
+            MergeStrategy::Replace,
+            true,
+        ),
+        (
+            "batch restores the draft source",
+            config(serde_json::json!({})),
+            config(serde_json::json!({"b": {"env": ["DRAFT_PASSWORD"]}})),
+            vec![
+                ("b", serde_json::json!({"patterns": ["^pin_[a-z]{8}$"]})),
+                ("b.env", serde_json::json!(["DRAFT_PASSWORD"])),
+            ],
+            MergeStrategy::Replace,
+            true,
+        ),
+    ] {
+        let mut config = original.clone();
+        let mut edits = CredentialProviderEdits::new(&config);
+        for (path, value) in updates {
+            edits
+                .apply(
+                    &mut config,
+                    &parse_key_path(&format!("features.network_proxy.credentials.{path}")).unwrap(),
+                    parse_value(value).unwrap().as_ref(),
+                    strategy.clone(),
+                )
+                .unwrap();
+        }
+        let layers = ConfigLayerStack::new(
+            vec![
+                ConfigLayerEntry::new(ConfigLayerSource::System { file: file.clone() }, lower),
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::User {
+                        file: file.clone(),
+                        profile: None,
+                    },
+                    config.clone(),
+                ),
+            ],
+            Default::default(),
+            Default::default(),
+        )?;
+        actual.push((
+            name,
+            edits
+                .validate_remapping(&original, &config, &layers)
+                .is_ok(),
+        ));
+        expected.push((name, valid));
+    }
+    assert_eq!(actual, expected);
+    Ok(())
+}
+
+#[test]
 fn toml_value_to_item_handles_nested_config_tables() {
     let config = r#"
 [mcp_servers.docs]
@@ -765,6 +1364,76 @@ async fn managed_auth_policy_survives_unusable_requirements_file_changes() -> Re
 }
 
 #[tokio::test]
+async fn provider_remapping_validates_fragments_even_when_source_is_overridden() -> Result<()> {
+    for (managed_provider, strategy) in [
+        (None, MergeStrategy::Upsert),
+        (None, MergeStrategy::Replace),
+        (Some("z_new"), MergeStrategy::Upsert),
+        (Some("z_new"), MergeStrategy::Replace),
+        (Some("z_managed"), MergeStrategy::Upsert),
+        (Some("z_managed"), MergeStrategy::Replace),
+    ] {
+        let tmp = tempdir()?;
+        let initial = r#"[features.network_proxy.credentials.a_working]
+env = ["VENDOR_PASSWORD"]
+patterns = ["^pin_[a-z]{8}$"]
+url_prefixes = ["https://old.example"]
+"#;
+        std::fs::write(tmp.path().join(CONFIG_TOML_FILE), initial)?;
+        let managed_path = tmp.path().join("managed.toml");
+        if let Some(managed_provider) = managed_provider {
+            std::fs::write(
+                &managed_path,
+                format!(
+                    r#"[features.network_proxy.credentials.{managed_provider}]
+env = ["VENDOR_PASSWORD"]
+patterns = ["^pin_[a-z]{{8}}$"]
+url_prefix_from_env = "VENDOR_ENDPOINT"
+"#
+                ),
+            )?;
+        }
+        let service = ConfigManager::new_for_tests(
+            tmp.path().to_path_buf(),
+            vec![],
+            LoaderOverrides::with_managed_config_path_for_tests(managed_path),
+            CloudConfigBundleLoader::default(),
+        );
+        let result = service
+            .write_value(ConfigValueWriteParams {
+                file_path: None,
+                key_path: match strategy {
+                    MergeStrategy::Upsert => "features.network_proxy.credentials.z_new.env",
+                    MergeStrategy::Replace => "features.network_proxy.credentials",
+                }
+                .to_string(),
+                value: match strategy {
+                    MergeStrategy::Upsert => serde_json::json!(["VENDOR_PASSWORD"]),
+                    MergeStrategy::Replace => {
+                        serde_json::json!({"z_new": {"env": ["VENDOR_PASSWORD"]}})
+                    }
+                },
+                merge_strategy: strategy,
+                expected_version: None,
+            })
+            .await;
+        if managed_provider == Some("z_new") {
+            result?;
+        } else {
+            assert_eq!(
+                result.unwrap_err().write_error_code(),
+                Some(ConfigWriteErrorCode::ConfigValidationError)
+            );
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE))?,
+                initial
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_user_value_rejected_even_if_overridden_by_managed() {
     let tmp = tempdir().expect("tempdir");
     std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "model = \"user\"").unwrap();
@@ -1322,6 +1991,29 @@ async fn structured_feature_toggle_ignores_unrelated_managed_settings() -> Resul
             .and_then(|features| features.get("network_proxy"))
             .is_none()
     );
+
+    let configured_provider = "[features.network_proxy]\nenabled = true\n\n\
+         [features.network_proxy.credentials.vendor]\n\
+         env = ['VENDOR_TOKEN']\n\
+         patterns = ['token_[a-z]{24}']\n\
+         url_prefixes = ['https://api.vendor.example']\n";
+    std::fs::write(&user_path, configured_provider)?;
+    service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(user_path.display().to_string()),
+            key_path: "features.network_proxy".to_string(),
+            value: serde_json::Value::Null,
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await?;
+    let updated: TomlValue = toml::from_str(&std::fs::read_to_string(&user_path)?)?;
+    let feature = &updated["features"]["network_proxy"];
+    assert_eq!(
+        feature.get("enabled").and_then(TomlValue::as_bool),
+        Some(false)
+    );
+    assert!(feature.get("credentials").is_some());
     Ok(())
 }
 
@@ -1715,28 +2407,32 @@ exclude = [
 set = { KEEP = "1", OTHER = "2", GH_HOST = "github.stale.example" } # keep this inline table
 "#
     );
-    #[cfg(windows)]
-    {
-        service
+    for (value, expected_set) in [
+        (
+            serde_json::json!("github.trusted.example"),
+            "KEEP='1'\nOTHER='2'\nGH_HOST='github.stale.example'\ngh_host='github.trusted.example'",
+        ),
+        (
+            serde_json::Value::Null,
+            "KEEP='1'\nOTHER='2'\nGH_HOST='github.stale.example'",
+        ),
+    ] {
+        let response = service
             .write_value(ConfigValueWriteParams {
                 file_path: Some(path.display().to_string()),
                 key_path: "shell_environment_policy.set.gh_host".to_string(),
-                value: serde_json::json!("github.trusted.example"),
+                value,
                 merge_strategy: MergeStrategy::Upsert,
                 expected_version: None,
             })
             .await?;
+        assert_eq!(response.status, WriteStatus::Ok);
+        assert_eq!(response.overridden_metadata, None);
         let config: TomlValue = toml::from_str(&std::fs::read_to_string(&path)?)?;
-        let overrides = config
-            .get("shell_environment_policy")
-            .and_then(|policy| policy.get("set"))
-            .and_then(TomlValue::as_table)
-            .expect("environment overrides");
         assert_eq!(
-            overrides.get("GH_HOST").and_then(TomlValue::as_str),
-            Some("github.trusted.example")
+            config["shell_environment_policy"]["set"],
+            toml::from_str::<TomlValue>(expected_set)?
         );
-        assert!(!overrides.contains_key("gh_host"));
     }
     service
         .read(ConfigReadParams {
@@ -1846,7 +2542,7 @@ exclude = ["AWS_*"]
 "#,
             "shell_environment_policy.filters.AWS_*",
             serde_json::json!("include"),
-            serde_json::Value::Null,
+            Some(serde_json::Value::Null),
         ),
         (
             r#"[shell_environment_policy.filters]
@@ -1854,21 +2550,42 @@ exclude = ["AWS_*"]
 "#,
             "shell_environment_policy.exclude",
             serde_json::json!(["AWS_*"]),
-            serde_json::Value::Null,
+            Some(serde_json::Value::Null),
         ),
-        #[cfg(windows)]
+        (
+            "[shell_environment_policy.set]\nGH_HOST = 'github.managed.example'\n",
+            "shell_environment_policy.set.GH_HOST",
+            serde_json::json!("github.user.example"),
+            Some(serde_json::json!("github.managed.example")),
+        ),
         (
             "[shell_environment_policy.set]\nGH_HOST = 'github.managed.example'\n",
             "shell_environment_policy.set.gh_host",
             serde_json::json!("github.user.example"),
-            serde_json::json!("github.managed.example"),
+            None,
+        ),
+        (
+            "[shell_environment_policy.set]\ngh_host = 'github.managed.example'\n",
+            "shell_environment_policy.set.gh_host",
+            serde_json::json!("github.user.example"),
+            Some(serde_json::json!("github.managed.example")),
+        ),
+        (
+            "[shell_environment_policy.set]\ngh_host = 'github.managed.example'\n",
+            "shell_environment_policy.set.GH_HOST",
+            serde_json::json!("github.user.example"),
+            None,
         ),
     ];
 
     for (managed, key_path, value, expected_effective_value) in cases {
         let tmp = tempdir()?;
         let path = tmp.path().join(CONFIG_TOML_FILE);
-        std::fs::write(&path, "")?;
+        std::fs::write(
+            &path,
+            "[shell_environment_policy.set]\n\
+             GH_HOST = 'github.original.example'\ngh_host = 'github.original-lower.example'\n",
+        )?;
         let managed_path = tmp.path().join("managed_config.toml");
         std::fs::write(&managed_path, managed)?;
         let managed_file = AbsolutePathBuf::try_from(managed_path.clone())?;
@@ -1889,15 +2606,20 @@ exclude = ["AWS_*"]
             })
             .await?;
 
-        assert_eq!(response.status, WriteStatus::OkOverridden);
-        let overridden = response
-            .overridden_metadata
-            .expect("managed representation should override the user edit");
-        assert_eq!(
-            overridden.overriding_layer.name,
-            ApiConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
-        );
-        assert_eq!(overridden.effective_value, expected_effective_value);
+        if let Some(expected_effective_value) = expected_effective_value {
+            assert_eq!(response.status, WriteStatus::OkOverridden);
+            let overridden = response
+                .overridden_metadata
+                .expect("managed setting should override the user edit");
+            assert_eq!(
+                overridden.overriding_layer.name,
+                ApiConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
+            );
+            assert_eq!(overridden.effective_value, expected_effective_value);
+        } else {
+            assert_eq!(response.status, WriteStatus::Ok);
+            assert_eq!(response.overridden_metadata, None);
+        }
         service
             .read(ConfigReadParams {
                 include_layers: false,

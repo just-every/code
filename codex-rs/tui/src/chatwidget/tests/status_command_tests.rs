@@ -90,7 +90,7 @@ async fn status_command_renders_immediately_without_rate_limit_refresh() {
 
 #[tokio::test]
 async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
     chat.config.model_reasoning_effort = None;
 
     chat.dispatch_command(SlashCommand::Status);
@@ -102,7 +102,7 @@ async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
         other => panic!("expected status output, got {other:?}"),
     };
     assert!(
-        rendered.contains("gpt-5.4 (reasoning medium, summaries auto)"),
+        rendered.contains("gpt-5.5 (reasoning medium, summaries auto)"),
         "expected /status to render the catalog default reasoning effort, got: {rendered}"
     );
 }

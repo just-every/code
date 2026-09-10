@@ -144,13 +144,14 @@ impl RealtimeHandoffAdmission {
         }
     }
 
-    async fn route(&self, session: &Arc<Session>, text: String) {
+    async fn route(&self, session: &Arc<Session>, text: String) -> Result<(), &'static str> {
         let Ok(_permit) = self.gate.acquire().await else {
-            return;
+            return Ok(());
         };
         if !self.retired.load(Ordering::Acquire) {
-            session.route_realtime_text_input(text).await;
+            session.route_realtime_text_input(text).await?;
         }
+        Ok(())
     }
 
     async fn retire(&self) {
@@ -1645,6 +1646,7 @@ async fn handle_start_inner(
             msg,
         };
         let mut end = RealtimeConversationEnd::TransportClosed;
+        let mut handoff_error = None;
         // Drain already-parsed events so a queued handoff is routed before the final tail.
         while let Ok(event) = events_rx.recv().await {
             match &event {
@@ -1667,7 +1669,7 @@ async fn handle_start_inner(
             if let Some(text) = maybe_routed_text {
                 // The routed text can contain spoken prompts or workspace secrets.
                 debug!("[realtime-text] realtime conversation text output");
-                route_handoffs.route(&sess_clone, text).await;
+                handoff_error = route_handoffs.route(&sess_clone, text).await.err();
             }
             sess_clone
                 .send_event_raw(ev(EventMsg::RealtimeConversationRealtime(
@@ -1676,9 +1678,24 @@ async fn handle_start_inner(
                     },
                 )))
                 .await;
+            if handoff_error.is_some() {
+                break;
+            }
         }
-        if let Ok(text) = transcript_tail_rx.recv().await {
-            route_handoffs.route(&sess_clone, text).await;
+        if handoff_error.is_none()
+            && let Ok(text) = transcript_tail_rx.recv().await
+        {
+            handoff_error = route_handoffs.route(&sess_clone, text).await.err();
+        }
+        if let Some(error) = handoff_error {
+            end = RealtimeConversationEnd::Error;
+            sess_clone
+                .send_event_raw(ev(EventMsg::RealtimeConversationRealtime(
+                    RealtimeConversationRealtimeEvent {
+                        payload: RealtimeEvent::Error(error.to_string()),
+                    },
+                )))
+                .await;
         }
         if fanout_realtime_active.swap(false, Ordering::Relaxed) {
             match end {

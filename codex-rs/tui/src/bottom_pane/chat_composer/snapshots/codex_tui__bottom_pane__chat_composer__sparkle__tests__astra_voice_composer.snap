@@ -1,0 +1,12 @@
+---
+source: tui/src/bottom_pane/chat_composer/sparkle_tests.rs
+assertion_line: 361
+expression: "baseline.content.chunks(60).map(|row|\nrow.iter().map(ratatui::buffer::Cell::symbol).collect::<String>()).collect::<Vec<_>>().join(\"\\n\")"
+---
+                                                            
+ voice ● listening                /voice mute   /voice stop 
+   mic ▁▃▄▅▆█  codex █▆▅▄▃▁                                 
+                                                            
+› Ask Codex to do anything                                  
+                                                            
+  ? for shortcuts                        100% context left

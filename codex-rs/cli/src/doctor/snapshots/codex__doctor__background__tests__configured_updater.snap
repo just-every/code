@@ -1,0 +1,8 @@
+---
+source: cli/src/doctor/background.rs
+assertion_line: 332
+expression: details
+---
+update-loop pid file: CODEX_HOME/app-server-daemon/app-server-updater.pid (missing)
+automatic updates: disabled (configured)
+update interval: 90 minutes (configured)

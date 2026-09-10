@@ -4,6 +4,8 @@ use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::AddThreadAttachmentOutcome;
+use crate::AddThreadAttachmentParams;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::ArchiveThreadsParams;
@@ -18,6 +20,7 @@ use crate::DeletedProject;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListProjectsParams;
+use crate::ListThreadAttachmentsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
@@ -29,6 +32,8 @@ use crate::PreparedFork;
 use crate::ProjectMoveOutcome;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
+use crate::RemoveThreadAttachmentOutcome;
+use crate::RemoveThreadAttachmentParams;
 use crate::RenameThreadSectionParams;
 use crate::ResumeThreadParams;
 use crate::RevertThreadParams;
@@ -41,6 +46,7 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
 use crate::StoredThreadSectionsPage;
+use crate::ThreadAttachmentPage;
 use crate::ThreadMetadataPatch;
 use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
@@ -251,6 +257,47 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Whether this store can persist and discover thread-owned attachments.
+    fn supports_thread_attachments(&self) -> bool {
+        false
+    }
+
+    /// Attaches an attachment, returning an existing attachment for repeated requests.
+    fn add_thread_attachment(
+        &self,
+        _params: AddThreadAttachmentParams,
+    ) -> ThreadStoreFuture<'_, AddThreadAttachmentOutcome> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/add",
+            })
+        })
+    }
+
+    /// Lists attachments belonging to one persisted thread.
+    fn list_thread_attachments(
+        &self,
+        _params: ListThreadAttachmentsParams,
+    ) -> ThreadStoreFuture<'_, ThreadAttachmentPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/list",
+            })
+        })
+    }
+
+    /// Removes an attachment and reports whether it existed.
+    fn remove_thread_attachment(
+        &self,
+        _params: RemoveThreadAttachmentParams,
+    ) -> ThreadStoreFuture<'_, RemoveThreadAttachmentOutcome> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/remove",
+            })
+        })
+    }
+
     /// Whether this store supports durable host-owned projects.
     fn supports_projects(&self) -> bool {
         false
@@ -427,9 +474,11 @@ pub trait ThreadStore: Any + Send + Sync {
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
     /// Deletes a thread's persisted rollout data and associated metadata.
+    /// Success includes cleanup of associated persisted state; callers must not repeat it.
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()>;
 
-    /// Deletes threads in order, treating already-missing members as deleted.
+    /// Deletes threads and their associated persisted state in order, treating already-missing
+    /// members as deleted.
     ///
     /// Stores with request-scoped delete preflight should override this instead of repeating
     /// that work through [`ThreadStore::delete_thread`].

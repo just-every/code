@@ -20,6 +20,7 @@ use crate::context::GuardianApprovedAction;
 use crate::context::NodeReplReviewEvidence;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
+use crate::state::ReasoningEffortPin;
 use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
@@ -335,6 +336,14 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .collect::<Vec<_>>();
     sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
+    {
+        let mut state = sess.state.lock().await;
+        // Keep the baseline while startup prewarm is retained for the first turn,
+        // including when its task has not established the pin yet.
+        if state.startup_prewarm.is_none() {
+            state.reasoning_effort_pin = ReasoningEffortPin::Unset;
+        }
+    }
     sess.services
         .thread_extension_data
         .remove::<NodeReplReviewEvidence>();

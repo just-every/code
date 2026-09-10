@@ -27,6 +27,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use pretty_assertions::assert_eq;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -461,6 +462,14 @@ fn maybe_wrap_shell_lc_with_snapshot_reuses_brokered_session_zsh() {
     std::fs::write(&snapshot_path, "# Snapshot file\n").expect("write snapshot");
     let (session_shell, shell_snapshot) =
         shell_with_snapshot(ShellType::Zsh, "/bin/zsh", snapshot_path.abs());
+    let copy_key = format!("{SNAPSHOT_BROKERED_VALUE_ENV_PREFIX}OPENAI_API_KEY");
+    let env = HashMap::from([
+        (
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        ),
+        (copy_key.clone(), "dummy-openai-key".to_string()),
+    ]);
     for (flag, expected_flag) in [("-c", "-fc"), ("-lc", "-lfc")] {
         let command = vec![
             "/bin/zsh".to_string(),
@@ -469,10 +478,6 @@ fn maybe_wrap_shell_lc_with_snapshot_reuses_brokered_session_zsh() {
             "arg0".to_string(),
             "arg1".to_string(),
         ];
-        let env = HashMap::from([(
-            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
-            "1".to_string(),
-        )]);
 
         let rewritten = maybe_wrap_shell_lc_with_snapshot(
             &command,
@@ -490,6 +495,7 @@ fn maybe_wrap_shell_lc_with_snapshot_reuses_brokered_session_zsh() {
             shell_single_quote(&shell_snapshot.to_string_lossy())
         )));
         assert!(rewritten[2].ends_with(&command[2]));
+        assert!(rewritten[2].contains(&format!("unset {copy_key} || exit 1")));
         assert!(!rewritten[2].contains("exec '/bin/zsh'"));
         assert_eq!(rewritten[3..], command[3..]);
     }
@@ -855,7 +861,8 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
     std::fs::write(
         &snapshot,
         format!(
-            "# Snapshot file\ncorp_auth() {{ printf '%s\\n%s\\n%s' \"$OPENAI_API_KEY\" \"${{GITHUB_TOKEN-unset}}\" \"$1\"; }}\nexport OPENAI_API_KEY='stale'\nexport GITHUB_TOKEN='ghp_snapshot_only'\nexport GH_HOST='github.example.com'\nexport BASH_ENV='{}'\nexport ZDOTDIR='{}'\n",
+            "# Snapshot file\ncorp_auth() {{ printf '%s\\n%s\\n%s' \"$OPENAI_API_KEY\" \"${{GITHUB_TOKEN-unset}}\" \"$1\"; }}\nexport OPENAI_API_KEY='stale'\nexport GITHUB_TOKEN='ghp_snapshot_only'\nexport GH_HOST='github.example.com'\nexport BASH_ENV='{}'\nexport ENV='{}'\nexport ZDOTDIR='{}'\n",
+            startup.display(),
             startup.display(),
             dir.path().display()
         ),
@@ -866,13 +873,27 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
             "OPENAI_API_KEY".to_string(),
             "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_".to_string(),
         ),
+        (
+            "AUTH_HEADER".to_string(),
+            "Bearer sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+                .to_string(),
+        ),
         ("GITHUB_TOKEN".to_string(), String::new()),
         ("BASH_ENV".to_string(), startup.display().to_string()),
+        ("ENV".to_string(), startup.display().to_string()),
     ]);
     proxy.apply_to_env(&mut env);
-    prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot));
-    assert!(!env.contains_key("BASH_ENV"));
     let dummy = env["OPENAI_API_KEY"].clone();
+    let dummy_alias = env["AUTH_HEADER"].clone();
+    let mut alias_only_env = env.clone();
+    alias_only_env.remove("OPENAI_API_KEY");
+    let mut empty_canonical_env = env.clone();
+    empty_canonical_env.insert("OPENAI_API_KEY".to_string(), String::new());
+    let mut absent_alias_env = env.clone();
+    absent_alias_env.remove("AUTH_HEADER");
+    prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot), &shell);
+    assert!(!env.contains_key("BASH_ENV"));
+    assert_eq!(env.get("ENV"), Some(&startup.display().to_string()));
     let command = vec![
         "/bin/bash".to_string(),
         "-c".to_string(),
@@ -900,6 +921,341 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
         format!("{dummy}\nghp_snapshot_only\ngithub.example.com")
     );
 
+    let (posix_shell, _) = shell_with_snapshot(ShellType::Sh, "/bin/sh", snapshot.clone());
+    let no_prepends = RuntimePathPrepends::default();
+    let wrap_brokered_snapshot = |shell: &Shell,
+                                  snapshot: &AbsolutePathBuf,
+                                  env: &HashMap<String, String>,
+                                  prepends: &RuntimePathPrepends| {
+        maybe_wrap_shell_lc_with_snapshot(
+            &[
+                shell.shell_path.to_string_lossy().into_owned(),
+                if shell.shell_type == ShellType::Sh {
+                    "-lc"
+                } else {
+                    "-c"
+                }
+                .to_string(),
+                "/bin/sh -ic 'printf \"%s|%s\" \"$OPENAI_API_KEY\" \"${ENV-unset}\"'".to_string(),
+            ],
+            shell,
+            Some(snapshot),
+            &HashMap::new(),
+            env,
+            prepends,
+        )
+    };
+    let wrap_snapshot = |snapshot: &AbsolutePathBuf, env: &HashMap<String, String>| {
+        wrap_brokered_snapshot(&posix_shell, snapshot, env, &no_prepends)
+    };
+    let nested = wrap_snapshot(&snapshot, &env);
+    let run_nested =
+        |command: &[String], env: &HashMap<String, String>| -> anyhow::Result<String> {
+            let output = Command::new(&command[0])
+                .args(&command[1..])
+                .current_dir(dir.path())
+                .env_clear()
+                .envs(env)
+                .output()?;
+            anyhow::ensure!(output.status.success(), "nested shell failed: {output:?}");
+            Ok(String::from_utf8(output.stdout)?)
+        };
+    let posix_startup = dir.path().join("posix-startup.sh");
+    std::fs::write(&posix_startup, "export OPENAI_API_KEY='sk-posix-secret'\n")?;
+    let posix_snapshot = dir.path().join("posix-startup-snapshot.sh").abs();
+    std::fs::write(
+        &posix_snapshot,
+        format!("export ENV='{}'\n", posix_startup.display()),
+    )?;
+    let mut posix_startup_env = env.clone();
+    posix_startup_env.insert(
+        SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY.to_string(),
+        posix_startup.display().to_string(),
+    );
+    let distinct = wrap_snapshot(&posix_snapshot, &posix_startup_env);
+    assert_eq!(
+        run_nested(&distinct, &posix_startup_env)?,
+        format!("{dummy}|unset")
+    );
+    posix_startup_env.remove(SNAPSHOT_ORIGINAL_BASH_ENV_ENV_KEY);
+    posix_startup_env.insert("ENV".to_string(), posix_startup.display().to_string());
+    let inherited = wrap_snapshot(&posix_snapshot, &posix_startup_env);
+    assert_eq!(
+        run_nested(&inherited, &posix_startup_env)?,
+        format!("{dummy}|unset")
+    );
+
+    let wrap_bash_snapshot = |snapshot: &AbsolutePathBuf, env: &HashMap<String, String>| {
+        wrap_brokered_snapshot(&shell, snapshot, env, &no_prepends)
+    };
+    let readonly_snapshot = dir.path().join("readonly-env-snapshot.sh").abs();
+    for initial_env in [None, Some("production"), Some(startup.to_str().unwrap())] {
+        let mut case_env = env.clone();
+        case_env.remove("ENV");
+        if let Some(value) = initial_env {
+            case_env.insert("ENV".to_string(), value.to_string());
+        }
+        for (value, succeeds) in [(startup.to_str().unwrap(), false), ("production", true)] {
+            std::fs::write(
+                &readonly_snapshot,
+                format!("export ENV='{value}'\nreadonly ENV\n"),
+            )?;
+            for command_shell in [&shell, &posix_shell] {
+                let command = wrap_brokered_snapshot(
+                    command_shell,
+                    &readonly_snapshot,
+                    &case_env,
+                    &no_prepends,
+                );
+                let output = Command::new(&command[0])
+                    .args(&command[1..])
+                    .current_dir(dir.path())
+                    .env_clear()
+                    .envs(&case_env)
+                    .output()?;
+                assert_eq!(output.status.success(), succeeds, "{output:?}");
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    if succeeds {
+                        format!("{dummy}|production")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+        }
+    }
+    let prepended_path_snapshot = dir.path().join("prepended-path-snapshot.sh").abs();
+    std::fs::write(
+        &prepended_path_snapshot,
+        "export ENV='${PATH%%:*}/startup.sh'\nexport PATH='/safe'\n",
+    )?;
+    let mut prepended_env = env.clone();
+    prepended_env.insert("PATH".to_string(), "/safe".to_string());
+    prepended_env.insert("ENV".to_string(), "${PATH%%:*}/startup.sh".to_string());
+    let mut prepends = RuntimePathPrepends::default();
+    prepends.prepend(&mut prepended_env, dir.path());
+    let command =
+        wrap_brokered_snapshot(&shell, &prepended_path_snapshot, &prepended_env, &prepends);
+    assert_eq!(
+        run_nested(&command, &prepended_env)?,
+        format!("{dummy}|unset")
+    );
+    let relative_startup_snapshot = dir.path().join("relative-startup-snapshot.sh").abs();
+    let startup_path = startup.display().to_string();
+    let mut expanded_startup_env = env.clone();
+    expanded_startup_env.extend([
+        ("SNAPSHOT_STARTUP_FILE".to_string(), startup_path.clone()),
+        ("ORIGINAL_STARTUP_FILE".to_string(), startup_path.clone()),
+        (
+            "SNAPSHOT_APPLICATION_FILE".to_string(),
+            "/safe-application.env".to_string(),
+        ),
+        (
+            SNAPSHOT_ORIGINAL_BASH_ENV_ENV_KEY.to_string(),
+            "$SNAPSHOT_STARTUP_FILE".to_string(),
+        ),
+    ]);
+    let application_script =
+        format!("export ENV='{startup_path}'\nexport SNAPSHOT_APPLICATION_FILE='{startup_path}'\n");
+    let changed_startup_script = "export ENV='$ORIGINAL_STARTUP_FILE'\nexport SNAPSHOT_STARTUP_FILE='/different-startup.sh'\n";
+    let strict_script = format!("set -eu\nexport ENV='{startup_path}'\n");
+    for (original_env, script, expected_env) in [
+        (
+            startup_path.as_str(),
+            "export ENV='./startup.sh'\n",
+            "unset",
+        ),
+        (
+            startup_path.as_str(),
+            "export ENV='$SNAPSHOT_STARTUP_FILE'\n",
+            "unset",
+        ),
+        (
+            "$SNAPSHOT_APPLICATION_FILE",
+            application_script.as_str(),
+            "unset",
+        ),
+        (
+            "${SNAPSHOT_APPLICATION_FILE}",
+            application_script.as_str(),
+            "unset",
+        ),
+        (startup_path.as_str(), changed_startup_script, "unset"),
+        (
+            "$OPTIONAL_APPLICATION_FILE",
+            strict_script.as_str(),
+            "$OPTIONAL_APPLICATION_FILE",
+        ),
+    ] {
+        let mut case_env = expanded_startup_env.clone();
+        case_env.insert("ENV".to_string(), original_env.to_string());
+        std::fs::write(&relative_startup_snapshot, script)?;
+        let command = wrap_bash_snapshot(&relative_startup_snapshot, &case_env);
+        assert_eq!(
+            run_nested(&command, &case_env)?,
+            format!("{dummy}|{expected_env}")
+        );
+    }
+
+    for bash_env in ["", "$OPTIONAL_STARTUP"] {
+        let mut case_env = env.clone();
+        case_env.insert("BASH_ENV".to_string(), bash_env.to_string());
+        case_env.insert("ENV".to_string(), String::new());
+        prepare_brokered_shell_snapshot_env(&mut case_env, Some(&snapshot), &shell);
+        let command = wrap_bash_snapshot(&snapshot, &case_env);
+        assert_eq!(run_nested(&command, &case_env)?, format!("{dummy}|"));
+    }
+
+    let mut expanded_env = env.clone();
+    expanded_env.insert("ENV".to_string(), "$SNAPSHOT_STARTUP_FILE".to_string());
+    expanded_env.insert(
+        "SNAPSHOT_STARTUP_FILE".to_string(),
+        startup.display().to_string(),
+    );
+    assert_eq!(
+        run_nested(&nested, &expanded_env)?,
+        format!("{dummy}|unset")
+    );
+    expanded_env.insert("ENV".to_string(), "${SNAPSHOT_STARTUP_FILE}".to_string());
+    assert_eq!(
+        run_nested(&nested, &expanded_env)?,
+        format!("{dummy}|unset")
+    );
+
+    let injection = "\"; printf CODEX_ENV_INJECTED; __codex_env_file=\"";
+    expanded_env.insert("ENV".to_string(), injection.to_string());
+    let startup_value_snapshot = dir.path().join("startup-value-snapshot.sh").abs();
+    std::fs::write(
+        &startup_value_snapshot,
+        format!("export ENV='{injection}'\n"),
+    )?;
+    let expanded_command = wrap_snapshot(&startup_value_snapshot, &expanded_env);
+    assert_eq!(
+        run_nested(&expanded_command, &expanded_env)?,
+        format!("{dummy}|{injection}")
+    );
+
+    std::fs::write(&startup_value_snapshot, "export ENV='~/startup.sh'\n")?;
+    let bash_posix_path = dir.path().join("sh");
+    std::os::unix::fs::symlink("/bin/bash", &bash_posix_path)?;
+    let bash_posix_path = bash_posix_path.display().to_string();
+    let (bash_posix_shell, _) =
+        shell_with_snapshot(ShellType::Sh, &bash_posix_path, snapshot.clone());
+    let bash_posix_command = vec![
+        bash_posix_path.clone(),
+        "-c".to_string(),
+        format!(
+            "'{bash_posix_path}' -ic 'printf \"%s|%s\" \"$OPENAI_API_KEY\" \"${{ENV-unset}}\"'"
+        ),
+    ];
+    let mut tilde_env = env.clone();
+    tilde_env.insert("ENV".to_string(), "~/startup.sh".to_string());
+    tilde_env.insert("HOME".to_string(), dir.path().display().to_string());
+    let bash_posix_command = maybe_wrap_shell_lc_with_snapshot(
+        &bash_posix_command,
+        &bash_posix_shell,
+        Some(&startup_value_snapshot),
+        &HashMap::new(),
+        &tilde_env,
+        &RuntimePathPrepends::default(),
+    );
+    assert_eq!(
+        run_nested(&bash_posix_command, &tilde_env)?,
+        format!("{dummy}|unset")
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        expanded_env.insert("ENV".to_string(), "~/startup.sh".to_string());
+        expanded_env.insert("HOME".to_string(), dir.path().display().to_string());
+        assert_eq!(
+            run_nested(&nested, &expanded_env)?,
+            format!("{dummy}|unset")
+        );
+    }
+
+    std::fs::create_dir(dir.path().join("production"))?;
+    let mut ordinary_env = env.clone();
+    ordinary_env.insert("ENV".to_string(), "production".to_string());
+    assert_eq!(
+        run_nested(&nested, &ordinary_env)?,
+        format!("{dummy}|production")
+    );
+
+    let application_env_file = dir.path().join(".env");
+    std::fs::write(&application_env_file, "APPLICATION_SETTING=production\n")?;
+    ordinary_env.insert(
+        "ENV".to_string(),
+        application_env_file.display().to_string(),
+    );
+    let application_command = vec![
+        "/bin/bash".to_string(),
+        "-c".to_string(),
+        "printf '%s' \"$ENV\"".to_string(),
+    ];
+    let application_command = maybe_wrap_shell_lc_with_snapshot(
+        &application_command,
+        &shell,
+        Some(&snapshot),
+        &HashMap::new(),
+        &ordinary_env,
+        &RuntimePathPrepends::default(),
+    );
+    assert_eq!(
+        run_nested(&application_command, &ordinary_env)?,
+        application_env_file.display().to_string()
+    );
+    for flag in ["-c", "-lc"] {
+        let posix_application_command = maybe_wrap_shell_lc_with_snapshot(
+            &[
+                "/bin/sh".to_string(),
+                flag.to_string(),
+                "printf '%s' \"$ENV\"".to_string(),
+            ],
+            &posix_shell,
+            Some(&snapshot),
+            &HashMap::new(),
+            &ordinary_env,
+            &RuntimePathPrepends::default(),
+        );
+        assert_eq!(
+            run_nested(&posix_application_command, &ordinary_env)?,
+            application_env_file.display().to_string()
+        );
+    }
+
+    let changed_application_snapshot = dir.path().join("changed-application-snapshot.sh").abs();
+    std::fs::write(
+        &changed_application_snapshot,
+        format!("export ENV='{}'\n", application_env_file.display()),
+    )?;
+    let bash_nested_command = wrap_bash_snapshot(&changed_application_snapshot, &env);
+    assert_eq!(
+        run_nested(&bash_nested_command, &env)?,
+        format!("{dummy}|{}", application_env_file.display())
+    );
+    let posix_nested_command = wrap_snapshot(&changed_application_snapshot, &env);
+    assert_eq!(
+        run_nested(&posix_nested_command, &env)?,
+        format!("{dummy}|{}", application_env_file.display())
+    );
+    let application_snapshot = dir.path().join("application-snapshot.sh");
+    std::fs::write(&application_snapshot, "export ENV='production'\n")?;
+    let application_snapshot = application_snapshot.abs();
+    let application_command = wrap_snapshot(&application_snapshot, &env);
+    assert_eq!(
+        run_nested(&application_command, &env)?,
+        format!("{dummy}|production")
+    );
+    let mut snapshot_env = env.clone();
+    snapshot_env.remove("ENV");
+    let application_command = wrap_snapshot(&application_snapshot, &snapshot_env);
+    assert_eq!(
+        run_nested(&application_command, &snapshot_env)?,
+        format!("{dummy}|production")
+    );
+
     if std::path::Path::new("/bin/zsh").exists() {
         std::fs::write(
             dir.path().join(".zshenv"),
@@ -909,7 +1265,7 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
         std::os::unix::fs::symlink("/bin/zsh", &renamed_zsh)?;
         env.insert("ZDOTDIR".to_string(), dir.path().display().to_string());
         let (zsh, _) = shell_with_snapshot(ShellType::Zsh, "/bin/zsh", snapshot.clone());
-        prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot));
+        prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot), &zsh);
         let command = vec![
             renamed_zsh.display().to_string(),
             "-lc".to_string(),
@@ -923,11 +1279,113 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
             &env,
             &RuntimePathPrepends::default(),
         );
+        assert!(!rewritten[2].contains(&dummy));
+        assert!(!rewritten[2].contains(&dummy_alias));
         assert_eq!(rewritten[1], "-lfc");
         let output = Command::new(&rewritten[0])
             .args(&rewritten[1..])
             .env_clear()
             .envs(&env)
+            .output()?;
+        assert!(output.status.success(), "zsh command failed: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{dummy}\n{}", dir.path().display())
+        );
+
+        let system_startup_dir = dir.path().join("system-startup");
+        std::fs::create_dir(&system_startup_dir)?;
+        let system_startup_zsh = system_startup_dir.join("zsh");
+        std::fs::write(
+            &system_startup_zsh,
+            "#!/bin/sh\nexport OPENAI_API_KEY='sk-system-startup-secret'\nexport AUTH_HEADER='Bearer sk-system-startup-secret'\nexec /bin/zsh -ax \"$@\"\n",
+        )?;
+        let mut permissions = std::fs::metadata(&system_startup_zsh)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&system_startup_zsh, permissions)?;
+        let (system_zsh, _) = shell_with_snapshot(
+            ShellType::Zsh,
+            system_startup_zsh.to_string_lossy().as_ref(),
+            snapshot.clone(),
+        );
+        for (mut startup_env, expected_canonical, expected_alias) in [
+            (alias_only_env, "unset", dummy_alias.as_str()),
+            (empty_canonical_env, "", dummy_alias.as_str()),
+            (absent_alias_env, dummy.as_str(), "unset"),
+        ] {
+            prepare_brokered_shell_snapshot_env(&mut startup_env, Some(&snapshot), &system_zsh);
+            let command = vec![
+                system_startup_zsh.display().to_string(),
+                "-c".to_string(),
+                format!(
+                    "set +x\nprintf '%s\\n%s\\n%s\\n%s\\n%s\\n' \"${{OPENAI_API_KEY-unset}}\" \"${{AUTH_HEADER-unset}}\" \"${{{SNAPSHOT_BROKERED_VALUE_ENV_PREFIX}AUTH_HEADER-unset}}\" \"${{{SNAPSHOT_BROKERED_VALUE_ENV_PREFIX}OPENAI_API_KEY-unset}}\" \"${{{SNAPSHOT_BROKERED_UNSET_ENV_PREFIX}OPENAI_API_KEY-unset}}\"\nenv -0"
+                ),
+            ];
+            let system_rewritten = maybe_wrap_shell_lc_with_snapshot(
+                &command,
+                &system_zsh,
+                Some(&snapshot),
+                &HashMap::new(),
+                &startup_env,
+                &RuntimePathPrepends::default(),
+            );
+            let output = Command::new(&system_rewritten[0])
+                .args(&system_rewritten[1..])
+                .env_clear()
+                .envs(&startup_env)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "system startup command failed: {output:?}"
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let exported_env = stdout
+                .strip_prefix(&format!(
+                    "{expected_canonical}\n{expected_alias}\nunset\nunset\nunset\n"
+                ))
+                .unwrap_or_else(|| panic!("unexpected system startup output: {stdout}"));
+            assert!(!stdout.contains("sk-system-startup-secret"));
+            assert!(
+                !exported_env
+                    .split('\0')
+                    .any(|entry| entry.starts_with("__CODEX_SNAPSHOT_PROXY_OVERRIDE_"))
+            );
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("sk-system-startup-secret"));
+        }
+
+        for (bash_env, posix_env, zdotdir) in [
+            (
+                "$ZDOTDIR/startup.sh",
+                "$ZDOTDIR/startup.sh",
+                Some(dir.path()),
+            ),
+            ("${ZDOTDIR:-$HOME}/startup.sh", "$HOME/startup.sh", None),
+        ] {
+            let mut nested_zsh_env = env.clone();
+            nested_zsh_env.remove(SNAPSHOT_ORIGINAL_ZDOTDIR_ENV_KEY);
+            nested_zsh_env.insert("HOME".to_string(), dir.path().display().to_string());
+            nested_zsh_env.insert("BASH_ENV".to_string(), bash_env.to_string());
+            nested_zsh_env.insert("ENV".to_string(), posix_env.to_string());
+            if let Some(zdotdir) = zdotdir {
+                nested_zsh_env.insert("ZDOTDIR".to_string(), zdotdir.display().to_string());
+            } else {
+                nested_zsh_env.remove("ZDOTDIR");
+            }
+            prepare_brokered_shell_snapshot_env(&mut nested_zsh_env, Some(&snapshot), &zsh);
+            let command = wrap_brokered_snapshot(&zsh, &snapshot, &nested_zsh_env, &no_prepends);
+            assert_eq!(
+                run_nested(&command, &nested_zsh_env)?,
+                format!("{dummy}|unset")
+            );
+        }
+
+        env.remove("ZDOTDIR");
+        env.remove(SNAPSHOT_ORIGINAL_ZDOTDIR_ENV_KEY);
+        prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot), &zsh);
+        let output = Command::new(&rewritten[0])
+            .args(&rewritten[1..])
+            .env_clear()
+            .envs(env)
             .output()?;
         assert!(output.status.success(), "zsh command failed: {output:?}");
         assert_eq!(
@@ -1436,4 +1894,119 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
         .expect("run rewritten command");
     assert!(output.status.success(), "command failed: {output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "unset");
+}
+
+#[test]
+fn brokered_credential_exports_stop_when_startup_makes_credential_readonly() {
+    let copy_key = format!("{SNAPSHOT_BROKERED_VALUE_ENV_PREFIX}OPENAI_API_KEY");
+    let env = HashMap::from([(copy_key.clone(), "dummy-openai-key".to_string())]);
+    let restore = build_brokered_credential_exports(&env, /*remove_copies*/ true);
+
+    let unset_output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!(
+                "unset OPENAI_API_KEY\n{restore}\nprintf '%s|%s' \"${{OPENAI_API_KEY-unset}}\" \"${{{copy_key}-unset}}\""
+            ),
+        ])
+        .env(&copy_key, "dummy-openai-key")
+        .output()
+        .expect("run unset credential probe");
+    assert!(
+        unset_output.status.success(),
+        "unset credential probe failed: {unset_output:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&unset_output.stdout), "unset|unset");
+
+    let empty_output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!(
+                "OPENAI_API_KEY=\n{restore}\nprintf '%s|%s' \"$OPENAI_API_KEY\" \"${{{copy_key}-unset}}\""
+            ),
+        ])
+        .env(&copy_key, "dummy-openai-key")
+        .output()
+        .expect("run empty credential probe");
+    assert!(
+        empty_output.status.success(),
+        "empty credential probe failed: {empty_output:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&empty_output.stdout), "|unset");
+
+    let unchanged_output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!(
+                "readonly OPENAI_API_KEY=dummy-openai-key\n{restore}\nprintf '%s|%s' \"$OPENAI_API_KEY\" \"${{{copy_key}-unset}}\""
+            ),
+        ])
+        .env(&copy_key, "dummy-openai-key")
+        .output()
+        .expect("run unchanged readonly credential probe");
+    assert!(
+        unchanged_output.status.success(),
+        "unchanged readonly credential probe failed: {unchanged_output:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&unchanged_output.stdout),
+        "dummy-openai-key|unset"
+    );
+
+    let xtrace_output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!(
+                "OPENAI_API_KEY=real-openai-key\nset -x\n{restore}\nset +x\nprintf '%s|%s' \"$OPENAI_API_KEY\" \"${{{copy_key}-unset}}\""
+            ),
+        ])
+        .env(&copy_key, "dummy-openai-key")
+        .output()
+        .expect("run xtrace credential probe");
+    assert!(
+        xtrace_output.status.success(),
+        "xtrace credential probe failed: {xtrace_output:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&xtrace_output.stdout),
+        "dummy-openai-key|unset"
+    );
+    assert!(!String::from_utf8_lossy(&xtrace_output.stderr).contains("real-openai-key"));
+
+    let unset_marker_key = format!("{SNAPSHOT_BROKERED_UNSET_ENV_PREFIX}OPENAI_API_KEY");
+    let unset_env = HashMap::from([(unset_marker_key.clone(), "1".to_string())]);
+    let unset_restore = build_brokered_credential_exports(&unset_env, /*remove_copies*/ true);
+    let readonly_empty_output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!(
+                "readonly OPENAI_API_KEY=\n{unset_restore}\nprintf '%s|%s' \"$OPENAI_API_KEY\" \"${{{unset_marker_key}-unset}}\""
+            ),
+        ])
+        .env(&unset_marker_key, "1")
+        .output()
+        .expect("run readonly empty credential probe");
+    assert!(
+        readonly_empty_output.status.success(),
+        "readonly empty credential probe failed: {readonly_empty_output:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&readonly_empty_output.stdout),
+        "|unset"
+    );
+
+    let output = Command::new("/bin/bash")
+        .args([
+            "-c",
+            &format!("readonly OPENAI_API_KEY=real-openai-key\n{restore}\nprintf should-not-run"),
+        ])
+        .env(copy_key, "dummy-openai-key")
+        .output()
+        .expect("run readonly credential probe");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    assert!(
+        output.stdout.is_empty(),
+        "protected command unexpectedly ran"
+    );
 }

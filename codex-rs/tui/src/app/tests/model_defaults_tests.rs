@@ -21,7 +21,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
         loader_overrides.user_config_profile = Some("work".parse()?);
         let overrides = if outcome == "overridden" {
             vec![
-                ("model".into(), toml::Value::String("gpt-5.2".into())),
+                ("model".into(), toml::Value::String("gpt-5.6-terra".into())),
                 (
                     "model_reasoning_effort".into(),
                     toml::Value::String("low".into()),
@@ -69,7 +69,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
         let mut tui = crate::tui::test_support::make_test_tui()?;
         for event in [
             AppEvent::PersistModelSelection {
-                model: "gpt-5.4".into(),
+                model: "gpt-5.5".into(),
                 effort: Some(ReasoningEffortConfig::High),
             },
             AppEvent::PersistPlanModeReasoningEffort(Some(ReasoningEffortConfig::High)),
@@ -77,7 +77,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
                 service_tier: Some(ServiceTier::Fast.request_value().into()),
             },
             AppEvent::ApplyAdvancedReasoning {
-                model: "gpt-5.4".into(),
+                model: "gpt-5.5".into(),
                 effort: ReasoningEffortConfig::Ultra,
             },
         ] {
@@ -112,7 +112,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
             assert_eq!(
                 toml::from_str::<toml::Value>(&persisted)?,
                 toml::Value::Table(toml::toml! {
-                    model = "gpt-5.4"
+                    model = "gpt-5.5"
                     model_reasoning_effort = "medium"
                     plan_mode_reasoning_effort = "high"
                     service_tier = "fast"

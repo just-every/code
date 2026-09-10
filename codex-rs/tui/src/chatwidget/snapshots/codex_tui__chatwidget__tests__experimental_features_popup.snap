@@ -1,16 +1,18 @@
 ---
 source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 3083
 expression: popup
 ---
   Experimental features
   Checked features are configured on. Some experimental features take effect
   only in new tasks or after restarting the Codex server.
 
-› [ ] JavaScript REPL  Enable a persistent Node-backed JavaScript REPL for
-                       interactive website debugging and other inline
-                       JavaScript execution capabilities.
-  [x] Shell tool       Allow the model to run shell commands.
-  [ ] Worktrees        Create isolated Git worktrees and group sessions by
-                       repository.
+› [ ] JavaScript REPL      Enable a persistent Node-backed JavaScript REPL for
+                           interactive website debugging and other inline
+                           JavaScript execution capabilities.
+  [x] Shell tool           Allow the model to run shell commands.
+  [ ] Worktrees            Create isolated Git worktrees and group sessions by
+                           repository.
+  [ ] Voice conversations  Talk with Codex using /voice.
 
   Press space to select or enter to save

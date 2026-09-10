@@ -92,6 +92,7 @@ use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::protocol_mode::McpProtocolMode;
+use crate::startup_error::is_authentication_required_error;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -184,7 +185,8 @@ impl Drop for InitializeDeadlineGuard {
 #[derive(Clone)]
 struct InitializeContext {
     timeout: Option<Duration>,
-    client_service: ElicitationClientService,
+    client_info: InitializeRequestParams,
+    send_elicitation: Arc<SendElicitation>,
 }
 
 #[derive(Clone)]
@@ -610,11 +612,11 @@ impl RmcpClient {
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
     ) -> Result<ServerPeerInfo> {
-        let client_service = ElicitationClientService::new(
-            params.clone(),
-            send_elicitation,
-            self.elicitation_pause_state.clone(),
-        );
+        let context = InitializeContext {
+            timeout,
+            client_info: params,
+            send_elicitation: Arc::new(send_elicitation),
+        };
         let pending_transport = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
@@ -628,11 +630,7 @@ impl RmcpClient {
         };
 
         let (service, oauth_runtime) = self
-            .connect_pending_transport_with_initialize_retries(
-                pending_transport,
-                client_service.clone(),
-                timeout,
-            )
+            .connect_pending_transport_with_initialize_retries(pending_transport, &context)
             .await?;
 
         let initialize_result_rmcp = service
@@ -643,10 +641,7 @@ impl RmcpClient {
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
-            *initialize_context = Some(InitializeContext {
-                timeout,
-                client_service,
-            });
+            *initialize_context = Some(context);
         }
 
         {
@@ -798,7 +793,27 @@ impl RmcpClient {
         meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> Result<CallToolResult> {
-        self.refresh_oauth_if_needed().await?;
+        let authentication_required_result = |error| {
+            if !is_authentication_required_error(&error) {
+                return Err(error);
+            }
+            // Local expiry and server rejection use the same reconnect signal without
+            // exposing token-endpoint or transport details in the tool result.
+            let mut result = CallToolResult::error(vec![ContentBlock::text(
+                "MCP authentication required. Reconnect to continue using this server.",
+            )]);
+            result.meta = Some(
+                serde_json::Map::from_iter([(
+                    "mcp/www_authenticate".to_string(),
+                    Value::String("Bearer error=\"invalid_token\"".to_string()),
+                )])
+                .into(),
+            );
+            Ok(result)
+        };
+        if let Err(error) = self.refresh_oauth_if_needed().await {
+            return authentication_required_result(error);
+        }
         let arguments = match arguments {
             Some(Value::Object(map)) => Some(map),
             Some(other) => {
@@ -831,7 +846,7 @@ impl RmcpClient {
                         });
                     if modern_session {
                         rmcp_params.meta = meta;
-                        return service.call_tool(rmcp_params).await;
+                        return crate::tool_input::call_tool(&service, rmcp_params).await;
                     }
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
@@ -863,14 +878,14 @@ impl RmcpClient {
                 let Some(ClientOperationError::Service(ServiceError::TransportSend(transport))) =
                     error.downcast_ref()
                 else {
-                    return Err(error);
+                    return authentication_required_result(error);
                 };
                 let Some(StreamableHttpError::AuthRequired(challenge)) =
                     transport
                         .error
                         .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
                 else {
-                    return Err(error);
+                    return authentication_required_result(error);
                 };
                 // The transport has already handled automatic refresh. Preserve the challenge
                 // for interactive login without replaying the rejected tool call.
@@ -1224,12 +1239,20 @@ impl RmcpClient {
     async fn connect_pending_transport(
         &self,
         pending_transport: PendingTransport,
-        client_service: ElicitationClientService,
+        initialize_context: &InitializeContext,
         timeout: Option<Duration>,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthRuntime>,
     )> {
+        // Request IDs and remembered cancellations belong to this connection, including
+        // when a failed initialization or expired HTTP session creates a new transport.
+        let send_elicitation = Arc::clone(&initialize_context.send_elicitation);
+        let client_service = ElicitationClientService::new(
+            initialize_context.client_info.clone(),
+            Box::new(move |id, request| send_elicitation(id, request)),
+            self.elicitation_pause_state.clone(),
+        );
         let _initialize_deadline = match &self.transport_recipe {
             TransportRecipe::StreamableHttp {
                 initialize_deadline,
@@ -1510,8 +1533,7 @@ impl RmcpClient {
         let (service, oauth_runtime) = self
             .connect_pending_transport_with_initialize_retries(
                 pending_transport,
-                initialize_context.client_service,
-                initialize_context.timeout,
+                &initialize_context,
             )
             .await?;
         service
@@ -1639,6 +1661,10 @@ async fn create_oauth_transport_and_runtime(
         oauth_runtime: runtime,
     })
 }
+
+#[cfg(test)]
+#[path = "tool_input_tests.rs"]
+mod tool_input_tests;
 
 #[cfg(test)]
 #[path = "user_verification_cancellation_tests.rs"]

@@ -22,11 +22,14 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
+use std::path::Component;
+use std::path::Path;
 use std::time::Duration;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
+const DEFAULT_AWS_CREDENTIAL_EXPORT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_AWS_AUTH_REFRESH_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 /// Hard cap for user-configured `stream_max_retries`.
@@ -159,8 +162,37 @@ pub struct ModelProviderAwsAuthInfo {
     pub profile: Option<String>,
     /// AWS region to use for provider-specific endpoints.
     pub region: Option<String>,
+    /// Optional command whose exported credentials replace the AWS SDK credential chain.
+    pub credential_export: Option<AwsCredentialExportConfig>,
     /// Optional command used to reauthenticate after a refreshable AWS auth failure.
     pub auth_refresh: Option<AwsAuthRefreshConfig>,
+}
+
+/// Command used to export AWS signing credentials for a model provider.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AwsCredentialExportConfig {
+    /// Executable to invoke directly, without a shell.
+    pub command: String,
+    /// Arguments passed to the credential export command.
+    #[serde(default)]
+    pub args: Vec<RedactedString>,
+    /// Maximum time to wait for the credential export command to complete.
+    #[serde(default = "default_aws_credential_export_timeout_ms")]
+    pub timeout_ms: NonZeroU64,
+}
+
+impl AwsCredentialExportConfig {
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms.get())
+    }
+}
+
+fn default_aws_credential_export_timeout_ms() -> NonZeroU64 {
+    match NonZeroU64::new(DEFAULT_AWS_CREDENTIAL_EXPORT_TIMEOUT_MS) {
+        Some(timeout_ms) => timeout_ms,
+        None => panic!("AWS credential export timeout must be non-zero"),
+    }
 }
 
 /// Command used to refresh AWS credentials for a model provider.
@@ -192,7 +224,7 @@ fn default_aws_auth_refresh_timeout_ms() -> NonZeroU64 {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
-        if self.aws.is_some() {
+        if let Some(aws) = self.aws.as_ref() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
                 // upgrade requests before allowing AWS-authenticated providers
@@ -221,8 +253,33 @@ impl ModelProviderInfo {
                 ));
             }
 
-            if let Some(auth_refresh) = self.aws.as_ref().and_then(|aws| aws.auth_refresh.as_ref())
-            {
+            if let Some(credential_export) = aws.credential_export.as_ref() {
+                if aws.profile.is_some() {
+                    return Err(
+                        "provider aws.credential_export cannot be combined with aws.profile"
+                            .to_string(),
+                    );
+                }
+                if credential_export.command.trim().is_empty() {
+                    return Err(
+                        "provider aws.credential_export.command must not be empty".to_string()
+                    );
+                }
+                let command = Path::new(&credential_export.command);
+                let mut components = command.components();
+                let is_bare_command = matches!(
+                    (components.next(), components.next()),
+                    (Some(Component::Normal(name)), None) if name == command.as_os_str()
+                );
+                if !command.is_absolute() && !is_bare_command {
+                    return Err(
+                        "provider aws.credential_export.command must be an absolute path or a bare executable name"
+                            .to_string(),
+                    );
+                }
+            }
+
+            if let Some(auth_refresh) = aws.auth_refresh.as_ref() {
                 if auth_refresh.command.trim().is_empty() {
                     return Err("provider aws.auth_refresh.command must not be empty".to_string());
                 }
@@ -437,6 +494,7 @@ impl ModelProviderInfo {
             aws: Some(aws.unwrap_or(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
+                credential_export: None,
                 auth_refresh: None,
             })),
             wire_api: WireApi::Responses,
@@ -564,7 +622,8 @@ pub fn merge_configured_model_providers(
             if provider != ModelProviderInfo::default() {
                 return Err(format!(
                     "model_providers.{key} only supports changing \
-`base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, and `aws.auth_refresh`; \
+`base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, `aws.credential_export`, \
+and `aws.auth_refresh`; \
 other non-default provider fields are not supported"
                 ));
             }

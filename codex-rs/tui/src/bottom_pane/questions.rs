@@ -13,6 +13,13 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn clear_pending_questions(&mut self) {
+        if let Some(questions) = &mut self.questions {
+            questions.clear_pending();
+            self.request_redraw();
+        }
+    }
+
     fn question_editor(&mut self) -> &mut AsyncQuestions {
         self.questions.get_or_insert_with(|| {
             let mut questions = AsyncQuestions::new(

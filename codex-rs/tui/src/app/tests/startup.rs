@@ -1520,6 +1520,7 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
             session: Some(session),
             turns: vec![test_turn("running", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
+            active_reasoning_item: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,

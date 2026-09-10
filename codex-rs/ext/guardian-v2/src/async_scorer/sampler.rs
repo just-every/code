@@ -69,6 +69,8 @@ pub struct LunaSamplerConfig {
     pub service_tier: Option<String>,
     /// Luna model's host-resolved encrypted-compaction compatibility hash.
     pub luna_compaction_hash: Option<String>,
+    /// Complete input allowance resolved for the classifier model.
+    pub max_input_tokens: usize,
     /// Host-provided metrics capability with the owning session's attribution.
     pub metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
@@ -117,6 +119,9 @@ pub enum LunaSamplerError {
     /// The supplied parent checkpoint cannot be consumed by this Luna configuration.
     #[error("parent compaction is incompatible with Luna")]
     IncompatibleCompaction,
+    /// The complete classifier input exceeded the model allowance.
+    #[error("Luna input exceeds the complete request budget")]
+    InputTooLarge,
 }
 
 struct ActiveRequest {
@@ -224,6 +229,7 @@ impl LunaSampler {
             | LunaSamplerError::OutputTooLarge
             | LunaSamplerError::Superseded
             | LunaSamplerError::IncompatibleCompaction
+            | LunaSamplerError::InputTooLarge
             | LunaSamplerError::Api(
                 ApiError::Transport(TransportError::Build(_))
                 | ApiError::ContextWindowExceeded
@@ -291,6 +297,28 @@ impl LunaSampler {
             {
                 item.set_id(Some(ResponseItemId::new(prefix)));
             }
+        }
+        let total_tokens = input
+            .iter()
+            .map(codex_guardian_context::estimate_input_tokens)
+            .fold(0usize, usize::saturating_add);
+        if let Some(metrics) = self.config.metrics.as_deref() {
+            for (component, tokens) in [
+                ("existing_context", 0),
+                ("new_input", total_tokens),
+                ("total", total_tokens),
+            ] {
+                metrics.histogram_with_boundaries(
+                    codex_guardian_context::REQUEST_TOKENS_METRIC,
+                    i64::try_from(tokens).unwrap_or(i64::MAX),
+                    codex_guardian_context::REQUEST_TOKENS_BOUNDARIES,
+                    &[("target", "async"), ("component", component)],
+                );
+            }
+        }
+        // Oversized classifications defer to sync with the existing failure score.
+        if total_tokens > self.config.max_input_tokens.saturating_sub(/*rhs*/ 256) {
+            return Err(LunaSamplerError::InputTooLarge);
         }
         let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),
@@ -372,6 +400,7 @@ impl LunaSampler {
                 "turn_id": turn_id,
                 "parent_turn_id": parent_turn_id,
                 "thread_source": "guardian_classifier",
+                "turn_trigger": "guardian_classifier",
             });
             let mut client_metadata = HashMap::from([
                 ("session_id".to_owned(), self.config.session_id.clone()),

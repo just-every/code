@@ -103,6 +103,8 @@ impl ChatWidget {
         self.reasoning_summary_parts.clear();
         self.reasoning_buffer.clear();
         self.reasoning_header = None;
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Running,
             /*body*/ None,
@@ -116,6 +118,9 @@ impl ChatWidget {
         completion: Option<history_cell::FinalMessageSeparator>,
         from_replay: bool,
     ) {
+        if self.status_state.reasoning_resume_turn_id.is_some() {
+            self.on_agent_reasoning_final();
+        }
         self.input_queue.submit_pending_steers_after_interrupt = false;
         let sanitized_last_agent_message = last_agent_message.as_deref().map(|message| {
             parse_assistant_markdown(message, self.config.cwd.as_path()).visible_markdown
@@ -174,6 +179,9 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.clear_context_compaction();
         self.status_state.pending_status_indicator_restore = false;
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
+        self.reasoning_header = None;
         self.input_queue.user_turn_pending_start = false;
         self.clear_active_hook_cell();
         self.clear_guardian_review_status();
@@ -314,6 +322,12 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        if self.status_state.reasoning_resume_turn_id.is_some() {
+            self.on_agent_reasoning_final();
+        }
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
+        self.reasoning_header = None;
         self.clear_context_compaction();
         self.clear_safety_buffering();
         // Drop preview-only stream tail content on any termination path before

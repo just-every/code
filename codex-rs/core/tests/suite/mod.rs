@@ -52,11 +52,11 @@ mod client_websockets;
 mod cloud_config;
 mod code_mode;
 mod code_mode_elicitation;
+mod codex_apps_protocol;
 mod codex_delegate;
 mod collaboration_instructions;
 mod compact;
 mod compact_remote;
-mod compact_remote_parity;
 mod compact_resume_fork;
 mod context_annotations;
 mod current_time_reminder;
@@ -72,9 +72,13 @@ mod external_auth;
 mod fork_thread;
 mod git_enrichment;
 mod guardian_authorization;
+// Uses the same command-approval harness as guardian_review below.
+#[cfg(not(target_os = "windows"))]
+mod guardian_context_budget;
 mod guardian_history;
 mod guardian_mcp_elicitation;
 mod guardian_retained_context;
+mod guardian_retry;
 #[cfg(not(target_os = "windows"))]
 mod guardian_review;
 #[cfg(not(target_os = "windows"))]
@@ -96,6 +100,7 @@ mod json_result;
 mod live_cli;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
+mod mcp_extension_protocol;
 mod mcp_optional_startup_grace;
 #[cfg(unix)]
 mod mcp_refresh_cleanup;
@@ -165,6 +170,7 @@ mod skills;
 mod skills_extension;
 mod spawn_agent_description;
 mod sqlite_state;
+mod startup_cancellation;
 mod step_settings;
 mod step_settings_snapshots;
 mod stream_error_allows_next_turn;

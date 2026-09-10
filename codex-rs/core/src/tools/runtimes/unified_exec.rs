@@ -43,6 +43,7 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcess;
 use crate::unified_exec::UnifiedExecProcessManager;
 use codex_core_plugins::PluginMetricsSidecar;
+use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::error::CodexErr;
@@ -338,11 +339,16 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         };
         let shell_snapshot_location = shell_snapshot.as_ref().map(|snapshot| snapshot.path());
         let mut env = exec_env_for_sandbox_permissions(&req.env, launch_sandbox_permissions);
-        if let Some(snapshot) = shell_snapshot.as_ref()
+        let snapshot_credential_context = if let Some(snapshot) = shell_snapshot.as_ref()
             && (managed_network.is_some() || base_command.get(1).is_some_and(|flag| flag == "-lc"))
         {
-            snapshot.restore_credentials(&mut env, req.turn_environment.shell_environment_policy());
-        }
+            Some(
+                snapshot
+                    .restore_credentials(&mut env, req.turn_environment.shell_environment_policy()),
+            )
+        } else {
+            None
+        };
         let (mut env, managed_network_context, network_proxy_launch) = match managed_network {
             Some(network) if environment_is_remote => {
                 let mut launch = network.remote_launch_config().await.map_err(|err| {
@@ -390,8 +396,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 }
             }
             Some(network) => {
-                let prepared = network
-                    .prepare_for_optional_environment(
+                let prepared = snapshot_credential_context
+                    .unwrap_or_default()
+                    .prepare_child_environment(
+                        network,
                         env,
                         Some(&req.turn_environment.selection.environment_id),
                     )
@@ -405,8 +413,65 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
             }
             None => (env, None, None),
         };
-        super::prepare_brokered_shell_snapshot_env(&mut env, shell_snapshot_location.as_ref());
-        let explicit_env_overrides = req.explicit_env_overrides.clone();
+        if let Some(snapshot) = shell_snapshot.as_ref() {
+            snapshot.restore_fail_open_aliases(
+                &mut env,
+                Some(&req.turn_environment.selection.environment_id),
+            );
+        }
+        if managed_network.is_some()
+            && !environment_is_remote
+            && shell.shell_type == ShellType::Sh
+            && env
+                .get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+                .is_some_and(|active| active == "1")
+            && let Some(startup_env) = shell_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.protected_startup_env())
+        {
+            env.insert(
+                super::SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY.to_string(),
+                startup_env.to_string(),
+            );
+        }
+        super::prepare_brokered_shell_snapshot_env(
+            &mut env,
+            shell_snapshot_location.as_ref(),
+            shell,
+        );
+        if env
+            .get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+            .is_some_and(|active| active == "1")
+            && let Some(snapshot) = shell_snapshot.as_ref()
+        {
+            for key in snapshot.startup_credential_keys() {
+                if !super::is_valid_shell_variable_name(key) {
+                    continue;
+                }
+                let (prefix, value) = match env.get(key) {
+                    Some(value) => (super::SNAPSHOT_BROKERED_VALUE_ENV_PREFIX, value.clone()),
+                    None => (super::SNAPSHOT_BROKERED_UNSET_ENV_PREFIX, "1".to_string()),
+                };
+                env.insert(format!("{prefix}{key}"), value);
+            }
+        }
+        let mut explicit_env_overrides = req.explicit_env_overrides.clone();
+        if let Some(network) = managed_network
+            && !environment_is_remote
+        {
+            let broker = network.credential_broker_environment(&env);
+            for key in broker
+                .credential_keys
+                .into_iter()
+                .chain(broker.context_keys)
+            {
+                if !codex_network_proxy::is_credential_broker_provider_env_key(&key)
+                    && let Some(value) = env.get(&key)
+                {
+                    explicit_env_overrides.insert(key, value.clone());
+                }
+            }
+        }
         let metrics_sidecar = sidecar_for_command(
             ctx,
             &req.command,
@@ -485,7 +550,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         if !environment_is_remote
             && matches!(shell.shell_type, ShellType::PowerShell | ShellType::Cmd)
             && env
-                .get(codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+                .get(CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
                 .is_some_and(|active| active == "1")
             && let Some(network) = managed_network
         {

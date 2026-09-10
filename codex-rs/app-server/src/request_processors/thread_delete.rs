@@ -54,17 +54,6 @@ impl ThreadRequestProcessor {
             .await
             .map_err(thread_store_delete_error)?;
 
-        if let Some(state_db) = self.state_db.as_ref() {
-            state_db
-                .delete_threads_strict(thread_ids.as_slice())
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to delete app-server state for {thread_id}: {err}"
-                    ))
-                })?;
-        }
-
         deleted_thread_ids.extend(
             delete_order
                 .into_iter()

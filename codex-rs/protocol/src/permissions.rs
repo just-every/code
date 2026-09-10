@@ -24,8 +24,12 @@ use crate::protocol::NetworkAccess;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::WritableRoot;
 
+mod deny_read_validator;
+mod target;
 mod windows_glob;
 
+pub use deny_read_validator::DenyReadValidator;
+pub use deny_read_validator::DenyReadViolation;
 pub use windows_glob::WindowsDenyReadGlobScan;
 pub use windows_glob::windows_deny_read_glob_scan;
 

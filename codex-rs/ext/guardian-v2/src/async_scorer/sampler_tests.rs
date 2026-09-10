@@ -111,6 +111,7 @@ fn assert_connection_metadata(
                 "turn_id": turn_id,
                 "parent_turn_id": parent_turn_id,
                 "thread_source": "guardian_classifier",
+                "turn_trigger": "guardian_classifier",
             },
         });
         if let Some(root_turn_id) = root_turn_id {
@@ -208,6 +209,7 @@ pub(super) fn sampler_config(base_url: String) -> LunaSamplerConfig {
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     }
 }
@@ -239,6 +241,16 @@ type RecordedMetric = (String, i64, Vec<(String, String)>);
 struct RecordingMetrics(Mutex<Vec<RecordedMetric>>);
 
 impl ExtensionMetrics for RecordingMetrics {
+    fn histogram_with_boundaries(
+        &self,
+        name: &str,
+        value: i64,
+        _boundaries: &[f64],
+        tags: &[(&str, &str)],
+    ) {
+        self.histogram(name, value, tags);
+    }
+
     fn counter(&self, _name: &str, _inc: i64, _tags: &[(&str, &str)]) {}
 
     fn histogram(&self, name: &str, value: i64, tags: &[(&str, &str)]) {
@@ -276,14 +288,29 @@ async fn sampler_records_token_usage_after_returning_an_early_classification() -
 
     assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     tokio::time::timeout(Duration::from_secs(2), async {
-        while metrics.0.lock().unwrap().len() < 7 {
+        while metrics
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|metric| metric.0 == CLASSIFICATION_TOKEN_USAGE_METRIC)
+            .count()
+            < 7
+        {
             tokio::task::yield_now().await;
         }
     })
     .await?;
 
     assert_eq!(
-        *metrics.0.lock().unwrap(),
+        metrics
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|metric| metric.0 == CLASSIFICATION_TOKEN_USAGE_METRIC)
+            .cloned()
+            .collect::<Vec<_>>(),
         [
             ("total", 37),
             ("input", 37),
@@ -299,6 +326,27 @@ async fn sampler_records_token_usage_after_returning_an_early_classification() -
             vec![("token_type".to_owned(), token_type.to_owned())],
         ))
     );
+
+    let request = server
+        .wait_for_request(
+            /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+            /*request_index*/ 0,
+        )
+        .await
+        .body_json();
+    let input: Vec<ResponseItem> = serde_json::from_value(request["input"].clone())?;
+    let estimated = input
+        .iter()
+        .map(codex_guardian_context::estimate_input_tokens)
+        .sum::<usize>();
+    assert!(metrics.0.lock().unwrap().contains(&(
+        codex_guardian_context::REQUEST_TOKENS_METRIC.to_owned(),
+        i64::try_from(estimated)?,
+        vec![
+            ("target".to_owned(), "async".to_owned()),
+            ("component".to_owned(), "total".to_owned()),
+        ],
+    )));
 
     Ok(())
 }
@@ -444,6 +492,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     })
     .await?;
@@ -687,6 +736,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     })
     .await?;

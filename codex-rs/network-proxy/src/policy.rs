@@ -42,6 +42,16 @@ pub fn is_loopback_host(host: &Host) -> bool {
     false
 }
 
+/// Matches the destinations in `DEFAULT_NO_PROXY_VALUE`, without resolving DNS.
+pub(crate) fn is_default_proxy_bypass_host(host: &str) -> bool {
+    let host = normalize_host(host);
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip == Ipv4Addr::LOCALHOST || ip.is_private(),
+        Ok(IpAddr::V6(ip)) => ip == Ipv6Addr::LOCALHOST,
+        Err(_) => host == "localhost" || host.ends_with(".localhost"),
+    }
+}
+
 pub fn is_non_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_non_public_ipv4(ip),

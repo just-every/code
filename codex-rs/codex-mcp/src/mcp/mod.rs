@@ -172,8 +172,10 @@ pub struct McpConfig {
     pub prefix_mcp_tool_names: bool,
     /// MCP servers whose model-visible tool namespaces omit the `mcp__` prefix.
     pub non_prefixed_mcp_tool_servers: Vec<String>,
-    /// Protocol compatibility policy captured when this MCP configuration is created.
+    /// Protocol mode for servers other than the host-owned Codex Apps registration.
     pub protocol_mode: McpProtocolMode,
+    /// Independent protocol mode for the trusted, HTTP Codex Apps registration.
+    pub host_owned_apps_protocol_mode: McpProtocolMode,
     /// Client-side elicitation capabilities advertised during MCP initialization.
     pub client_elicitation_capability: ElicitationCapability,
     /// Resolved MCP registrations keyed by logical server name.
@@ -800,13 +802,22 @@ async fn collect_mcp_server_status_snapshot_from_manager(
             .insert(tool_name, tool);
     }
 
+    // Status-only discovery has no event channel. Report OAuth failures from the completed
+    // connection attempt instead of retaining the credential-presence status read beforehand.
+    let mut auth_statuses = auth_statuses_from_entries(&auth_status_entries);
+    for server_name in mcp_connection_manager.authentication_failed_servers().await {
+        if auth_statuses.get(&server_name) == Some(&McpAuthStatus::OAuth) {
+            auth_statuses.insert(server_name, McpAuthStatus::NotLoggedIn);
+        }
+    }
+
     McpServerStatusSnapshot {
         server_infos,
         tools_by_server,
         tools_errors,
         resources: convert_mcp_resources(resources),
         resource_templates: convert_mcp_resource_templates(resource_templates),
-        auth_statuses: auth_statuses_from_entries(&auth_status_entries),
+        auth_statuses,
         server_names,
     }
 }

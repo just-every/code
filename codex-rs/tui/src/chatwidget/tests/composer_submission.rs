@@ -352,6 +352,7 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
         user_message: UserMessage::from("keep this queued prompt"),
         action: QueuedInputAction::Plain,
         pending_pastes: vec![("[Image 1]".to_string(), "pasted contents".to_string())],
+        source: UserMessageSource::Prompt,
     };
     let history_record = UserMessageHistoryRecord::UserMessageText;
     chat.input_queue
@@ -1762,11 +1763,13 @@ async fn restore_thread_input_state_applies_running_state_policy() {
             ..Default::default()
         }),
         safety_buffering_prompt: Some(UserMessage::from("buffered prompt")),
+        safety_buffering_source: UserMessageSource::Prompt,
         pending_steers: VecDeque::from([PendingSteer {
             history_record: pending_history.clone(),
             ..pending_steer("submitted to the interrupted turn")
         }]),
         rejected_steers_queue: VecDeque::new(),
+        rejected_steer_sources: VecDeque::new(),
         rejected_steer_history_records: VecDeque::new(),
         queued_user_messages: VecDeque::from([UserMessage::from("already queued").into()]),
         queued_user_message_history_records: VecDeque::from([queued_history.clone()]),

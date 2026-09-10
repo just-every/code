@@ -695,6 +695,10 @@ async fn memories_startup_phase1_uses_live_thread_service_tier_and_detached_meta
     assert_eq!(client_metadata, metadata);
     assert_eq!(metadata["request_kind"].as_str(), Some("memory"));
     assert_eq!(
+        metadata["turn_trigger"].as_str(),
+        Some("memory_consolidation")
+    );
+    assert_eq!(
         metadata["thread_source"].as_str(),
         Some("memory_consolidation")
     );
@@ -1025,6 +1029,12 @@ async fn run_memory_phase_two_model_request_test(
     let parent_permission_profile = config.permissions.effective_permission_profile();
     phase2::run(context, config, parent_permission_profile).await;
     let request = wait_for_single_request(&response).await;
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        request.body_json()["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("consolidation turn metadata"),
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"], "memory_consolidation");
     let consolidation_thread_id = ThreadId::from_string(
         request.body_json()["client_metadata"]["thread_id"]
             .as_str()

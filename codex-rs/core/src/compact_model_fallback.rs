@@ -36,7 +36,6 @@ pub(crate) fn record_model_fallback(
     let implementation_tag = match implementation {
         CompactionImplementation::Responses => "responses",
         CompactionImplementation::ResponsesCompactionV2 => "responses_compaction_v2",
-        CompactionImplementation::ResponsesCompact => "responses_compact",
     };
     let outcome = if fallback_error.is_none() {
         "succeeded"

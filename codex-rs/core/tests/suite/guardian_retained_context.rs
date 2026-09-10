@@ -1061,28 +1061,20 @@ async fn standalone_fork_retains_inherited_user_instructions(
             .await?;
         test.thread_manager
             .fork_prepared_thread(
-                test.config.clone(),
+                codex_core::StartThreadOptions::new(test.config.clone()),
                 prepared,
-                /*thread_source*/ None,
-                /*parent_trace*/ None,
-                ClientMcpExtensions::default(),
-                /*reserved_thread_id*/ None,
             )
             .await?
     } else {
         test.thread_manager
             .fork_thread_from_history(
                 ForkSnapshot::Interrupted,
-                test.config.clone(),
+                codex_core::StartThreadOptions::new(test.config.clone()),
                 InitialHistory::Resumed(ResumedHistory {
                     conversation_id: worker.session_configured().thread_id,
                     history: Arc::new(load_context(&test, &worker).await?),
                     rollout_path: None,
                 }),
-                /*thread_source*/ None,
-                /*parent_trace*/ None,
-                ClientMcpExtensions::default(),
-                /*reserved_thread_id*/ None,
             )
             .await?
     };

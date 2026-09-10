@@ -5,15 +5,56 @@
 
 use super::*;
 
-impl ChatWidget {
-    pub(super) fn restore_reasoning_status_header(&mut self) {
-        if self.reasoning_header.is_none() {
-            self.reasoning_header = extract_first_bold(&self.reasoning_buffer);
+fn latest_summary_line(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("<!--") {
+            return None;
         }
+        let line = line.trim_start_matches('#').trim();
+        let line = if let Some(stripped) = line.strip_prefix("**") {
+            let (bold, trailing) = stripped.split_once("**")?;
+            format!("{bold}{trailing}")
+        } else {
+            line.to_string()
+        };
+        (!line.is_empty()).then_some(line)
+    })
+}
+
+impl ChatWidget {
+    pub(super) fn on_reasoning_item_started(&mut self, id: String) {
+        if self.status_state.reasoning_resume_turn_id.take().is_some()
+            && self.status_state.reasoning_item_id.as_ref() != Some(&id)
+        {
+            self.on_agent_reasoning_final();
+        }
+        if self.status_state.reasoning_item_id.as_ref() == Some(&id) {
+            return;
+        }
+        self.status_state.reasoning_item_id = Some(id);
+        self.status_state.reasoning_recovered_after_refresh = false;
+        self.reasoning_buffer.clear();
+        self.reasoning_summary_parts.clear();
+        self.restore_reasoning_status_header();
+    }
+
+    pub(super) fn restore_reasoning_status_header(&mut self) {
+        if self.safety_buffering_is_waiting()
+            || self.unified_exec_wait_streak.is_some()
+            || self.status_state.compaction.is_some()
+            || !self.status_state.pending_guardian_review_status.is_empty()
+        {
+            return;
+        }
+        self.reasoning_header =
+            latest_summary_line(&self.reasoning_buffer).or(self.reasoning_header.take());
         if let Some(header) = self.reasoning_header.clone() {
             self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;
             self.set_status_header(header);
-        } else if self.bottom_pane.is_task_running() {
+        } else if self.bottom_pane.is_task_running()
+            || self.status_state.current_status.is_guardian_review()
+        {
             self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
             self.set_status_header(String::from("Working"));
         }
@@ -230,9 +271,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_agent_reasoning_delta(&mut self, delta: String) {
-        // For reasoning deltas, do not stream to history. Accumulate the
-        // current reasoning block and extract the first bold element
-        // (between **/**) as the chunk header. Show this header as status.
+        // Accumulate the current reasoning block for history and activity text.
         self.reasoning_buffer.push_str(&delta);
 
         if self.safety_buffering_is_waiting() {
@@ -244,11 +283,14 @@ impl ChatWidget {
             return;
         }
 
-        if self.reasoning_header.is_none() {
-            self.reasoning_header = extract_first_bold(&self.reasoning_buffer);
+        if !self.status_state.pending_guardian_review_status.is_empty() {
+            return;
         }
+
+        self.reasoning_header =
+            latest_summary_line(&self.reasoning_buffer).or(self.reasoning_header.take());
         let Some(header) = self.reasoning_header.as_deref() else {
-            // Fallback while we don't yet have a bold header: leave existing header as-is.
+            // No usable summary has arrived yet.
             return;
         };
 
@@ -279,13 +321,22 @@ impl ChatWidget {
             self.reasoning_summary_parts
                 .push(std::mem::take(&mut self.reasoning_buffer));
         }
+        self.reasoning_header = self
+            .reasoning_summary_parts
+            .iter()
+            .rev()
+            .find_map(|part| latest_summary_line(part))
+            .or(self.reasoning_header.take());
         if !self.reasoning_summary_parts.is_empty() {
             let reasoning_parts = std::mem::take(&mut self.reasoning_summary_parts);
             let cell = history_cell::new_reasoning_summary_block(reasoning_parts, &self.config.cwd);
             self.add_boxed_history(cell);
         }
         self.reasoning_buffer.clear();
-        self.reasoning_header = None;
+        // Keep the last useful summary through tools and later empty items.
+        self.status_state.reasoning_item_id = None;
+        self.status_state.reasoning_resume_turn_id = None;
+        self.status_state.reasoning_recovered_after_refresh = false;
         self.reasoning_summary_parts.clear();
         self.request_redraw();
     }
@@ -296,7 +347,6 @@ impl ChatWidget {
             self.reasoning_summary_parts
                 .push(std::mem::take(&mut self.reasoning_buffer));
         }
-        self.reasoning_header = None;
     }
 
     pub(super) fn on_stream_error(&mut self, message: String, additional_details: Option<String>) {

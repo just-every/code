@@ -2,6 +2,7 @@
 
 mod attribution;
 mod authorization_path;
+mod brokered_tunnel;
 mod certs;
 mod config;
 mod connect_policy;
@@ -44,10 +45,17 @@ pub use config::NetworkUnixSocketPermissions;
 pub use config::host_and_port_from_network_addr;
 pub use config::managed_proxy_ports;
 pub use credential_broker::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
+pub use credential_broker::CredentialAuthMethod;
+pub use credential_broker::CredentialBrokerContext;
+pub use credential_broker::CredentialBrokerEnvironment;
+pub use credential_broker::CredentialProviderConfig;
 pub use credential_broker::brokered_credential_binding_env_keys;
 pub use credential_broker::brokered_credential_dummy_env_keys;
 pub use credential_broker::brokered_credential_env_keys;
+pub use credential_broker::brokered_credential_marker_env_keys;
+pub use credential_broker::brokered_credential_value_env_keys;
 pub use credential_broker::credential_broker_provider_context_env_keys;
+pub use credential_broker::credential_broker_provider_sources_allowed;
 pub use credential_broker::is_credential_broker_provider_env_key;
 pub use environment_policy::EnvironmentNetworkPolicy;
 pub use mitm_hook::InjectedHeaderConfig;

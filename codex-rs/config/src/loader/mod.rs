@@ -5,6 +5,8 @@ mod macos;
 mod project_discovery;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows;
 
 use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
@@ -38,10 +40,8 @@ use crate::thread_config::ThreadConfigContext;
 use crate::thread_config::ThreadConfigLoader;
 use codex_file_system::ExecutorFileSystem;
 use codex_git_utils::resolve_root_git_project_for_trust;
-use codex_network_proxy::credential_broker_provider_context_env_keys;
 use codex_network_proxy::is_credential_broker_provider_env_key;
 use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::EnvironmentVariablePattern;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::protocol::AskForApproval;
@@ -50,7 +50,6 @@ use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
 use dunce::canonicalize as normalize_path;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 #[cfg(windows)]
@@ -61,6 +60,10 @@ pub use local::LocalConfigLayers;
 pub use local::LocalTomlLayer;
 pub use local::LocalTomlLayerStack;
 pub use local::load_local_config_layers;
+#[cfg(windows)]
+pub use windows::WindowsSystemConfigNamespaceProbe;
+#[cfg(windows)]
+pub use windows::probe_windows_system_config_namespace;
 
 #[cfg(unix)]
 const SYSTEM_CONFIG_TOML_FILE_UNIX: &str = "/etc/codex/config.toml";
@@ -369,6 +372,11 @@ pub async fn load_config_layers_state(
         if let Some(cli_overrides_layer) = cli_overrides_layer.as_ref() {
             merge_toml_values(&mut merged_so_far, cli_overrides_layer);
         }
+        let trusted_broker_config = credential_broker_trusted_config(
+            &merged_so_far,
+            &thread_config_layers,
+            &loaded_config_layers,
+        );
         // Managed config wins over CLI config. Apply it before choosing the
         // project root and trust, but keep its final layers above project config.
         project_discovery::merge_managed_config_for_discovery(
@@ -393,11 +401,7 @@ pub async fn load_config_layers_state(
         let mut project_trust_context = match project_trust_context(
             fs,
             &merged_so_far,
-            &credential_broker_trusted_config(
-                &merged_so_far,
-                &thread_config_layers,
-                &loaded_config_layers,
-            ),
+            &trusted_broker_config,
             &cwd,
             &project_root_markers,
             codex_home,
@@ -1039,7 +1043,7 @@ struct ProjectTrustContext {
     projects_trust: std::collections::HashMap<String, TrustLevel>,
     user_config_file: AbsolutePathBuf,
     credential_broker: CredentialBrokerProjectState,
-    credential_broker_binding_env: HashMap<String, String>,
+    credential_broker_provider_env_keys: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1158,7 +1162,7 @@ fn project_layer_entry(
 fn sanitize_project_config(
     config: &mut TomlValue,
     credential_broker: CredentialBrokerProjectState,
-    trusted_binding_env: &HashMap<String, String>,
+    trusted_provider_env_keys: &[String],
 ) -> Vec<String> {
     let Some(table) = config.as_table_mut() else {
         return Vec::new();
@@ -1195,6 +1199,9 @@ fn sanitize_project_config(
             if network_proxy.remove("credential_broker").is_some() {
                 ignored_keys.push("features.network_proxy.credential_broker".to_string());
             }
+            if network_proxy.remove("credentials").is_some() {
+                ignored_keys.push("features.network_proxy.credentials".to_string());
+            }
             if credential_broker_configured && network_proxy.remove("enabled").is_some() {
                 ignored_keys.push("features.network_proxy.enabled".to_string());
             }
@@ -1208,15 +1215,17 @@ fn sanitize_project_config(
         if policy.remove("experimental_use_profile").is_some() {
             ignored_keys.push("shell_environment_policy.experimental_use_profile".to_string());
         }
-        let binding_keys = credential_broker_provider_context_env_keys().collect::<Vec<_>>();
+        let environment_keys_match = |left: &str, right: &str| {
+            left == right || cfg!(windows) && left.eq_ignore_ascii_case(right)
+        };
         if let Some(overrides) = policy.get_mut("set").and_then(TomlValue::as_table_mut) {
             overrides.retain(|key, _| {
                 if key.eq_ignore_ascii_case("ZDOTDIR")
                     || key.eq_ignore_ascii_case("BASH_ENV")
                     || is_credential_broker_provider_env_key(key)
-                    || binding_keys
+                    || trusted_provider_env_keys
                         .iter()
-                        .any(|binding_key| key.eq_ignore_ascii_case(binding_key))
+                        .any(|provider_key| environment_keys_match(key, provider_key))
                 {
                     ignored_keys.push(format!("shell_environment_policy.set.{key}"));
                     false
@@ -1224,57 +1233,6 @@ fn sanitize_project_config(
                     true
                 }
             });
-        }
-
-        if let Some(include_only) = policy
-            .get_mut("include_only")
-            .and_then(TomlValue::as_array_mut)
-            && !include_only.is_empty()
-        {
-            for binding_key in &binding_keys {
-                if !include_only.iter().any(|pattern| {
-                    pattern.as_str().is_some_and(|pattern| {
-                        EnvironmentVariablePattern::new_case_insensitive(pattern)
-                            .matches(binding_key)
-                    })
-                }) {
-                    include_only.push(TomlValue::String(binding_key.to_string()));
-                }
-            }
-        }
-
-        if let Some(filters) = policy.get_mut("filters").and_then(TomlValue::as_table_mut)
-            && filters
-                .values()
-                .any(|action| action.as_str() == Some("include"))
-        {
-            for binding_key in &binding_keys {
-                if !filters.iter().any(|(pattern, action)| {
-                    action.as_str() == Some("include")
-                        && EnvironmentVariablePattern::new_case_insensitive(pattern)
-                            .matches(binding_key)
-                }) {
-                    filters.insert(
-                        binding_key.to_string(),
-                        TomlValue::String("include".to_string()),
-                    );
-                }
-            }
-        }
-
-        if !trusted_binding_env.is_empty()
-            && ["inherit", "exclude", "include_only", "filters"]
-                .iter()
-                .any(|key| policy.contains_key(*key))
-        {
-            let overrides = policy
-                .entry("set".to_string())
-                .or_insert_with(|| TomlValue::Table(toml::map::Map::new()));
-            if let Some(overrides) = overrides.as_table_mut() {
-                for (key, value) in trusted_binding_env {
-                    overrides.insert(key.clone(), TomlValue::String(value.clone()));
-                }
-            }
         }
     }
     // Repository contents must not turn an ordinary key into a permission increase.
@@ -1369,38 +1327,27 @@ async fn project_trust_context(
     } else {
         CredentialBrokerProjectState::Unconfigured
     };
-    let credential_broker_binding_env = if credential_broker_configured {
-        let trusted_policy_overrides = trusted_broker_config
-            .get("shell_environment_policy")
-            .and_then(|policy| policy.get("set"))
-            .and_then(TomlValue::as_table);
-        credential_broker_provider_context_env_keys()
-            .filter_map(|key| {
-                let trusted_override = trusted_policy_overrides
-                    .and_then(|overrides| {
-                        overrides.iter().find(|(candidate, _)| {
-                            if cfg!(windows) {
-                                candidate.eq_ignore_ascii_case(key)
-                            } else {
-                                candidate.as_str() == key
-                            }
-                        })
-                    })
-                    .and_then(|(name, value)| {
-                        value
-                            .as_str()
-                            .map(|value| (name.clone(), value.to_string()))
-                    });
-                trusted_override.or_else(|| {
-                    std::env::var(key)
-                        .ok()
-                        .map(|value| (key.to_string(), value))
-                })
-            })
-            .collect()
-    } else {
-        HashMap::new()
-    };
+    let configured_providers = network_proxy
+        .and_then(|network_proxy| network_proxy.get("credentials"))
+        .and_then(TomlValue::as_table);
+    let credential_broker_provider_env_keys = configured_providers
+        .into_iter()
+        .flat_map(|providers| providers.values())
+        .flat_map(|provider| {
+            provider
+                .get("env")
+                .and_then(TomlValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(TomlValue::as_str)
+                .chain(
+                    provider
+                        .get("url_prefix_from_env")
+                        .and_then(TomlValue::as_str),
+                )
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
 
     Ok(ProjectTrustContext {
         project_root,
@@ -1413,10 +1360,12 @@ async fn project_trust_context(
         projects_trust,
         user_config_file: user_config_file.clone(),
         credential_broker,
-        credential_broker_binding_env,
+        credential_broker_provider_env_keys,
     })
 }
 
+// Start before managed layers are merged: replaying credential source remaps
+// can discard provider fields needed to protect their environment bindings.
 fn credential_broker_trusted_config(
     merged_config: &TomlValue,
     thread_config_layers: &[ConfigLayerEntry],
@@ -1782,7 +1731,7 @@ async fn discover_project_layers(
                 let ignored_project_config_keys = sanitize_project_config(
                     &mut config,
                     trust_context.credential_broker,
-                    &trust_context.credential_broker_binding_env,
+                    &trust_context.credential_broker_provider_env_keys,
                 );
                 if disabled_reason.is_none() && !ignored_project_config_keys.is_empty() {
                     startup_warnings.push(project_ignored_config_keys_warning(

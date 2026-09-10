@@ -131,7 +131,7 @@ impl DesktopPolicy {
             write_roots: write_roots.into_iter().collect(),
             deny_read_paths: plan_deny_read_acl_paths(
                 overrides.deny_read_paths.as_deref().unwrap_or_default(),
-            )
+            )?
             .into_iter()
             .collect(),
             deny_write_paths: build_payload_deny_write_paths(&request, overrides.deny_write_paths)

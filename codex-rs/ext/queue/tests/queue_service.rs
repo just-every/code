@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -23,6 +25,7 @@ use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
+use codex_extension_api::TurnStartAdmission;
 use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ImageDetail;
@@ -58,6 +61,19 @@ const TINY_PNG_BYTES: &[u8] = &[
     122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 const TINY_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+
+#[derive(Debug)]
+struct TestAdmission(AtomicBool);
+
+impl TurnStartAdmission for TestAdmission {
+    fn admit_turn_start(&self) -> Option<Box<dyn Send>> {
+        if self.0.load(Ordering::SeqCst) {
+            None
+        } else {
+            Some(Box::new(()))
+        }
+    }
+}
 
 #[derive(Default)]
 struct RecordingEventSink {
@@ -226,6 +242,49 @@ async fn emit_idle_with_cause(
         },
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drain_leaves_persisted_queued_message_for_a_later_start() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let response =
+        responses::mount_sse_once(&server, responses::sse_completed("queued-turn")).await;
+    let admission = Arc::new(TestAdmission(AtomicBool::new(true)));
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.turn_start_admission(admission.clone());
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    let thread_id = test.session_configured.thread_id;
+    let queue = loaded_thread_queue(&test)?;
+    let staged = QueuedItemService::new(
+        Arc::clone(&queue),
+        Weak::new(),
+        Arc::new(NoopExtensionEventSink),
+    );
+    let item = staged
+        .enqueue(thread_id, user_input("queued after drain"))
+        .await?;
+    let service = QueuedItemService::new(
+        Arc::clone(&queue),
+        Arc::downgrade(&test.thread_manager),
+        Arc::new(NoopExtensionEventSink),
+    );
+
+    emit_idle(&service, thread_id).await;
+    assert_eq!(vec![item.clone()], service.list(thread_id).await?);
+    assert!(response.requests().is_empty());
+
+    admission.0.store(false, Ordering::SeqCst);
+    emit_idle(&service, thread_id).await;
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
+    assert!(service.list(thread_id).await?.is_empty());
+    assert_eq!(1, response.requests().len());
+    Ok(())
 }
 
 #[tokio::test]

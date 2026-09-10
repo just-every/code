@@ -1050,84 +1050,158 @@ async fn usage_limit_stale_turn_does_not_stop_current_goal() -> anyhow::Result<(
 }
 
 #[tokio::test]
-async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<()> {
+async fn update_goal_can_stop_and_accounts_final_progress() -> anyhow::Result<()> {
+    for (status, token_budget, expected_status, state_status) in [
+        (
+            ThreadGoalStatus::Blocked,
+            100_i64,
+            ThreadGoalStatus::Blocked,
+            codex_state::ThreadGoalStatus::Blocked,
+        ),
+        (
+            ThreadGoalStatus::Paused,
+            100,
+            ThreadGoalStatus::Paused,
+            codex_state::ThreadGoalStatus::Paused,
+        ),
+        (
+            ThreadGoalStatus::Paused,
+            20,
+            ThreadGoalStatus::BudgetLimited,
+            codex_state::ThreadGoalStatus::BudgetLimited,
+        ),
+    ] {
+        let runtime = test_runtime().await?;
+        let thread_id = test_thread_id()?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+        let tools = harness.tools();
+        let create_tool = tool_by_name(&tools, "create_goal");
+        create_tool
+            .handle(tool_call(
+                "create_goal",
+                "call-create-goal",
+                json!({ "objective": "ship goal extension backend", "token_budget": token_budget }),
+            ))
+            .await?;
+        harness.sink.clear();
+
+        harness
+            .record_token_usage(
+                "turn-1",
+                &token_usage(
+                    /*input_tokens*/ 20, /*cached_input_tokens*/ 5,
+                    /*output_tokens*/ 8, /*reasoning_output_tokens*/ 2,
+                    /*total_tokens*/ 30,
+                ),
+            )
+            .await;
+        let update_tool = tool_by_name(&tools, "update_goal");
+        let invocation = tool_call(
+            "update_goal",
+            "call-update-goal",
+            json!({ "status": status }),
+        );
+        let output = update_tool.handle(invocation.clone()).await?;
+        let result = output.code_mode_result(&invocation.payload);
+
+        assert_eq!(
+            result,
+            json!({
+                "goal": {
+                    "threadId": thread_id,
+                    "objective": "ship goal extension backend",
+                    "status": expected_status,
+                    "tokenBudget": token_budget,
+                    "tokensUsed": 23,
+                    "timeUsedSeconds": 0,
+                    "createdAt": result["goal"]["createdAt"],
+                    "updatedAt": result["goal"]["updatedAt"],
+                },
+                "remainingTokens": (token_budget - 23).max(0),
+                "completionBudgetReport": serde_json::Value::Null,
+            })
+        );
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        assert_eq!(23, goal.tokens_used);
+        assert_eq!(state_status, goal.status);
+
+        assert_eq!(
+            vec![
+                CapturedGoalEvent {
+                    event_id: "call-update-goal".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    status: if token_budget > 23 {
+                        ThreadGoalStatus::Active
+                    } else {
+                        ThreadGoalStatus::BudgetLimited
+                    },
+                    tokens_used: 23,
+                },
+                CapturedGoalEvent {
+                    event_id: "call-update-goal".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    status: expected_status,
+                    tokens_used: 23,
+                },
+            ],
+            harness.sink.goal_events()
+        );
+        harness
+            .record_token_usage(
+                "turn-1",
+                &token_usage(
+                    /*input_tokens*/ 40, /*cached_input_tokens*/ 5,
+                    /*output_tokens*/ 10, /*reasoning_output_tokens*/ 2,
+                    /*total_tokens*/ 52,
+                ),
+            )
+            .await;
+        harness
+            .notify_tool_finish("turn-1", "call-shell", "shell")
+            .await;
+        harness.stop_turn("turn-1").await;
+        assert_eq!(
+            Some(goal),
+            runtime.thread_goals().get_thread_goal(thread_id).await?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_goal_rejects_resume_and_system_limit_statuses() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
-    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
-    harness.start_turn("turn-1", &TokenUsage::default()).await;
-
-    let tools = harness.tools();
-    let create_tool = tool_by_name(&tools, "create_goal");
-    create_tool
-        .handle(tool_call(
-            "create_goal",
-            "call-create-goal",
-            json!({ "objective": "ship goal extension backend" }),
-        ))
-        .await?;
-    harness.sink.clear();
-
-    harness
-        .record_token_usage(
-            "turn-1",
-            &token_usage(
-                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
-                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
-            ),
-        )
-        .await;
+    let tools = installed_tools(runtime, thread_id).await;
     let update_tool = tool_by_name(&tools, "update_goal");
-    let invocation = tool_call(
-        "update_goal",
-        "call-update-goal",
-        json!({ "status": "blocked" }),
-    );
-    let output = update_tool.handle(invocation.clone()).await?;
-    let result = output.code_mode_result(&invocation.payload);
-
-    assert_eq!(
-        result,
-        json!({
-            "goal": {
-                "threadId": thread_id,
-                "objective": "ship goal extension backend",
-                "status": "blocked",
-                "tokensUsed": 23,
-                "timeUsedSeconds": 0,
-                "createdAt": result["goal"]["createdAt"],
-                "updatedAt": result["goal"]["updatedAt"],
-            },
-            "remainingTokens": serde_json::Value::Null,
-            "completionBudgetReport": serde_json::Value::Null,
-        })
-    );
-
-    let goal = runtime
-        .thread_goals()
-        .get_thread_goal(thread_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(23, goal.tokens_used);
-    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
-
-    assert_eq!(
-        vec![
-            CapturedGoalEvent {
-                event_id: "call-update-goal".to_string(),
-                turn_id: Some("turn-1".to_string()),
-                status: ThreadGoalStatus::Active,
-                tokens_used: 23,
-            },
-            CapturedGoalEvent {
-                event_id: "call-update-goal".to_string(),
-                turn_id: Some("turn-1".to_string()),
-                status: ThreadGoalStatus::Blocked,
-                tokens_used: 23,
-            },
-        ],
-        harness.sink.goal_events()
-    );
+    for status in ["active", "budgetLimited", "usageLimited"] {
+        let result = update_tool
+            .handle(tool_call(
+                "update_goal",
+                "call-update-goal",
+                json!({ "status": status }),
+            ))
+            .await;
+        let error = match result {
+            Ok(_) => panic!("agent must not set {status}"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "update_goal can only mark the existing goal complete, blocked, or paused at the user's explicit request; resume, budget-limited, and usage-limited status changes are controlled by the user or system".to_string()
+            )
+        );
+    }
     Ok(())
 }
 

@@ -46,6 +46,7 @@ use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
+use crate::request_processors::ThreadResumeTarget;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_processors::read_server_diagnostics;
@@ -70,6 +71,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::UserVerificationCancelResponse;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_code_mode::CodeModeSessionProvider;
@@ -77,6 +79,7 @@ use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
 use codex_exec_server::EnvironmentManager;
+use codex_extension_api::TurnStartAdmission;
 use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
@@ -100,6 +103,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::models_refresh_worker::ModelsRefreshWorker;
+use crate::turn_admission::TurnAdmission;
 
 const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
 
@@ -135,6 +139,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
     models_refresh_worker: ModelsRefreshWorker,
@@ -310,6 +315,8 @@ impl MessageProcessor {
             ),
         );
         let goal_service = Arc::new(GoalService::new());
+        let turn_admission = TurnAdmission::default();
+        let turn_start_admission: Arc<dyn TurnStartAdmission> = Arc::new(turn_admission.clone());
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
         let mut queue_service = None;
@@ -342,6 +349,7 @@ impl MessageProcessor {
                         git_attribution_base_url: config.chatgpt_base_url.clone(),
                         http_client_factory: config.http_client_factory(),
                         queue_service: queue_service.clone(),
+                        turn_start_admission: Some(Arc::clone(&turn_start_admission)),
                     },
                 ),
                 Arc::new(CodexHomeUserInstructionsProvider::new(
@@ -569,6 +577,7 @@ impl MessageProcessor {
         );
 
         Self {
+            turn_admission,
             user_verification,
             outgoing,
             models_refresh_worker,
@@ -631,7 +640,12 @@ impl MessageProcessor {
             traceparent: trace.traceparent.clone(),
             tracestate: trace.tracestate.clone(),
         });
-        let request_context = RequestContext::new(request_id.clone(), request_span, request_trace);
+        let request_context = RequestContext::new(
+            request_id.clone(),
+            request_method,
+            request_span,
+            request_trace,
+        );
         Self::run_request_with_context(
             Arc::clone(&self.outgoing),
             request_context.clone(),
@@ -680,8 +694,12 @@ impl MessageProcessor {
         };
         let request_span =
             crate::app_server_tracing::typed_request_span(&request, connection_id, &session);
-        let mut request_context =
-            RequestContext::new(request_id.clone(), request_span, /*parent_trace*/ None);
+        let mut request_context = RequestContext::new(
+            request_id.clone(),
+            request.method_name(),
+            request_span,
+            /*parent_trace*/ None,
+        );
         request_context.cancellation = cancellation;
         tracing::trace!(
             ?connection_id,
@@ -740,6 +758,38 @@ impl MessageProcessor {
 
     pub(crate) fn thread_created_receiver(&self) -> broadcast::Receiver<ThreadId> {
         self.thread_processor.thread_created_receiver()
+    }
+
+    pub(crate) async fn daemon_recovery_candidates(&self) -> Vec<String> {
+        self.thread_processor.daemon_recovery_candidates().await
+    }
+
+    pub(crate) async fn restore_daemon_threads(
+        &self,
+        candidates: std::collections::BTreeSet<String>,
+    ) {
+        for thread_id in candidates {
+            let Ok(_permit) = self.turn_admission.admit() else {
+                break;
+            };
+            if let Err(err) = self
+                .thread_processor
+                .thread_resume(
+                    ThreadResumeTarget::DaemonRecovery,
+                    codex_app_server_protocol::ThreadResumeParams {
+                        thread_id,
+                        exclude_turns: true,
+                        ..Default::default()
+                    },
+                    /*app_server_client_name*/ None,
+                    /*app_server_client_version*/ None,
+                    ClientMcpExtensions::default(),
+                )
+                .await
+            {
+                tracing::warn!(code = err.code, "failed to restore saved daemon thread");
+            }
+        }
     }
 
     pub(crate) async fn send_initialize_notifications_to_connection(
@@ -808,6 +858,7 @@ impl MessageProcessor {
         session_state: &ConnectionSessionState,
     ) {
         session_state.rpc_gate.close().await;
+        self.request_serialization_queues.discard_closed().await;
         self.outgoing
             .disconnect_user_verification_connection(connection_id)
             .await;
@@ -928,6 +979,28 @@ impl MessageProcessor {
             &codex_request,
         );
 
+        let (turn_admission, recheck_turn_admission) = match &codex_request {
+            ClientRequest::ThreadStart { .. }
+            | ClientRequest::ThreadFork { .. }
+            | ClientRequest::ThreadResume { .. }
+            | ClientRequest::ThreadRollback { .. }
+            | ClientRequest::ThreadRevert { .. }
+            | ClientRequest::ThreadSettingsUpdate { .. }
+            | ClientRequest::TurnSettingsUpdate { .. }
+            | ClientRequest::ThreadDelete { .. }
+            | ClientRequest::ThreadArchive { .. } => (Some(self.turn_admission.admit()?), false),
+            ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnSteer { .. }
+            | ClientRequest::ReviewStart { .. }
+            | ClientRequest::ThreadCompactStart { .. }
+            | ClientRequest::ThreadShellCommand { .. }
+            | ClientRequest::ThreadQueueStart { .. }
+            | ClientRequest::ThreadRealtimeStart { .. } => {
+                (Some(self.turn_admission.admit()?), true)
+            }
+            _ => (None, false),
+        };
+
         let event_stream_ready = match &codex_request {
             ClientRequest::McpServerEventStreamStart { params, .. } => Some(
                 session
@@ -945,6 +1018,13 @@ impl MessageProcessor {
         let request = QueuedInitializedRequest::new(
             rpc_gate,
             async move {
+                let _turn_admission = turn_admission;
+                // Runtime changes already admitted before drain finish normally. Turn work
+                // still waiting in serialization must observe the newly closed gate.
+                if recheck_turn_admission && let Err(error) = processor.turn_admission.admit() {
+                    processor.outgoing.send_error(error_request_id, error).await;
+                    return;
+                }
                 let processor_for_request = Arc::clone(&processor);
                 let result = processor_for_request
                     .handle_initialized_client_request(
@@ -994,6 +1074,15 @@ impl MessageProcessor {
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
+            }
+            ClientRequest::UserVerificationCancel { params, .. } => {
+                self.outgoing
+                    .cancel_user_verification_request(&ConnectionRequestId {
+                        connection_id,
+                        request_id: params.request_id,
+                    })
+                    .await;
+                Ok(Some(UserVerificationCancelResponse {}.into()))
             }
             request @ (ClientRequest::UserVerificationStatus { .. }
             | ClientRequest::UserVerificationEnroll { .. }
@@ -1205,7 +1294,7 @@ impl MessageProcessor {
             ClientRequest::ThreadResume { params, .. } => {
                 self.thread_processor
                     .thread_resume(
-                        request_id.clone(),
+                        ThreadResumeTarget::Client(request_id.clone()),
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
@@ -1294,6 +1383,19 @@ impl MessageProcessor {
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
                 self.thread_processor.thread_metadata_update(params).await
+            }
+            ClientRequest::ThreadAttachmentAdd { params, .. } => {
+                self.thread_processor
+                    .thread_attachment_add(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadAttachmentList { params, .. } => {
+                self.thread_processor.thread_attachment_list(params).await
+            }
+            ClientRequest::ThreadAttachmentRemove { params, .. } => {
+                self.thread_processor
+                    .thread_attachment_remove(request_id.clone(), params)
+                    .await
             }
             ClientRequest::ThreadSectionMove { params, .. } => {
                 self.thread_processor.thread_section_move(params).await

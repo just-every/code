@@ -1,4 +1,5 @@
 //! User, assistant, reasoning, and streaming message history cells.
+//! Completed reasoning is retained in the expanded transcript, not compact scrollback.
 
 use super::markdown_render_cache::MarkdownRenderCache;
 use super::*;
@@ -658,7 +659,8 @@ pub(crate) fn new_spoken_user_prompt(message: String) -> UserHistoryCell {
     cell
 }
 
-/// Create the reasoning history cell emitted at the end of a reasoning block.
+/// Retain a completed reasoning block in the expanded transcript only.
+/// Activity headings belong to the live status row and must not accumulate in scrollback.
 ///
 /// The helper snapshots `cwd` into the returned cell so local file links render the same way they
 /// did while the turn was live, even if rendering happens after other app state has advanced. Part
@@ -669,16 +671,8 @@ pub(crate) fn new_reasoning_summary_block(
     cwd: &Path,
 ) -> Box<dyn HistoryCell> {
     let (header, content) = split_reasoning_summary_parts(&reasoning_parts);
-    let title_only = content
-        .strip_prefix("**")
-        .and_then(|content| content.strip_suffix("**"))
-        .is_some_and(|content| !content.is_empty() && !content.contains("**"));
-    let transcript_only = header.is_empty() && !title_only;
     Box::new(ReasoningSummaryCell::new(
-        header,
-        content,
-        cwd,
-        transcript_only,
+        header, content, cwd, /*transcript_only*/ true,
     ))
 }
 

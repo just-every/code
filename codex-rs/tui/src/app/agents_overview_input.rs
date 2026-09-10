@@ -1,14 +1,29 @@
 //! Focus and input routing for the agent dashboard. Refreshes retain the shared
-//! composer; dashboard actions never consume keys while its editor owns focus.
+//! composer; Right opens the selected task from an empty editor with no pending input.
 
 use super::*;
 use crate::bottom_pane::InputResult;
+use crate::chatwidget::UserMessage;
+use crate::clipboard_paste::paste_image_to_temp_png;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 
 impl AgentsOverviewView {
     pub(super) fn handle_composer_key(&mut self, key: KeyEvent) {
         let mut state = self.state();
         let offline = state.connection_notice.is_some();
         let status_grouping = state.status_grouping;
+        if !offline
+            && crate::key_hint::plain(KeyCode::Right).is_press(key)
+            && state
+                .composer
+                .as_ref()
+                .is_some_and(ChatComposer::can_leave_empty_prompt_with_right)
+        {
+            drop(state);
+            self.activate();
+            return;
+        }
         if key.code == KeyCode::Esc && !state.composer_owns_escape() {
             state.focus = AgentsOverviewFocus::List;
             return;
@@ -16,6 +31,20 @@ impl AgentsOverviewView {
         let Some(composer) = state.composer.as_mut() else {
             return;
         };
+        if key.kind == KeyEventKind::Press
+            && matches!(key.code, KeyCode::Char('v' | 'V'))
+            && key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            match paste_image_to_temp_png() {
+                Ok((path, _)) => composer.attach_image(path),
+                Err(error) => self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    crate::history_cell::new_error_event(format!("Failed to paste image: {error}")),
+                ))),
+            }
+            return;
+        }
         if offline
             && !composer.popup_active()
             && (self.composer_keymap.submit.is_pressed(key)
@@ -27,11 +56,26 @@ impl AgentsOverviewView {
             return;
         }
         let (result, _) = composer.handle_key_event(key);
+        let prompt = if let InputResult::Submitted {
+            text,
+            text_elements,
+        } = result
+        {
+            Some(UserMessage {
+                text,
+                text_elements,
+                local_images: composer.take_recent_submission_images_with_placeholders(),
+                remote_image_urls: Vec::new(),
+                mention_bindings: Vec::new(),
+            })
+        } else {
+            None
+        };
         drop(state);
-        if let InputResult::Submitted { text, .. } = result {
+        if let Some(prompt) = prompt {
             self.app_event_tx
                 .send(AppEvent::DispatchAgentsOverviewTask {
-                    prompt: text,
+                    prompt,
                     cwd: (!status_grouping)
                         .then(|| self.selected_row().map(|row| row.thread.cwd.clone()))
                         .flatten(),
@@ -68,6 +112,16 @@ impl AgentsOverviewView {
             && state.composer_owns_escape()
         {
             *key = "esc esc".to_string();
+        }
+        if composing
+            && state.connection_notice.is_none()
+            && state
+                .composer
+                .as_ref()
+                .is_some_and(ChatComposer::can_leave_empty_prompt_with_right)
+            && self.rows.get(self.selected).is_some()
+        {
+            hints.push(("→".to_string(), "open task".to_string()));
         }
         if area.width < 60 && hints.len() > 2 {
             hints.remove(/*index*/ 1);

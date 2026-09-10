@@ -1,4 +1,5 @@
 //! Windows deny-glob scan bounds shared by policy validation and native ACL expansion.
+use codex_utils_path_uri::PathConvention;
 
 /// Literal scan root and maximum traversal depth for a Windows deny glob.
 pub struct WindowsDenyReadGlobScan<'a> {
@@ -26,8 +27,8 @@ pub fn windows_deny_read_glob_scan(
         }
         None => (".", pattern),
     };
-    let components = pattern_suffix
-        .split(['/', '\\'])
+    let components = PathConvention::Windows
+        .path_segments(pattern_suffix)
         .filter(|component| !component.is_empty())
         .collect::<Vec<_>>();
     let max_depth = if components.contains(&"**") {

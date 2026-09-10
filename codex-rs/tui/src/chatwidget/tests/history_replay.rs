@@ -1386,6 +1386,8 @@ async fn live_reasoning_summary_is_not_rendered_twice_when_item_completes() {
     );
     let _ = drain_insert_history(&mut rx);
 
+    handle_agent_reasoning_started(&mut chat, "reasoning-1");
+
     chat.handle_server_notification(
         ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
             thread_id: "thread-1".to_string(),
@@ -1442,6 +1444,8 @@ async fn live_reasoning_summary_drops_empty_parts_without_losing_content() {
         /*replay_kind*/ None,
     );
     let _ = drain_insert_history(&mut rx);
+
+    handle_agent_reasoning_started(&mut chat, "reasoning-1");
 
     for (summary_index, delta) in [
         (0, "**Plan**\n\ndone"),

@@ -26,7 +26,7 @@ async fn auth_and_provider_switches_do_not_reuse_chatgpt_catalog() -> Result<()>
     let mut model = bundled_models_response()?
         .models
         .into_iter()
-        .find(|model| model.slug == "gpt-5.4")
+        .find(|model| model.slug == "gpt-5.5")
         .unwrap();
     model.visibility = ModelVisibility::List;
     model.default_service_tier = Some("priority".into());
@@ -40,7 +40,7 @@ async fn auth_and_provider_switches_do_not_reuse_chatgpt_catalog() -> Result<()>
     let chatgpt = test_codex()
         .with_home(home.clone())
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .build_with_auto_env(&server)
         .await?;
     assert!(home.path().join("models_cache.json").exists());
@@ -72,12 +72,29 @@ async fn auth_and_provider_switches_do_not_reuse_chatgpt_catalog() -> Result<()>
             .models,
         bundled
     );
+    assert_eq!(models_mock.requests().len(), 1);
     drop(chatgpt);
+    server.reset().await;
 
+    let mut api_model = model.clone();
+    api_model.default_service_tier = None;
+    let api_models_mock = responses::mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![api_model],
+        },
+    )
+    .await;
     let api = test_codex()
         .with_home(home.clone())
         .with_auth(CodexAuth::from_api_key("api-key"))
-        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config
+                .features
+                .enable(codex_features::Feature::ApiKeyModelDiscovery)
+                .expect("enable API-key model discovery");
+        })
+        .with_model("gpt-5.5")
         .build_with_auto_env(&server)
         .await?;
     let ordinary = responses::mount_sse_once(
@@ -108,7 +125,7 @@ async fn auth_and_provider_switches_do_not_reuse_chatgpt_catalog() -> Result<()>
         explicit.single_request().body_json()["service_tier"],
         "priority"
     );
-    assert_eq!(models_mock.requests().len(), 1);
+    assert_eq!(api_models_mock.requests().len(), 1);
     drop(api);
 
     let other_server = wiremock::MockServer::start().await;
@@ -124,7 +141,7 @@ async fn auth_and_provider_switches_do_not_reuse_chatgpt_catalog() -> Result<()>
     let other = test_codex()
         .with_home(home)
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(|config| {
             config.model_provider_id = "second".into();
             config.model_provider.name = "Second".into();

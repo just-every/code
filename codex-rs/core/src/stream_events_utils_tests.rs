@@ -298,11 +298,12 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
     ));
     let step_context = step_context.with_tool_router_for_test(router);
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-    let tool_runtime = ToolCallRuntime::new(Arc::clone(&session), step_context, tracker);
+    let tool_runtime =
+        ToolCallRuntime::new(Arc::clone(&session), Arc::clone(&step_context), tracker);
     let item = assistant_output_text("original assistant text");
     let mut ctx = HandleOutputCtx {
         sess: session,
-        turn_context: Arc::clone(&turn_context),
+        step_context,
         turn_store: Arc::new(ExtensionData::new(turn_context.sub_id.clone())),
         tool_runtime,
         cancellation_token: CancellationToken::new(),

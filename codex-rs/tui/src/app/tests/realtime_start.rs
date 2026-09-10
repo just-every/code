@@ -62,3 +62,39 @@ async fn rejected_voice_start_does_not_leave_local_capture_active() -> Result<()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn rejected_voice_stop_clears_the_owned_session() -> Result<()> {
+    for replay_only in [false, true] {
+        let (mut app, _events, _ops) = make_test_app_with_channels().await;
+        let (mut app_server, requests, proxy) =
+            start_recording_remote_app_server(&app.config).await?;
+        let thread_id = ThreadId::new();
+        app.chat_widget
+            .handle_thread_session_quiet(test_thread_session(
+                thread_id,
+                app.config.cwd.to_path_buf(),
+            ));
+        crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, thread_id);
+        if replay_only {
+            app.app_server_target = AppServerTarget::Remote {
+                endpoint: crate::resolve_remote_addr("ws://127.0.0.1:9")?,
+            };
+            app.active_thread_id = Some(thread_id);
+            app.ensure_thread_channel(thread_id).mark_replay_only();
+        }
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        Box::pin(app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::CodexOp(Op::RealtimeConversationStop { thread_id }),
+        ))
+        .await?;
+
+        assert!(!app.chat_widget.may_receive_realtime_transcripts());
+        assert!(recorded_params(&requests, "thread/realtime/stop").is_empty());
+        app_server.shutdown().await?;
+        proxy.await??;
+    }
+    Ok(())
+}

@@ -199,6 +199,9 @@ impl ThreadQueueRequestProcessor {
         let turn_id = match submission {
             StartIfIdleSubmission::Started { turn_id } => turn_id,
             StartIfIdleSubmission::NotSubmitted {
+                reason: NotSubmittedReason::ServerDraining,
+            } => return Err(crate::error_code::server_draining_error()),
+            StartIfIdleSubmission::NotSubmitted {
                 reason: NotSubmittedReason::NotIdle | NotSubmittedReason::PendingTriggerTurn,
             } => {
                 return Err(invalid_request(

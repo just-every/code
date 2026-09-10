@@ -1,6 +1,9 @@
 use super::*;
 use crate::McpPluginAttribution;
 use crate::McpServerRegistration;
+use crate::connection_manager::tests::create_ready_async_managed_client;
+use crate::mcp::auth::McpAuthStatusEntry;
+use crate::rmcp_client::StartupOutcomeError;
 use codex_config::Constrained;
 use codex_config::types::AppToolApproval;
 use codex_config::types::AuthKeyringBackendKind;
@@ -12,11 +15,72 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
+use codex_rmcp_client::McpAuthState;
+use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+#[tokio::test]
+async fn status_snapshot_only_downgrades_oauth_authentication_failures() {
+    let auth_failure = StartupOutcomeError::Failed {
+        error: "OAuth refresh token was rejected".to_string(),
+        is_authentication_required: true,
+    };
+    let mut manager = McpConnectionSet::empty(/*prefix_mcp_tool_names*/ true);
+    let mut auth_status_entries = HashMap::new();
+    for (name, auth_state, startup_error) in [
+        (
+            "oauth-failed",
+            McpAuthState::OAuth,
+            Some(auth_failure.clone()),
+        ),
+        ("oauth-ready", McpAuthState::OAuth, None),
+        (
+            "oauth-provider-error",
+            McpAuthState::OAuth,
+            Some(StartupOutcomeError::Failed {
+                error: "provider temporarily unavailable".to_string(),
+                is_authentication_required: false,
+            }),
+        ),
+        ("bearer", McpAuthState::BearerToken, Some(auth_failure)),
+    ] {
+        let mut client = create_ready_async_managed_client(Vec::new()).await;
+        if let Some(error) = startup_error {
+            client.client = futures::future::ready(Err(error)).boxed().shared();
+        }
+        manager.insert_test_client(name, client);
+        auth_status_entries.insert(
+            name.to_string(),
+            McpAuthStatusEntry {
+                config: None,
+                auth_state,
+            },
+        );
+    }
+
+    let server_names = auth_status_entries.keys().cloned().collect();
+    let snapshot = collect_mcp_server_status_snapshot_from_manager(
+        &manager,
+        auth_status_entries,
+        server_names,
+        McpSnapshotDetail::ToolsAndAuthOnly,
+    )
+    .await;
+
+    assert_eq!(
+        snapshot.auth_statuses,
+        HashMap::from([
+            ("oauth-failed".to_string(), McpAuthStatus::NotLoggedIn),
+            ("oauth-ready".to_string(), McpAuthStatus::OAuth),
+            ("oauth-provider-error".to_string(), McpAuthStatus::OAuth),
+            ("bearer".to_string(), McpAuthStatus::BearerToken),
+        ]),
+    );
+}
 
 pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
     McpConfig {
@@ -42,6 +106,7 @@ pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         prefix_mcp_tool_names: true,
         non_prefixed_mcp_tool_servers: Vec::new(),
         protocol_mode: McpProtocolMode::Legacy,
+        host_owned_apps_protocol_mode: McpProtocolMode::Legacy,
         client_elicitation_capability: ElicitationCapability::default(),
         mcp_server_catalog: ResolvedMcpCatalog::default(),
         connector_snapshot: codex_connectors::ConnectorSnapshot::default(),

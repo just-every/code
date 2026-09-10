@@ -239,6 +239,55 @@ async fn fast_exiting_hook_preserves_stdout_when_stdin_is_not_consumed() {
 }
 
 #[tokio::test]
+async fn hook_drains_output_and_times_out_while_stdin_is_blocked() {
+    let temp = tempdir().expect("create temp dir");
+    let mut handler = write_handler(
+        &temp,
+        r#"from pathlib import Path
+import sys
+import time
+
+sys.stdout.write("x" * 1024 * 1024)
+sys.stdout.flush()
+sys.stderr.write("x" * 1024 * 1024)
+sys.stderr.flush()
+Path("output-drained").touch()
+time.sleep(30)
+"#,
+    );
+    handler.timeout_sec = 2;
+    let ConfiguredHandlerKind::Command { command, env, .. } = &handler.kind else {
+        panic!("expected command hook");
+    };
+    let input_json = format!(r#"{{"padding":"{}"}}"#, "x".repeat(1024 * 1024));
+    let (runtime, _result_receiver) = runtime();
+
+    // Keep user shell startup files out of the pipe I/O timeout test.
+    let runtime = runtime.reconfigured(if cfg!(windows) {
+        CommandShell {
+            program: "cmd.exe".to_string(),
+            args: vec!["/D".to_string(), "/C".to_string()],
+        }
+    } else {
+        CommandShell {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string()],
+        }
+    });
+
+    let result = timeout(
+        Duration::from_secs(10),
+        run_command(&runtime, &handler, command, env, &input_json, temp.path()),
+    )
+    .await
+    .expect("the hook timeout must also cover blocked stdin writes");
+
+    assert!(temp.path().join("output-drained").exists());
+    assert_eq!(result.exit_code, None);
+    assert_eq!(result.error, Some("hook timed out after 2s".to_string()));
+}
+
+#[tokio::test]
 async fn command_hook_does_not_expose_configured_noise_auth_token() {
     let temp = tempdir().expect("create temp dir");
     let source_path = AbsolutePathBuf::try_from(temp.path().join("hooks.json"))

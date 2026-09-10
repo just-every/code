@@ -11,6 +11,7 @@ use app_test_support::create_fake_rollout_with_text_elements;
 use app_test_support::create_fake_rollout_with_token_usage;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::rollout_path;
 use app_test_support::test_absolute_path;
@@ -2894,8 +2895,25 @@ async fn thread_resume_rejects_archived_session_by_id() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_resume_keeps_paused_goal_paused() -> Result<()> {
-    let server = create_mock_responses_server_repeating_assistant("Done").await;
+async fn thread_resume_keeps_tool_paused_goal_paused() -> Result<()> {
+    let server = create_mock_responses_server_sequence(vec![
+        responses::sse(vec![
+            responses::ev_response_created("create-goal"),
+            responses::ev_function_call(
+                "create-goal-call",
+                "create_goal",
+                r#"{"objective":"keep polishing"}"#,
+            ),
+            responses::ev_completed("create-goal"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("pause-goal"),
+            responses::ev_function_call("pause-goal-call", "update_goal", r#"{"status":"paused"}"#),
+            responses::ev_completed("pause-goal"),
+        ]),
+        create_final_assistant_message_sse_response("The goal is paused.")?,
+    ])
+    .await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
     let config_path = codex_home.path().join("config.toml");
@@ -2925,7 +2943,7 @@ async fn thread_resume_keeps_paused_goal_paused() -> Result<()> {
             thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![UserInput::Text {
-                text: "materialize this thread".to_string(),
+                text: "Create a goal to keep polishing, then pause it.".to_string(),
                 text_elements: Vec::new(),
             }],
             ..Default::default()
@@ -2943,22 +2961,14 @@ async fn thread_resume_keeps_paused_goal_paused() -> Result<()> {
     .await??;
 
     let goal_id = mcp
-        .send_raw_request(
-            "thread/goal/set",
-            Some(json!({
-                "threadId": thread.id,
-                "objective": "keep polishing",
-                "status": "paused",
-            })),
-        )
+        .send_raw_request("thread/goal/get", Some(json!({ "threadId": thread.id })))
         .await?;
-    let _goal: ThreadGoalSetResponse =
+    let goal: ThreadGoalGetResponse =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(goal_id)).await??;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("thread/goal/updated"),
-    )
-    .await??;
+    assert_eq!(
+        goal.goal.expect("goal should exist").status,
+        ThreadGoalStatus::Paused
+    );
     mcp.clear_message_buffer();
 
     let resume_id = mcp
@@ -3856,6 +3866,7 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
         &path,
         &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: canonical_turn_id.to_string(),
+            root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
@@ -3967,6 +3978,7 @@ async fn cold_paginated_resume_omits_usage_when_its_turn_is_ambiguous() -> Resul
         &path,
         &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: interrupted_turn_id.to_string(),
+            root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
@@ -4109,6 +4121,7 @@ async fn thread_resume_token_usage_replay_ignores_stale_interrupted_tail_turn() 
             "type": "event_msg",
             "payload": serde_json::to_value(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: stale_turn_id.to_string(),
+                root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
@@ -4197,6 +4210,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
             "type": "event_msg",
             "payload": serde_json::to_value(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: interrupted_turn_id.to_string(),
+                root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
@@ -4510,6 +4524,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
             "type": "event_msg",
             "payload": serde_json::to_value(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.to_string(),
+                root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,

@@ -179,6 +179,11 @@ fn network_proxy_feature_toggle_preserves_credential_broker_configuration() {
             "[features.network_proxy]\nenabled = false\ncredential_broker = true\ndomains = { \"github.com\" = \"allow\" }\n",
             "[features.network_proxy]\nenabled = true\ncredential_broker = true\ndomains = { \"github.com\" = \"allow\" }\n",
         ),
+        (
+            "[features.network_proxy]\nenabled = true\ncredentials = { vendor = { env = [\"VENDOR_TOKEN\"] } }\n",
+            "[features.network_proxy]\nenabled = false\ncredentials = { vendor = { env = [\"VENDOR_TOKEN\"] } }\n",
+            "[features.network_proxy]\nenabled = true\ncredentials = { vendor = { env = [\"VENDOR_TOKEN\"] } }\n",
+        ),
     ] {
         std::fs::write(&config_path, initial).expect("write config");
         for (enabled, expected) in [(false, disabled), (true, enabled_again)] {

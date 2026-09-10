@@ -83,9 +83,8 @@ impl ServerHandler for VerificationServer {
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
         assert_eq!(
             context
-                .peer
-                .peer_info()
-                .and_then(|info| info.capabilities.extensions.clone())
+                .client_capabilities()
+                .and_then(|capabilities| capabilities.extensions)
                 .and_then(|extensions| extensions.get(OPENAI_ELICITATION_EXTENSION_ID).cloned())
                 .map(Value::Object),
             Some(json!({"userVerification": {}})),

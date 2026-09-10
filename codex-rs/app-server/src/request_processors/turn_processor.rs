@@ -667,7 +667,11 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error = internal_error(format!("failed to submit turn input: {reason:?}"));
+                let error = if reason == NotSubmittedReason::ServerDraining {
+                    crate::error_code::server_draining_error()
+                } else {
+                    internal_error(format!("failed to submit turn input: {reason:?}"))
+                };
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);
             }
@@ -870,6 +874,7 @@ impl TurnRequestProcessor {
         if has_any_overrides {
             thread
                 .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
+                    disabled_plugin_ids: None,
                     environments: environments.clone(),
                     runtime_workspace_roots: runtime_workspace_roots.clone(),
                     approval_policy,
@@ -893,6 +898,7 @@ impl TurnRequestProcessor {
         }
 
         Ok(codex_protocol::protocol::ThreadSettingsOverrides {
+            disabled_plugin_ids: None,
             environments,
             runtime_workspace_roots,
             profile_workspace_roots,
@@ -1067,6 +1073,9 @@ impl TurnRequestProcessor {
             SteerSubmission::Steered { turn_id } => turn_id,
             SteerSubmission::NotSubmitted { reason } => {
                 let (message, data, error_type) = match reason {
+                    NotSubmittedReason::ServerDraining => {
+                        return Err(crate::error_code::server_draining_error());
+                    }
                     NotSubmittedReason::NoActiveTurn | NotSubmittedReason::NotIdle => (
                         "no active turn to steer".to_string(),
                         None,

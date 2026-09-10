@@ -19,6 +19,7 @@ use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
+use codex_extension_api::TurnStartAdmission;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalService;
 use codex_http_client::HttpClientFactory;
@@ -48,6 +49,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) http_client_factory: HttpClientFactory,
     /// Process-scoped queue shared by idle dispatch and app-server requests.
     pub(crate) queue_service: Option<Arc<QueuedItemService>>,
+    pub(crate) turn_start_admission: Option<Arc<dyn TurnStartAdmission>>,
 }
 
 pub(crate) fn thread_extensions<S>(
@@ -69,8 +71,12 @@ where
         git_attribution_base_url,
         http_client_factory,
         queue_service,
+        turn_start_admission,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
+    if let Some(admission) = turn_start_admission {
+        builder.turn_start_admission(admission);
+    }
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
     }

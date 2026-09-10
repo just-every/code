@@ -312,3 +312,82 @@ fn sparkle_waits_for_terminal_colors() {
         },
     );
 }
+
+#[test]
+fn sparkle_preserves_voice_indicator_styles() {
+    use crate::bottom_pane::voice_strip::VoiceStripPhase;
+    use crate::bottom_pane::voice_strip::VoiceStripState;
+    use crate::tui::FrameRequester;
+
+    with_test_default_colors(
+        DefaultColors {
+            fg: (230, 216, 255),
+            bg: (36, 27, 53),
+        },
+        || {
+            let (mut composer, _rx) = new_test_composer();
+            composer.set_voice_strip(
+                Some(VoiceStripState {
+                    mute_hint: None,
+                    phase: VoiceStripPhase::Active,
+                    microphone_live: true,
+                    microphone_muted: false,
+                    microphone_history: vec![0, 37, 73, 110, 146, 255],
+                    speaker_history: vec![255, 146, 110, 73, 37, 0],
+                    activity: "listening",
+                    animations: false,
+                }),
+                FrameRequester::test_dummy(),
+            );
+            let area = Rect::new(
+                /*x*/ 0,
+                /*y*/ 0,
+                /*width*/ 60,
+                composer.desired_height(/*width*/ 60),
+            );
+            let mut baseline = Buffer::empty(area);
+            composer.render(area, &mut baseline);
+            let mut saw_stars = false;
+            for tick in 0..80 {
+                composer.astra_sparkle = Some(Sparkle {
+                    started: Instant::now() - FRAME_TICK * tick,
+                    ..new_test_sparkle()
+                });
+                let mut actual = Buffer::empty(area);
+                composer.render(area, &mut actual);
+                saw_stars |= actual
+                    .content
+                    .iter()
+                    .any(|cell| DOTS.contains(&cell.symbol()));
+                // Compare whole cells: an unchanged glyph can still inherit a star's color.
+                let content = baseline
+                    .content
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.symbol() != " ")
+                    .map(|(index, _)| actual.content[index].clone())
+                    .collect::<Vec<_>>();
+                let expected = baseline
+                    .content
+                    .iter()
+                    .filter(|cell| cell.symbol() != " ")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(content, expected, "sparkle frame {tick}");
+            }
+            assert!(saw_stars);
+            insta::assert_snapshot!(
+                "astra_voice_composer",
+                baseline
+                    .content
+                    .chunks(60)
+                    .map(|row| row
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        },
+    );
+}

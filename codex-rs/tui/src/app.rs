@@ -206,6 +206,7 @@ mod agent_navigation;
 mod agent_picker;
 mod agent_status_feed;
 mod agents_overview;
+mod agents_overview_actions;
 mod agents_overview_details;
 mod agents_overview_threads;
 mod agents_overview_view;
@@ -236,6 +237,8 @@ mod platform_actions;
 mod plugin_mentions;
 mod rate_limit_refresh;
 mod realtime_delivery;
+mod realtime_settings;
+mod reasoning_replay;
 mod recap;
 mod reconnect;
 mod replay_filter;
@@ -583,6 +586,7 @@ pub(crate) struct App {
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
+    pending_thread_switch_resets: usize,
     pub(crate) scrollback_has_older_history: bool,
 
     pub(crate) enhanced_keys_supported: bool,

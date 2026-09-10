@@ -6,7 +6,7 @@ expression: "render_bottom_popup(&chat,\n100).replace(&directory,\n\"[[workspace
   Copy to clipboard
 
 › 1. Whole status  >_ OpenAI Codex (vVERSION)
-  2. Model         gpt-5.4
+  2. Model         gpt-5.5
   3. Directory     [[workspace]]
   4. Thread name   Clipboard example
   5. Session ID    00000000-0000-0000-0000-000000000123

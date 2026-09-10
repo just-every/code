@@ -39,11 +39,9 @@ use codex_network_proxy::NetworkProtocol;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::models::AdditionalPermissionProfile as PermissionProfile;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -1053,7 +1051,7 @@ async fn guardian_allows_unified_exec_additional_permissions_requests_past_polic
 }
 
 #[tokio::test]
-async fn process_compacted_history_preserves_separate_guardian_developer_message() {
+async fn compaction_initial_context_preserves_separate_guardian_developer_message() {
     let (session, mut turn_context) = make_session_and_context().await;
     update_turn_settings_for_test(&mut turn_context, |settings| {
         update_selected_settings_for_test(settings, |selected| {
@@ -1084,40 +1082,20 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
         step_context,
     };
 
-    let (refreshed, _) = crate::compact_remote::process_compacted_history(
-        &session,
-        vec![
-            ResponseItem::Message {
-                id: None,
-                role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "stale developer message".to_string(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "summary".to_string(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            },
-        ],
-        &initial_context_injection,
-    )
-    .await;
+    let (refreshed, _) =
+        crate::compact::build_compaction_initial_context(&session, &initial_context_injection)
+            .await;
 
     let developer_messages = refreshed
         .iter()
-        .filter_map(|item| match item {
+        .filter_map(|envelope| match &envelope.item {
             ResponseItem::Message { role, content, .. } if role == "developer" => {
                 crate::content_items_to_text(content).map(|text| {
                     (
                         text,
-                        item.executed_tool_call_metadata()
+                        envelope
+                            .item
+                            .executed_tool_call_metadata()
                             .and_then(|metadata| metadata.content_item_kinds.clone()),
                     )
                 })
@@ -1126,11 +1104,6 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
         })
         .collect::<Vec<_>>();
 
-    assert!(
-        !developer_messages
-            .iter()
-            .any(|(message, _)| message.contains("stale developer message"))
-    );
     assert!(
         !developer_messages
             .iter()
@@ -1284,6 +1257,8 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         /*state_db*/ None,
     ));
 
+    let mut thread_extension_init = codex_extension_api::ExtensionDataInit::default();
+    thread_extension_init.insert(codex_extension_api::SessionIsolation::Isolated);
     let (session, io) = Session::spawn(SessionSpawnArgs {
         config,
         allow_provider_model_fallback: false,
@@ -1299,6 +1274,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         code_mode_session_provider: Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
         extensions: codex_extension_api::empty_extension_registry(),
         conversation_history: InitialHistory::New,
+        disabled_plugin_ids: None,
         requested_history_mode: None,
         fork_persistence: ForkPersistence::Copied,
         session_source: SessionSource::SubAgent(SubAgentSource::Other(
@@ -1317,7 +1293,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         user_shell_override: None,
         parent_trace: None,
         environment_selections: Vec::new(),
-        thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
+        thread_extension_init,
         client_mcp_extensions: ClientMcpExtensions::default(),
         reserved_thread_id: None,
         analytics_events_client: None,
@@ -1347,4 +1323,49 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         }
     );
     drop(io);
+}
+
+#[test_case(TerminalEventKind::TurnComplete; "completion")]
+#[test_case(TerminalEventKind::TurnAborted; "interruption")]
+#[tokio::test]
+async fn terminal_turn_clears_extension_owned_denials(terminal: TerminalEventKind) {
+    let (session, turn, events) = make_session_and_context_with_rx().await;
+    let finish = Arc::new(tokio::sync::Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&turn),
+            Vec::new(),
+            HeldStepTask {
+                kind: TaskKind::Regular,
+                finish: Arc::clone(&finish),
+            },
+        )
+        .await;
+    let denials =
+        codex_guardian_reviewer::ReviewDenials::for_thread(&session.services.thread_extension_data);
+    for _ in 0..2 {
+        assert_eq!(
+            denials.record_denial(&turn.sub_id, turn.model_info()).await,
+            None
+        );
+    }
+    match terminal {
+        TerminalEventKind::TurnComplete => finish.notify_one(),
+        TerminalEventKind::TurnAborted => {
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await
+        }
+    }
+    recv_terminal_event(&events, terminal).await;
+    // Delivery precedes accounting cleanup. Wait for the runtime to finish the turn.
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        while session.active_turn.lock().await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("turn becomes idle");
+    assert_eq!(
+        denials.record_denial(&turn.sub_id, turn.model_info()).await,
+        None
+    );
 }

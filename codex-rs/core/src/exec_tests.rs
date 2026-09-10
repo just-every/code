@@ -8,6 +8,7 @@ use core_test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::time::Duration;
+use test_case::test_case;
 use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 
@@ -331,8 +332,152 @@ async fn exec_full_buffer_capture_keeps_io_drain_timeout_when_descendant_holds_p
     Ok(())
 }
 
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum CaptureDrainFailure {
+    Cancellation,
+    Timeout,
+    DrainTimeout,
+}
+
+#[cfg(unix)]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stderr")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stdout")]
+#[test_case("stderr", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_cancel")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_timeout")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_drain_timeout")]
 #[tokio::test]
-async fn process_exec_tool_call_preserves_full_buffer_capture_policy() -> Result<()> {
+async fn full_buffer_expiration_cleans_up_after_leader_exit(
+    pipe: &str,
+    failure: CaptureDrainFailure,
+    capture_policy: ExecCapturePolicy,
+) -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let redirect = match pipe {
+        "stdout" => "2>/dev/null",
+        "stderr" => ">/dev/null",
+        _ => unreachable!("test specifies stdout or stderr"),
+    };
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .args(["-c", &format!(
+            "printf complete; (while [ ! -f release ]; do sleep 0.01; done; printf survived > late_write) {redirect} &"
+        )])
+        .current_dir(dir.path())
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn()?;
+    let process_group_id = child.id().expect("running child");
+    let cancellation = CancellationToken::new();
+    let expiration = match failure {
+        CaptureDrainFailure::Cancellation => ExecExpiration::Cancellation(cancellation.clone()),
+        CaptureDrainFailure::Timeout => ExecExpiration::Timeout(Duration::from_millis(250)),
+        CaptureDrainFailure::DrainTimeout => ExecExpiration::Timeout(Duration::from_secs(30)),
+    };
+    let capture = consume_output(
+        child,
+        expiration,
+        capture_policy,
+        /*stdout_stream*/ None,
+    );
+    let after_leader_exit = async {
+        timeout(Duration::from_secs(5), async {
+            while unsafe {
+                libc::kill(process_group_id as libc::pid_t, /*sig*/ 0)
+            } == 0
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("capture should reap the direct child before cancellation");
+        if matches!(failure, CaptureDrainFailure::Cancellation) {
+            cancellation.cancel();
+        }
+    };
+    let (result, ()) = timeout(Duration::from_secs(6), async {
+        tokio::join!(capture, after_leader_exit)
+    })
+    .await?;
+    std::fs::write(dir.path().join("release"), "")?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let survived = dir.path().join("late_write").exists();
+    codex_utils_pty::process_group::kill_process_group(process_group_id)?;
+    assert!(
+        !survived,
+        "pipe-holding descendant survived capture failure"
+    );
+    match failure {
+        CaptureDrainFailure::Cancellation | CaptureDrainFailure::Timeout => {
+            let output = result?;
+            assert_eq!(
+                (
+                    output.timed_out,
+                    output.exit_status.success(),
+                    output.stdout.text,
+                    output.stderr.text
+                ),
+                (
+                    matches!(failure, CaptureDrainFailure::Timeout),
+                    false,
+                    Vec::new(),
+                    Vec::new()
+                ),
+            );
+        }
+        CaptureDrainFailure::DrainTimeout => {
+            assert!(result.is_err(), "incomplete capture must fail");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn full_buffer_expiration_preserves_successful_background_startup() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "printf complete; (sleep 0.05; printf survived > late_write) >/dev/null 2>&1 &",
+        ])
+        .current_dir(dir.path())
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let output = consume_output(
+        command.spawn()?,
+        ExecExpiration::Timeout(Duration::from_secs(5)),
+        ExecCapturePolicy::FullBufferWithExpiration,
+        /*stdout_stream*/ None,
+    )
+    .await?;
+    assert!(output.exit_status.success());
+    assert_eq!(output.stdout.text, b"complete");
+    timeout(Duration::from_secs(5), async {
+        while !dir.path().join("late_write").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[test_case(ExecCapturePolicy::FullBuffer, 1; "without_expiration")]
+#[test_case(ExecCapturePolicy::FullBufferWithExpiration, 30_000; "with_expiration")]
+#[tokio::test]
+async fn process_exec_tool_call_preserves_full_buffer_capture_policy(
+    capture_policy: ExecCapturePolicy,
+    timeout_ms: u64,
+) -> Result<()> {
     let byte_count = EXEC_OUTPUT_MAX_BYTES.saturating_add(128 * 1024);
     #[cfg(windows)]
     let command = vec![
@@ -355,8 +500,8 @@ async fn process_exec_tool_call_preserves_full_buffer_capture_policy() -> Result
         ExecParams {
             command,
             cwd: cwd.clone(),
-            expiration: 1.into(),
-            capture_policy: ExecCapturePolicy::FullBuffer,
+            expiration: timeout_ms.into(),
+            capture_policy,
             env: std::env::vars().collect(),
             network: None,
             network_environment_id: None,

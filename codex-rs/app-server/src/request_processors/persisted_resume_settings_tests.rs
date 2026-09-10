@@ -30,6 +30,7 @@ fn settings_item(
         ThreadSettingsAppliedEvent {
             thread_id: None,
             thread_settings: ThreadSettingsSnapshot {
+                disabled_plugin_ids: Vec::new(),
                 model: "gpt-5".to_string(),
                 model_provider_id: "openai".to_string(),
                 service_tier: None,
@@ -64,6 +65,7 @@ fn turn_context_item(
     RolloutItem::TurnContext(TurnContextItem {
         turn_id: Some(turn_id.to_string()),
         root_turn_id: None,
+        disabled_plugin_ids: None,
         cwd: cwd(),
         workspace_roots: Some(vec![cwd()]),
         current_date: None,

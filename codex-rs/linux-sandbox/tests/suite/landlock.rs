@@ -21,6 +21,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Output;
+use std::time::Duration;
 use tempfile::NamedTempFile;
 
 // At least on GitHub CI, the arm64 tests appear to need longer timeouts.
@@ -249,6 +251,363 @@ fn expect_denied(
             details => panic!("{context}: {details:?}"),
         },
     }
+}
+
+async fn wsl_windows_executable(name: &str) -> Option<String> {
+    if !std::path::Path::new("/run/WSL").is_dir() {
+        return None;
+    }
+
+    let windows_path = format!(r"C:\Windows\System32\{name}");
+    let output = tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS),
+        tokio::process::Command::new("wslpath")
+            .args(["-u", &windows_path])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+async fn wsl_baseline_output(executable: &str, args: &[&str]) -> Option<Output> {
+    tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS),
+        tokio::process::Command::new(executable)
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()
+    .filter(|output| output.status.success())
+}
+
+#[tokio::test]
+async fn wsl_interop_cannot_run_windows_program_with_network_access() {
+    let Some(powershell) = wsl_windows_executable(r"WindowsPowerShell\v1.0\powershell.exe").await
+    else {
+        return;
+    };
+    let args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Write-Output interop-escaped",
+    ];
+    if wsl_baseline_output(&powershell, &args).await.is_none() {
+        eprintln!("skipping WSL interop test: Windows interop is unavailable on the host");
+        return;
+    }
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping WSL interop test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let output = expect_denied(
+        run_cmd_result_with_writable_roots(
+            &[&powershell, args[0], args[1], args[2], args[3]],
+            &[],
+            NETWORK_TIMEOUT_MS,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ true,
+        )
+        .await,
+        "WSL interop must not start a Windows program inside a restricted filesystem sandbox",
+    );
+    assert!(!output.stdout.text.contains("interop-escaped"));
+}
+
+#[tokio::test]
+async fn wsl_interop_bind_alias_cannot_run_windows_program() {
+    let Some(powershell) = wsl_windows_executable(r"WindowsPowerShell\v1.0\powershell.exe").await
+    else {
+        return;
+    };
+    if wsl_baseline_output(
+        &powershell,
+        &["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    )
+    .await
+    .is_none()
+        || should_skip_bwrap_tests().await
+        || !std::path::Path::new("/usr/bin/unshare").exists()
+        || !std::path::Path::new("/usr/bin/mount").exists()
+    {
+        return;
+    }
+    let Ok(interop_socket) = std::env::var("WSL_INTEROP") else {
+        eprintln!("skipping WSL bind alias test: WSL_INTEROP is unavailable");
+        return;
+    };
+    if !std::path::Path::new(&interop_socket).exists() {
+        eprintln!("skipping WSL bind alias test: interop socket is unavailable");
+        return;
+    }
+
+    let mount_dir = tempfile::tempdir().expect("create mount target");
+    let alias = mount_dir.path().join("WSL");
+    std::fs::create_dir(&alias).expect("create interop bind target");
+    let namespace_probe = tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS),
+        tokio::process::Command::new("unshare")
+            .args([
+                "--user",
+                "--map-root-user",
+                "--mount",
+                "--propagation",
+                "private",
+                "--",
+                "/bin/sh",
+                "-c",
+                "mount --bind /run/WSL \"$1\" && umount \"$1\"",
+                "sh",
+            ])
+            .arg(&alias)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let Ok(Ok(probe)) = namespace_probe else {
+        eprintln!("skipping WSL bind alias test: user/mount namespace probe could not run");
+        return;
+    };
+    if !probe.status.success() {
+        eprintln!(
+            "skipping WSL bind alias test: user/mount namespace unavailable: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        return;
+    }
+
+    let profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::read_only(),
+        NetworkSandboxPolicy::Enabled,
+    );
+    let profile = serde_json::to_string(&profile).expect("serialize permission profile");
+    let cwd = std::env::current_dir().expect("current directory");
+    let script = r#"
+        mount --bind /run/WSL "$1"
+        trap 'umount "$1"' EXIT
+        export WSL_INTEROP="$1/${WSL_INTEROP##*/}"
+        "$2" -NoProfile -NonInteractive -Command 'Write-Output alias-baseline-ok'
+        bash -c 'exec -a "$1" /init "$1" -NoProfile -NonInteractive -Command "Write-Output direct-init-baseline-ok"' bash "$2"
+        "$3" --sandbox-policy-cwd "$4" --permission-profile "$5" -- \
+            "$2" -NoProfile -NonInteractive -Command 'Write-Output interop-escaped'
+        status=$?
+        printf 'sandbox-exit=%s\n' "$status"
+        if test "$status" -eq 0; then exit 1; fi
+        "$3" --sandbox-policy-cwd "$4" --permission-profile "$5" -- \
+            bash -c 'exec -a "$1" /init "$1" -NoProfile -NonInteractive -Command "Write-Output direct-init-escaped"' bash "$2"
+        status=$?
+        printf 'direct-init-exit=%s\n' "$status"
+        test "$status" -ne 0
+    "#;
+    let output = tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS * 3),
+        tokio::process::Command::new("unshare")
+            .args([
+                "--user",
+                "--map-root-user",
+                "--mount",
+                "--propagation",
+                "private",
+                "--",
+            ])
+            .args(["/bin/sh", "-c", script, "sh"])
+            .arg(&alias)
+            .arg(&powershell)
+            .arg(codex_linux_sandbox_exe())
+            .arg(&cwd)
+            .arg(profile)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("WSL bind alias test should finish")
+    .expect("unshare should start");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "WSL bind alias must be isolated: stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("alias-baseline-ok"), "stdout={stdout}");
+    assert!(
+        stdout.contains("direct-init-baseline-ok"),
+        "stdout={stdout}"
+    );
+    assert!(stdout.contains("sandbox-exit="), "stdout={stdout}");
+    assert!(stdout.contains("direct-init-exit="), "stdout={stdout}");
+    assert!(!stdout.contains("interop-escaped"), "stdout={stdout}");
+    assert!(!stdout.contains("direct-init-escaped"), "stdout={stdout}");
+}
+
+#[tokio::test]
+async fn wsl_no_proc_masks_inherited_procfs_and_windows_interop() {
+    let Some(powershell) = wsl_windows_executable(r"WindowsPowerShell\v1.0\powershell.exe").await
+    else {
+        return;
+    };
+    let args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Write-Output interop-escaped",
+    ];
+    if wsl_baseline_output(&powershell, &args).await.is_none() || should_skip_bwrap_tests().await {
+        return;
+    }
+
+    let profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::read_only(),
+        NetworkSandboxPolicy::Enabled,
+    );
+    let profile = serde_json::to_string(&profile).expect("serialize permission profile");
+    let cwd = std::env::current_dir().expect("current directory");
+    let proc_check = tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS),
+        tokio::process::Command::new(codex_linux_sandbox_exe())
+            .arg("--sandbox-policy-cwd")
+            .arg(&cwd)
+            .args([
+                "--permission-profile",
+                &profile,
+                "--no-proc",
+                "--",
+                "/bin/sh",
+                "-c",
+                "test ! -e /proc/1",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("procfs check should finish")
+    .expect("sandbox helper should start");
+    assert!(
+        proc_check.status.success(),
+        "inherited procfs was not masked: {}",
+        String::from_utf8_lossy(&proc_check.stderr)
+    );
+
+    let output = tokio::time::timeout(
+        Duration::from_millis(NETWORK_TIMEOUT_MS),
+        tokio::process::Command::new(codex_linux_sandbox_exe())
+            .arg("--sandbox-policy-cwd")
+            .arg(&cwd)
+            .args([
+                "--permission-profile",
+                &profile,
+                "--no-proc",
+                "--",
+                &powershell,
+            ])
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("sandbox command should finish")
+    .expect("sandbox helper should start");
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("interop-escaped"));
+}
+
+#[tokio::test]
+async fn wsl_interop_cannot_reenter_distro_as_root_with_network_access() {
+    let Some(wsl) = wsl_windows_executable("wsl.exe").await else {
+        return;
+    };
+    let Ok(distro) = std::env::var("WSL_DISTRO_NAME") else {
+        eprintln!("skipping WSL root test: distro name is unavailable");
+        return;
+    };
+    let args = ["-d", &distro, "-u", "root", "--", "/usr/bin/id", "-u"];
+    let Some(baseline) = wsl_baseline_output(&wsl, &args).await else {
+        eprintln!("skipping WSL root test: Windows interop is unavailable on the host");
+        return;
+    };
+    assert_eq!(baseline.stdout, b"0\n");
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping WSL root test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let output = expect_denied(
+        run_cmd_result_with_writable_roots(
+            &[
+                &wsl, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+            ],
+            &[],
+            NETWORK_TIMEOUT_MS,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ true,
+        )
+        .await,
+        "WSL interop must not start a new root session inside a restricted filesystem sandbox",
+    );
+    assert_ne!(output.stdout.text.trim(), "0");
+}
+
+#[tokio::test]
+async fn legacy_landlock_rejects_wsl_interop_with_network_access() {
+    let Some(powershell) = wsl_windows_executable(r"WindowsPowerShell\v1.0\powershell.exe").await
+    else {
+        return;
+    };
+    if wsl_baseline_output(
+        &powershell,
+        &["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+    )
+    .await
+    .is_none()
+    {
+        eprintln!("skipping legacy WSL interop test: Windows interop is unavailable on the host");
+        return;
+    }
+
+    let safe_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::read_only(),
+        NetworkSandboxPolicy::Restricted,
+    );
+    let linux_output = run_cmd_result_with_permission_profile(
+        &["/bin/true"],
+        safe_profile,
+        NETWORK_TIMEOUT_MS,
+        /*use_legacy_landlock*/ true,
+    )
+    .await
+    .expect("legacy Landlock should run a Linux command");
+    assert_eq!(linux_output.exit_code, 0);
+
+    let unsafe_profile = PermissionProfile::from_runtime_permissions(
+        &FileSystemSandboxPolicy::read_only(),
+        NetworkSandboxPolicy::Enabled,
+    );
+    let output = expect_denied(
+        run_cmd_result_with_permission_profile(
+            &["/bin/true"],
+            unsafe_profile,
+            NETWORK_TIMEOUT_MS,
+            /*use_legacy_landlock*/ true,
+        )
+        .await,
+        "legacy Landlock must reject restricted filesystem access with full network access on WSL",
+    );
+    assert!(
+        output
+            .stderr
+            .text
+            .contains("legacy Landlock cannot isolate WSL Windows interop")
+    );
 }
 
 #[tokio::test]

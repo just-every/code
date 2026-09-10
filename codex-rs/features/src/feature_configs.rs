@@ -1,5 +1,6 @@
 use crate::FeatureConfig;
 use crate::FeatureToml;
+use codex_network_proxy::CredentialProviderConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -478,6 +479,8 @@ pub struct NetworkProxyConfigToml {
     pub allow_local_binding: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_broker: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<BTreeMap<String, CredentialProviderConfig>>,
 }
 
 impl FeatureConfig for NetworkProxyConfigToml {

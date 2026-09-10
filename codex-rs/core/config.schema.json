@@ -419,6 +419,35 @@
       ],
       "type": "object"
     },
+    "AwsCredentialExportConfig": {
+      "additionalProperties": false,
+      "description": "Command used to export AWS signing credentials for a model provider.",
+      "properties": {
+        "args": {
+          "default": [],
+          "description": "Arguments passed to the credential export command.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable to invoke directly, without a shell.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 30000,
+          "description": "Maximum time to wait for the credential export command to complete.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
     "BrowserUseConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -602,6 +631,9 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "api_key_model_discovery": {
+              "type": "boolean"
+            },
             "apply_patch_freeform": {
               "type": "boolean"
             },
@@ -670,6 +702,9 @@
               "type": "boolean"
             },
             "code_mode_prewarm": {
+              "type": "boolean"
+            },
+            "codex_apps_mcp_2026_07_28": {
               "type": "boolean"
             },
             "codex_git_commit": {
@@ -1160,6 +1195,62 @@
         "experimental_mode": {
           "description": "Enables experimental context management.",
           "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "CredentialAuthMethod": {
+      "description": "Authentication formats supported by declarative credential providers.",
+      "enum": [
+        "bearer",
+        "token",
+        "basic",
+        "header"
+      ],
+      "type": "string"
+    },
+    "CredentialProviderConfig": {
+      "additionalProperties": false,
+      "description": "Declarative description of an environment-backed credential family.",
+      "properties": {
+        "auth": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/CredentialAuthMethod"
+          },
+          "type": "array"
+        },
+        "env": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "header": {
+          "type": "string"
+        },
+        "patterns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "url_prefix_from_env": {
+          "description": "Environment variable containing an additional URL prefix or hostname.",
+          "type": "string"
+        },
+        "url_prefixes": {
+          "default": [],
+          "description": "URL prefixes authorized for injection. Bare loopback hosts imply HTTP; other bare hosts imply HTTPS.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -2215,6 +2306,14 @@
           ],
           "description": "Optional command used to reauthenticate after a refreshable AWS auth failure."
         },
+        "credential_export": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AwsCredentialExportConfig"
+            }
+          ],
+          "description": "Optional command whose exported credentials replace the AWS SDK credential chain."
+        },
         "profile": {
           "description": "AWS profile name to use. When unset, the AWS SDK default chain decides.",
           "type": "string"
@@ -2551,6 +2650,12 @@
         },
         "credential_broker": {
           "type": "boolean"
+        },
+        "credentials": {
+          "additionalProperties": {
+            "$ref": "#/definitions/CredentialProviderConfig"
+          },
+          "type": "object"
         },
         "dangerously_allow_all_unix_sockets": {
           "type": "boolean"
@@ -3888,6 +3993,9 @@
           ],
           "default": {
             "agents": {
+              "archive": null,
+              "delete": null,
+              "hide": null,
               "new_task": null,
               "rename": null,
               "resume": null,
@@ -4198,6 +4306,30 @@
       "additionalProperties": false,
       "description": "Shortcuts specific to the shared agents overview.",
       "properties": {
+        "archive": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Archive the selected task and its child agents after confirmation."
+        },
+        "delete": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Permanently delete the selected task and its child agents after confirmation."
+        },
+        "hide": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Hide the selected task until explicitly resumed or the TUI restarts."
+        },
         "new_task": {
           "allOf": [
             {
@@ -4703,6 +4835,9 @@
             }
           ],
           "default": {
+            "archive": null,
+            "delete": null,
+            "hide": null,
             "new_task": null,
             "rename": null,
             "resume": null,
@@ -6021,6 +6156,9 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "api_key_model_discovery": {
+          "type": "boolean"
+        },
         "apply_patch_freeform": {
           "type": "boolean"
         },
@@ -6089,6 +6227,9 @@
           "type": "boolean"
         },
         "code_mode_prewarm": {
+          "type": "boolean"
+        },
+        "codex_apps_mcp_2026_07_28": {
           "type": "boolean"
         },
         "codex_git_commit": {

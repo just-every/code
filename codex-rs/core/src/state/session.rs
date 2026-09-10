@@ -30,8 +30,9 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use tokio_util::task::AbortOnDropHandle;
 
-/// Runtime request effort. A successful compaction can establish a fresh baseline, while
-/// startup and replay must explicitly re-establish the selected effort in surviving history.
+/// Runtime request effort, initially unset and established by prewarm or sampling.
+/// Rollback clears it after startup prewarm is consumed; successful compaction allows
+/// a fresh baseline without an override.
 pub(crate) enum ReasoningEffortPin {
     Unset,
     Compacted,

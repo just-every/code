@@ -2670,7 +2670,7 @@ fn reasoning_summary_block() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, vec!["• Detailed reasoning goes here."]);
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Detailed reasoning goes here."]);
@@ -2742,7 +2742,7 @@ async fn reasoning_summary_block_respects_config_overrides() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, vec!["• Detailed reasoning goes here."]);
+    assert_eq!(rendered_display, Vec::<String>::new());
 }
 
 #[test]
@@ -2776,17 +2776,14 @@ fn reasoning_summary_block_falls_back_when_summary_is_missing() {
 }
 
 #[test]
-fn reasoning_summary_block_displays_title_only_summary() {
+fn reasoning_summary_block_keeps_title_only_summary_in_expanded_transcript() {
     let cell = new_reasoning_summary_block(
         vec!["**Confirming backend JSONL source**".to_string()],
         &test_cwd(),
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(
-        rendered_display.join("\n"),
-        @"• Confirming backend JSONL source"
-    );
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(
@@ -2803,7 +2800,7 @@ fn reasoning_summary_block_splits_header_and_summary_when_present() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    assert_eq!(rendered_display, vec!["• We should fix the bug next."]);
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• We should fix the bug next."]);
@@ -2820,7 +2817,7 @@ fn reasoning_summary_block_hides_empty_html_comment_parts() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(rendered_display.join("\n"), @"");
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, Vec::<String>::new());
@@ -2838,7 +2835,7 @@ fn reasoning_summary_block_preserves_bold_content_after_empty_html_comment_part(
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(rendered_display.join("\n"), @"• Important conclusion");
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Important conclusion"]);
@@ -2866,7 +2863,7 @@ fn reasoning_summary_block_strips_header_after_leading_empty_part() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(rendered_display.join("\n"), @"• Tests passed");
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Tests passed"]);
@@ -2883,7 +2880,7 @@ fn reasoning_summary_block_drops_empty_part_after_real_content() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(rendered_display.join("\n"), @"• done");
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• done"]);
@@ -2897,7 +2894,7 @@ fn reasoning_summary_block_preserves_literal_html_comment() {
     );
 
     let rendered_display = render_lines(&cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(rendered_display.join("\n"), @"• Use <!-- --> in JSX.");
+    assert_eq!(rendered_display, Vec::<String>::new());
 
     let rendered_transcript = render_transcript(cell.as_ref());
     assert_eq!(rendered_transcript, vec!["• Use <!-- --> in JSX."]);

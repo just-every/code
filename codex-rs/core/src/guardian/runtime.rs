@@ -1,7 +1,5 @@
-//! Binds the existing synchronous reviewer to one approval action.
+//! Captures one approval action for the extension-owned synchronous reviewer.
 
-use codex_extension_api::ExtensionFuture;
-use codex_extension_api::SynchronousApprovalReviewer;
 use codex_protocol::protocol::ReviewDecision;
 use std::sync::Arc;
 
@@ -10,7 +8,6 @@ use super::GuardianApprovalRequest;
 use super::GuardianReviewContext;
 use super::GuardianReviewOptions;
 use super::approval_request::guardian_approval_request_to_json;
-use super::review::run_synchronous_review;
 use crate::session::session::Session;
 
 /// Carries the original action even when the legacy synchronous renderer cannot handle its paths.
@@ -82,13 +79,4 @@ pub(super) struct ReviewRuntime {
     pub(super) request: ReviewAction,
     pub(super) reasons: ApprovalRequestReasons,
     pub(super) options: GuardianReviewOptions,
-}
-
-impl SynchronousApprovalReviewer for ReviewRuntime {
-    fn review(
-        &self,
-        reason: codex_protocol::approvals::GuardianReviewReason,
-    ) -> ExtensionFuture<'_, ReviewDecision> {
-        Box::pin(run_synchronous_review(self.clone(), reason))
-    }
 }

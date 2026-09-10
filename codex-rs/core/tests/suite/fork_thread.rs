@@ -101,10 +101,8 @@ async fn fork_thread_twice_drops_to_first_message() {
     } = thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(1),
-            config_for_fork.clone(),
+            codex_core::StartThreadOptions::new(config_for_fork.clone()),
             base_path.clone(),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork 1");
@@ -130,10 +128,8 @@ async fn fork_thread_twice_drops_to_first_message() {
     } = thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(0),
-            config_for_fork.clone(),
+            codex_core::StartThreadOptions::new(config_for_fork.clone()),
             fork1_path.clone(),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork 2");
@@ -227,16 +223,12 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
     } = thread_manager
         .fork_thread_from_history(
             ForkSnapshot::Interrupted,
-            test.config.clone(),
+            codex_core::StartThreadOptions::new(test.config.clone()),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: test.session_configured.thread_id,
                 history: Arc::new(supplied_history),
                 rollout_path: None,
             }),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
-            ClientMcpExtensions::default(),
-            /*reserved_thread_id*/ None,
         )
         .await
         .expect("fork from stored history");

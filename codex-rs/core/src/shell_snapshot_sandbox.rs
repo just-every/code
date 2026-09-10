@@ -10,6 +10,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::SandboxErr;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -23,6 +25,11 @@ use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+#[cfg(all(test, unix))]
+#[path = "shell_snapshot_sandbox_tests.rs"]
+mod tests;
 
 #[derive(Clone)]
 pub(crate) struct ShellSnapshotSandbox {
@@ -39,6 +46,7 @@ pub(crate) struct ShellSnapshotSandbox {
     network: Option<NetworkProxy>,
     environment_id: String,
     additional_permissions: Option<AdditionalPermissionProfile>,
+    network_denial_cancellation_token: Option<CancellationToken>,
 }
 
 pub(crate) fn snapshot_read_permissions(
@@ -83,7 +91,29 @@ impl ShellSnapshotSandbox {
             network: attempt.network_proxy(network).cloned(),
             environment_id: environment_id.to_string(),
             additional_permissions: additional_permissions.cloned(),
+            network_denial_cancellation_token: attempt.network_denial_cancellation_token.clone(),
         }
+    }
+
+    pub(crate) fn cache_key(&self) -> Result<String> {
+        serde_json::to_string(&(
+            self.sandbox.as_metric_tag(),
+            self.sandbox_requested,
+            &self.permissions,
+            self.enforce_managed_network,
+            &self.sandbox_policy_cwd,
+            &self.workspace_roots,
+            &self.codex_linux_sandbox_exe,
+            self.use_legacy_landlock,
+            self.windows_sandbox_level,
+            self.windows_sandbox_private_desktop,
+            self.network
+                .as_ref()
+                .map(|network| (network.http_addr(), network.socks_addr())),
+            &self.environment_id,
+            &self.additional_permissions,
+        ))
+        .context("failed to serialize shell snapshot sandbox policy")
     }
 
     pub(crate) async fn run(
@@ -154,29 +184,43 @@ impl ShellSnapshotSandbox {
             .map(PathUri::to_abs_path)
             .collect::<std::io::Result<Vec<_>>>()
             .context("failed to resolve shell snapshot workspace roots")?;
+        let cancellation = self
+            .network_denial_cancellation_token
+            .as_ref()
+            .map_or_else(CancellationToken::new, CancellationToken::child_token);
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let expiration = ExecExpiration::TimeoutOrCancellation {
+            timeout: snapshot_timeout,
+            cancellation,
+        };
         let request = ExecRequest::from_sandbox_exec_request(
             request,
             ExecOptions {
-                expiration: ExecExpiration::Timeout(snapshot_timeout),
-                capture_policy: ExecCapturePolicy::FullBuffer,
+                expiration,
+                capture_policy: ExecCapturePolicy::SensitiveFullBuffer,
             },
             workspace_roots,
         )
         .context("failed to prepare shell snapshot execution")?;
-        let output = tokio::time::timeout(
-            snapshot_timeout,
-            execute_env(request, /*stdout_stream*/ None),
-        )
-        .await
-        .map_err(|_| anyhow!("Snapshot command timed out for {shell_name}"))?
-        .with_context(|| format!("Failed to execute sandboxed {shell_name}"))?;
+        // Caller cancellation must leave execution alive long enough to clean up its process group.
+        let output = tokio::spawn(execute_env(request, /*stdout_stream*/ None))
+            .await
+            .context("shell snapshot execution task failed")?
+            .map_err(|err| match err.details() {
+                // Startup output can contain credentials, even when execution fails.
+                CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => anyhow!(
+                    "Snapshot command was denied by sandbox with status {}",
+                    output.exit_code
+                ),
+                CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. }) => {
+                    anyhow!("Snapshot command timed out")
+                }
+                _ => anyhow::Error::new(err)
+                    .context(format!("Failed to execute sandboxed {shell_name}")),
+            })?;
 
         if output.exit_code != 0 {
-            bail!(
-                "Snapshot command exited with status {}: {}",
-                output.exit_code,
-                output.stderr.text
-            );
+            bail!("Snapshot command exited with status {}", output.exit_code);
         }
 
         Ok(output.stdout.text)

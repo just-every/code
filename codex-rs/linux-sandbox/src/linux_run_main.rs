@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use crate::bwrap::BwrapNetworkMode;
 use crate::bwrap::BwrapOptions;
+use crate::bwrap::WSL_INTEROP_DIR;
 use crate::bwrap::create_bwrap_command_args;
 use crate::landlock::apply_permission_profile_to_current_thread;
 use crate::launcher::exec_bwrap;
@@ -186,7 +187,9 @@ pub fn run_main() -> ! {
         use_legacy_landlock,
         &file_system_sandbox_policy,
         network_sandbox_policy,
+        allow_network_for_proxy,
         &sandbox_policy_cwd,
+        Path::new(WSL_INTEROP_DIR),
     );
 
     // Inner stage: apply seccomp/no_new_privs after bubblewrap has already
@@ -378,7 +381,9 @@ fn ensure_legacy_landlock_mode_supports_policy(
     use_legacy_landlock: bool,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
+    allow_network_for_proxy: bool,
     sandbox_policy_cwd: &Path,
+    wsl_interop_dir: &Path,
 ) {
     if use_legacy_landlock
         && file_system_sandbox_policy
@@ -386,6 +391,18 @@ fn ensure_legacy_landlock_mode_supports_policy(
     {
         panic!(
             "permission profiles requiring direct runtime enforcement are incompatible with --use-legacy-landlock"
+        );
+    }
+    if use_legacy_landlock
+        && network_sandbox_policy.is_enabled()
+        && !allow_network_for_proxy
+        && !file_system_sandbox_policy.has_full_disk_write_access()
+        // Interop can use another binfmt handler or a newly created socket.
+        // An active endpoint probe would race with sandboxed command startup.
+        && wsl_interop_dir.is_dir()
+    {
+        panic!(
+            "legacy Landlock cannot isolate WSL Windows interop with network access enabled; use bubblewrap or restrict network access"
         );
     }
 }
@@ -414,6 +431,8 @@ fn run_bwrap_with_proc_fallback(
     let options = BwrapOptions {
         mount_proc,
         network_mode,
+        mask_wsl_interop: !file_system_sandbox_policy.has_full_disk_write_access()
+            && Path::new(WSL_INTEROP_DIR).is_dir(),
         ..Default::default()
     };
     let mut bwrap_args = build_bwrap_argv(

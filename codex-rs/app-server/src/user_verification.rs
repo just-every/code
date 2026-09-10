@@ -254,6 +254,10 @@ mod tests;
 mod rpc_tests;
 
 #[cfg(test)]
+#[path = "user_verification_cancel_tests.rs"]
+mod cancel_tests;
+
+#[cfg(test)]
 #[path = "user_verification_test_support.rs"]
 mod test_support;
 

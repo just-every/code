@@ -58,11 +58,18 @@ pub(super) enum ShellEscapePolicy {
     Disallow,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UserMessageSource {
+    Prompt,
+    QuestionAnswer,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct QueuedUserMessage {
     pub(super) user_message: UserMessage,
     pub(super) action: QueuedInputAction,
     pub(super) pending_pastes: Vec<(String, String)>,
+    pub(super) source: UserMessageSource,
 }
 
 impl QueuedUserMessage {
@@ -71,6 +78,7 @@ impl QueuedUserMessage {
             user_message,
             action,
             pending_pastes: Vec::new(),
+            source: UserMessageSource::Prompt,
         }
     }
 
@@ -125,8 +133,10 @@ pub(crate) struct ThreadInputState {
     pub(crate) questions: Option<crate::bottom_pane::QuestionState>,
     pub(super) composer: Option<ThreadComposerState>,
     pub(super) safety_buffering_prompt: Option<UserMessage>,
+    pub(super) safety_buffering_source: UserMessageSource,
     pub(crate) pending_steers: VecDeque<PendingSteer>,
     pub(super) rejected_steers_queue: VecDeque<UserMessage>,
+    pub(super) rejected_steer_sources: VecDeque<UserMessageSource>,
     pub(super) rejected_steer_history_records: VecDeque<UserMessageHistoryRecord>,
     pub(super) queued_user_messages: VecDeque<QueuedUserMessage>,
     pub(super) queued_user_message_history_records: VecDeque<UserMessageHistoryRecord>,
@@ -176,6 +186,7 @@ pub(crate) struct PendingSteer {
     pub(crate) client_id: String,
     pub(super) user_message: UserMessage,
     pub(super) history_record: UserMessageHistoryRecord,
+    pub(super) source: UserMessageSource,
     pub(super) compare_key: PendingSteerCompareKey,
 }
 

@@ -194,6 +194,16 @@ pub trait TurnLifecycleContributor: Send + Sync {
         })
     }
 
+    /// Observes a completed item without changing it or delaying streamed deltas.
+    fn on_item_completed<'a>(
+        &'a self,
+        _thread_store: &'a ExtensionData,
+        _turn_store: &'a ExtensionData,
+        _item: &'a TurnItem,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
     /// Called before the host drops the completed turn runtime and turn store.
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {

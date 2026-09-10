@@ -1,4 +1,5 @@
 use codex_features::FEATURES;
+use codex_features::Feature;
 use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
@@ -36,14 +37,17 @@ lazy_static! {
     static ref ALL_TOOLTIPS: Vec<&'static str> = {
         let mut tips = Vec::new();
         tips.extend(TOOLTIPS.iter().copied());
-        tips.extend(experimental_tooltips());
+        tips.extend(experimental_tooltips(
+            codex_realtime_webrtc::RealtimeWebrtcSession::is_supported,
+        ));
         tips
     };
 }
 
-fn experimental_tooltips() -> Vec<&'static str> {
+fn experimental_tooltips(voice_supported: impl Fn() -> bool) -> Vec<&'static str> {
     FEATURES
         .iter()
+        .filter(|spec| spec.id != Feature::RealtimeConversation || voice_supported())
         .filter_map(|spec| spec.stage.experimental_announcement())
         .collect()
 }
@@ -357,6 +361,33 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    #[test]
+    fn experimental_voice_tooltip_requires_runtime_support() {
+        let unavailable = experimental_tooltips(|| false);
+        let available = experimental_tooltips(|| true);
+        let voice_tip = FEATURES
+            .iter()
+            .find(|spec| spec.id == Feature::RealtimeConversation)
+            .and_then(|spec| spec.stage.experimental_announcement())
+            .expect("voice has an experimental announcement");
+        assert_eq!(
+            unavailable,
+            available
+                .iter()
+                .copied()
+                .filter(|tip| *tip != voice_tip)
+                .collect::<Vec<_>>()
+        );
+        insta::assert_snapshot!(
+            "experimental_voice_tooltip",
+            available
+                .into_iter()
+                .filter(|tip| *tip == voice_tip)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 
     #[test]
     fn random_tooltip_returns_some_tip_when_available() {

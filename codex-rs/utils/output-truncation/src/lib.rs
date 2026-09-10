@@ -11,6 +11,12 @@ use codex_utils_string::truncate_middle_with_token_budget;
 
 pub use codex_protocol::protocol::TruncationPolicy;
 
+/// Adds the existing 20% allowance for serialization and headers.
+/// Saved history budgets already include this allowance.
+pub fn with_serialization_allowance(policy: TruncationPolicy) -> TruncationPolicy {
+    policy * 1.2
+}
+
 pub fn formatted_truncate_text(content: &str, policy: TruncationPolicy) -> String {
     if content.len() <= policy.byte_budget() {
         return content.to_string();

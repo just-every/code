@@ -56,26 +56,40 @@ pub(crate) struct ConnectionRequestId {
     pub(crate) request_id: RequestId,
 }
 
-/// Trace data we keep for an incoming request until we send its final
-/// response or error.
+/// Trace data and cancellation state retained until an incoming request's final response or error.
 #[derive(Clone)]
 pub(crate) struct RequestContext {
     request_id: ConnectionRequestId,
     pub(crate) cancellation: tokio_util::sync::CancellationToken,
+    cancellation_scope: RequestCancellationScope,
     span: Span,
     parent_trace: Option<W3cTraceContext>,
     _diagnostics_guard: Arc<GaugeGuard>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RequestCancellationScope {
+    Unavailable,
+    UserVerification,
+}
+
 impl RequestContext {
     pub(crate) fn new(
         request_id: ConnectionRequestId,
+        method: &str,
         span: Span,
         parent_trace: Option<W3cTraceContext>,
     ) -> Self {
         Self {
             request_id,
             cancellation: tokio_util::sync::CancellationToken::new(),
+            cancellation_scope: match method {
+                "userVerification/status"
+                | "userVerification/enroll"
+                | "userVerification/delete"
+                | "userVerification/verify" => RequestCancellationScope::UserVerification,
+                _ => RequestCancellationScope::Unavailable,
+            },
             span,
             parent_trace,
             _diagnostics_guard: Arc::new(IN_FLIGHT_REQUESTS.track()),
@@ -250,6 +264,15 @@ impl OutgoingMessageSender {
             .is_some()
         {
             warn!("replaced unresolved request context");
+        }
+    }
+
+    pub(crate) async fn cancel_user_verification_request(&self, request_id: &ConnectionRequestId) {
+        let contexts = self.request_contexts.lock().await;
+        if let Some(context) = contexts.get(request_id)
+            && context.cancellation_scope == RequestCancellationScope::UserVerification
+        {
+            context.cancellation.cancel();
         }
     }
 
@@ -648,8 +671,10 @@ impl OutgoingMessageSender {
         response: ClientResponsePayload,
         check: impl FnOnce() -> std::result::Result<(), JSONRPCErrorError>,
     ) {
+        // Remain cancellable while waiting to deliver a proof, including after native work ends.
+        let permit = self.sender.reserve().await;
         let _context = self.take_request_context(&request_id).await;
-        let Ok(permit) = self.sender.reserve().await else {
+        let Ok(permit) = permit else {
             return;
         };
         let message = match check() {
@@ -876,6 +901,10 @@ fn timestamped_server_notification(notification: ServerNotification) -> Outgoing
 #[cfg(test)]
 #[path = "user_verification_ownership_tests.rs"]
 mod user_verification_ownership_tests;
+
+#[cfg(test)]
+#[path = "user_verification_cancel_context_tests.rs"]
+mod user_verification_cancel_context_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1257,6 +1286,7 @@ mod tests {
         outgoing
             .register_request_context(RequestContext::new(
                 request_id.clone(),
+                "thread/start",
                 tracing::info_span!("app_server.request", rpc.method = "thread/start"),
                 /*parent_trace*/ None,
             ))
@@ -1416,6 +1446,7 @@ mod tests {
         outgoing
             .register_request_context(RequestContext::new(
                 closed_connection_request,
+                "turn/interrupt",
                 tracing::info_span!("app_server.request", rpc.method = "turn/interrupt"),
                 /*parent_trace*/ None,
             ))
@@ -1423,6 +1454,7 @@ mod tests {
         outgoing
             .register_request_context(RequestContext::new(
                 open_connection_request,
+                "turn/start",
                 tracing::info_span!("app_server.request", rpc.method = "turn/start"),
                 /*parent_trace*/ None,
             ))

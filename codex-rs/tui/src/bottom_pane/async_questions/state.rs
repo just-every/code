@@ -147,6 +147,17 @@ impl AsyncQuestions {
         self.composer.reset_vim_mode();
     }
 
+    pub(crate) fn clear_pending(&mut self) {
+        // Keep seen_ids so replay cannot restore questions from the previous prompt.
+        self.state.pending.clear();
+        self.state.current_idx = 0;
+        self.expanded = false;
+        self.submission = None;
+        self.visible_options.set((0, 0));
+        self.restore_current_draft();
+        self.composer.reset_vim_mode();
+    }
+
     pub(crate) fn capture(&mut self) -> QuestionState {
         self.composer.cancel_history_search();
         self.save_current_draft();

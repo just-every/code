@@ -137,10 +137,10 @@ fn configure_apps_without_search_tool(config: &mut Config, apps_base_url: &str) 
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("gpt-5.4 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("gpt-5.5 exists in bundled models.json");
     config.chatgpt_base_url = apps_base_url.to_string();
-    config.model = Some("gpt-5.4".to_string());
+    config.model = Some("gpt-5.5".to_string());
     config.tool_suggest.discoverables = vec![ToolSuggestDiscoverable {
         kind: ToolSuggestDiscoverableType::Connector,
         id: DISCOVERABLE_GMAIL_ID.to_string(),
@@ -1059,7 +1059,7 @@ async fn run_remote_plugin_install_metadata_case() -> Result<()> {
                 "source": "endpoint_recommendation",
                 "thread_id": thread_id,
                 "turn_id": turn_id,
-                "model_slug": "gpt-5.4",
+                "model_slug": "gpt-5.5",
                 "product_client_id": codex_login::default_client::originator().value,
             }
         })

@@ -4,6 +4,7 @@
 use super::*;
 use crate::bottom_pane::ChatComposer;
 use crate::bottom_pane::ChatComposerConfig;
+use crate::chatwidget::UserMessage;
 
 impl App {
     pub(super) fn sync_agents_overview_composer(&self) {
@@ -21,6 +22,7 @@ impl App {
                 self.config.disable_paste_burst,
                 ChatComposerConfig {
                     trim_submission: false,
+                    image_paste_enabled: true,
                     ..ChatComposerConfig::plain_text()
                 },
             );
@@ -39,18 +41,37 @@ impl App {
         composer.set_keymap_bindings(&self.keymap);
     }
 
-    pub(super) fn restore_agents_overview_prompt(&mut self, prompt: String) {
+    pub(super) fn restore_agents_overview_prompt(&mut self, prompt: UserMessage) {
         if let Ok(mut state) = self.agents_overview.view_state.lock()
             && let Some(composer) = state.composer.as_mut()
             && composer.is_empty()
             && !composer.is_in_paste_burst()
             && !composer.popup_active()
         {
-            composer.set_text_content(prompt, Vec::new(), Vec::new());
+            composer.set_text_content(
+                prompt.text,
+                prompt.text_elements,
+                prompt
+                    .local_images
+                    .into_iter()
+                    .map(|image| image.path)
+                    .collect(),
+            );
             composer.move_cursor_to_end();
             return;
         }
+        let hint = (!prompt.local_images.is_empty()).then(|| {
+            format!(
+                "Reattach images from: {}",
+                prompt
+                    .local_images
+                    .iter()
+                    .map(|image| image.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
         self.chat_widget
-            .add_info_message(format!("Unsent task: {prompt}"), /*hint*/ None);
+            .add_info_message(format!("Unsent task: {}", prompt.text), hint);
     }
 }

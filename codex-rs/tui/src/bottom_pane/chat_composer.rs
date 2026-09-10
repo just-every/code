@@ -4,7 +4,7 @@
 //! completed slash commands to atomic elements, and handles Enter submission/newlines.
 //! It also shows Luna Reserve's yellow prompt arrow and detects unbracketed paste bursts
 //! from raw key streams, particularly on Windows.
-//! The live voice strip renders after decorative effects so its controls stay legible.
+//! The live voice strip renders after effort ignition and before stars, which skip its text.
 //!
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
@@ -18,6 +18,7 @@
 //! # Key Event Routing
 //!
 //! Plain Left opens agents when the local-daemon composer is empty and available for input.
+//! The agents dashboard uses the matching empty-editor guards for Right to open a task.
 //! Explicit editor remaps take precedence.
 //! Most key handling goes through [`ChatComposer::handle_key_event`], which dispatches to a
 //! popup-specific handler if a popup is visible and otherwise to
@@ -423,7 +424,6 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Vim
                 | SlashCommand::Keymap
                 | SlashCommand::ElevateSandbox
-                | SlashCommand::SandboxReadRoot
                 | SlashCommand::Experimental
                 | SlashCommand::Memories
                 | SlashCommand::Quit
@@ -5054,6 +5054,7 @@ impl ChatComposer {
             }
         }
         drop(state);
+        self.render_voice_strip(composer_rect, buf);
         if self.astra_sparkle.is_some() {
             self.render_sparkle(
                 composer_rect,
@@ -5061,7 +5062,6 @@ impl ChatComposer {
                 buf,
             );
         }
-        self.render_voice_strip(composer_rect, buf);
     }
 }
 

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use codex_config::ConfigLayerEntry;
@@ -24,9 +26,16 @@ use codex_extension_api::SkillInvocationInput;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_models_manager::bundled_models_response;
+use codex_otel::OtelExporter;
+use codex_otel::OtelHttpProtocol;
+use codex_otel::OtelProvider;
+use codex_otel::OtelSettings;
+use codex_otel::THREAD_SKILLS_KEPT_TOTAL_METRIC;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -36,7 +45,10 @@ use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::ExecutorSkillProvider;
 use codex_skills_extension::HostSkillProvider;
@@ -80,6 +92,8 @@ use core_test_support::test_codex::test_env;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
+use opentelemetry_sdk::metrics::data::AggregatedMetrics;
+use opentelemetry_sdk::metrics::data::MetricData;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -106,6 +120,45 @@ struct StaticSkillProvider {
 
 struct CatalogSkillProvider {
     catalog: SkillCatalog,
+}
+
+struct PausedCatalogSkillProvider {
+    inner: CatalogSkillProvider,
+    first_discovery: AtomicBool,
+    started: tokio::sync::mpsc::UnboundedSender<String>,
+    resume: tokio::sync::Semaphore,
+}
+
+impl SkillProvider for PausedCatalogSkillProvider {
+    fn list(&self, query: SkillListQuery) -> SkillProviderFuture<'_, SkillCatalog> {
+        Box::pin(async move {
+            if query.host_snapshot.is_none() {
+                return Ok(SkillCatalog::default());
+            }
+            if self.first_discovery.swap(/*val*/ false, Ordering::SeqCst) {
+                self.started
+                    .send(query.turn_id.clone())
+                    .expect("discovery receiver");
+                self.resume
+                    .acquire()
+                    .await
+                    .expect("resume discovery")
+                    .forget();
+            }
+            self.inner.list(query).await
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        request: SkillReadRequest<'a>,
+    ) -> SkillProviderFuture<'a, SkillReadResult> {
+        self.inner.read(request)
+    }
+
+    fn search(&self, request: SkillSearchRequest) -> SkillProviderFuture<'_, SkillSearchResult> {
+        self.inner.search(request)
+    }
 }
 
 #[derive(Debug)]
@@ -2488,113 +2541,266 @@ async fn production_turn_aliases_combined_skill_catalogs_under_shared_budget() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn production_turn_scales_extension_catalog_from_resolved_model_window() -> Result<()> {
+    assert_catalog_model_switch(/*max_context_tokens*/ None).await
+}
+
+async fn assert_catalog_model_switch(max_context_tokens: Option<usize>) -> Result<()> {
+    const MODEL_A: &str = "skills-model-a";
+    const MODEL_B: &str = "skills-model-b";
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-a"),
+                responses::ev_function_call(
+                    "plan",
+                    "update_plan",
+                    &json!({
+                        "plan": [{"step": "Inspect skills", "status": "completed"}]
+                    })
+                    .to_string(),
+                ),
+                ev_completed("resp-a"),
+            ]),
+            sse(vec![ev_response_created("resp-b"), ev_completed("resp-b")]),
+        ],
+    )
+    .await;
+    let codex_home = Arc::new(TempDir::new()?);
+    // Use the normal metrics sink to verify core's model attribution.
+    let telemetry = OtelProvider::try_new(&OtelSettings {
+        environment: "test".to_string(),
+        service_name: "skills-model-switch".to_string(),
+        service_version: env!("CARGO_PKG_VERSION").to_string(),
+        codex_home: codex_home.path().to_path_buf(),
+        exporter: OtelExporter::None,
+        trace_exporter: OtelExporter::None,
+        metrics_exporter: OtelExporter::OtlpHttp {
+            endpoint: format!("{}/metrics", server.uri()),
+            headers: Default::default(),
+            protocol: OtelHttpProtocol::Json,
+            tls: None,
+        },
+        runtime_metrics: true,
+        span_attributes: Default::default(),
+        tracestate: Default::default(),
+    })
+    .map_err(|error| anyhow::anyhow!("{error}"))?
+    .expect("metrics provider");
     let skill_count = 800;
-    let mut included_counts = Vec::new();
-    for (context_window, max_context_window, expected_budget) in
-        [(Some(10_000), None, 200), (None, Some(400_000), 8_000)]
-    {
-        let server = responses::start_mock_server().await;
-        let response = mount_sse_once(
-            &server,
-            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
-        )
-        .await;
-        let source_kind = SkillSourceKind::Custom("test".to_string());
-        let catalog = SkillCatalog {
-            entries: (0..skill_count)
-                .map(|index| {
-                    let name = format!("skill-{index:03}");
-                    SkillCatalogEntry::new(
-                        SkillPackageId(format!("test/{name}")),
-                        SkillAuthority::new(source_kind.clone(), "test"),
-                        name.clone(),
-                        "A description long enough to keep the catalog under sustained budget pressure.",
-                        SkillResourceId::new(format!("{name}/SKILL.md")),
-                    )
-                    .with_display_path(format!("skill://test/{name}/SKILL.md"))
+    let catalog = SkillCatalog {
+        entries: (0..skill_count)
+            .map(|index| {
+                let name = format!("skill-{index:03}");
+                SkillCatalogEntry::new(
+                    SkillPackageId(format!("test/{name}")),
+                    SkillAuthority::new(SkillSourceKind::Host, "test"),
+                    name.clone(),
+                    "A description long enough to keep the catalog under sustained budget pressure.",
+                    SkillResourceId::new(format!("{name}/SKILL.md")),
+                )
+                .with_display_path(format!("skill://test/{name}/SKILL.md"))
+            })
+            .collect(),
+        warnings: Vec::new(),
+    };
+    let (started, mut discovery) = tokio::sync::mpsc::unbounded_channel();
+    let provider = Arc::new(PausedCatalogSkillProvider {
+        inner: CatalogSkillProvider { catalog },
+        first_discovery: AtomicBool::new(/*v*/ true),
+        started,
+        resume: tokio::sync::Semaphore::new(/*permits*/ 0),
+    });
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let mut extensions =
+        ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::new(ChannelEventSink(event_tx)));
+    install_with_providers(
+        &mut extensions,
+        SkillProviders::new().with_host_provider(provider.clone()),
+        |config: &Config| SkillsExtensionConfig {
+            include_instructions: config.include_skill_instructions,
+            max_context_tokens: config.skill_max_context_tokens,
+            bundled_skills_enabled: false,
+            orchestrator_skills_enabled: false,
+            shadow_selection_enabled: false,
+        },
+    );
+    let mut builder = test_codex()
+        .with_home(codex_home)
+        .with_model(MODEL_A)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(move |config| {
+            configure_catalog_test(config);
+            config
+                .features
+                .enable(Feature::StepModelSwitching)
+                .expect("model switching");
+            config.skill_max_context_tokens =
+                max_context_tokens.and_then(std::num::NonZeroUsize::new);
+            let template = bundled_models_response()
+                .expect("bundled models")
+                .models
+                .into_iter()
+                .find(|model| model.slug == "gpt-5.5")
+                .expect("gpt-5.5");
+            config.model_catalog = Some(ModelsResponse {
+                models: [
+                    (MODEL_A, Some(10_000), None, false),
+                    (MODEL_B, None, Some(400_000), true),
+                ]
+                .into_iter()
+                .map(|(slug, window, max_window, usage)| {
+                    let mut model = template.clone();
+                    model.slug = slug.to_string();
+                    model.context_window = window;
+                    model.max_context_window = max_window;
+                    // Distinguish the resolved window from the smaller usable limit.
+                    model.effective_context_window_percent = 50;
+                    model.include_skills_usage_instructions = usage;
+                    model
                 })
                 .collect(),
-            warnings: Vec::new(),
-        };
-        let (event_tx, event_rx) = std::sync::mpsc::channel();
-        let mut extensions = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::new(
-            ChannelEventSink(event_tx),
-        ));
-        install_with_providers(
-            &mut extensions,
-            SkillProviders::new().with_provider(SkillProviderSource::new(
-                source_kind,
-                "test",
-                Arc::new(StaticSkillProvider {
-                    catalog,
-                    main_prompt_contents: None,
-                }),
-            )),
-            |config: &Config| SkillsExtensionConfig {
-                include_instructions: config.include_skill_instructions,
-                max_context_tokens: config.skill_max_context_tokens,
-                bundled_skills_enabled: false,
-                orchestrator_skills_enabled: false,
-                shadow_selection_enabled: false,
-            },
-        );
-        let mut builder = test_codex()
-            .with_extensions(Arc::new(extensions.build()))
-            .with_model_info_override("gpt-5.5", move |model_info| {
-                model_info.context_window = context_window;
-                model_info.max_context_window = max_context_window;
-            })
-            .with_config(|config| {
-                config.include_skill_instructions = true;
             });
-        let test = builder.build_with_auto_env(&server).await?;
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Inspect the available skills.".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let turn_id = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), discovery.recv())
+        .await?
+        .expect("A catalog discovery started");
+    let (reply, outcome) = tokio::sync::oneshot::channel();
+    test.codex
+        .submit(Op::TurnSettings {
+            turn_id,
+            update: TurnSettingsUpdate {
+                model: Some(MODEL_B.to_string()),
+                ..Default::default()
+            },
+            reply,
+        })
+        .await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 10), outcome).await??,
+        TurnSettingsUpdateOutcome::Applied
+    );
+    provider.resume.add_permits(/*n*/ 1);
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
-        test.submit_turn("Inspect the available skills.").await?;
-        let request = response.single_request();
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let mut included_counts = Vec::new();
+    for (request, (model, default_budget, include_usage)) in requests
+        .iter()
+        .zip([(MODEL_A, 200, false), (MODEL_B, 8_000, true)])
+    {
+        assert_eq!(request.body_json()["model"], model);
         let developer_texts = request.message_input_texts("developer");
+        // B retains A in history and appends its own changed catalog.
         let catalog_text = developer_texts
             .iter()
+            .rev()
             .find(|text| text.contains("skill://test/"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "production request should include the extension skill catalog, got {developer_texts:?}"
-                )
-            });
+            .expect("catalog in provider request");
+        assert_eq!(
+            catalog_text.contains("### How to use skills"),
+            include_usage
+        );
         let metadata_lines = catalog_text
             .lines()
             .skip_while(|line| *line != "### Available skills")
-            .skip(1)
+            .skip(/*n*/ 1)
             .take_while(|line| !line.starts_with("### "))
             .filter(|line| line.starts_with("- "))
             .collect::<Vec<_>>();
-        let metadata_cost = metadata_lines.iter().fold(0usize, |cost, line| {
-            cost.saturating_add(approx_token_count(&format!("{line}\n")))
-        });
+        let metadata_cost = metadata_lines
+            .iter()
+            .map(|line| approx_token_count(&format!("{line}\n")))
+            .sum::<usize>();
+        let budget = max_context_tokens.unwrap_or(default_budget);
+        assert!(
+            metadata_cost <= budget,
+            "catalog cost {metadata_cost} exceeds {budget}"
+        );
+        assert!(
+            metadata_cost > budget / 2,
+            "catalog incorrectly used the usable inference limit"
+        );
         let included_count = metadata_lines
             .iter()
             .filter(|line| line.starts_with("- skill-"))
             .count();
-        let warning = event_rx.try_recv()?.into_warning();
-        let omitted_count = skill_count - included_count;
-
-        assert!(catalog_text.contains("additional skills omitted"));
+        assert!(included_count > 0 && included_count < skill_count);
         assert!(!catalog_text.contains(
             "A description long enough to keep the catalog under sustained budget pressure."
         ));
-        assert!(metadata_cost <= expected_budget);
-        assert_eq!(
-            warning.message,
-            format!(
-                "Exceeded skills context budget. All skill descriptions were removed and {omitted_count} additional skills were not included in the model-visible skills list."
-            )
-        );
         included_counts.push(included_count);
     }
+    if max_context_tokens.is_some() {
+        assert_eq!(included_counts[0], included_counts[1]);
+    } else {
+        assert!(included_counts[0] < included_counts[1]);
+    }
+    let warnings = event_rx
+        .try_iter()
+        .map(|event| event.into_warning().message)
+        .collect::<Vec<_>>();
+    let mut expected_warnings = included_counts
+        .iter()
+        .map(|count| {
+            format!(
+                "Exceeded skills context budget. All skill descriptions were removed and {} additional skills were not included in the model-visible skills list.",
+                skill_count - count,
+            )
+        })
+        .collect::<Vec<_>>();
+    expected_warnings.dedup();
+    assert_eq!(warnings, expected_warnings);
 
-    assert!(included_counts[0] > 0);
-    assert!(included_counts[0] < included_counts[1]);
-
+    let snapshot = telemetry.metrics().expect("metrics client").snapshot()?;
+    let metric = snapshot
+        .scope_metrics()
+        .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+        .find(|metric| metric.name() == THREAD_SKILLS_KEPT_TOTAL_METRIC)
+        .expect("catalog metrics");
+    let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metric.data() else {
+        panic!("catalog metric should be a histogram");
+    };
+    let mut samples = histogram
+        .data_points()
+        .filter_map(|point| {
+            let attributes = point
+                .attributes()
+                .map(|attribute| (attribute.key.as_str(), attribute.value.as_str().to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (attributes.get("catalog_surface").map(String::as_str) == Some("host_world_state")
+                && matches!(
+                    attributes.get("model").map(String::as_str),
+                    Some(MODEL_A | MODEL_B)
+                ))
+            .then(|| (attributes["model"].clone(), point.count(), point.sum()))
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        samples,
+        vec![
+            (MODEL_A.to_string(), 1, included_counts[0] as f64),
+            (MODEL_B.to_string(), 1, included_counts[1] as f64),
+        ]
+    );
+    telemetry
+        .shutdown_with_timeout(Duration::from_secs(/*secs*/ 5))
+        .await?;
     Ok(())
 }
 
@@ -2642,6 +2848,7 @@ async fn production_turn_shares_catalog_budget_across_host_and_executor_sections
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn production_turn_uses_configured_skill_catalog_token_budget() -> Result<()> {
     let server = responses::start_mock_server().await;
     let response = mount_sse_once(
@@ -2684,7 +2891,7 @@ async fn production_turn_uses_configured_skill_catalog_token_budget() -> Result<
     assert_full_descriptions(&executor_lines, &EXECUTOR_CATALOG);
     assert!(metadata_cost(&combined_lines) <= 800);
 
-    Ok(())
+    assert_catalog_model_switch(Some(800)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

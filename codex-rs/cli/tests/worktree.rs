@@ -214,12 +214,18 @@ trust_level = "trusted"
     env.insert("NO_PROXY".into(), "127.0.0.1,localhost".into());
     env.insert("no_proxy".into(), "127.0.0.1,localhost".into());
     env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("TERM_PROGRAM".into(), "unrecognized-terminal".into());
     env.insert("OTEL_METRIC_EXPORT_INTERVAL".into(), "100".into());
     for key in [
         "CODEX_EXEC_SERVER_URL",
         "CODEX_ACCESS_TOKEN",
         "OPENAI_API_KEY",
         "CODEX_API_KEY",
+        "TMUX",
+        "TMUX_PANE",
+        "ZELLIJ",
+        "ZELLIJ_SESSION_NAME",
+        "ZELLIJ_VERSION",
     ] {
         env.remove(key);
     }
@@ -461,17 +467,42 @@ trust_level = "trusted"
             .context("requests")?
             .into_iter()
             .filter(|request| request.url.path() == "/metrics")
-            .flat_map(|request| request.body)
-            .collect::<Vec<_>>();
-        assert!(
-            if analytics {
-                String::from_utf8_lossy(&metrics).contains("codex.tui.start")
-            } else {
-                metrics.is_empty()
-            },
-            "analytics={analytics}, metrics_bytes={}",
-            metrics.len()
-        );
+            .map(|request| serde_json::from_slice::<Value>(&request.body))
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        if analytics {
+            let point = metrics
+                .iter()
+                .flat_map(|payload| payload["resourceMetrics"].as_array().into_iter().flatten())
+                .flat_map(|resource| resource["scopeMetrics"].as_array().into_iter().flatten())
+                .flat_map(|scope| scope["metrics"].as_array().into_iter().flatten())
+                .filter(|metric| metric["name"] == "codex.tui.start")
+                .flat_map(|metric| metric["sum"]["dataPoints"].as_array().into_iter().flatten())
+                .next()
+                .context("codex.tui.start data point")?;
+            let tags = point["attributes"]
+                .as_array()
+                .context("codex.tui.start attributes")?
+                .iter()
+                .map(|attribute| {
+                    Ok((
+                        attribute["key"].as_str().context("metric tag key")?,
+                        attribute["value"]["stringValue"]
+                            .as_str()
+                            .context("metric tag value")?,
+                    ))
+                })
+                .collect::<anyhow::Result<HashMap<_, _>>>()?;
+            assert_eq!(
+                tags,
+                HashMap::from([
+                    ("app_server_mode", "in_process"),
+                    ("terminal_name", "unknown"),
+                    ("multiplexer", "none"),
+                ])
+            );
+        } else {
+            assert!(metrics.is_empty(), "analytics disabled");
+        }
         let (body, checkout, metadata) = observed
             .with_context(|| {
                 format!(

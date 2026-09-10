@@ -1255,7 +1255,6 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
         .with_config(move |config| {
             config.model_provider.base_url = Some(base_url);
             config.model_auto_compact_token_limit = Some(100_000);
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
             // The streaming fixture records raw request bodies for JSON assertions.
             let _ = config.features.disable(Feature::EnableRequestCompression);
         })

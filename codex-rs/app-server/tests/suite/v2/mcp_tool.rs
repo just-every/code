@@ -1341,9 +1341,9 @@ impl ServerHandler for ToolAppsMcpServer {
             .get("threadId")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        let client_capabilities = context.peer.peer_info().map(|request| {
+        let client_capabilities = context.client_capabilities().map(|capabilities| {
             json!({
-                "extensions": request.capabilities.extensions.clone().unwrap_or_default(),
+                "extensions": capabilities.extensions.unwrap_or_default(),
             })
         });
 

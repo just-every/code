@@ -57,6 +57,7 @@ use codex_utils_output_truncation::approx_bytes_for_tokens;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_payload;
+use codex_utils_output_truncation::with_serialization_allowance;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -366,9 +367,9 @@ impl ContextManager {
             {
                 // The override already includes the tool's serialization allowance.
                 let policy = metadata
-                    .and_then(|metadata| metadata.fallback_token_limit_override)
+                    .and_then(|metadata| metadata.history_truncation_token_limit)
                     .map(TruncationPolicy::Tokens)
-                    .unwrap_or(policy * 1.2);
+                    .unwrap_or_else(|| with_serialization_allowance(policy));
                 truncate_function_output_payload(output, policy, estimate_audio_token_count);
             }
             if let Some(review_history) = &mut self.review_history

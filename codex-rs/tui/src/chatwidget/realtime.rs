@@ -88,7 +88,7 @@ fn can_retain_realtime_speech(turn_id: &str, item: &ThreadItem) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RealtimeConversationPhase {
+pub(super) enum RealtimeConversationPhase {
     #[default]
     Inactive,
     Starting,
@@ -129,7 +129,7 @@ enum StartupRetry {
 #[derive(Default)]
 pub(super) struct RealtimeConversationUiState {
     startup_retry: StartupRetry,
-    phase: RealtimeConversationPhase,
+    pub(super) phase: RealtimeConversationPhase,
     recover_late_transcripts: bool,
     attempt_id: u64,
     thread_id: Option<ThreadId>,
@@ -137,6 +137,8 @@ pub(super) struct RealtimeConversationUiState {
     startup_abort: Option<AbortHandle>,
     backend_started: bool,
     webrtc_connected: bool,
+    active_since: Option<Instant>,
+    failure_recorded: bool,
     microphone_muted: bool,
     microphone_level: usize,
     speaker_level: usize,
@@ -278,6 +280,8 @@ impl ChatWidget {
             return;
         };
 
+        self.session_telemetry
+            .counter("codex.voice.session.start", /*inc*/ 1, &[]);
         self.start_realtime_conversation(thread_id);
     }
 
@@ -312,6 +316,7 @@ impl ChatWidget {
         ) {
             return;
         }
+        self.finish_realtime_session_metrics();
         self.restore_all_undelivered_realtime_speech();
 
         // Stopping may prevent final transcript events from arriving.
@@ -327,6 +332,7 @@ impl ChatWidget {
                 return;
             };
             if !self.submit_op(AppCommand::RealtimeConversationStop { thread_id }) {
+                self.record_realtime_failure();
                 self.reset_realtime_conversation();
             }
         } else {
@@ -376,6 +382,7 @@ impl ChatWidget {
             thread_id,
             offer_sdp: offer.offer_sdp.into(),
         }) {
+            self.record_realtime_failure();
             self.reset_realtime_conversation();
         }
     }
@@ -432,6 +439,7 @@ impl ChatWidget {
                 self.realtime_conversation.startup_retry = StartupRetry::WaitingForStop;
                 self.refresh_terminal_title();
                 if !self.submit_op(AppCommand::RealtimeConversationStop { thread_id }) {
+                    self.record_realtime_failure();
                     self.reset_realtime_conversation();
                 } else {
                     self.add_info_message(
@@ -457,6 +465,9 @@ impl ChatWidget {
             return;
         }
         self.realtime_conversation.phase = RealtimeConversationPhase::Active;
+        self.realtime_conversation.active_since = Some(Instant::now());
+        self.session_telemetry
+            .counter("codex.voice.session.connected", /*inc*/ 1, &[]);
         let running_delegation =
             self.turn_lifecycle
                 .last_turn_id
@@ -1525,9 +1536,29 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn record_realtime_failure(&mut self) {
+        if self.realtime_conversation.phase == RealtimeConversationPhase::Inactive
+            || self.realtime_conversation.failure_recorded
+        {
+            return;
+        }
+        self.realtime_conversation.failure_recorded = true;
+        self.session_telemetry
+            .counter("codex.voice.session.failure", /*inc*/ 1, &[]);
+    }
+
+    pub(super) fn realtime_retry_cleanup_pending(&self) -> bool {
+        self.realtime_conversation.startup_retry == StartupRetry::WaitingForStop
+    }
+
     pub(crate) fn on_realtime_error(&mut self, message: String) {
         if self.realtime_conversation.phase == RealtimeConversationPhase::Inactive {
             return;
+        }
+        if self.realtime_conversation.phase != RealtimeConversationPhase::Stopping
+            || self.realtime_retry_cleanup_pending()
+        {
+            self.record_realtime_failure();
         }
         self.stop_realtime_conversation();
         self.add_error_message(message);
@@ -1558,10 +1589,18 @@ impl ChatWidget {
         self.finish_realtime_partial_transcripts();
         let muted = self.realtime_conversation.microphone_muted;
         let thread_id = self.realtime_conversation.thread_id;
-        self.reset_realtime_conversation();
-        if (retry_after_stop || retry_after_early_close)
-            && let Some(thread_id) = thread_id.filter(|id| Some(*id) == self.thread_id())
+        let retry_thread_id = if retry_after_stop || retry_after_early_close {
+            thread_id.filter(|id| Some(*id) == self.thread_id())
+        } else {
+            None
+        };
+        if retry_thread_id.is_none()
+            && (reason.is_none() || matches!(reason.as_deref(), Some("transport_closed" | "error")))
         {
+            self.record_realtime_failure();
+        }
+        self.reset_realtime_conversation();
+        if let Some(thread_id) = retry_thread_id {
             // The old backend is closed. A late peer result belongs to its attempt ID.
             self.realtime_conversation.startup_retry = StartupRetry::Used;
             self.realtime_conversation.microphone_muted = muted;
@@ -1585,7 +1624,20 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn finish_realtime_session_metrics(&mut self) {
+        if let Some(active_since) = self.realtime_conversation.active_since.take() {
+            self.session_telemetry
+                .counter("codex.voice.session.ended", /*inc*/ 1, &[]);
+            self.session_telemetry.record_duration(
+                "codex.voice.session.duration",
+                active_since.elapsed(),
+                &[],
+            );
+        }
+    }
+
     pub(crate) fn reset_realtime_conversation(&mut self) -> Option<ThreadId> {
+        self.finish_realtime_session_metrics();
         let should_refresh_terminal_title = self.realtime_conversation.phase
             != RealtimeConversationPhase::Inactive
             && self.last_terminal_title.is_some();

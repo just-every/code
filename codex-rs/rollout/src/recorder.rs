@@ -135,18 +135,24 @@ enum RolloutCmd {
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
+    Discard {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
+    // The task, not just its caller, owns the lock until queued file writes finish.
+    _writer_lock: Option<Arc<crate::WriterLockGuard>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
 }
 
 impl RolloutWriterTask {
     /// Create task observability state before spawning the writer.
-    fn new() -> Self {
+    fn new(writer_lock: Option<Arc<crate::WriterLockGuard>>) -> Self {
         Self {
+            _writer_lock: writer_lock,
             handle: Mutex::new(None),
             terminal_failure: Mutex::new(None),
         }
@@ -852,6 +858,24 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
+        Self::new_inner(config, params, /*writer_lock*/ None).await
+    }
+
+    /// Opens a recorder under existing thread-store ownership, retaining it through background IO.
+    /// The caller must supply the guard for this rollout's stable thread ID and Codex home.
+    pub async fn new_with_writer_lock(
+        config: &impl RolloutConfigView,
+        params: RolloutRecorderParams,
+        writer_lock: Arc<crate::WriterLockGuard>,
+    ) -> std::io::Result<Self> {
+        Self::new_inner(config, params, Some(writer_lock)).await
+    }
+
+    async fn new_inner(
+        config: &impl RolloutConfigView,
+        params: RolloutRecorderParams,
+        writer_lock: Option<Arc<crate::WriterLockGuard>>,
+    ) -> std::io::Result<Self> {
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
         let state = match params {
@@ -933,7 +957,8 @@ impl RolloutRecorder {
                 }
             }
             RolloutRecorderParams::Resume { path } => {
-                let (path, file, ordinal_state) = open_rollout_for_append(path.as_path()).await?;
+                let (path, file, ordinal_state) =
+                    open_rollout_for_append(path.as_path(), writer_lock.clone()).await?;
                 RolloutWriterState {
                     writer: Some(JsonlWriter { file }),
                     deferred_creation: false,
@@ -955,7 +980,7 @@ impl RolloutRecorder {
         // Spawn a Tokio task that owns the file handle and performs async
         // writes. Using `tokio::fs::File` keeps everything on the async I/O
         // driver instead of blocking the runtime.
-        let writer_task = Arc::new(RolloutWriterTask::new());
+        let writer_task = Arc::new(RolloutWriterTask::new(writer_lock));
         let writer_task_for_spawn = Arc::clone(&writer_task);
         let rollout_path_for_spawn = rollout_path.clone();
         let handle = tokio::task::spawn(async move {
@@ -1147,6 +1172,28 @@ impl RolloutRecorder {
                 )));
             }
         };
+        self.wait_for_exit().await
+    }
+
+    /// Stops the writer without materializing deferred items, after already-running IO completes.
+    pub async fn discard(&self) -> std::io::Result<()> {
+        let (ack, done) = oneshot::channel();
+        if self.tx.send(RolloutCmd::Discard { ack }).await.is_ok() {
+            let _ = done.await;
+        }
+        self.wait_for_exit().await
+    }
+
+    async fn wait_for_exit(&self) -> std::io::Result<()> {
+        let handle = self
+            .writer_task
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            handle.await.map_err(IoError::other)?;
+        }
         Ok(())
     }
 }
@@ -1880,6 +1927,10 @@ async fn rollout_writer(
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
             }
+            RolloutCmd::Discard { ack } => {
+                let _ = ack.send(());
+                break;
+            }
             RolloutCmd::Shutdown { ack } => match state.shutdown().await {
                 Ok(()) => {
                     let _ = ack.send(Ok(()));
@@ -1933,7 +1984,8 @@ pub async fn append_rollout_item_to_path(
     rollout_path: &Path,
     item: &RolloutItem,
 ) -> std::io::Result<()> {
-    let (_rollout_path, file, ordinal_state) = open_rollout_for_append(rollout_path).await?;
+    let (_rollout_path, file, ordinal_state) =
+        open_rollout_for_append(rollout_path, /*writer_lock*/ None).await?;
     let ordinal = ordinal_state.current()?;
     let mut writer = JsonlWriter { file };
     writer.write_rollout_item(item, ordinal).await
@@ -1941,12 +1993,14 @@ pub async fn append_rollout_item_to_path(
 
 async fn open_rollout_for_append(
     path: &Path,
+    writer_lock: Option<Arc<crate::WriterLockGuard>>,
 ) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
     let refresh_modified_time =
         !tokio::fs::try_exists(compression::plain_rollout_path(path)).await?;
-    let path = compression::materialize_rollout_for_append(path).await?;
+    let path = compression::materialize_rollout_for_append(path, writer_lock.clone()).await?;
     let path_for_open = path.clone();
     let (file, ordinal_state) = tokio::task::spawn_blocking(move || {
+        let _writer_lock = writer_lock;
         let mut file = File::options()
             .read(true)
             .append(true)

@@ -11,6 +11,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 pub(super) async fn create_thread(
     store: &LocalThreadStore,
     params: CreateThreadParams,
+    writer_lock: super::WriterLockGuard,
 ) -> ThreadStoreResult<RolloutRecorder> {
     let cwd = params
         .metadata
@@ -26,7 +27,7 @@ pub(super) async fn create_thread(
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
     };
-    RolloutRecorder::new(
+    RolloutRecorder::new_with_writer_lock(
         &config,
         RolloutRecorderParams::new(
             params.thread_id,
@@ -57,6 +58,7 @@ pub(super) async fn create_thread(
         )
         .with_subagent_history_start_ordinal(params.subagent_history_start_ordinal)
         .with_initial_window_id(params.initial_window_id),
+        writer_lock,
     )
     .await
     .map_err(|err| ThreadStoreError::Internal {

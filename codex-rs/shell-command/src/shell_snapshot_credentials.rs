@@ -1,7 +1,9 @@
 //! Apply credential and environment policy to captured exports, producing typed render values.
-//! Native declarations are rendered only after applying the supplied credential policy.
+//! The shared literal decoder still validates alias and function bodies without evaluating them.
 
 use super::capture::CapturedSnapshot;
+use super::capture::ExportValue;
+use super::literals;
 use super::render;
 use super::render::Export;
 use super::render::Value;
@@ -32,7 +34,7 @@ pub struct PreparedSnapshot {
 /// Prepare a replay script from captured state without changing the captured data.
 ///
 /// Credential policy is applied before rendering. A rejected capture produces no script,
-/// when the assembled source still contains a recognized credential.
+/// including when executable source reconstructs a credential through shell quoting.
 pub fn prepare_snapshot_credentials(
     captured: &CapturedSnapshot<'_>,
     environment: SnapshotCredentialEnvironment<'_>,
@@ -58,9 +60,32 @@ pub fn prepare_snapshot_credentials(
                 .iter()
                 .filter(|credential_key| {
                     real_credential_value(credential_key).is_some_and(|real| {
-                        value == real || real.len() >= 16 && value.contains(real)
-                    }) || discovered.get(*credential_key).is_some_and(|dummy| {
-                        value == dummy || dummy.len() >= 16 && value.contains(dummy)
+                        value == real
+                            || value.contains(real)
+                                && (real.len() >= 16
+                                    || discovered.get(*credential_key).is_some_and(|dummy| {
+                                        discovered.get(key).is_some_and(|virtualized| {
+                                            virtualized != value && virtualized.contains(dummy)
+                                        })
+                                    }))
+                    }) || [
+                        original.get(*credential_key),
+                        discovered.get(*credential_key),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|dummy| !dummy.is_empty())
+                    .any(|dummy| {
+                        value == dummy
+                            || value.contains(dummy)
+                                && (dummy.len() >= 16
+                                    || real_credential_value(credential_key).is_some_and(|real| {
+                                        // Confirm short spans with the broker's path and pattern rules.
+                                        let mut restored = value.replace(dummy, real);
+                                        restored != *value
+                                            && virtualize_text(&mut restored)
+                                            && discovered.get(key) == Some(&restored)
+                                    }))
                     })
                 })
                 .map(String::as_str)
@@ -148,12 +173,44 @@ pub fn prepare_snapshot_credentials(
                 || brokered_keys
                     .iter()
                     .any(|credential_key| credential_key == key)
-                || brokered_alias_keys
-                    .iter()
-                    .any(|credential_key| credential_key == key)
-                || is_disallowed_credential_alias(key, &mut virtualize_text)
             {
                 return None;
+            }
+
+            if configured.contains_key(key)
+                && let ExportValue::TiedArray(array) = &export.value
+            {
+                let value = allowed.get(key)?;
+                let mut virtualized = value.clone();
+                if !virtualize_text(&mut virtualized) || virtualized != *value {
+                    invalid_export = true;
+                    return Some(Export::Captured(line));
+                }
+                if credential_aliases.remove(key).is_some() {
+                    alias_values.insert(key.to_string(), value.clone());
+                }
+                // An explicit scalar override replaces captured elements, not the array binding.
+                return Some(Export::ArrayBinding {
+                    key,
+                    declaration: line[..array.span.start].strip_suffix('=')?,
+                    suffix: &line[array.span.end..],
+                });
+            }
+
+            if is_disallowed_credential_alias(key, &mut virtualize_text) {
+                return None;
+            }
+
+            if brokered_alias_keys.iter().any(|alias_key| alias_key == key) {
+                // Source-less aliases keep their live scalar value, including explicit unsets.
+                return match &export.value {
+                    ExportValue::TiedArray(array) => Some(Export::ArrayBinding {
+                        key,
+                        declaration: line[..array.span.start].strip_suffix('=')?,
+                        suffix: &line[array.span.end..],
+                    }),
+                    ExportValue::Plain | ExportValue::UnparsedArray => None,
+                };
             }
 
             if let Some(credential_keys) = credential_aliases.remove(key) {
@@ -167,12 +224,74 @@ pub fn prepare_snapshot_credentials(
                 let (assignment, value) =
                     credential_alias_assignment(allowed.get(key)?, &credential_keys)?;
                 alias_values.insert(key.to_string(), value);
-                if line
-                    .split_whitespace()
-                    .skip(/*n*/ 1)
-                    .take_while(|word| word.starts_with('-'))
-                    .any(|flags| flags.contains('T'))
-                {
+                if let ExportValue::TiedArray(array) = &export.value {
+                    let scalar = array.values.join(array.separator.as_slice());
+                    let crosses_element = credential_keys
+                        .iter()
+                        .flat_map(|key| {
+                            [
+                                real_credential_value(key),
+                                original.get(*key),
+                                discovered.get(*key),
+                            ]
+                        })
+                        .flatten()
+                        .filter(|credential| !credential.is_empty())
+                        .any(|credential| {
+                            scalar
+                                .windows(credential.len())
+                                .enumerate()
+                                .any(|(start, bytes)| {
+                                    if bytes != credential.as_bytes() {
+                                        return false;
+                                    }
+                                    let mut offset = 0;
+                                    !array.values.iter().any(|value| {
+                                        let contains = offset <= start
+                                            && start + credential.len() <= offset + value.len();
+                                        offset += value.len() + array.separator.len();
+                                        contains
+                                    })
+                                })
+                        });
+                    if crosses_element {
+                        invalid_export = true;
+                        return Some(Export::Captured(line));
+                    }
+                    let Some((elements, normalized)) = array
+                        .values
+                        .iter()
+                        .map(|bytes| {
+                            let mut text = String::from_utf8(bytes.clone()).ok()?;
+                            if !virtualize_text(&mut text) {
+                                return None;
+                            }
+                            credential_alias_assignment(&text, &credential_keys)
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .map(|values| values.into_iter().unzip::<_, _, Vec<_>, Vec<_>>())
+                    else {
+                        invalid_export = true;
+                        return Some(Export::Captured(line));
+                    };
+                    // Never replay a known credential that crosses array-element boundaries.
+                    if normalized
+                        .iter()
+                        .map(String::as_bytes)
+                        .collect::<Vec<_>>()
+                        .join(array.separator.as_slice())
+                        != allowed.get(key)?.as_bytes()
+                    {
+                        invalid_export = true;
+                        return Some(Export::Captured(line));
+                    }
+                    return Some(Export::Array {
+                        prefix: &line[..array.span.start],
+                        elements,
+                        suffix: &line[array.span.end..],
+                    });
+                }
+                if matches!(export.value, ExportValue::UnparsedArray) {
                     invalid_export = true;
                     return Some(Export::Captured(line));
                 }
@@ -185,7 +304,7 @@ pub fn prepare_snapshot_credentials(
             Some(Export::Captured(line))
         })
         .collect::<Vec<_>>();
-    let mut snapshot = render::render(captured.state, captured.aliases, &exports)?;
+    let snapshot = render::render(captured.state, captured.aliases, &exports)?;
     if invalid_export {
         return None;
     }
@@ -204,13 +323,20 @@ pub fn prepare_snapshot_credentials(
         }
     }
 
-    if !virtualize_text(&mut snapshot) {
+    let mut virtualized = snapshot.clone();
+    if !virtualize_text(&mut virtualized) || virtualized != snapshot {
         return None;
     }
 
-    Some(PreparedSnapshot {
-        script: snapshot,
-        aliases: alias_values,
-        rejected_alias_keys,
-    })
+    literals::literal_words(&snapshot, captured.shell_type)?
+        .into_iter()
+        .all(|word| {
+            let mut virtualized = word.clone();
+            virtualize_text(&mut virtualized) && virtualized == word
+        })
+        .then_some(PreparedSnapshot {
+            script: snapshot,
+            aliases: alias_values,
+            rejected_alias_keys,
+        })
 }

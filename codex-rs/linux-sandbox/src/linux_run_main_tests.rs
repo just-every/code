@@ -204,6 +204,48 @@ fn inserts_unshare_net_when_proxy_only_network_mode_requested() {
 }
 
 #[test]
+fn masks_wsl_interop_with_full_network_and_restricted_filesystem() {
+    let argv = build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &read_only_file_system_policy(),
+        Path::new("/"),
+        Path::new("/"),
+        BwrapOptions {
+            network_mode: BwrapNetworkMode::FullAccess,
+            mask_wsl_interop: true,
+            ..Default::default()
+        },
+    )
+    .expect("build bwrap argv")
+    .args;
+
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/run/WSL"]));
+    assert!(!argv.iter().any(|arg| arg == "--unshare-net"));
+}
+
+#[test]
+fn masks_inherited_procfs_when_wsl_interop_is_masked_without_fresh_proc() {
+    let argv = build_bwrap_argv(
+        vec!["/bin/true".to_string()],
+        &read_only_file_system_policy(),
+        Path::new("/"),
+        Path::new("/"),
+        BwrapOptions {
+            mount_proc: false,
+            network_mode: BwrapNetworkMode::FullAccess,
+            mask_wsl_interop: true,
+            ..Default::default()
+        },
+    )
+    .expect("build bwrap argv")
+    .args;
+
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/run/WSL"]));
+    assert!(argv.windows(2).any(|args| args == ["--tmpfs", "/proc"]));
+    assert!(!argv.windows(2).any(|args| args == ["--proc", "/proc"]));
+}
+
+#[test]
 fn proxy_only_mode_takes_precedence_over_full_network_policy() {
     let mode = bwrap_network_mode(
         NetworkSandboxPolicy::Enabled,
@@ -673,11 +715,42 @@ fn legacy_landlock_rejects_split_only_filesystem_policies() {
             /*use_legacy_landlock*/ true,
             &policy,
             NetworkSandboxPolicy::Restricted,
+            /*allow_network_for_proxy*/ false,
             temp_dir.path(),
+            &temp_dir.path().join("WSL"),
         );
     });
 
     assert!(result.is_err());
+}
+
+#[test]
+fn legacy_landlock_rejects_full_network_when_wsl_interop_is_available() {
+    let temp_dir = tempfile::TempDir::new().expect("tempdir");
+    let wsl_interop_dir = temp_dir.path().join("WSL");
+    std::fs::create_dir(&wsl_interop_dir).expect("create interop directory");
+    let policy = read_only_file_system_policy();
+
+    let result = std::panic::catch_unwind(|| {
+        ensure_legacy_landlock_mode_supports_policy(
+            /*use_legacy_landlock*/ true,
+            &policy,
+            NetworkSandboxPolicy::Enabled,
+            /*allow_network_for_proxy*/ false,
+            temp_dir.path(),
+            &wsl_interop_dir,
+        );
+    });
+    assert!(result.is_err());
+
+    ensure_legacy_landlock_mode_supports_policy(
+        /*use_legacy_landlock*/ true,
+        &policy,
+        NetworkSandboxPolicy::Enabled,
+        /*allow_network_for_proxy*/ true,
+        temp_dir.path(),
+        &wsl_interop_dir,
+    );
 }
 
 #[test]

@@ -37,7 +37,6 @@ use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_exec_command_call;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::mount_compact_json_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
@@ -1058,8 +1057,6 @@ async fn token_budget_context_uses_new_window_after_compaction(
         ],
     )
     .await;
-    let compact = mount_compact_json_once(&server, json!({ "output": [] })).await;
-
     let mut model_provider = built_in_model_providers(/*openai_base_url*/ None)["openai"].clone();
     model_provider.base_url = Some(format!("{}/v1", server.uri()));
     model_provider.supports_websockets = false;
@@ -1098,10 +1095,6 @@ async fn token_budget_context_uses_new_window_after_compaction(
 
     let requests = responses.requests();
     assert_eq!(requests.len(), 2);
-    assert!(
-        compact.requests().is_empty(),
-        "token budget compaction should not call server-side compaction"
-    );
 
     let initial_token_budget = token_budget_contexts(&requests[0]);
     assert_eq!(initial_token_budget.len(), 1);

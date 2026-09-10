@@ -18,6 +18,9 @@ mod config_requirements_application;
 mod config_requirements_browser_use;
 mod config_requirements_in_app_browser;
 mod config_rpc;
+#[cfg(unix)]
+#[path = "connection_handling_stdio_tests.rs"]
+mod connection_handling_stdio;
 mod connection_handling_websocket;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
@@ -25,6 +28,7 @@ mod connection_handling_websocket_unix;
 mod curated_mcp_sync;
 mod current_time;
 mod cyber_access_program;
+mod daemon_update_recovery;
 mod daybreak_access;
 mod dynamic_tools;
 mod environment_add;
@@ -52,6 +56,7 @@ mod marketplace_add;
 mod marketplace_remove;
 mod marketplace_upgrade;
 mod mcp_event_stream;
+mod mcp_protocol_default;
 mod mcp_resource;
 mod mcp_resource_origin;
 mod mcp_server_elicitation;
@@ -100,11 +105,13 @@ mod session_end;
 mod skills_list;
 mod sleep;
 mod thread_archive;
+mod thread_attachments;
 mod thread_delete;
 mod thread_environments;
 mod thread_fork;
 #[path = "thread_fork_multi_agent_tests.rs"]
 mod thread_fork_multi_agent;
+mod thread_goal_empty_responses;
 mod thread_inject_items;
 mod thread_list;
 mod thread_loaded_list;

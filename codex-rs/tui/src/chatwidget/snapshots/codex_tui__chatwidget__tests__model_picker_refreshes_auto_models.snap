@@ -7,6 +7,6 @@ expression: "render_bottom_popup(&chat, 80)"
 
   1. codex-auto-test       Auto model
 › 2. All models (current)  Choose a specific model and reasoning level
-                           (current: gpt-5.2)
+                           (current: gpt-5.5)
 
   Press enter to confirm or esc to go back

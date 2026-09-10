@@ -14,6 +14,7 @@ use crate::ToolLifecycleContributor;
 use crate::TurnInputContributor;
 use crate::TurnItemContributor;
 use crate::TurnLifecycleContributor;
+use crate::TurnStartAdmission;
 
 /// Mutable registry used while hosts register typed runtime contributions.
 pub struct ExtensionRegistryBuilder<C: Sync> {
@@ -25,6 +26,7 @@ impl<C: Sync> Default for ExtensionRegistryBuilder<C> {
         Self {
             registry: ExtensionRegistry {
                 event_sink: Arc::new(NoopExtensionEventSink),
+                turn_start_admission: None,
                 thread_lifecycle_contributors: Vec::new(),
                 turn_lifecycle_contributors: Vec::new(),
                 config_contributors: Vec::new(),
@@ -58,6 +60,11 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
     /// Returns the host event sink to pass into extension constructors.
     pub fn event_sink(&self) -> Arc<dyn ExtensionEventSink> {
         Arc::clone(&self.registry.event_sink)
+    }
+
+    /// Installs the host gate for turn-input submissions that start a new turn.
+    pub fn turn_start_admission(&mut self, admission: Arc<dyn TurnStartAdmission>) {
+        self.registry.turn_start_admission = Some(admission);
     }
 
     /// Registers one approval-review contributor.
@@ -139,6 +146,7 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
 /// Immutable typed registry produced after extensions are installed.
 pub struct ExtensionRegistry<C: Sync> {
     event_sink: Arc<dyn ExtensionEventSink>,
+    turn_start_admission: Option<Arc<dyn TurnStartAdmission>>,
     thread_lifecycle_contributors: Vec<Arc<dyn ThreadLifecycleContributor<C>>>,
     turn_lifecycle_contributors: Vec<Arc<dyn TurnLifecycleContributor>>,
     config_contributors: Vec<Arc<dyn ConfigContributor<C>>>,
@@ -154,6 +162,15 @@ pub struct ExtensionRegistry<C: Sync> {
 }
 
 impl<C: Sync> ExtensionRegistry<C> {
+    /// Acquires the host's turn-start permit, or an empty permit for ungated hosts.
+    /// A missing permit rejects the start before Core consumes pending input.
+    pub fn admit_turn_start(&self) -> Option<Box<dyn Send>> {
+        match &self.turn_start_admission {
+            Some(admission) => admission.admit_turn_start(),
+            None => Some(Box::new(())),
+        }
+    }
+
     /// Returns the host event sink retained by this registry.
     pub fn event_sink(&self) -> Arc<dyn ExtensionEventSink> {
         Arc::clone(&self.event_sink)

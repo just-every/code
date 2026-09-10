@@ -215,6 +215,9 @@ pub enum SteerSubmission {
 /// Why Core did not accept submitted turn input for turn processing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotSubmittedReason {
+    /// The host is draining and no longer permits new regular turns.
+    ServerDraining,
+
     /// `start_turn_if_idle` found an active turn.
     NotIdle,
 

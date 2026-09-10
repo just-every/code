@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -91,6 +92,9 @@ mod policy;
 #[path = "guardian_code_mode_tests.rs"]
 mod code_mode;
 
+#[path = "guardian_action_budget_tests.rs"]
+mod action_budget;
+
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL: &str = "mock-model";
 const REQUIRED_MODEL: &str = "protected-model";
@@ -179,6 +183,8 @@ struct MockResponsesState {
     allow_guardian_review: Notify,
     classification_completed: Notify,
     truncation_recorded: Notify,
+    context_metric_bounds: Mutex<BTreeMap<(String, String), Option<f64>>>,
+    context_metrics_recorded: Notify,
     luna_score: f64,
     invalid_classification: bool,
     review_outcome: ReviewOutcome,
@@ -382,7 +388,26 @@ async fn parent_response(
     State(state): State<Arc<MockResponsesState>>,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    let events = if request["model"] == "gpt-5.6-luna" {
+    let events = if request["input"].as_array().is_some_and(|input| {
+        input
+            .last()
+            .is_some_and(|item| item["type"] == "compaction_trigger")
+    }) {
+        assert!(state.compact_root_after_answer);
+        assert!(request.to_string().contains("guardian-user-input"));
+        vec![
+            responses::ev_response_created("root-compaction"),
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "compaction",
+                    "id": "cmp_root",
+                    "encrypted_content": "opaque root summary",
+                },
+            }),
+            responses::ev_completed("root-compaction"),
+        ]
+    } else if request["model"] == "gpt-5.6-luna" {
         luna_response(&state, request).await
     } else if request
         .pointer("/client_metadata/x-openai-subagent")
@@ -709,14 +734,62 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     let responses_url = format!("http://{}", listener.local_addr()?);
     let router = Router::new()
         .route("/v1/responses", get(luna_websocket).post(parent_response))
-        .route("/v1/responses/compact", post(|Json(request): Json<Value>| async move {
-            assert!(request.to_string().contains("guardian-user-input"));
-            Json(json!({"output": [{"type": "compaction", "id": "cmp_root", "encrypted_content": "opaque root summary"}]}))
-        }))
         .route(
             "/metrics",
             post(
                 |State(state): State<Arc<MockResponsesState>>, body: String| async move {
+                    if matches!(state.transcript_content, TranscriptContent::MixedEvidence) {
+                        let payload: Value = serde_json::from_str(&body).expect("OTLP JSON");
+                        for metric in payload["resourceMetrics"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|resource| {
+                                resource["scopeMetrics"].as_array().into_iter().flatten()
+                            })
+                            .flat_map(|scope| scope["metrics"].as_array().into_iter().flatten())
+                            .filter(|metric| {
+                                matches!(
+                                    metric["name"].as_str(),
+                                    Some(
+                                        "codex.guardian.context.request_tokens"
+                                            | "codex.guardian.context.section_cost"
+                                    )
+                                )
+                            })
+                        {
+                            let name = metric["name"].as_str().expect("context metric name");
+                            for point in metric["histogram"]["dataPoints"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                            {
+                                let attributes =
+                                    point["attributes"].as_array().expect("metric attributes");
+                                for target in ["sync", "async"] {
+                                    if attributes.iter().any(|attr| {
+                                        attr["key"] == "target"
+                                            && attr["value"]["stringValue"] == target
+                                    }) {
+                                        let mut bounds = state
+                                            .context_metric_bounds
+                                            .lock()
+                                            .expect("context metric bounds");
+                                        bounds.insert(
+                                            (name.to_owned(), target.to_owned()),
+                                            point["explicitBounds"]
+                                                .as_array()
+                                                .and_then(|bounds| bounds.last())
+                                                .and_then(Value::as_f64),
+                                        );
+                                        if bounds.len() == 4 {
+                                            state.context_metrics_recorded.notify_one();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if body.contains("codex.guardian_v2.classification") {
                         state.classification_completed.notify_one();
                     }
@@ -824,7 +897,6 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     if matches!(lifecycle, ThreadLifecycle::RootUserInputCompaction) {
         mock_config = mock_config
             .with_provider_name("OpenAI")
-            .disable_feature(Feature::RemoteCompactionV2)
             .disable_feature(Feature::TokenBudget)
             .disable_feature(Feature::EnableRequestCompression);
     }
@@ -1323,6 +1395,26 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             assert!(text.contains(end));
             assert!(text.find(start) < text.find(end));
             assert!(text.contains("Planned action JSON:"));
+        }
+    }
+    if mixed_evidence {
+        timeout(TIMEOUT, responses_state.context_metrics_recorded.notified())
+            .await
+            .expect("sync and async request/section metrics should all be exported");
+        let bounds = responses_state
+            .context_metric_bounds
+            .lock()
+            .expect("context metric bounds");
+        for ((metric, target), bound) in bounds.iter() {
+            assert_eq!(
+                *bound,
+                Some(if metric == "codex.guardian.context.request_tokens" {
+                    2_000_000.0
+                } else {
+                    16_777_216.0
+                }),
+                "{metric} ({target}) must export its context metric buckets"
+            );
         }
     }
     if lifecycle.has_user_answer() {

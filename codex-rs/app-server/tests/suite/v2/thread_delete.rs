@@ -149,6 +149,7 @@ async fn thread_delete_deletes_spawned_descendants() -> Result<()> {
     assert_eq!(deleted_ids, vec![grandchild_id, child_id, parent_id]);
 
     for thread_id in [parent_thread_id, child_thread_id, grandchild_thread_id] {
+        assert_eq!(state_db.get_thread(thread_id).await?, None);
         let rollout_path = find_thread_path_by_id_str(
             codex_home.path(),
             &thread_id.to_string(),

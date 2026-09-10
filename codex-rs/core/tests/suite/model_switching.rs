@@ -21,6 +21,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -165,6 +166,15 @@ fn test_model_info(
     }
 }
 
+fn configure_model_switching_fixture(model: &mut ModelInfo) {
+    // Exercise model selection and history without changing the request transport,
+    // starting Code Mode, or compacting the mocked history on a model switch.
+    model.tool_mode = None;
+    model.multi_agent_version = None;
+    model.use_responses_lite = false;
+    model.comp_hash = None;
+}
+
 #[test_case(None; "model only")]
 #[test_case(Some(Personality::Pragmatic); "model and personality")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -176,14 +186,16 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
 
-    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
-        config
-            .features
-            .enable(Feature::Personality)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Personality)
+                .expect("test config should allow feature update");
+        });
     let test = builder.build_with_auto_env(&server).await?;
-    let next_model = "gpt-5.4";
+    let next_model = "gpt-5.5";
 
     submit_model_turn(
         &test.codex,
@@ -219,10 +231,10 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     Ok(())
 }
 
-#[test_case(None, "gpt-5.2"; "model-generated base instructions and original model")]
-#[test_case(None, "gpt-5.4"; "model-generated base instructions and fork model")]
-#[test_case(Some("inherited custom base instructions"), "gpt-5.2"; "custom base instructions and original model")]
-#[test_case(Some("inherited custom base instructions"), "gpt-5.4"; "custom base instructions and fork model")]
+#[test_case(None, "gpt-5.6-terra"; "model-generated base instructions and original model")]
+#[test_case(None, "gpt-5.5"; "model-generated base instructions and fork model")]
+#[test_case(Some("inherited custom base instructions"), "gpt-5.6-terra"; "custom base instructions and original model")]
+#[test_case(Some("inherited custom base instructions"), "gpt-5.5"; "custom base instructions and fork model")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instructions(
     custom_base_instructions: Option<&'static str>,
@@ -233,9 +245,9 @@ async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instruction
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-fork")).await;
 
-    let initial_model = "gpt-5.2";
+    let initial_model = "gpt-5.6-terra";
     let mut builder = test_codex()
-        .with_model(initial_model)
+        .with_model_info_override(initial_model, configure_model_switching_fixture)
         .with_config(move |config| {
             config.base_instructions = custom_base_instructions.map(str::to_string);
         });
@@ -259,16 +271,14 @@ async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instruction
     );
 
     let mut fork_config = test.config.clone();
-    fork_config.model = Some("gpt-5.4".to_string());
+    fork_config.model = Some("gpt-5.5".to_string());
     fork_config.base_instructions = None;
     let fork = test
         .thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(0),
-            fork_config,
+            codex_core::StartThreadOptions::new(fork_config),
             source_rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await?;
     submit_model_turn(&fork.thread, turn_model, ThreadSettingsOverrides::default()).await?;
@@ -338,13 +348,13 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
     )
     .await;
 
-    let initial_model = "gpt-5.2";
-    let switched_model = "gpt-5.4";
+    let initial_model = "gpt-5.6-terra";
+    let switched_model = "gpt-5.5";
     let rollback_ready = Arc::new(RollbackReady::default());
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(rollback_ready.clone());
     let mut builder = test_codex()
-        .with_model(initial_model)
+        .with_model_info_override(initial_model, configure_model_switching_fixture)
         .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
 
@@ -369,7 +379,9 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
 
     let test = match followup {
         RollbackFollowup::ColdResume => {
-            let mut resume_builder = test_codex().with_model(switched_model);
+            let mut resume_builder = test_codex()
+                .with_model_info_override(initial_model, configure_model_switching_fixture)
+                .with_model(switched_model);
             resume_builder.restart(&server, &test).await?
         }
         RollbackFollowup::StartupModel | RollbackFollowup::SwitchedModel => test,
@@ -426,9 +438,10 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
     )
     .await;
 
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder =
+        test_codex().with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture);
     let test = builder.build(&server).await?;
-    let next_model = "gpt-5.4";
+    let next_model = "gpt-5.5";
 
     test.codex
         .start_or_steer_turn(read_only_user_turn(
@@ -517,7 +530,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
     )
     .await;
 
-    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
         config
             .features
             .enable(Feature::Personality)
@@ -625,16 +638,18 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
         ],
     )
     .await;
-    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
-        config
-            .features
-            .enable(Feature::DefaultModeRequestUserInput)
-            .expect("test config should allow feature update");
-        config.model_reasoning_effort = Some(ReasoningEffort::Low);
-        config.model_reasoning_summary = Some(ReasoningSummary::Concise);
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.approvals_reviewer = ApprovalsReviewer::User;
-    });
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::DefaultModeRequestUserInput)
+                .expect("test config should allow feature update");
+            config.model_reasoning_effort = Some(ReasoningEffort::Low);
+            config.model_reasoning_summary = Some(ReasoningSummary::Concise);
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::User;
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     test.codex
@@ -652,7 +667,7 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
     core_test_support::submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
-            model: Some("gpt-5.4".to_string()),
+            model: Some("gpt-5.5".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
             service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
@@ -702,19 +717,19 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
         request_settings,
         vec![
             json!({
-                "model": "gpt-5.2",
+                "model": "gpt-5.6-terra",
                 "reasoning": { "effort": "low", "summary": "concise" },
                 "service_tier": null,
                 "approval_policy_never": false,
             }),
             json!({
-                "model": "gpt-5.2",
+                "model": "gpt-5.6-terra",
                 "reasoning": { "effort": "low", "summary": "concise" },
                 "service_tier": null,
                 "approval_policy_never": false,
             }),
             json!({
-                "model": "gpt-5.4",
+                "model": "gpt-5.5",
                 "reasoning": { "effort": "high", "summary": "detailed" },
                 "service_tier": "priority",
                 "approval_policy_never": true,
@@ -944,14 +959,26 @@ async fn null_service_tier_override_is_omitted_from_http_turn_with_catalog_defau
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum MediaHistorySource {
+    Live,
+    Resume,
+    Fork,
+}
+
+#[test_case(MediaHistorySource::Live; "live history")]
+#[test_case(MediaHistorySource::Resume; "resumed history")]
+#[test_case(MediaHistorySource::Fork; "forked history")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Result<()> {
+async fn model_change_projects_media_without_changing_live_or_replayed_history(
+    source: MediaHistorySource,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
     let multimodal_model_slug = "test-multimodal-model";
     let text_model_slug = "test-text-only-model";
-    let multimodal_model = test_model_info(
+    let mut multimodal_model = test_model_info(
         multimodal_model_slug,
         "Test Multimodal Model",
         "supports image and audio input",
@@ -961,6 +988,7 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             InputModality::Audio,
         ],
     );
+    multimodal_model.supports_image_detail_original = true;
     let text_model = test_model_info(
         text_model_slug,
         "Test Text Model",
@@ -984,9 +1012,13 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config.model = Some(multimodal_model_slug.to_string());
+            config.model = Some(text_model_slug.to_string());
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
     let models_manager = test.thread_manager.get_models_manager();
     let _ = models_manager
         .list_models(
@@ -994,8 +1026,10 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             codex_core::test_support::default_http_client_factory(),
         )
         .await;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
-        .to_string();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(/*w*/ 2048, /*h*/ 2048)
+        .write_to(&mut png, image::ImageFormat::Png)?;
+    let image_url = codex_utils_image::data_url_from_bytes("image/png", &png.into_inner());
 
     test.codex
         .start_or_steer_turn(read_only_user_turn(
@@ -1071,6 +1105,60 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             .any(|text| text == "audio content omitted because you do not support audio input"),
         "second request should include the audio-omitted placeholder text"
     );
+
+    let original = first_request
+        .inputs_of_type("message")
+        .into_iter()
+        .find(|item| {
+            item["content"]
+                .as_array()
+                .is_some_and(|content| content.iter().any(|part| part["type"] == "input_image"))
+        })
+        .expect("original media message");
+    if !matches!(source, MediaHistorySource::Live) {
+        test.codex.shutdown_and_wait().await?;
+    }
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+    let thread = match source {
+        MediaHistorySource::Live => Arc::clone(&test.codex),
+        MediaHistorySource::Resume => {
+            test.thread_manager
+                .resume_thread_from_rollout(
+                    test.config.clone(),
+                    rollout_path,
+                    test.thread_manager.auth_manager(),
+                    /*parent_trace*/ None,
+                    ClientMcpExtensions::default(),
+                )
+                .await?
+                .thread
+        }
+        MediaHistorySource::Fork => {
+            test.thread_manager
+                .fork_thread(
+                    ForkSnapshot::Interrupted,
+                    codex_core::StartThreadOptions::new(test.config.clone()),
+                    rollout_path,
+                )
+                .await?
+                .thread
+        }
+    };
+    let response = mount_sse_once(&server, sse_completed("resp-restored")).await;
+    submit_model_turn(
+        &thread,
+        multimodal_model_slug,
+        ThreadSettingsOverrides::default(),
+    )
+    .await?;
+    let restored = response
+        .single_request()
+        .inputs_of_type("message")
+        .into_iter()
+        .find(|item| item["id"] == original["id"]);
+    // Preserve the prepared media, item ID, turn ID, and creation timestamp together.
+    assert_eq!(restored.as_ref(), Some(&original));
+    thread.shutdown_and_wait().await?;
     Ok(())
 }
 

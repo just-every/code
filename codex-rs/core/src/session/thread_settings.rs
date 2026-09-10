@@ -71,6 +71,7 @@ pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSetti
         service_tier,
         collaboration_mode,
         personality,
+        disabled_plugin_ids,
     } = overrides;
     SessionSettingsUpdate {
         step_settings: StepSettingsUpdate {
@@ -90,6 +91,7 @@ pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSetti
         permission_profile,
         active_permission_profile,
         windows_sandbox_level,
+        disabled_plugin_ids,
         ..Default::default()
     }
 }
