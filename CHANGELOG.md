@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.183] - 2026-09-10
+
+- Core: backport upstream model parity and normalize image detail handling for compatible responses. (559c2a26)
+- Auto Drive: route fast implementation loops to gpt-5.6-luna by default. (559c2a26)
+
 ## [0.6.182] - 2026-09-08
 
 - Core: align model cache identity and routing cookie behavior. (007ac240)
