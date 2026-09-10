@@ -16,7 +16,7 @@ overrides:
   flatted: 3.4.2
   glob@10.4.5: 10.5.0
   handlebars: 4.7.9
-  js-yaml: 4.3.1
+  js-yaml: 4.3.2
   micromatch: ^4.0.8
   minimatch@3.1.2: 3.1.4
   minimatch@9.0.5: 9.0.7
@@ -44,20 +44,20 @@ importers:
         version: 3.6.2
     optionalDependencies:
       '@just-every/code-darwin-arm64':
-        specifier: 0.6.178
-        version: 0.6.178
+        specifier: 0.6.182
+        version: 0.6.182
       '@just-every/code-darwin-x64':
-        specifier: 0.6.178
-        version: 0.6.178
+        specifier: 0.6.182
+        version: 0.6.182
       '@just-every/code-linux-arm64-musl':
-        specifier: 0.6.178
-        version: 0.6.178
+        specifier: 0.6.182
+        version: 0.6.182
       '@just-every/code-linux-x64-musl':
-        specifier: 0.6.178
-        version: 0.6.178
+        specifier: 0.6.182
+        version: 0.6.182
       '@just-every/code-win32-x64':
-        specifier: 0.6.178
-        version: 0.6.178
+        specifier: 0.6.182
+        version: 0.6.182
 
   codex-rs/responses-api-proxy/npm: {}
 
@@ -641,28 +641,28 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
-  '@just-every/code-darwin-arm64@0.6.178':
-    resolution: {integrity: sha512-+xYyCcyIultYvyKmqBLtJpHeG/kjcYo8TV0dQSi2xC2AO+Ps8SnIIuzYZAg/nnJf7TNwA7ttXjlSLPv5EqgjnQ==}
+  '@just-every/code-darwin-arm64@0.6.182':
+    resolution: {integrity: sha512-3d6O/Xe4/8+1e70H21aSihLHbvK83KwP20ZGsSpVYPtopfDViokMV4fVlEK+Xvx14kkyB18AeVboaAfgWGPuVA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@just-every/code-darwin-x64@0.6.178':
-    resolution: {integrity: sha512-PnbaqYtwXeULjmjjxh7txm4/DRTRkY5Su5jqU/prmTF/pYWc5fb/HLv0vnVUfLf/zaNJWxlrVJkCTZ2q5wlIIw==}
+  '@just-every/code-darwin-x64@0.6.182':
+    resolution: {integrity: sha512-w+Wy5dkN/e1Qapp6nSOOkJDskcQJsb+ax6GrToYjtQ4F6saTuq7LDrpqnGWnm1e2OvX+Kd8K7bwNpjFgSkcNXQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@just-every/code-linux-arm64-musl@0.6.178':
-    resolution: {integrity: sha512-2coLpzv80+1qZ5giCVw1mwJatqvXuefInTzXUCG1YDqTiiH6qP5NvOg1Cbn2NjAih+KU3KEarTzhli8hYbksgA==}
+  '@just-every/code-linux-arm64-musl@0.6.182':
+    resolution: {integrity: sha512-Y+NvLttx064jhwyV70C3RUEe5jmF9FggYxIGxRTo+lblKK4L+Y3S+vCB82FOEHW+tCR6km0aA5FZLKfdIjfG9Q==}
     cpu: [arm64]
     os: [linux]
 
-  '@just-every/code-linux-x64-musl@0.6.178':
-    resolution: {integrity: sha512-u9UPOjo04pkhFMFFMRKZfVE4fOPd32TugcLimBnNNldrjIusTquaI+TW3p2fI1s/emAqIdDydDzc+0Mrkkf8Xg==}
+  '@just-every/code-linux-x64-musl@0.6.182':
+    resolution: {integrity: sha512-N0YgjaxALhERxUXBurEXhtW+l+czLkQtdYSXUiOSPRuHkM3JfSWHrL9/FVnQZ84xfAoSKS/A99MbHW784tDSRQ==}
     cpu: [x64]
     os: [linux]
 
-  '@just-every/code-win32-x64@0.6.178':
-    resolution: {integrity: sha512-FteXpPUIxFpourKgCjPScFCqee0WnkOuw/iSTiyzIQewggrpAQkMQAZz7bxRw+kYR4kmR0gEi8IbTUG0kzUMlw==}
+  '@just-every/code-win32-x64@0.6.182':
+    resolution: {integrity: sha512-ddzWNguUWOAPT655CfonrgcMvwXllBGlal44jAZzAT2+0Bp2guKOeX5DnRv6kJzIP8s0NmzYbxau3NJl/7os8g==}
     cpu: [x64]
     os: [win32]
 
@@ -1661,8 +1661,8 @@ packages:
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
-  js-yaml@4.3.1:
-    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
+  js-yaml@4.3.2:
+    resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
     hasBin: true
 
   jsesc@3.1.0:
@@ -2634,7 +2634,7 @@ snapshots:
       globals: 14.0.0
       ignore: 5.3.2
       import-fresh: 3.3.1
-      js-yaml: 4.3.1
+      js-yaml: 4.3.2
       minimatch: 3.1.4
       strip-json-comments: 3.1.1
     transitivePeerDependencies:
@@ -2679,7 +2679,7 @@ snapshots:
       camelcase: 5.3.1
       find-up: 4.1.0
       get-package-type: 0.1.0
-      js-yaml: 4.3.1
+      js-yaml: 4.3.2
       resolve-from: 5.0.0
 
   '@istanbuljs/schema@0.1.3': {}
@@ -2870,19 +2870,19 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@just-every/code-darwin-arm64@0.6.178':
+  '@just-every/code-darwin-arm64@0.6.182':
     optional: true
 
-  '@just-every/code-darwin-x64@0.6.178':
+  '@just-every/code-darwin-x64@0.6.182':
     optional: true
 
-  '@just-every/code-linux-arm64-musl@0.6.178':
+  '@just-every/code-linux-arm64-musl@0.6.182':
     optional: true
 
-  '@just-every/code-linux-x64-musl@0.6.178':
+  '@just-every/code-linux-x64-musl@0.6.182':
     optional: true
 
-  '@just-every/code-win32-x64@0.6.178':
+  '@just-every/code-win32-x64@0.6.182':
     optional: true
 
   '@nodelib/fs.scandir@2.1.5':
@@ -4063,7 +4063,7 @@ snapshots:
 
   js-tokens@4.0.0: {}
 
-  js-yaml@4.3.1:
+  js-yaml@4.3.2:
     dependencies:
       argparse: 2.0.1
 
