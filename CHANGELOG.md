@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.185] - 2026-09-11
+
+- Core: refresh upstream Codex ancestry for mainline parity. (d0c697f3)
+- Release: adopt remote workflow changes while preserving release metadata. (1fa58101)
+
 ## [0.6.184] - 2026-09-10
 
 - Release: update js-yaml to address Dependabot alert 149. (97f30b8f)
