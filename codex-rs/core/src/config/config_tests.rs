@@ -1217,9 +1217,9 @@ command = "print-token"
     assert_eq!(config.model_provider, expected_provider);
 }
 
-#[tokio::test]
-async fn load_config_rejects_unsupported_amazon_bedrock_overrides() {
-    let cfg = toml::from_str::<ConfigToml>(
+#[test]
+fn config_toml_rejects_unsupported_amazon_bedrock_overrides() {
+    let err = toml::from_str::<ConfigToml>(
         r#"
 model_provider = "amazon-bedrock"
 
@@ -1229,17 +1229,7 @@ requires_openai_auth = true
 supports_websockets = true
 "#,
     )
-    .expect("Amazon Bedrock unsupported overrides should deserialize");
-
-    let err = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        tempdir().expect("tempdir").abs(),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    .expect_err("Amazon Bedrock unsupported overrides should fail validation");
     assert!(err.to_string().contains(
         "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, `aws.credential_export`, and `aws.auth_refresh`; other non-default provider fields are not supported"
     ));
@@ -6163,6 +6153,50 @@ async fn config_applies_managed_auth_store_and_chatgpt_base_url() -> std::io::Re
 }
 
 #[tokio::test]
+async fn project_cannot_be_the_only_xaa_opt_in_source() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_layer_stack = ConfigLayerStack::new(
+        vec![ConfigLayerEntry::new(
+            ConfigLayerSource::Project {
+                dot_codex_folder: codex_home.path().join("project/.codex").abs(),
+            },
+            toml::toml! {
+                [features]
+                use_xaa = true
+            }
+            .into(),
+        )],
+        Default::default(),
+        Default::default(),
+    )?;
+    let cfg = config_layer_stack
+        .effective_config()
+        .try_into()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+
+    let error = Config::load_config_with_layer_stack(
+        LOCAL_FS.as_ref(),
+        cfg,
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+        config_layer_stack,
+    )
+    .await
+    .expect_err("project-only XAA opt-in must fail");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("must be selected in a non-project config layer")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn config_resolves_default_oauth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml::default();
@@ -7962,6 +7996,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
                 client_id: Some("eci-prd-pub-codex-123".to_string()),
                 callback_url: None,
                 callback_port: None,
+                ..Default::default()
             }),
             oauth_resource: Some("https://resource.example.com".to_string()),
             tools: HashMap::new(),
@@ -9997,6 +10032,8 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
     let fixture = create_test_fixture()?;
 
     let requirements_toml = codex_config::ConfigRequirementsToml {
+        model_provider: None,
+        model_providers: None,
         allowed_login_methods: None,
         allowed_chatgpt_workspaces: None,
         cli_auth_credentials_store: None,
@@ -11134,6 +11171,7 @@ async fn feature_requirements_normalize_effective_feature_values() -> std::io::R
 [features]
 personality = true
 shell_tool = false
+use_xaa = true
 "#,
             ),
         )
@@ -11157,6 +11195,10 @@ shell_tool = false
 #[tokio::test]
 async fn feature_requirements_can_still_disable_unified_exec() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        "[features]\nuse_xaa = true\n",
+    )?;
 
     let mut config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
@@ -11167,6 +11209,7 @@ async fn feature_requirements_can_still_disable_unified_exec() -> std::io::Resul
 unified_exec = false
 shell_tool = true
 unified_exec_zsh_fork = false
+use_xaa = false
 "#,
             ),
         )

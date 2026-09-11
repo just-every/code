@@ -35,7 +35,9 @@ fn partial_writes_account_for_samples_until_the_device_consumes_them() {
 fn suppression_cancels_a_full_writer_and_old_writers_cannot_resume() {
     let (buffers, port, writer) = active(/*rate*/ 8000);
     let bytes = vec![0; BLOCK * 4];
-    writer.write(&bytes).unwrap();
+    for _ in 0..if cfg!(target_os = "linux") { 3 } else { 1 } {
+        writer.write(&bytes).unwrap();
+    }
     let waiting = std::thread::spawn(move || writer.write(&bytes));
     Buffers::set_disabled(&buffers.speaker, /*disabled*/ true).unwrap();
     assert_eq!(waiting.join().unwrap(), Err("speaker writer cancelled"));
@@ -123,16 +125,25 @@ fn delay_contention_preserves_the_last_snapshot_without_failing_the_device() {
 }
 
 #[test]
-fn invalid_samples_and_stalled_consumption_fail_without_growing_the_queue() {
+fn invalid_samples_fail_but_stalled_consumption_drops_and_resumes() {
     let (buffers, _, writer) = active(/*rate*/ 8000);
     assert_eq!(
         writer.write(&f32::NAN.to_le_bytes()),
         Err("invalid speaker sample")
     );
-    writer.write(&vec![0; BLOCK * 4]).unwrap();
+    let blocks = if cfg!(target_os = "linux") { 3 } else { 1 };
+    for _ in 0..blocks {
+        writer.write(&vec![0; BLOCK * 4]).unwrap();
+    }
+    assert_eq!(writer.write(&vec![0; BLOCK * 4]), Ok(BLOCK * 4));
     assert_eq!(
-        writer.write(&vec![0; BLOCK * 4]),
-        Err("speaker fell behind")
+        buffers.queued.load(Ordering::Acquire),
+        (blocks * BLOCK) as u32
     );
-    assert_eq!(buffers.queued.load(Ordering::Acquire), BLOCK as u32);
+    let mut playback = Playback::default();
+    for _ in 0..blocks * BLOCK {
+        assert!(playback.next(&buffers).is_some());
+    }
+    assert_eq!(writer.write(&vec![0; BLOCK * 4]), Ok(BLOCK * 4));
+    assert!(!buffers.failed.load(Ordering::Acquire));
 }

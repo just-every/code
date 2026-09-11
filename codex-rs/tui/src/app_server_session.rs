@@ -1336,6 +1336,7 @@ impl AppServerSession {
             .request_typed(ClientRequest::TurnStart {
                 request_id,
                 params: TurnStartParams {
+                    disabled_plugin_ids: None,
                     thread_id: thread_id.to_string(),
                     turn_trigger: None,
                     client_user_message_id: Some(client_user_message_id),
@@ -1803,6 +1804,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             })
             .collect(),
         default_service_tier: model.default_service_tier,
+        available_access_programs: model.available_access_programs.map(Into::into),
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -2643,6 +2645,7 @@ mod tests {
             additional_speed_tiers: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,
+            available_access_programs: None,
             is_default: false,
         }
     }
@@ -3875,6 +3878,7 @@ mod tests {
         let forked_from_id = ThreadId::new();
         let read_only_profile = PermissionProfile::read_only();
         let response = ThreadResumeResponse {
+            disabled_plugin_ids: Vec::new(),
             thread: codex_app_server_protocol::Thread {
                 originator: None,
                 environments: None,

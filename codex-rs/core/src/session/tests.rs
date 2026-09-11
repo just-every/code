@@ -1,3 +1,6 @@
+#[path = "notification_tests.rs"]
+mod notification_tests;
+
 use super::mcp_refresh::McpRefresh;
 use super::step_settings::ResolvedStepSettings;
 use super::step_settings::StepSettings;
@@ -6,6 +9,7 @@ pub(crate) use super::step_settings::tests::update_selected_settings_for_test;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
+use crate::agents_md_manager::SessionInstructions;
 use crate::compact::InitialContextInjection;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
@@ -3121,11 +3125,19 @@ async fn record_token_usage_info_notifies_extension_contributors() {
     };
 
     session
-        .record_token_usage_info(&turn_context, Some(&first_usage))
+        .record_token_usage_info(
+            &turn_context,
+            &turn_context.initial_settings,
+            Some(&first_usage),
+        )
         .await
         .expect("first usage should be recorded");
     session
-        .record_token_usage_info(&turn_context, Some(&second_usage))
+        .record_token_usage_info(
+            &turn_context,
+            &turn_context.initial_settings,
+            Some(&second_usage),
+        )
         .await
         .expect("second usage should be recorded");
 
@@ -6423,7 +6435,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         session_configuration,
         /*environment_selections*/ &[],
         Arc::clone(&config),
-        /*user_instructions*/ None,
+        SessionInstructions::default(),
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
@@ -6665,7 +6677,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         tool_approvals: Mutex::new(ApprovalStore::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
-        agents_md_manager: Arc::new(AgentsMdManager::new(/*user_instructions*/ None)),
+        agents_md_manager: Arc::new(AgentsMdManager::new(SessionInstructions::default())),
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
@@ -6710,6 +6722,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         ),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
+            thread_id,
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
             &config.code_mode,
             executed_tool_calls,
@@ -6733,6 +6746,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         mcp_refresh: McpRefresh::new(),
+        mcp_tool_approval_metadata: Default::default(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -6903,7 +6917,7 @@ async fn make_session_with_config_and_rx(
         session_configuration,
         &default_environments,
         Arc::clone(&config),
-        /*user_instructions*/ None,
+        SessionInstructions::default(),
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
@@ -7032,7 +7046,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         session_configuration,
         &default_environments,
         Arc::clone(&config),
-        /*user_instructions*/ None,
+        SessionInstructions::default(),
         "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
@@ -8838,7 +8852,7 @@ where
         tool_approvals: Mutex::new(ApprovalStore::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
-        agents_md_manager: Arc::new(AgentsMdManager::new(/*user_instructions*/ None)),
+        agents_md_manager: Arc::new(AgentsMdManager::new(SessionInstructions::default())),
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
@@ -8883,6 +8897,7 @@ where
         ),
         executed_tool_calls: executed_tool_calls.clone(),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(
+            thread_id,
             Arc::new(codex_code_mode::DisabledCodeModeSessionProvider),
             &config.code_mode,
             executed_tool_calls,
@@ -8906,6 +8921,7 @@ where
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         mcp_refresh: McpRefresh::new(),
+        mcp_tool_approval_metadata: Default::default(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -11234,12 +11250,12 @@ impl SessionTask for GuardianDeniedApprovalTask {
     async fn run(
         self: Arc<Self>,
         session: Arc<Session>,
-        ctx: Arc<TurnContext>,
+        _ctx: Arc<TurnContext>,
         _input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
         for _ in 0..3 {
-            crate::guardian::record_guardian_denial_for_test(&session, &ctx, &ctx.sub_id).await;
+            crate::guardian::record_guardian_denial_for_test(&session).await;
         }
 
         cancellation_token.cancelled().await;
@@ -11610,8 +11626,6 @@ async fn guardian_helper_review_interrupts_after_three_consecutive_denials() {
     .await;
 
     let session_for_review = Arc::clone(&sess);
-    let turn_for_review = Arc::clone(&tc);
-    let turn_id = tc.sub_id.clone();
     let review_thread = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -11619,12 +11633,7 @@ async fn guardian_helper_review_interrupts_after_three_consecutive_denials() {
             .expect("helper review runtime");
         runtime.block_on(async move {
             for _ in 0..3 {
-                crate::guardian::record_guardian_denial_for_test(
-                    &session_for_review,
-                    &turn_for_review,
-                    &turn_id,
-                )
-                .await;
+                crate::guardian::record_guardian_denial_for_test(&session_for_review).await;
             }
         });
     });

@@ -100,6 +100,7 @@ mod json_result;
 mod live_cli;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
+mod mcp_ema_config;
 mod mcp_extension_protocol;
 mod mcp_optional_startup_grace;
 #[cfg(unix)]
@@ -110,6 +111,8 @@ mod mcp_tool_exposure;
 mod mcp_turn_metadata;
 mod mcp_user_verification;
 mod model_overrides;
+#[path = "model_provider_requirements_tests.rs"]
+mod model_provider_requirements;
 mod model_runtime_selectors;
 mod model_switching;
 mod model_visible_layout;

@@ -103,6 +103,7 @@ pub struct ThreadConfigSnapshot {
     pub parent_thread_id: Option<ThreadId>,
     pub thread_source: Option<ThreadSource>,
     pub originator: String,
+    pub disabled_plugin_ids: Vec<String>,
 }
 
 impl ThreadConfigSnapshot {
@@ -230,6 +231,11 @@ impl CodexThread {
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
+    }
+
+    /// Whether analytics is enabled for this thread after configuration and host overrides.
+    pub fn analytics_enabled(&self) -> bool {
+        self.session.services.analytics_events_client.is_enabled()
     }
 
     /// Returns extension-owned data attached to this thread runtime.

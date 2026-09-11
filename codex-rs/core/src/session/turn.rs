@@ -878,7 +878,8 @@ async fn required_mcp_servers_for_input(
         .services
         .plugins_manager
         .plugins_for_config(&turn_context.config.plugins_config_input())
-        .await;
+        .await
+        .without_plugins(&turn_context.disabled_plugin_ids);
     let current_config = sess.services.mcp_runtime.current_config();
     let mentioned_plugins =
         collect_explicit_plugin_mentions(user_input, loaded_plugins.capability_summaries());
@@ -1661,7 +1662,8 @@ pub(crate) async fn prepare_tool_recommendations(
         .plugins_manager
         .plugins_for_config(&turn_context.config.plugins_config_input())
         .instrument(trace_span!("built_tools.load_plugins"))
-        .await;
+        .await
+        .without_plugins(&turn_context.disabled_plugin_ids);
     let tool_suggest_is_enabled = tool_suggest_enabled(turn_context);
     let auth = if tool_suggest_is_enabled {
         sess.services.auth_manager.auth().await
@@ -2809,7 +2811,11 @@ async fn try_run_sampling_request(
                 )
                 .await;
                 let budget_result = sess
-                    .record_token_usage_info(&turn_context, token_usage.as_ref())
+                    .record_token_usage_info(
+                        &turn_context,
+                        &step_context.settings,
+                        token_usage.as_ref(),
+                    )
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;

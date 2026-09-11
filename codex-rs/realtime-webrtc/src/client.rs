@@ -12,6 +12,7 @@ use codex_utils_pty::SpawnedProcess;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
+use crate::HelperExitStage;
 use crate::Message;
 use crate::encode_frame;
 use crate::message_reader::MessageReader;
@@ -24,12 +25,28 @@ const RUNTIME_INITIALIZATION_DEADLINE: Duration = Duration::from_secs(/*secs*/ 3
 pub enum ConnectionError {
     NegotiationTimedOut,
     Failed,
+    HelperStartup,
+    RuntimeInitialization,
+    Transport,
+    AudioDevices,
+    AudioControls,
+    AudioSession,
+    Shutdown,
 }
 impl std::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::NegotiationTimedOut => "voice negotiation timed out",
             Self::Failed => "voice connection failed",
+            Self::HelperStartup => "voice helper could not start",
+            Self::RuntimeInitialization => "voice audio runtime could not initialize",
+            Self::Transport => "voice transport could not connect",
+            Self::AudioDevices => {
+                "voice audio devices could not open; check microphone and speaker setup"
+            }
+            Self::AudioControls => "voice audio controls failed",
+            Self::AudioSession => "voice audio session stopped unexpectedly",
+            Self::Shutdown => "voice helper could not shut down cleanly",
         })
     }
 }
@@ -41,6 +58,7 @@ pub struct VoiceHost {
     process: ProcessHandle,
     output: MessageReader,
     exit: oneshot::Receiver<i32>,
+    observed_exit: Option<Option<i32>>,
 }
 
 impl VoiceHost {
@@ -73,7 +91,7 @@ impl VoiceHost {
             .map_err(|_| anyhow::anyhow!("voice helper input unavailable"))?;
         let deadline = tokio::time::Instant::now() + DEADLINE;
         Ok(async move {
-            let response = tokio::time::timeout_at(deadline, self.output.next()).await??;
+            let response = tokio::time::timeout_at(deadline, self.next_response()).await??;
             ensure!(
                 response == Message::AudioControlsApplied {},
                 "unexpected voice helper response"
@@ -147,6 +165,16 @@ impl VoiceHost {
             "voice helper must be inside the physical package"
         );
         let environment = child_environment(std::env::vars_os());
+        #[cfg(target_os = "linux")]
+        let environment = {
+            let mut environment = environment;
+            if let Some(directory) =
+                crate::linux_alsa::plugin_directory(crate::linux_alsa::PLUGIN_DIRECTORIES)
+            {
+                environment.insert("ALSA_PLUGIN_DIR".to_owned(), directory.to_owned());
+            }
+            environment
+        };
         let SpawnedProcess {
             session,
             stdout_rx,
@@ -166,6 +194,7 @@ impl VoiceHost {
             process: session,
             output: MessageReader::new(stdout_rx),
             exit: exit_rx,
+            observed_exit: None,
         };
         host.exchange(
             Message::Hello {
@@ -187,7 +216,11 @@ impl VoiceHost {
         if result.is_err() {
             self.process.terminate();
         }
-        let code = timeout(DEADLINE, &mut self.exit).await??;
+        let code = match self.observed_exit {
+            Some(Some(code)) => code,
+            Some(None) => anyhow::bail!("voice helper exit status unavailable"),
+            None => timeout(DEADLINE, &mut self.exit).await??,
+        };
         result?;
         ensure!(code == 0, "voice helper failed during shutdown");
         Ok(())
@@ -213,9 +246,36 @@ impl VoiceHost {
                 .send(encode_frame(&request)?)
                 .await
                 .map_err(|_| anyhow::anyhow!("voice helper input closed"))?;
-            Ok(self.output.next().await?)
+            self.next_response().await
         })
         .await?
+    }
+
+    async fn next_response(&mut self) -> Result<Message> {
+        match self.output.next().await {
+            Ok(response) => Ok(response),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // The helper can exit just after closing stdout. Wait briefly for its
+                // status; never log its untyped stderr, SDP, or native error text.
+                let exit_code = match self.observed_exit {
+                    Some(status) => status,
+                    None => {
+                        match timeout(Duration::from_millis(/*millis*/ 250), &mut self.exit).await {
+                            Ok(status) => {
+                                let status = status.ok();
+                                self.observed_exit = Some(status);
+                                status
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                };
+                let phase = exit_code.and_then(HelperExitStage::from_code);
+                tracing::warn!(?phase, ?exit_code, "voice helper output closed");
+                Err(error.into())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 

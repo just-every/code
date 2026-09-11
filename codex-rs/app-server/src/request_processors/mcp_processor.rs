@@ -170,6 +170,11 @@ impl McpRequestProcessor {
             StreamableHttpRedirectMode::Legacy
         };
         let server = server.config();
+        if matches!(server.auth, codex_config::McpServerAuth::EmaAuth) {
+            return Err(invalid_request(
+                "EMA MCP connections are not enabled in this version",
+            ));
+        }
 
         let (url, http_headers, env_http_headers) = match &server.transport {
             McpServerTransportConfig::StreamableHttp {
@@ -342,6 +347,7 @@ impl McpRequestProcessor {
         };
         let McpServerStatusSnapshot {
             server_infos,
+            server_capabilities,
             tools_by_server,
             tools_errors,
             resources,
@@ -396,6 +402,7 @@ impl McpRequestProcessor {
                     },
                 ),
                 server_info: server_infos.get(name).cloned(),
+                server_capabilities: server_capabilities.get(name).cloned(),
                 tools: tools_by_server.get(name).cloned().unwrap_or_default(),
                 tools_error: tools_errors.get(name).cloned(),
                 resources: resources.get(name).cloned().unwrap_or_default(),

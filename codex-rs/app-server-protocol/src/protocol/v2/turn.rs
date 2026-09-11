@@ -139,6 +139,16 @@ impl From<CyberAccessProgram> for CoreCyberAccessProgram {
     }
 }
 
+impl From<CoreCyberAccessProgram> for CyberAccessProgram {
+    fn from(value: CoreCyberAccessProgram) -> Self {
+        match value {
+            CoreCyberAccessProgram::Standard => Self::Standard,
+            CoreCyberAccessProgram::DaybreakBlue => Self::DaybreakBlue,
+            CoreCyberAccessProgram::DaybreakRed => Self::DaybreakRed,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -155,6 +165,10 @@ pub struct TurnToolOutput {
 #[ts(export_to = "v2/")]
 pub struct TurnStartParams {
     pub thread_id: String,
+    /// Replace this thread's disabled plugin IDs.
+    /// Omitted/null preserves the list; [] clears it.
+    #[ts(optional = nullable)]
+    pub disabled_plugin_ids: Option<Vec<String>>,
     #[ts(optional = nullable)]
     pub client_user_message_id: Option<String>,
     pub input: Vec<UserInput>,

@@ -9,6 +9,15 @@
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
 //!
+//! # Astra Sparkle
+//!
+//! Selecting Astra animates stars in the untouched composer for 15 seconds from its first visible
+//! frame, then fades them smoothly for one second. The deadline runs even without terminal focus.
+//! Keys, paste, an existing draft, voice input, or a popup start a quick fade; offline Enter and
+//! Tab do too. Placeholder and draft text, including spaces, stay unchanged. Mouse reporting stays
+//! disabled for native selection and scrolling; hover or selection alone does not stop the stars.
+//! Reselecting Astra starts a new flourish.
+//!
 //! # Mention Menus
 //!
 //! By default, `@` lists plugins, filesystem entries, and skills. Skills are hidden when their
@@ -104,7 +113,8 @@
 //! When these paths clear the visible textarea after a successful submit or slash-command
 //! dispatch, they intentionally preserve the textarea kill buffer. That lets users `Ctrl+K` part
 //! of a draft, perform a composer action such as changing reasoning level, and then `Ctrl+Y` the
-//! killed text back into the now-empty draft.
+//! killed text back into the now-empty draft. Replacing the chat widget carries that buffer into
+//! the fresh composer so Vim yanks survive `/new` and thread switches.
 //!
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
@@ -336,6 +346,7 @@ use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
+use crate::bottom_pane::textarea::KillBufferSnapshot;
 use crate::bottom_pane::textarea::TextArea;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
@@ -1225,6 +1236,7 @@ impl ChatComposer {
     /// In all cases, clears any paste-burst Enter suppression state so a real paste cannot affect
     /// the next user Enter key, then syncs popup state.
     pub fn handle_paste(&mut self, pasted: String) -> bool {
+        self.interact_with_astra_sparkle();
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let pasted = sanitize_user_text(pasted.into());
         if let Some(query) = self.draft.textarea.vim_query_mut() {
@@ -1417,6 +1429,14 @@ impl ChatComposer {
     /// Resume text entry after a parent view takes focus, preserving Vim undo history.
     pub(crate) fn resume_text_entry(&mut self) {
         self.draft.textarea.enter_vim_insert_mode();
+    }
+
+    pub(crate) fn take_kill_buffer_snapshot(&mut self) -> KillBufferSnapshot {
+        self.draft.textarea.take_kill_buffer_snapshot()
+    }
+
+    pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
+        self.draft.textarea.restore_kill_buffer_snapshot(snapshot);
     }
 
     /// Restore draft history transferred from the startup composer.
@@ -2018,6 +2038,7 @@ impl ChatComposer {
             return (InputResult::None, false);
         }
 
+        self.interact_with_astra_sparkle();
         if self.history_search.is_none()
             && !self.popups.active()
             && self.draft.textarea.wants_vim_search_key(key_event)
@@ -5058,6 +5079,7 @@ impl ChatComposer {
         if self.astra_sparkle.is_some() {
             self.render_sparkle(
                 composer_rect,
+                textarea_rect,
                 self.cursor_pos_with_textarea_right_reserve(area, textarea_right_reserve),
                 buf,
             );

@@ -84,7 +84,11 @@ impl PlaybackWriter {
             .map_err(|_| "speaker writer failed")?;
         let deadline = Instant::now() + Duration::from_millis(/*millis*/ 100);
         let buffers = &self.state.buffers;
-        let limit = (self.state.rate / 25).min((BLOCK * buffers.playback.capacity()) as u32);
+        // Linux requests 50 ms callbacks; retain two callbacks of audio so a
+        // callback can fill without racing the producer. Keep the queue cap.
+        let windows_per_second = if cfg!(target_os = "linux") { 10 } else { 25 };
+        let limit = (self.state.rate / windows_per_second)
+            .min((BLOCK * buffers.playback.capacity()) as u32);
         loop {
             if self.epoch % 2 == 1
                 || buffers.speaker.load(Ordering::Acquire) != self.epoch
@@ -102,7 +106,9 @@ impl PlaybackWriter {
                 return Ok(bytes);
             }
             if Instant::now() >= deadline {
-                return Err("speaker fell behind");
+                // The sink must consume this chunk to catch up with the device clock.
+                // Dropping it keeps the bounded queue and current epoch intact.
+                return Ok(frame.len * 4);
             }
             std::thread::park_timeout(Duration::from_millis(/*millis*/ 1));
         }

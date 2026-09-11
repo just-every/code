@@ -15,6 +15,7 @@ use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
 use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
@@ -68,7 +69,6 @@ use codex_exec_server::EnvironmentManager;
 use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ExtensionDataInit;
-use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
@@ -235,6 +235,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod plugin_selection;
 mod realtime_history;
 mod retained_context;
 mod review;
@@ -425,7 +426,7 @@ pub(crate) enum ForkPersistence {
 pub(crate) struct SessionSpawnArgs {
     pub(crate) config: Config,
     pub(crate) allow_provider_model_fallback: bool,
-    pub(crate) user_instructions: LoadedUserInstructions,
+    pub(crate) instructions: SessionInstructions,
     pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
@@ -528,9 +529,9 @@ impl Session {
 
     async fn spawn_internal(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
         let SessionSpawnArgs {
-            mut config,
+            config,
             allow_provider_model_fallback,
-            user_instructions,
+            instructions,
             installation_id,
             auth_manager,
             models_manager,
@@ -573,14 +574,6 @@ impl Session {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
-        let LoadedUserInstructions {
-            instructions: user_instructions,
-            warnings: user_instruction_provider_warnings,
-        } = user_instructions;
-        // TODO(anp) pull startup_warnings out of Config
-        config
-            .startup_warnings
-            .extend(user_instruction_provider_warnings);
         let isolation = thread_extension_init
             .get::<codex_extension_api::SessionIsolation>()
             .map(|policy| *policy)
@@ -714,6 +707,16 @@ impl Session {
                 &model_info,
             )?;
             token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
+            if config
+                .token_budget
+                .as_ref()
+                .is_some_and(|token_budget| token_budget.use_history_notes_extension)
+                && !model_info.supports_experimental_context
+            {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "features.token_budget.use_history_notes_extension is not supported by model `{model}`; disable it or select a model that supports experimental context"
+                )));
+            }
         }
         let configured_config = Arc::clone(&config);
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
@@ -821,7 +824,7 @@ impl Session {
             session_configuration,
             &environment_selections,
             config.clone(),
-            user_instructions,
+            instructions,
             installation_id,
             auth_manager.clone(),
             models_manager.clone(),
@@ -856,7 +859,10 @@ impl Session {
         .await
         .map_err(|e| {
             error!("Failed to create session: {e:#}");
-            map_session_init_error(&e, &config.codex_home)
+            match e.downcast::<CodexErr>() {
+                Ok(error) => error,
+                Err(error) => map_session_init_error(&error, &config.codex_home),
+            }
         })?;
         if let Some(message) = initial_service_tier_warning {
             session
@@ -1927,8 +1933,21 @@ impl Session {
             .clone()
     }
 
-    pub(crate) async fn user_instructions(&self) -> Option<codex_extension_api::Instructions> {
-        self.services.agents_md_manager.user_instructions()
+    pub(crate) async fn inherited_instructions(&self) -> SessionInstructions {
+        self.services
+            .agents_md_manager
+            .inherited_instructions()
+            .await
+    }
+
+    pub(crate) async fn emit_instruction_warnings(&self, warnings: Vec<String>) {
+        for message in warnings {
+            self.send_event_raw(Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: EventMsg::Warning(WarningEvent { message }),
+            })
+            .await;
+        }
     }
 
     pub(crate) async fn provider(&self) -> ModelProviderInfo {
@@ -2006,11 +2025,13 @@ impl Session {
     }
 
     pub(crate) async fn refresh_hooks(&self, config: Arc<Config>) {
+        let disabled_plugin_ids = self.state.lock().await.active_disabled_plugin_ids.clone();
         let environments = self.services.turn_environments.snapshot().await;
         let hooks_config = build_hooks_config(
             config.as_ref(),
             self.services.plugins_manager.as_ref(),
             environments.single_local_environment(),
+            &disabled_plugin_ids,
         )
         .await;
 
@@ -2020,7 +2041,8 @@ impl Session {
         if Arc::ptr_eq(
             &state.session_configuration.original_config_do_not_use,
             &config,
-        ) {
+        ) && state.active_disabled_plugin_ids == disabled_plugin_ids
+        {
             let hooks = self.hooks().reconfigured(hooks_config);
             self.services.hooks.store(Arc::new(hooks));
         }
@@ -3708,11 +3730,14 @@ impl Session {
         let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         // Keep selections fixed for the turn while allowing their startup work to finish.
         let environments = turn_context.environments.refresh_readiness();
-        self.services
+        let (loaded_agents_md, warnings) = self
+            .services
             .agents_md_manager
             .refresh(&turn_context.config, &environments)
+            .or_cancel(cancellation_token)
             .await?;
-        let loaded_agents_md = self.services.agents_md_manager.get_loaded().await;
+        self.emit_instruction_warnings(warnings).await;
+        let loaded_agents_md = loaded_agents_md?;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
             .await;
@@ -4112,7 +4137,8 @@ impl Session {
             .services
             .plugins_manager
             .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await;
+            .await
+            .without_plugins(&turn_context.disabled_plugin_ids);
         let recommended_plugin_candidates = if turn_context
             .config
             .features
@@ -4528,7 +4554,7 @@ impl Session {
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
         let result = self
-            .record_token_usage_info(turn_context, token_usage)
+            .record_token_usage_info(turn_context, &turn_context.initial_settings, token_usage)
             .await;
         self.send_token_count_event(turn_context).await;
         result
@@ -4571,6 +4597,7 @@ impl Session {
     pub(crate) async fn record_token_usage_info(
         &self,
         turn_context: &TurnContext,
+        settings: &ResolvedStepSettings,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
@@ -4586,6 +4613,17 @@ impl Session {
                 }
                 state.token_info()
             };
+            let turn_state = self
+                .input_queue
+                .turn_state_for_sub_id(&self.active_turn, &turn_context.sub_id)
+                .await;
+            if let Some(turn_state) = turn_state {
+                turn_state.lock().await.token_usage_by_model.record(
+                    settings.selected_collaboration_mode().model(),
+                    settings.telemetry(&turn_context.session_telemetry),
+                    token_usage,
+                );
+            }
             let budget_result = self.record_rollout_budget_usage(token_usage);
             if let Some(token_info) = token_info.as_ref() {
                 for contributor in self.services.extensions.token_usage_contributors() {
@@ -4874,6 +4912,7 @@ async fn build_hooks_config(
     config: &Config,
     plugins_manager: &PluginsManager,
     environment: Option<&TurnEnvironment>,
+    disabled_plugin_ids: &[String],
 ) -> HooksConfig {
     let (hook_shell_program, hook_shell_argv) = environment
         .and_then(|environment| environment.shell.as_ref())
@@ -4885,7 +4924,10 @@ async fn build_hooks_config(
         })
         .unwrap_or_default();
     let plugins_input = config.plugins_config_input();
-    let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
+    let plugin_outcome = plugins_manager
+        .plugins_for_config(&plugins_input)
+        .await
+        .without_plugins(disabled_plugin_ids);
     let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();
     let plugin_hook_load_warnings = plugin_outcome.effective_plugin_hook_warnings();
     HooksConfig {

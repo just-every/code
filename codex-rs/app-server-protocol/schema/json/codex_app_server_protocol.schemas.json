@@ -9997,6 +9997,21 @@
               "null"
             ]
           },
+          "modelProvider": {
+            "description": "Exact provider selection required by managed policy.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelProviders": {
+            "additionalProperties": true,
+            "description": "Complete required provider definitions, using config.toml field names.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "models": {
             "anyOf": [
               {
@@ -14672,6 +14687,9 @@
             ],
             "description": "Current thread-runtime connection state; null when unavailable or the configuration changed."
           },
+          "serverCapabilities": {
+            "description": "Capabilities advertised by the initialized MCP server; null when unavailable."
+          },
           "serverInfo": {
             "anyOf": [
               {
@@ -15092,6 +15110,18 @@
               }
             ]
           },
+          "availableAccessPrograms": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ModelAccessPrograms"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null when the catalog does not provide access-program metadata."
+          },
           "defaultReasoningEffort": {
             "$ref": "#/definitions/v2/ReasoningEffort"
           },
@@ -15192,6 +15222,22 @@
           "isDefault",
           "model",
           "supportedReasoningEfforts"
+        ],
+        "type": "object"
+      },
+      "ModelAccessPrograms": {
+        "description": "Caller-specific explicit access programs advertised by model discovery.",
+        "properties": {
+          "cyber": {
+            "description": "Accepted explicit selections.",
+            "items": {
+              "$ref": "#/definitions/v2/CyberAccessProgram"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cyber"
         ],
         "type": "object"
       },
@@ -21059,6 +21105,14 @@
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
+          "disabledPluginIds": {
+            "default": [],
+            "description": "Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "instructionSources": {
             "default": [],
             "description": "Environment-native paths to instruction source files currently loaded for this thread.",
@@ -23307,6 +23361,14 @@
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
+          "disabledPluginIds": {
+            "default": [],
+            "description": "Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "instructionSources": {
             "default": [],
             "description": "Environment-native paths to instruction source files currently loaded for this thread.",
@@ -23786,6 +23848,14 @@
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
+          "disabledPluginIds": {
+            "default": [],
+            "description": "Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "effort": {
             "anyOf": [
               {
@@ -24058,6 +24128,14 @@
           },
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
+          },
+          "disabledPluginIds": {
+            "default": [],
+            "description": "Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "instructionSources": {
             "default": [],
@@ -25086,6 +25164,16 @@
             "description": "Override the working directory for this turn and subsequent turns.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "disabledPluginIds": {
+            "description": "Replace this thread's disabled plugin IDs. Omitted/null preserves the list; [] clears it.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
               "null"
             ]
           },

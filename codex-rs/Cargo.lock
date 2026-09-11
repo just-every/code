@@ -4070,6 +4070,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "appcontainer_common",
+ "codex-network-proxy",
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
@@ -4309,6 +4310,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4768,6 +4770,7 @@ dependencies = [
  "itertools 0.14.0",
  "lazy_static",
  "libc",
+ "objc2-app-kit",
  "pathdiff",
  "pretty_assertions",
  "pulldown-cmark",
@@ -4808,6 +4811,7 @@ dependencies = [
  "windows-sys 0.52.0",
  "winsplit",
  "wiremock",
+ "zbus",
 ]
 
 [[package]]
@@ -12029,9 +12033,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

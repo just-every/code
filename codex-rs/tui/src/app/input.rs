@@ -252,6 +252,13 @@ impl App {
             && key_event.kind == KeyEventKind::Press
         {
             let modifiers = key_event.modifiers;
+            if key_event.code == KeyCode::Esc
+                && modifiers == KeyModifiers::NONE
+                && !matches!(self.app_server_target, AppServerTarget::Embedded)
+            {
+                self.open_agents_overview(app_server, AgentsOverviewFocus::List);
+                return;
+            }
             let quit = match key_event.code {
                 KeyCode::Esc => modifiers == KeyModifiers::NONE,
                 KeyCode::Char('q' | 'Q') => {
@@ -280,7 +287,11 @@ impl App {
                     cwd: None,
                     history_mode: None,
                 };
-                let _ = self.resume_target_session(tui, app_server, target).await;
+                if let Ok(AppRunControl::Exit(_)) =
+                    self.resume_target_session(tui, app_server, target).await
+                {
+                    self.app_event_tx.send(AppEvent::Exit(ExitMode::Immediate));
+                }
                 return;
             }
         }

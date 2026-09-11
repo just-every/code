@@ -2,6 +2,7 @@
 //! Completed captions and both speakers' partials stay bounded across widget replacement.
 
 mod recording_controls;
+mod transcript_replay;
 
 use super::ChatWidget;
 use super::HistoryCell;
@@ -72,6 +73,7 @@ pub(crate) struct RealtimeTranscriptRecord {
     pub(crate) role: String,
     pub(crate) text: String,
     pub(crate) complete: bool,
+    pub(crate) before_turn_id: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,6 +163,7 @@ pub(super) struct RealtimeConversationUiState {
     pub(super) live_transcript_cell: Option<Box<dyn HistoryCell>>,
     pending_history_cells: VecDeque<Box<dyn HistoryCell>>,
     accepted_transcripts: VecDeque<RealtimeTranscriptRecord>,
+    replay_transcripts: Option<VecDeque<RealtimeTranscriptRecord>>,
     latest_input_was_voice: bool,
     input_generation: u64,
     latest_voice_input_fingerprint: Option<(usize, u64)>,
@@ -1014,6 +1017,7 @@ impl ChatWidget {
                 role,
                 text,
                 complete: false,
+                before_turn_id: None,
             });
         };
         if let Some((role, text)) = self.realtime_conversation.interleaved_transcript.take() {
@@ -1193,7 +1197,7 @@ impl ChatWidget {
                 .wrapping_add(/*rhs*/ 1);
             self.realtime_conversation.transcript_input_generation =
                 Some(self.realtime_conversation.input_generation);
-            if interrupted && self.config.animations {
+            if interrupted && self.local_settings.tui.animations {
                 self.realtime_conversation.interruption_acknowledged_until =
                     Some(Instant::now() + INTERRUPTION_ACKNOWLEDGMENT);
             }
@@ -1273,7 +1277,7 @@ impl ChatWidget {
             &self.realtime_conversation.transcript,
             previous,
             discarded_prefix_bytes,
-            MotionMode::from_animations_enabled(self.config.animations),
+            MotionMode::from_animations_enabled(self.local_settings.tui.animations),
             self.frame_requester.clone(),
         );
         self.realtime_conversation.live_transcript_cell = Some(Box::new(live_cell));
@@ -1347,6 +1351,7 @@ impl ChatWidget {
                         role: role.clone(),
                         text: text.clone(),
                         complete: true,
+                        before_turn_id: None,
                     },
                 );
                 text.clone()
@@ -1488,6 +1493,7 @@ impl ChatWidget {
                     role: role.clone(),
                     text: text.clone(),
                     complete: true,
+                    before_turn_id: None,
                 });
             while self.realtime_conversation.pending_history_cells.len()
                 >= MAX_PENDING_TRANSCRIPT_CELLS
@@ -1599,6 +1605,7 @@ impl ChatWidget {
         {
             self.record_realtime_failure();
         }
+        let failed = self.realtime_conversation.failure_recorded;
         self.reset_realtime_conversation();
         if let Some(thread_id) = retry_thread_id {
             // The old backend is closed. A late peer result belongs to its attempt ID.
@@ -1615,6 +1622,7 @@ impl ChatWidget {
         }
         if let Some(reason) = reason
             && reason != "error"
+            && !(failed && reason == "requested")
         {
             self.add_info_message(
                 format!("Voice conversation ended: {reason}"),
@@ -1711,6 +1719,7 @@ impl ChatWidget {
                     role,
                     text,
                     complete: true,
+                    before_turn_id: None,
                 });
         }
         let pending_history_cells =

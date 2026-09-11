@@ -327,12 +327,13 @@ async fn captioned_voice_answer_does_not_duplicate_on_close() {
 #[tokio::test]
 async fn restored_partial_caption_accepts_late_completion_without_duplicate_history() {
     let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
-    chat.config.animations = false;
+    chat.local_settings.tui.animations = false;
     chat.restore_realtime_transcript_cells(VecDeque::from([
         super::super::RealtimeTranscriptRecord {
             role: "user".into(),
             text: "last ".into(),
             complete: false,
+            before_turn_id: None,
         },
     ]));
     let live = chat
@@ -383,6 +384,7 @@ async fn empty_late_completion_discards_the_restored_partial() {
             role: "user".into(),
             text: "unfinished".into(),
             complete: false,
+            before_turn_id: None,
         },
     ]));
     chat.on_realtime_transcript_done("user".into(), String::new());

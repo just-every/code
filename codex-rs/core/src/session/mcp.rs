@@ -98,11 +98,12 @@ impl Session {
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
-        let (session_source, host_fallback_cwd) = {
+        let (session_source, host_fallback_cwd, disabled_plugin_ids) = {
             let state = self.state.lock().await;
             (
                 state.session_configuration.session_source.clone(),
                 state.session_configuration.cwd().clone(),
+                state.active_disabled_plugin_ids.clone(),
             )
         };
         let environments = self.services.turn_environments.snapshot().await;
@@ -128,6 +129,7 @@ impl Session {
                 McpThreadIdentity {
                     session_source: &session_source,
                     originator: &originator,
+                    disabled_plugin_ids: &disabled_plugin_ids,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
                 },
                 &ready_selected_capability_roots,
@@ -233,6 +235,7 @@ impl Session {
                     McpThreadIdentity {
                         session_source: &desired.session_source,
                         originator: &desired.originator,
+                        disabled_plugin_ids: &desired.disabled_plugin_ids,
                         environments: McpEnvironmentScope::Live(&self.services.turn_environments),
                     },
                     &ready_selected_capability_roots,
@@ -299,6 +302,7 @@ impl Session {
                 McpThreadIdentity {
                     session_source: &desired.session_source,
                     originator: &desired.originator,
+                    disabled_plugin_ids: &desired.disabled_plugin_ids,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
                 },
                 &ready_selected_capability_roots,
@@ -662,12 +666,13 @@ impl Session {
             return;
         };
         let auth = self.services.auth_manager.auth().await;
-        {
+        let disabled_plugin_ids = {
             let mut state = self.state.lock().await;
             let mut config = (*state.session_configuration.original_config_do_not_use).clone();
             config.mcp_servers = refresh_config.mcp_servers.clone();
             state.session_configuration.original_config_do_not_use = Arc::new(config);
-        }
+            state.active_disabled_plugin_ids.clone()
+        };
         let ready_selected_capability_roots = self
             .services
             .mcp_runtime
@@ -690,6 +695,7 @@ impl Session {
                 McpThreadIdentity {
                     session_source: &turn_context.session_source,
                     originator: &turn_context.originator,
+                    disabled_plugin_ids: &disabled_plugin_ids,
                     environments: McpEnvironmentScope::Live(&self.services.turn_environments),
                 },
                 &ready_selected_capability_roots,
@@ -783,9 +789,8 @@ async fn review_guardian_mcp_elicitation(
             .meta()
             .and_then(|meta| meta.get("callId"))
             .and_then(Value::as_str)
-        && let Some((Some(invocation), _)) = session
-            .mcp_tool_approval_metadata(&turn_context.sub_id, call_id)
-            .await
+        && let Some((Some(invocation), _)) =
+            session.mcp_tool_approval_metadata(&request.server_name, call_id)
         && invocation.server == request.server_name
     {
         Some(call_id)
@@ -822,9 +827,8 @@ async fn review_guardian_mcp_elicitation(
             else {
                 return Ok(None);
             };
-            let Some((Some(invocation), metadata)) = session
-                .mcp_tool_approval_metadata(&turn_context.sub_id, call_id)
-                .await
+            let Some((Some(invocation), metadata)) =
+                session.mcp_tool_approval_metadata(&request.server_name, call_id)
             else {
                 return Ok(None);
             };

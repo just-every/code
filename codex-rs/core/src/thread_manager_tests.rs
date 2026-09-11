@@ -53,6 +53,230 @@ use wiremock::MockServer;
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+struct ParentInstructionsProvider(codex_extension_api::Instructions);
+
+impl codex_extension_api::UserInstructionsProvider for ParentInstructionsProvider {
+    fn load_user_instructions(&self) -> codex_extension_api::LoadInstructionsFuture<'_> {
+        Box::pin(async move {
+            codex_extension_api::LoadedUserInstructions {
+                instructions: Some(self.0.clone()),
+                warnings: Vec::new(),
+            }
+        })
+    }
+}
+
+impl codex_extension_api::ThreadInstructionsProvider for ParentInstructionsProvider {
+    fn load_thread_instructions(&self) -> codex_extension_api::LoadInstructionsFuture<'_> {
+        codex_extension_api::UserInstructionsProvider::load_user_instructions(self)
+    }
+}
+
+#[tokio::test]
+async fn live_fork_keeps_instructions_when_source_is_unloaded_during_setup() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let global = codex_extension_api::Instructions {
+        text: "global instructions".to_string(),
+        source: None,
+    };
+    let thread = codex_extension_api::Instructions {
+        text: "source thread instructions".to_string(),
+        source: None,
+    };
+    let mut manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    Arc::get_mut(&mut manager.state)
+        .expect("unshared manager")
+        .user_instructions_provider = Arc::new(ParentInstructionsProvider(global.clone()));
+    let source = manager
+        .start_thread(StartThreadOptions {
+            environments: Some(Vec::new()),
+            thread_instructions_provider: Some(Arc::new(ParentInstructionsProvider(
+                thread.clone(),
+            ))),
+            ..StartThreadOptions::new(config.clone())
+        })
+        .await
+        .expect("start source");
+    let history = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: source.thread_id,
+        history: Arc::new(Vec::new()),
+        rollout_path: None,
+    });
+
+    // Queue removal between the first source lookup and subsequent startup
+    // lookups. Tokio's fair RwLock makes this ordering deterministic.
+    let fork = manager.fork_thread_from_history(
+        ForkSnapshot::Interrupted,
+        StartThreadOptions {
+            environments: Some(Vec::new()),
+            ..StartThreadOptions::new(config)
+        },
+        history,
+    );
+    tokio::pin!(fork);
+    {
+        let _guard = manager.state.threads.write().await;
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(fork.as_mut(), &mut context).is_pending());
+    }
+    let removal = manager.remove_thread_if_matches(&source.thread_id, &source.thread);
+    tokio::pin!(removal);
+    assert!(futures::poll!(&mut removal).is_pending());
+    assert!(futures::poll!(&mut fork).is_pending());
+    assert!(removal.await.is_some());
+    let fork = fork.await.expect("fork survives source removal");
+    let instructions = fork.thread.session.inherited_instructions().await;
+    assert_eq!(
+        (instructions.user, instructions.thread),
+        (Some(global), Some(thread))
+    );
+    source
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown source");
+    fork.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown fork");
+}
+
+/// A thread opt-out wins over a shared client without disabling its siblings.
+#[tokio::test]
+async fn thread_analytics_opt_out_overrides_shared_client() {
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/codex/analytics-events/events"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.chatgpt_base_url = server.uri();
+    config.model_provider.base_url = Some(server.uri());
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let shared_client = AnalyticsEventsClient::new(
+        AuthManager::from_auth_for_testing(auth.clone()),
+        server.uri(),
+        /*analytics_enabled*/ Some(true),
+    );
+    let mut expected_thread_ids = Vec::new();
+    let mut opted_out_thread_ids = Vec::new();
+
+    for (name, client_override, expected_enabled) in [
+        (
+            "enabled_override",
+            Some(shared_client.clone()),
+            [false, true, true],
+        ),
+        (
+            "disabled_override",
+            Some(AnalyticsEventsClient::disabled()),
+            [false, false, false],
+        ),
+        ("no_override", None, [false, true, true]),
+    ] {
+        config.codex_home = temp_dir.path().join(name).abs();
+        config.cwd = config.codex_home.abs();
+        std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+        let mut manager = ThreadManager::with_models_provider_and_home_for_tests(
+            auth.clone(),
+            config.model_provider.clone(),
+            config.codex_home.to_path_buf(),
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        );
+        Arc::get_mut(&mut manager.state)
+            .expect("unshared thread manager state")
+            .analytics_events_client = client_override;
+
+        for (setting, enabled) in [Some(false), Some(true), None]
+            .into_iter()
+            .zip(expected_enabled)
+        {
+            config.analytics_enabled = setting;
+            let started = manager
+                .start_thread(StartThreadOptions::new(config.clone()))
+                .await
+                .expect("start analytics test thread");
+            let services = &started.thread.session.services;
+            assert_eq!(started.thread.analytics_enabled(), enabled);
+            assert_eq!(
+                services
+                    .session_extension_data
+                    .get::<AnalyticsEventsClient>()
+                    .expect("analytics client in session store")
+                    .is_enabled(),
+                enabled,
+            );
+            let thread_id = started.thread_id.to_string();
+            if enabled {
+                expected_thread_ids.push(thread_id.clone());
+            } else {
+                opted_out_thread_ids.push(thread_id.clone());
+            }
+            services.analytics_events_client.track_app_used(
+                codex_analytics::TrackEventsContext {
+                    model_slug: "test-model".to_string(),
+                    turn_id: format!("test-turn-{thread_id}"),
+                    thread_id,
+                    product_client_id: "codex_work_cca".to_string(),
+                },
+                codex_analytics::AppInvocation {
+                    connector_id: Some("test-connector".to_string()),
+                    app_name: None,
+                    invocation_type: None,
+                },
+            );
+            services.analytics_events_client.flush().await;
+        }
+        let shutdown = manager
+            .shutdown_all_threads_bounded(Duration::from_secs(10))
+            .await;
+        assert_eq!(shutdown.completed.len(), 3);
+    }
+
+    let events: Vec<serde_json::Value> = server
+        .received_requests()
+        .await
+        .expect("analytics requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/codex/analytics-events/events")
+        .flat_map(|request| {
+            request.body_json::<serde_json::Value>().expect("JSON body")["events"]
+                .as_array()
+                .expect("events array")
+                .clone()
+        })
+        .collect();
+    assert!(events.iter().all(|event| {
+        !opted_out_thread_ids
+            .iter()
+            .any(|thread_id| event["event_params"]["thread_id"] == thread_id.as_str())
+    }));
+    let mut actual_thread_ids: Vec<String> = events
+        .iter()
+        .filter(|event| event["event_type"] == "codex_app_used")
+        .map(|event| {
+            event["event_params"]["thread_id"]
+                .as_str()
+                .expect("app usage thread ID")
+                .to_string()
+        })
+        .collect();
+    actual_thread_ids.sort();
+    expected_thread_ids.sort();
+    assert_eq!(actual_thread_ids, expected_thread_ids);
+}
+
 /// Controls without a custom allocation policy still produce distinct thread identifiers.
 #[test]
 fn thread_id_generator_defaults_to_standard_ids() {
@@ -1022,19 +1246,6 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         }
     }
 
-    struct ParentInstructionsProvider(codex_extension_api::Instructions);
-
-    impl codex_extension_api::UserInstructionsProvider for ParentInstructionsProvider {
-        fn load_user_instructions(&self) -> codex_extension_api::LoadUserInstructionsFuture<'_> {
-            Box::pin(async move {
-                codex_extension_api::LoadedUserInstructions {
-                    instructions: Some(self.0.clone()),
-                    warnings: Vec::new(),
-                }
-            })
-        }
-    }
-
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
@@ -1070,7 +1281,7 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
 
     let parent_instructions = codex_extension_api::Instructions {
         text: "parent user instructions must not be inherited".to_string(),
-        source: config.codex_home.join("AGENTS.md"),
+        source: Some(config.codex_home.join("AGENTS.md")),
     };
     let mut manager = ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
@@ -1092,11 +1303,12 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         Arc::clone(&manager_state.extensions),
         manager_state.mcp_manager.codex_apps_tools_cache(),
     ));
-    manager_state.user_instructions_provider =
-        Arc::new(ParentInstructionsProvider(parent_instructions.clone()));
+    let parent_provider = Arc::new(ParentInstructionsProvider(parent_instructions.clone()));
+    manager_state.user_instructions_provider = parent_provider.clone();
     let parent = manager
         .start_thread(StartThreadOptions {
             metrics_service_name: Some("codex_work_desktop".to_string()),
+            thread_instructions_provider: Some(parent_provider),
             ..StartThreadOptions::new(config.clone())
         })
         .await
@@ -1105,9 +1317,10 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         .thread
         .session
         .set_multi_agent_version_if_unset(MultiAgentVersion::V2);
+    let parent_snapshot = parent.thread.session.inherited_instructions().await;
     assert_eq!(
-        parent.thread.session.user_instructions().await,
-        Some(parent_instructions)
+        (parent_snapshot.user, parent_snapshot.thread),
+        (Some(parent_instructions.clone()), Some(parent_instructions))
     );
     assert_eq!(
         parent
@@ -1190,7 +1403,11 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
         Some(parent.thread_id)
     );
     assert_eq!(reviewer.session_configured.forked_from_id, None);
-    assert!(reviewer.thread.session.user_instructions().await.is_none());
+    let reviewer_snapshot = reviewer.thread.session.inherited_instructions().await;
+    assert_eq!(
+        (reviewer_snapshot.user, reviewer_snapshot.thread),
+        (None, None)
+    );
     assert!(
         reviewer
             .thread
@@ -1331,13 +1548,21 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
                 server.environment_id = environment_id.clone();
                 server.enabled = false;
                 let plugin_id = selected_root.id;
-                vec![codex_extension_api::McpServerContribution::SelectedPlugin {
-                    name: plugin_id.clone(),
-                    plugin_display_name: plugin_id.clone(),
-                    plugin_id,
-                    selection_order: 0,
-                    config: Box::new(server),
-                }]
+                vec![
+                    codex_extension_api::McpServerContribution::SelectedPluginPackage {
+                        selected_root_id: plugin_id.clone(),
+                        plugin_id: plugin_id.clone(),
+                        plugin_display_name: plugin_id.clone(),
+                        connector_ids: vec![],
+                    },
+                    codex_extension_api::McpServerContribution::SelectedPlugin {
+                        name: plugin_id.clone(),
+                        plugin_display_name: plugin_id.clone(),
+                        plugin_id,
+                        selection_order: 0,
+                        config: Box::new(server),
+                    },
+                ]
             })
         }
     }
@@ -1350,6 +1575,10 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
         .features
         .enable(Feature::Apps)
         .expect("test config should allow apps");
+    config
+        .features
+        .enable(Feature::Plugins)
+        .expect("enable plugins");
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
 
     let lifecycle_observed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1423,6 +1652,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             McpThreadIdentity {
                 session_source: &SessionSource::Exec,
                 originator: &first_originator,
+                disabled_plugin_ids: &[],
                 environments: McpEnvironmentScope::Live(&first_session.services.turn_environments),
             },
             /*ready_selected_capability_roots*/ &[],
@@ -1441,6 +1671,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             McpThreadIdentity {
                 session_source: &second_session_source,
                 originator: &second_originator,
+                disabled_plugin_ids: &[],
                 environments: McpEnvironmentScope::Live(&second_session.services.turn_environments),
             },
             /*ready_selected_capability_roots*/ &[],
@@ -1501,6 +1732,39 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             .get("originator"),
         Some(&"codex_work_desktop".to_string())
     );
+    for disabled_plugin_ids in [vec!["selected-a".to_string()], vec![]] {
+        let projection = first_session
+            .services
+            .mcp_manager
+            .runtime_config_for_step(
+                &config,
+                &first_session.services.mcp_thread_init,
+                &first_session.services.thread_extension_data,
+                McpThreadIdentity {
+                    session_source: &SessionSource::Exec,
+                    originator: &first_originator,
+                    disabled_plugin_ids: &disabled_plugin_ids,
+                    environments: McpEnvironmentScope::Live(
+                        &first_session.services.turn_environments,
+                    ),
+                },
+                /*ready_selected_capability_roots*/ &[],
+                /*executor_capability_discovery*/ None,
+            )
+            .await;
+        assert_eq!(
+            projection.selected_plugins.disabled_plugin_roots,
+            disabled_plugin_ids
+        );
+        assert_eq!(
+            selected_servers(&projection.config).contains_key("selected-a"),
+            disabled_plugin_ids.is_empty()
+        );
+        assert_eq!(
+            projection.selected_plugins.plugins.len(),
+            usize::from(disabled_plugin_ids.is_empty())
+        );
+    }
 }
 
 #[tokio::test]

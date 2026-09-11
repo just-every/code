@@ -7,6 +7,7 @@ mod input;
 mod render;
 
 use super::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
+use super::agents_overview_details::AgentsOverviewDetails;
 use crate::app_event::AgentsOverviewAction;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -86,7 +87,7 @@ impl AgentsOverviewGroup {
 
 #[derive(Clone)]
 pub(super) struct AgentsOverviewRow {
-    pub(super) details: Vec<Line<'static>>,
+    pub(super) details: AgentsOverviewDetails,
     pub(super) thread: Thread,
     pub(super) thread_id: ThreadId,
     pub(super) group: AgentsOverviewGroup,
@@ -132,6 +133,7 @@ pub(super) struct AgentsOverviewViewState {
     pub(super) composer: Option<ChatComposer>,
     pub(super) key_chord_hint: Option<Vec<(String, String)>>,
     pub(super) focus: AgentsOverviewFocus,
+    pub(super) refresh_failed: bool,
     pub(super) connection_notice: Option<&'static str>,
     pub(super) server_version_notice: Option<String>,
     search: String,
@@ -177,6 +179,7 @@ impl AgentsOverviewViewState {
 }
 
 pub(super) struct AgentsOverviewView {
+    use_theme_colors: bool,
     pub(super) rows: Vec<AgentsOverviewRow>,
     project_groups: Vec<AgentsOverviewProjectGroup>,
     selected: usize,
@@ -193,6 +196,7 @@ impl AgentsOverviewView {
         rows: Vec<AgentsOverviewRow>,
         selected_thread_id: Option<ThreadId>,
         worktrees_enabled: bool,
+        use_theme_colors: bool,
         app_event_tx: AppEventSender,
         keymap: RuntimeKeymap,
         state: Arc<Mutex<AgentsOverviewViewState>>,
@@ -218,6 +222,7 @@ impl AgentsOverviewView {
             .map(|row| AgentsOverviewProjectGroup::for_thread(&row.thread, worktrees_enabled))
             .collect();
         let mut view = Self {
+            use_theme_colors,
             rows,
             project_groups,
             selected,
@@ -238,6 +243,14 @@ impl AgentsOverviewView {
 
     pub(super) fn thread_ids(&self) -> Vec<ThreadId> {
         self.rows.iter().map(|row| row.thread_id).collect()
+    }
+
+    fn title_style(&self, thread_id: ThreadId) -> Style {
+        if self.use_theme_colors {
+            Style::default().fg(crate::thread_color::thread_color(thread_id))
+        } else {
+            Style::default()
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, AgentsOverviewViewState> {
@@ -320,7 +333,6 @@ impl AgentsOverviewView {
                 state.search.clear();
                 state.searching = false;
             }
-            self.state().completion = Some(ViewCompletion::Accepted);
         }
     }
 
@@ -438,7 +450,7 @@ impl AgentsOverviewView {
                 " ".into(),
                 dot,
                 " ".into(),
-                display_title(&row.thread).into(),
+                Span::styled(display_title(&row.thread), self.title_style(row.thread_id)),
                 current.dim(),
             ];
             if project_grouping {
@@ -459,7 +471,10 @@ impl AgentsOverviewView {
             Line::from("Task details".bold()),
             Line::default(),
             crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
-                display_title(&row.thread).to_owned().bold().into(),
+                Line::from(Span::styled(
+                    display_title(&row.thread).to_owned(),
+                    self.title_style(row.thread_id).bold(),
+                )),
                 width,
             ),
             Line::from(vec![dot, " ".into(), status.into()]),
@@ -477,17 +492,18 @@ impl AgentsOverviewView {
             lines.push("Branch".dim().into());
             lines.push(branch.clone().into());
         }
-        let preview = crate::text_formatting::truncate_text(&row.thread.preview, width * 2);
+        let preview = super::agents_overview_details::preview_markdown(&row.thread.preview);
         lines.extend([Line::default(), Line::from("Prompt".dim())]);
-        let mut prompt = crate::wrapping::word_wrap_lines(
+        let prompt = crate::markdown_render::render_markdown_text_with_width_and_cwd(
             match preview.as_str() {
                 "" => "No prompt available.",
                 preview => preview,
-            }
-            .lines()
-            .map(Line::from),
-            width,
-        );
+            },
+            Some(width),
+            Some(row.thread.cwd.as_path()),
+        )
+        .lines;
+        let mut prompt = crate::wrapping::word_wrap_lines(prompt, width);
         if prompt.len() > 2 {
             prompt.truncate(2);
             prompt[1] = "…".dim().into();
@@ -496,7 +512,17 @@ impl AgentsOverviewView {
         let details_start = crate::wrapping::word_wrap_lines(lines[..4].to_vec(), width).len();
         let mut lines = crate::wrapping::word_wrap_lines(lines, width);
         if self.state().connection_notice.is_none() {
-            let mut details = crate::wrapping::word_wrap_lines(row.details.clone(), width);
+            let mut details = row.details.lines.clone();
+            if let Some((message, cwd)) = &row.details.last_message {
+                details.extend([Line::default(), "Last message".dim().into()]);
+                crate::markdown::append_markdown(
+                    &crate::markdown::unwrap_markdown_fences(message),
+                    Some(width),
+                    Some(cwd.as_path()),
+                    &mut details,
+                );
+            }
+            let mut details = crate::wrapping::word_wrap_lines(details, width);
             let available = usize::from(area.height).saturating_sub(lines.len());
             if details.len() > available {
                 details.truncate(available);

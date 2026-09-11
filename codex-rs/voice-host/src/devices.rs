@@ -1,5 +1,5 @@
 //! Owns local device streams on the helper worker. Callbacks allocate no buffers and take no locks.
-//! Small callbacks share full queue slots; processing lag still fails the session closed.
+//! Small callbacks share full queue slots; overload discards stale media and resumes fresh audio.
 //! Capture and actual rendered output carry device timing.
 //! References start with worker service; unmute rejects earlier device capture buffers.
 
@@ -207,7 +207,9 @@ impl Devices {
         audio: &mut crate::audio_track::AudioTrack,
     ) -> io::Result<usize> {
         if let Some(playout) = &self.playout {
-            playout.check().map_err(io::Error::other)?;
+            playout
+                .check()
+                .map_err(|_| io::Error::other(crate::service_failure::ServiceFailure::Playout))?;
         }
         self.worker.service(audio, Instant::now).await
     }
@@ -241,9 +243,12 @@ fn bounded_stream_config(
     if min > max {
         return Err(io::Error::other("unsupported audio callback size range"));
     }
-    // Aim for 10 ms without consuming the queue's service headroom.
-    // Do not fall back to the backend's potentially much larger default buffer.
-    let frames = (config.sample_rate / 100).clamp(min, max);
+    // ALSA allocates two periods. A 20 ms ring can be smaller than one PipeWire
+    // graph cycle (e.g. 2048 frames at 48 kHz), silently losing capture samples
+    // every cycle. Give Linux a bounded 100 ms ring instead, while retaining
+    // 10 ms callbacks elsewhere and rejecting incompatible device ranges below.
+    let periods_per_second = if cfg!(target_os = "linux") { 20 } else { 100 };
+    let frames = (config.sample_rate / periods_per_second).clamp(min, max);
     let callback_duration =
         Duration::from_secs_f64(f64::from(frames) / f64::from(config.sample_rate));
     // Backends may deliver smaller callbacks than requested. Packing makes queue
@@ -338,7 +343,8 @@ where
                     record_peak(&buffers.microphone_peak, *output);
                 }
                 if !capture.push(frame, rate, &buffers.capture) {
-                    buffers.failed.store(true, Ordering::Release);
+                    capture.reset();
+                    buffers.capture_dropped.store(true, Ordering::Release);
                     return;
                 }
             }
@@ -429,7 +435,8 @@ fn render_output<T>(
             record_peak(&buffers.speaker_peak, *sample);
         }
         if !output.reference.push(reference, rate, &buffers.rendered) {
-            buffers.failed.store(true, Ordering::Release);
+            output.reference.reset();
+            buffers.render_dropped.store(true, Ordering::Release);
         }
     }
     if let Some(end) = delivered_until {
