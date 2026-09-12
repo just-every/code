@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.186] - 2026-09-12
+
+- Core: refresh upstream Codex ancestry for mainline parity. (cbe15cd1)
+- Release: keep the codex-rs mirror aligned with upstream/main. (11871005)
+
 ## [0.6.185] - 2026-09-11
 
 - Core: refresh upstream Codex ancestry for mainline parity. (d0c697f3)
