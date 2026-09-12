@@ -113,6 +113,15 @@ Failures use the normal JSON-RPC error envelope with closed `{type, reason}` dat
 `invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
 these values rather than message text. Native diagnostic payloads stay private.
 
+## Managed model provider requirements
+
+Existing threads retain their provider configuration. Input RPCs reject requests when managed
+`model_provider` or `model_providers` requirements no longer match that configuration, or cannot
+be loaded. This covers turn start/steer, review, compaction, manual queue start, and active goal
+updates. Realtime connections use separate routing configuration and are not checked here.
+Interrupt, realtime stop, and goal pause/clear remain available. User and project
+configuration changes alone do not invalidate existing threads.
+
 # Amazon Bedrock authentication
 
 If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock setup and
@@ -204,3 +213,14 @@ in both `full` and `toolsAndAuthOnly` detail modes, including thread-scoped read
 This is the server's advertised MCP capabilities object, including its `extensions`
 map. It is null when the connection has not initialized successfully; capabilities
 are never inferred from tools or copied from a shared catalog cache.
+
+# Thread rollback
+
+`thread/rollback` has been removed from the API, including its request and response
+types. Requests use the generic unknown-method rejection path. Use `thread/revert`
+for paginated threads instead.
+
+Existing rollouts may contain historical `ThreadRolledBack` events. Their replay
+and migration remain supported so resuming, reading, and forking those threads
+preserves the surviving history. This disk compatibility does not require restoring
+support for new `thread/rollback` requests.

@@ -135,6 +135,9 @@ impl ChatWidget {
             status_account_display,
             remote_connection: None,
             local_worktree_operations: true,
+            windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
+            #[cfg(any(target_os = "windows", test))]
+            windows_sandbox_elevated_setup_complete: false,
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
@@ -290,7 +293,6 @@ impl ChatWidget {
             .bottom_pane
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_service_tier_commands();
-        widget.sync_personality_command_enabled();
         widget.sync_worktrees_enabled();
         widget.sync_plugins_command_enabled();
         widget.sync_goal_command_enabled();

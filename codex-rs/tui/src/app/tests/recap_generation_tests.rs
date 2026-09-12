@@ -34,7 +34,7 @@ fn render_chat_widget(app: &App) -> String {
         .join("\n")
 }
 
-fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
+async fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
     app.active_thread_id = Some(thread_id);
     app.transcript_cells
         .push(Arc::new(crate::history_cell::UserHistoryCell {
@@ -44,21 +44,25 @@ fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
         }));
-    let ready_at = Instant::now() - recap::RECAP_DELAY;
+    let ready_at = Instant::now();
     app.recap.note_focus_lost(ready_at);
     for _ in 0..3 {
         app.recap
             .note_turn_finished(&TurnStatus::Completed, ready_at);
     }
+    // Advance the scheduler's clock instead of subtracting from the host's uptime.
+    tokio::time::pause();
+    tokio::time::advance(recap::RECAP_DELAY).await;
+    tokio::time::resume();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn recap_generation_uses_bounded_structured_request_and_inserts_result() -> Result<()> {
     let chunks = [
         ev_response_created("recap-response"),
         ev_assistant_message(
             "recap-message",
-            r#"{"recap":"Finished parsing. Next: run focused tests."}"#,
+            r#"{"summary":"Finished parsing.","next_action":"Run focused tests."}"#,
         ),
         ev_completed("recap-response"),
     ]
@@ -113,7 +117,23 @@ stream_max_retries = 0
     .await?;
     while app_event_rx.try_recv().is_ok() {}
 
-    prepare_eligible_recap(&mut app, thread_id);
+    prepare_eligible_recap(&mut app, thread_id).await;
+    app.transcript_cells
+        .push(Arc::new(crate::history_cell::AgentMarkdownCell::new(
+            format!(
+                "Parser fix implemented. {} What should empty input do?",
+                "progress ".repeat(/*n*/ 5_000)
+            ),
+            std::path::Path::new("."),
+        )));
+    app.transcript_cells
+        .push(Arc::new(crate::history_cell::UserHistoryCell {
+            message: "Keep follow-up work queued.".to_string(),
+            spoken: false,
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+        }));
 
     app.handle_event(
         &mut tui,
@@ -165,7 +185,8 @@ stream_max_retries = 0
             .collect::<Vec<_>>(),
         vec![
             "Conversation recap",
-            "Finished parsing. Next: run focused tests.",
+            "Finished parsing.",
+            "Next: Run focused tests.",
         ]
     );
 
@@ -184,7 +205,20 @@ stream_max_retries = 0
         "prompt: {prompt}\nrequest: {request}"
     );
     assert!(prompt.len() <= recap::RECAP_PROMPT_MAX_BYTES);
+    assert!(prompt.contains("Assistant: Parser fix implemented."));
+    assert!(prompt.contains("What should empty input do?"));
+    assert!(prompt.contains("[... excerpted ...]"));
+    assert_eq!(
+        prompt
+            .matches("Pending user request: Keep follow-up work queued.")
+            .count(),
+        1
+    );
     assert_eq!(request["text"]["format"]["type"], "json_schema");
+    assert_eq!(
+        request["text"]["format"]["schema"]["required"],
+        serde_json::json!(["summary", "next_action"])
+    );
     assert_eq!(request["tools"], serde_json::json!([]));
 
     app_server.shutdown().await?;
@@ -305,7 +339,7 @@ async fn manual_recap_works_when_auto_recap_disabled() -> Result<()> {
 async fn auto_recap_opt_out_blocks_requests_and_cleans_up_pending_start() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
-    prepare_eligible_recap(&mut app, thread_id);
+    prepare_eligible_recap(&mut app, thread_id).await;
     let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.local_settings.tui.auto_recap = false;
@@ -453,7 +487,7 @@ async fn temporary_recap_threads_disable_memories_and_remote_mcp_servers() -> Re
 async fn recap_check_rejects_a_non_displayed_thread() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let displayed_thread_id = ThreadId::new();
-    prepare_eligible_recap(&mut app, displayed_thread_id);
+    prepare_eligible_recap(&mut app, displayed_thread_id).await;
     while app_event_rx.try_recv().is_ok() {}
     let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -483,7 +517,7 @@ async fn recap_check_rejects_a_non_displayed_thread() -> Result<()> {
 async fn recap_check_rejects_a_running_turn() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
-    prepare_eligible_recap(&mut app, thread_id);
+    prepare_eligible_recap(&mut app, thread_id).await;
     app.chat_widget
         .handle_thread_session(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
     app.chat_widget.handle_server_notification(

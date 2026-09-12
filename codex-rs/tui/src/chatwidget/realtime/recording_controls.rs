@@ -76,6 +76,39 @@ impl ChatWidget {
         }
     }
 
+    pub(super) fn suppress_active_realtime_speaker(&mut self) {
+        // Quiet turns must not wait for captions before accepting their first
+        // audio packets. Only interrupt output that may belong to an older turn.
+        if self
+            .realtime_conversation
+            .assistant_transcript_generation
+            .is_some()
+            || self
+                .realtime_conversation
+                .pending_speech
+                .iter()
+                .any(|pending| {
+                    pending.input_generation != self.realtime_conversation.input_generation
+                        && !pending.captioned
+                        && matches!(
+                            pending.state,
+                            PendingSpeechState::Queued(_) | PendingSpeechState::Accepted
+                        )
+                })
+            || self.realtime_conversation.speaker_level > 0
+            || self
+                .realtime_conversation
+                .speaker_active_until
+                .is_some_and(|deadline| deadline > Instant::now())
+            || self
+                .realtime_conversation
+                .speaker_suppression_generation
+                .is_some()
+        {
+            self.suppress_realtime_speaker();
+        }
+    }
+
     pub(super) fn suppress_realtime_speaker(&mut self) {
         self.realtime_conversation.speaker_suppression_generation =
             Some(self.realtime_conversation.input_generation);
@@ -189,15 +222,6 @@ impl ChatWidget {
             .audio_meter_history
             .iter()
             .any(|(microphone, speaker)| *microphone > 0 || *speaker > 0);
-        // Release a quiet channel instead of waiting for old peaks to scroll out.
-        for (microphone, speaker) in &mut self.realtime_conversation.audio_meter_history {
-            if microphone_intensity == 0 {
-                *microphone = 0;
-            }
-            if speaker_intensity == 0 {
-                *speaker = 0;
-            }
-        }
         if self.realtime_conversation.audio_meter_history.len() >= MAX_REALTIME_AUDIO_METER_FRAMES {
             self.realtime_conversation.audio_meter_history.pop_front();
         }

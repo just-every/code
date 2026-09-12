@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use tokio_util::sync::CancellationToken;
 
 use crate::inline_visualization::InlineVisualizationContext;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
@@ -61,7 +62,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
-use codex_protocol::config_types::Personality;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_realtime_webrtc::StartedRealtimeWebrtcSession;
 
@@ -304,6 +304,7 @@ pub(crate) enum AppEvent {
     },
     /// Register a hidden title-generation thread started in the background.
     ThreadTitleStarted {
+        cancellation: CancellationToken,
         thread_id: ThreadId,
         destination: ThreadTitleDestination,
         prompt: String,
@@ -312,6 +313,7 @@ pub(crate) enum AppEvent {
     },
     /// Route a hidden title request to its automatic rename or editable prompt.
     GeneratedThreadTitle {
+        cancellation: CancellationToken,
         thread_id: ThreadId,
         temporary_thread_id: ThreadId,
         destination: ThreadTitleDestination,
@@ -727,6 +729,13 @@ pub(crate) enum AppEvent {
         result: Result<ThreadUsageOutcome, String>,
     },
 
+    /// Result of fetching usage for the selected dashboard task.
+    AgentsOverviewUsageLoaded {
+        thread_id: ThreadId,
+        request_id: Uuid,
+        result: Result<ThreadUsageOutcome, String>,
+    },
+
     /// Fetch workspace messages for the status-line headline item.
     RefreshStatusLineWorkspaceHeadline {
         request_id: u64,
@@ -1061,6 +1070,9 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    /// Move visible completed voice captions into history in one app event.
+    CommitRealtimeTranscriptHistory,
+
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 
@@ -1106,9 +1118,6 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
-    /// Update the current personality in the running app and widget.
-    UpdatePersonality(Personality),
-
     /// Result of creating a TUI-owned WebRTC offer for an active thread.
     RealtimeWebrtcOfferCreated {
         thread_id: ThreadId,
@@ -1148,11 +1157,6 @@ pub(crate) enum AppEvent {
     /// Save the voice for subsequent conversations through the app server.
     PersistRealtimeVoiceSelection {
         voice: codex_protocol::protocol::RealtimeVoice,
-    },
-
-    /// Persist the selected personality to the appropriate config.
-    PersistPersonalitySelection {
-        personality: Personality,
     },
 
     /// Persist the selected service tier to the appropriate config.
@@ -1215,26 +1219,6 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         selection: PermissionProfileSelection,
     },
-
-    /// Open the Windows world-writable directories warning.
-    /// If `preset` is `Some`, the confirmation will apply the provided
-    /// approval/sandbox configuration on Continue; if `None`, it performs no
-    /// policy change and only acknowledges/dismisses the warning.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    OpenWorldWritableWarningConfirmation {
-        preset: Option<ApprovalPreset>,
-        profile_selection: Option<PermissionProfileSelection>,
-        /// Up to 3 sample world-writable directories to display in the warning.
-        sample_paths: Vec<String>,
-        /// If there are more than `sample_paths`, this carries the remaining count.
-        extra_count: usize,
-        /// True when the scan failed (e.g. ACL query error) and protections could not be verified.
-        failed_scan: bool,
-    },
-
-    /// The startup world-writable scan finished and queued any protected warning it requires.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    StartupWorldWritableScanCompleted,
 
     /// Prompt to enable the Windows sandbox feature before using Agent mode.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -1319,19 +1303,11 @@ pub(crate) enum AppEvent {
     /// Clear all persisted local memory artifacts via the app-server.
     ResetMemories,
 
-    /// Update whether the world-writable directories warning has been acknowledged.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    UpdateWorldWritableWarningAcknowledged(bool),
-
     /// Update whether the rate limit switch prompt has been acknowledged for the session.
     UpdateRateLimitSwitchPromptHidden(bool),
 
     /// Update the Plan-mode-specific reasoning effort in memory.
     UpdatePlanModeReasoningEffort(Option<ReasoningEffort>),
-
-    /// Persist the acknowledgement flag for the world-writable directories warning.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    PersistWorldWritableWarningAcknowledged,
 
     /// Persist the acknowledgement flag for the rate limit switch prompt.
     PersistRateLimitSwitchPromptHidden,
@@ -1344,10 +1320,6 @@ pub(crate) enum AppEvent {
         from_model: String,
         to_model: String,
     },
-
-    /// Skip the next world-writable scan (one-shot) after a user-confirmed continue.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    SkipNextWorldWritableScan,
 
     /// Re-open the approval presets popup.
     OpenApprovalsPopup,

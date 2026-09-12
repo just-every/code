@@ -5914,7 +5914,7 @@ async fn make_test_app() -> App {
         pending_realtime_transcript_replay: HashMap::new(),
         realtime_replay_order: VecDeque::new(),
         temporary_structured_requests: HashMap::new(),
-        pending_thread_titles: HashSet::new(),
+        pending_thread_titles: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
         pending_server_profiles: HashMap::new(),
@@ -6013,7 +6013,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             pending_realtime_transcript_replay: HashMap::new(),
             realtime_replay_order: VecDeque::new(),
             temporary_structured_requests: HashMap::new(),
-            pending_thread_titles: HashSet::new(),
+            pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             pending_server_profiles: HashMap::new(),
@@ -8708,6 +8708,7 @@ async fn override_turn_context_sends_thread_settings_update() {
         let thread_id = started.session.thread_id;
         let initial_model = started.session.model.clone();
         let initial_effort = started.session.reasoning_effort.clone();
+        let initial_personality = started.session.personality;
         app.enqueue_primary_thread_session(started.session, started.turns)
             .await
             .expect("primary thread should be registered");
@@ -8781,8 +8782,8 @@ async fn override_turn_context_sends_thread_settings_update() {
             collaboration_mode.settings.reasoning_effort
         );
         assert_eq!(
-            notification.thread_settings.personality,
-            Some(Personality::Pragmatic)
+            notification.thread_settings.personality, initial_personality,
+            "the Pragmatic turn override should not change personality"
         );
 
         app.handle_app_server_event(
@@ -8811,7 +8812,7 @@ async fn override_turn_context_sends_thread_settings_update() {
             updated_mode.settings.reasoning_effort,
             collaboration_mode.settings.reasoning_effort
         );
-        assert_eq!(updated_session.personality, Some(Personality::Pragmatic));
+        assert_eq!(updated_session.personality, initial_personality);
         assert_eq!(updated_session.service_tier, Some(service_tier));
         assert_eq!(updated_session.approval_policy, AskForApproval::OnRequest);
         assert_eq!(

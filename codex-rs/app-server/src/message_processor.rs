@@ -486,11 +486,13 @@ impl MessageProcessor {
             thread_state_manager.clone(),
             state_db.clone(),
             Arc::clone(&goal_service),
+            config_manager.clone(),
         );
         let thread_queue_processor = ThreadQueueRequestProcessor::new(
             Arc::clone(&thread_manager),
             Arc::clone(&thread_store),
             outgoing.clone(),
+            config_manager.clone(),
             queue_service,
         );
         let project_processor = ProjectRequestProcessor::new(
@@ -528,7 +530,6 @@ impl MessageProcessor {
             pending_thread_unloads,
             thread_state_manager,
             thread_watch_manager,
-            thread_list_state_permit,
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
         );
@@ -983,7 +984,6 @@ impl MessageProcessor {
             ClientRequest::ThreadStart { .. }
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }
-            | ClientRequest::ThreadRollback { .. }
             | ClientRequest::ThreadRevert { .. }
             | ClientRequest::ThreadSettingsUpdate { .. }
             | ClientRequest::TurnSettingsUpdate { .. }
@@ -1447,11 +1447,6 @@ impl MessageProcessor {
             ClientRequest::ThreadBackgroundTerminalsTerminate { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_terminate(params)
-                    .await
-            }
-            ClientRequest::ThreadRollback { params, .. } => {
-                self.thread_processor
-                    .thread_rollback(&request_id, params, app_server_client_name.as_deref())
                     .await
             }
             ClientRequest::ThreadRevert { params, .. } => {

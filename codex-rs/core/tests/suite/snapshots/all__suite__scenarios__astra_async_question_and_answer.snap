@@ -1,0 +1,55 @@
+---
+source: core/tests/suite/scenarios.rs
+expression: "context_snapshot::format_context_snapshot(\"Astra asks who a launch update is for, keeps working, and receives the user's answer in the active turn.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+---
+Scenario: Astra asks who a launch update is for, keeps working, and receives the user's answer in the active turn.
+
+## Window 1
+-- request 1 (request) --
+00:additional_tools/developer (3; hash=d4f3e164a92d9bf1):
+        - namespace/functions; hash=e7db0a45c4ec3157
+          - custom/exec
+          - function/wait
+          - function/request_user_input
+          - function/request_user_input_async
+        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+          - function/sleep
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=43f195d9cc99ee15
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
+          - function/wait_agent
+01:message/developer:
+    <MODEL_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <COLLABORATION_MODE>
+03:message/developer:
+    <MULTI_AGENT_ROLE>
+04:message/developer:
+    <MULTI_AGENT_MODE>
+05:message/user:
+    <ENVIRONMENT_CONTEXT>
+06:message/user:
+    Draft a short launch update. Ask me who it is for and keep working while I answer.
+-- request 2 (request) --
+07:function_call/functions.request_user_input_async:{"questions":[{"options":["Internal team","Customers"],"title":"Who should receive the launch update?"}]}
+08:function_call_output:{"accepted":true}
+-- request 3 (request) --
+09:message/assistant:
+    I drafted a short launch update.
+10:message/user:
+    > Who should receive the launch update?
+
+    Customers
+-- request 4 (request) --
+11:message/assistant:
+    Here is the launch update for customers.
+12:message/developer:
+    <PERMISSIONS_INSTRUCTIONS>
+13:message/user:
+    <ENVIRONMENT_CONTEXT>
+14:message/user:
+    Now give it an email subject.

@@ -72,6 +72,8 @@ mod misalignment_policy;
 mod model_auto_review;
 mod model_list;
 mod model_provider_capabilities_read;
+#[path = "model_provider_enforcement_tests.rs"]
+mod model_provider_enforcement;
 mod multi_agent_v2_developer_instructions;
 mod otel;
 mod output_schema;
@@ -126,7 +128,6 @@ mod thread_queue;
 mod thread_read;
 mod thread_resume;
 mod thread_revert;
-mod thread_rollback;
 mod thread_sections;
 mod thread_settings_update;
 mod thread_shell_command;

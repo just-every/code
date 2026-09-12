@@ -152,9 +152,6 @@ use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::Personality;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
@@ -162,8 +159,6 @@ use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-#[cfg(target_os = "windows")]
-use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_rollout::StateDbHandle;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -199,6 +194,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
@@ -209,6 +205,7 @@ mod agents_overview;
 mod agents_overview_actions;
 mod agents_overview_details;
 mod agents_overview_threads;
+mod agents_overview_usage;
 mod agents_overview_view;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod app_server_event_targets;
@@ -271,6 +268,7 @@ use self::agent_navigation::AgentNavigationState;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
+pub(crate) use self::platform_actions::WindowsSandboxHost;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
 use self::side::SideParentStatusChange;
@@ -426,14 +424,6 @@ impl AutoReviewMode {
         builtin_permission_profile_for_active_permission_profile(&self.active_permission_profile)
             .expect("auto-review mode should use a built-in permission profile")
     }
-}
-
-#[cfg(target_os = "windows")]
-fn managed_filesystem_sandbox_is_restricted(permission_profile: &PermissionProfile) -> bool {
-    matches!(
-        permission_profile.file_system_sandbox_policy().kind,
-        FileSystemSandboxKind::Restricted
-    )
 }
 
 /// Baseline cadence for periodic stream commit animation ticks.
@@ -607,8 +597,7 @@ pub(crate) struct App {
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
     /// When set, the next draw rebuilds terminal scrollback from the retained transcript cells.
     ///
-    /// This is used after a confirmed thread rollback to ensure scrollback reflects the trimmed
-    /// transcript cells.
+    /// This keeps scrollback consistent with the retained transcript after backtracking.
     pub(crate) backtrack_render_pending: bool,
     pub(crate) feedback: codex_feedback::CodexFeedback,
     feedback_audience: FeedbackAudience,
@@ -637,7 +626,7 @@ pub(crate) struct App {
     realtime_replay_order: VecDeque<ThreadId>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
     /// Track title generation across thread switches and deduplicate automatic requests.
-    pending_thread_titles: HashSet<(ThreadId, ThreadTitleDestination)>,
+    pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     agents_overview: agents_overview::AgentsOverviewState,
@@ -966,6 +955,7 @@ impl App {
                     // Allow widgets to process any pending timers before rendering.
                     let had_active_view = self.chat_widget.has_active_view();
                     self.chat_widget.pre_draw_tick();
+                    self.refresh_agents_overview_usage(app_server, tui.frame_requester());
                     let rendered_area = self.render_chat_widget_frame(tui, screen_size)?;
                     if !had_active_view
                         && self.chat_widget.has_active_view()
