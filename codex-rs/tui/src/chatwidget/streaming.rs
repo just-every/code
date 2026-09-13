@@ -202,15 +202,16 @@ impl ChatWidget {
                 self.history_render_mode(),
             ));
         }
-        if let Some(controller) = self.plan_stream_controller.as_mut()
-            && controller.push(&delta)
-        {
+        let changed = self
+            .plan_stream_controller
+            .as_mut()
+            .is_some_and(|controller| controller.push(&delta));
+        if (changed || delta.contains('\n')) && self.sync_active_stream_tail() {
+            self.request_redraw();
+        }
+        if changed {
             self.app_event_tx.send(AppEvent::StartCommitAnimation);
             self.run_catch_up_commit_tick();
-        }
-        // Unterminated source is buffered by the controller and cannot change the visible tail.
-        if delta.contains('\n') && self.sync_active_stream_tail() {
-            self.request_redraw();
         }
     }
 
@@ -542,15 +543,16 @@ impl ChatWidget {
                 inline_visualization_context,
             ));
         }
-        if let Some(controller) = self.stream_controller.as_mut()
-            && controller.push(&delta)
-        {
+        let changed = self
+            .stream_controller
+            .as_mut()
+            .is_some_and(|controller| controller.push(&delta));
+        if (changed || delta.contains('\n')) && self.sync_active_stream_tail() {
+            self.request_redraw();
+        }
+        if changed {
             self.app_event_tx.send(AppEvent::StartCommitAnimation);
             self.run_catch_up_commit_tick();
-        }
-        // Unterminated source is buffered by the controller and cannot change the visible tail.
-        if delta.contains('\n') && self.sync_active_stream_tail() {
-            self.request_redraw();
         }
     }
 

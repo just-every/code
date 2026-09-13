@@ -1,6 +1,9 @@
 //! Records attempted calls at existing execution boundaries. Request metadata policy
 //! lives in the private request metadata module; this recorder must never dispatch or await tools.
 
+#[cfg(test)]
+#[path = "executed_tool_calls_direct_tests.rs"]
+mod direct_tests;
 mod request_metadata;
 
 use std::collections::HashMap;
@@ -8,6 +11,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::Weak;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use codex_code_mode::CellId;
 use codex_features::Feature;
@@ -37,6 +43,10 @@ use seen_ids::SeenIds;
 const MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES: usize = 8 * 1024;
 const MAX_EXECUTED_TOOL_CALL_FULL_ARGUMENT_BYTES_PER_OUTPUT: usize = 32 * 1024;
 const MAX_PENDING_EXECUTED_TOOL_CALLS: usize = 256;
+// Limits new Direct metadata retained in history and the append-only rollout
+// during one recorder lifetime. A new process cannot recover the exact prior
+// budget because raw result metadata is intentionally not deserialized.
+const MAX_RETAINED_DIRECT_METADATA_BYTES: usize = 1024 * 1024;
 
 type ExecutedToolCallCache =
     HashMap<(std::mem::Discriminant<ResponseItem>, String), Vec<ExecutedToolCall>>;
@@ -46,11 +56,32 @@ type ExecutedToolCallCache =
 #[derive(Clone, Default)]
 pub(crate) struct ExecutedToolCalls {
     state: Arc<Mutex<Option<ExecutedToolCallRecorderState>>>,
+    retained_direct_metadata_bytes: Arc<AtomicUsize>,
+    pending_direct_calls: Arc<AtomicUsize>,
+}
+
+// The tool future owns this reservation, so completion or cancellation releases it.
+pub(crate) struct DirectCallPermit {
+    recording: Weak<()>,
+    pending_direct_calls: Arc<AtomicUsize>,
+}
+
+impl DirectCallPermit {
+    pub(crate) fn strong_count(&self) -> usize {
+        self.recording.strong_count()
+    }
+}
+
+impl Drop for DirectCallPermit {
+    fn drop(&mut self) {
+        self.pending_direct_calls.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Default)]
 struct ExecutedToolCallRecorderState {
-    direct_calls: HashMap<String, ExecutedToolCall>,
+    // Disabling drops this lifetime, permanently invalidating prepared Direct records.
+    recording: Arc<()>,
     cells: HashMap<CellId, RecordedCell>,
     output_cells: HashMap<String, CellId>,
     retained_calls: HashMap<(std::mem::Discriminant<ResponseItem>, String), RetainedToolCalls>,
@@ -175,6 +206,8 @@ impl ExecutedToolCalls {
                     ..Default::default()
                 }
             }))),
+            retained_direct_metadata_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_direct_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -210,12 +243,105 @@ impl ExecutedToolCalls {
         self.record_call(call, source, step_context.tool_router.tool_mode());
     }
 
+    /// Keep a Direct record with its invocation so it can be attached to that invocation's output.
+    pub(crate) fn prepare_direct_call(
+        &self,
+        call: &ToolCall,
+        source: &ToolCallSource,
+        step_context: &StepContext,
+    ) -> Option<(ExecutedToolCall, DirectCallPermit)> {
+        if is_code_mode_wrapper(call, source, step_context.tool_router.tool_mode()) {
+            return None;
+        }
+        let permit = self.reserve_direct_call()?;
+        let (mut recorded, _) = recorded_call(call);
+        let argument_bytes = serialized_json_bytes(recorded.arguments()).unwrap_or(usize::MAX);
+        if matches!(recorded.arguments(), ExecutedToolCallArguments::Raw(_))
+            && argument_bytes > MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES
+        {
+            recorded = ExecutedToolCall::truncated(
+                recorded.name,
+                argument_bytes,
+                MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES,
+            );
+        }
+        Some((recorded, permit))
+    }
+
+    fn reserve_direct_call(&self) -> Option<DirectCallPermit> {
+        let recording = Arc::downgrade(&self.lock_state().as_ref()?.recording);
+        self.pending_direct_calls
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+                (pending < MAX_PENDING_EXECUTED_TOOL_CALLS).then_some(pending + 1)
+            })
+            .ok()?;
+        Some(DirectCallPermit {
+            recording,
+            pending_direct_calls: Arc::clone(&self.pending_direct_calls),
+        })
+    }
+
+    /// Validate the recording lifetime and attach together so a config refresh
+    /// cannot invalidate the call between those two operations.
+    pub(crate) fn attach_direct_call_to_output(
+        &self,
+        item: &mut ResponseItem,
+        prepared: Option<(ExecutedToolCall, DirectCallPermit)>,
+    ) {
+        let Some((call, permit)) = prepared else {
+            return;
+        };
+        let state = self.lock_state();
+        let Some(state) = state.as_ref() else {
+            return;
+        };
+        if !permit.recording.ptr_eq(&Arc::downgrade(&state.recording)) {
+            return;
+        }
+        let complete = matches!(call.arguments(), ExecutedToolCallArguments::Raw(_));
+        item.append_executed_tool_calls(vec![call]);
+        if complete {
+            item.mark_tool_calls_complete();
+        }
+        let retained = self.retained_direct_metadata_bytes.load(Ordering::Relaxed);
+        let available = MAX_RETAINED_DIRECT_METADATA_BYTES.saturating_sub(retained);
+        let mut bytes = executed_tool_call_metadata_bytes(item);
+        if bytes > available {
+            item.clear_tool_result_metadata();
+            bytes = executed_tool_call_metadata_bytes(item);
+        }
+        if bytes > available {
+            item.clear_executed_tool_calls();
+            return;
+        }
+        // All Direct attachments share the recorder lock, including cloned handles.
+        self.retained_direct_metadata_bytes
+            .store(retained + bytes, Ordering::Relaxed);
+    }
+
+    /// Remember IDs from response items that bypass local tool dispatch.
+    pub(crate) fn observe_non_dispatched_call(&self, item: &ResponseItem) {
+        let Some(call_id) = input_call_id(item) else {
+            return;
+        };
+        let mut state = self.lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        if !state.seen_ids.observe_call_id(call_id) {
+            state.invalidate_origin(call_id);
+        }
+    }
+
     pub(crate) fn record_accepted_result(
         &self,
         source: &ToolCallSource,
         call_id: &str,
         result: &dyn ToolOutput,
     ) {
+        if !matches!(source, ToolCallSource::CodeMode { .. }) {
+            return;
+        }
         // Release the lock before calling the output's trait method.
         let recording = self.lock_state().is_some();
         if recording && let Some(metadata) = result.tool_result_metadata() {
@@ -227,83 +353,25 @@ impl ExecutedToolCalls {
         if self.lock_state().is_none() {
             return;
         }
-        if matches!(source, ToolCallSource::Direct)
-            && matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
-            && call.tool_name.is_default_namespace()
-            && matches!(
-                (call.tool_name.name.as_str(), &call.payload),
-                (
-                    crate::tools::code_mode::PUBLIC_TOOL_NAME,
-                    ToolPayload::Custom { .. }
-                ) | (
-                    crate::tools::code_mode::WAIT_TOOL_NAME,
-                    ToolPayload::Function { .. }
-                )
-            )
-        {
-            let mut state = self.lock_state();
-            let Some(state) = state.as_mut() else {
-                return;
-            };
-            let fresh = state.seen_ids.observe_call_id(&call.call_id);
-            if !fresh {
-                state.invalidate_origin(&call.call_id);
-            }
-            if fresh && state.pending_wrapper_origins.len() < MAX_PENDING_EXECUTED_TOOL_CALLS {
-                state.pending_wrapper_origins.insert(call.call_id.clone());
-            }
-            return;
-        }
-
-        let original_bytes = match &call.payload {
-            ToolPayload::Function { arguments } => arguments.len(),
-            ToolPayload::Custom { input } => serialized_json_bytes(input).unwrap_or(usize::MAX),
-            ToolPayload::ToolSearch { arguments } => {
-                serialized_json_bytes(arguments).unwrap_or(usize::MAX)
-            }
-        };
-        let name = codex_tools::code_mode_name_for_tool_name(&call.tool_name);
-        let recorded_call = if original_bytes > MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES {
-            ExecutedToolCall::truncated(name, original_bytes, MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES)
-        } else {
-            let arguments = match &call.payload {
-                ToolPayload::Function { arguments } => serde_json::from_str(arguments)
-                    .unwrap_or_else(|_| JsonValue::String(arguments.clone())),
-                ToolPayload::Custom { input } => JsonValue::String(input.clone()),
-                ToolPayload::ToolSearch { arguments } => {
-                    serde_json::to_value(arguments).unwrap_or_default()
-                }
-            };
-            ExecutedToolCall::new(name, arguments)
-        };
         match source {
             ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
                 let mut state = self.lock_state();
                 let Some(state) = state.as_mut() else {
                     return;
                 };
-                if !state.seen_ids.observe_call_id(&call.call_id) {
+                let fresh = state.seen_ids.observe_call_id(&call.call_id);
+                if !fresh {
                     state.invalidate_origin(&call.call_id);
                 }
-                if state.direct_calls.len() < MAX_PENDING_EXECUTED_TOOL_CALLS {
-                    state
-                        .direct_calls
-                        .entry(call.call_id.clone())
-                        .or_insert(recorded_call);
-                } else if state.direct_calls.len() == MAX_PENDING_EXECUTED_TOOL_CALLS
-                    && !state.direct_calls.contains_key(&call.call_id)
+                if fresh
+                    && is_code_mode_wrapper(call, source, tool_mode)
+                    && state.pending_wrapper_origins.len() < MAX_PENDING_EXECUTED_TOOL_CALLS
                 {
-                    state.direct_calls.insert(
-                        call.call_id.clone(),
-                        ExecutedToolCall::truncated(
-                            recorded_call.name,
-                            original_bytes,
-                            /*max_bytes*/ 0,
-                        ),
-                    );
+                    state.pending_wrapper_origins.insert(call.call_id.clone());
                 }
             }
             ToolCallSource::CodeMode { cell_id, .. } => {
+                let (recorded_call, original_bytes) = recorded_call(call);
                 self.record_nested_tool_call(
                     CellId::new(cell_id.clone()),
                     call.call_id.clone(),
@@ -376,28 +444,23 @@ impl ExecutedToolCalls {
         call_id: &str,
         metadata: &JsonValue,
     ) -> bool {
+        let ToolCallSource::CodeMode { cell_id, .. } = source else {
+            return false;
+        };
         let metadata = codex_protocol::models::ToolResultMetadata::new(metadata);
         let has_metadata = metadata.is_some();
         let mut state = self.lock_state();
         let Some(state) = state.as_mut() else {
             return false;
         };
-        let call = match source {
-            ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
-                state.direct_calls.get_mut(call_id)
-            }
-            ToolCallSource::CodeMode { cell_id, .. } => state
-                .cells
-                .get_mut(&CellId::new(cell_id.clone()))
-                .and_then(|cell| cell.pending_calls.get_mut(call_id)),
-        };
+        let call = state
+            .cells
+            .get_mut(&CellId::new(cell_id.clone()))
+            .and_then(|cell| cell.pending_calls.get_mut(call_id));
         if let Some(call) = call {
             call.set_tool_result_metadata(metadata);
             return has_metadata;
         }
-        let ToolCallSource::CodeMode { cell_id, .. } = source else {
-            return false;
-        };
         let Some((retained, index)) = state.retained_calls.values_mut().find_map(|retained| {
             if retained.runtime_cell_id.as_ref()?.as_str() != cell_id.as_str() {
                 return None;
@@ -459,6 +522,47 @@ impl ExecutedToolCalls {
             }
         }
     }
+}
+
+fn is_code_mode_wrapper(call: &ToolCall, source: &ToolCallSource, tool_mode: ToolMode) -> bool {
+    matches!(source, ToolCallSource::Direct)
+        && matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
+        && call.tool_name.is_default_namespace()
+        && matches!(
+            (call.tool_name.name.as_str(), &call.payload),
+            (
+                crate::tools::code_mode::PUBLIC_TOOL_NAME,
+                ToolPayload::Custom { .. }
+            ) | (
+                crate::tools::code_mode::WAIT_TOOL_NAME,
+                ToolPayload::Function { .. }
+            )
+        )
+}
+
+fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+    let original_bytes = match &call.payload {
+        ToolPayload::Function { arguments } => arguments.len(),
+        ToolPayload::Custom { input } => serialized_json_bytes(input).unwrap_or(usize::MAX),
+        ToolPayload::ToolSearch { arguments } => {
+            serialized_json_bytes(arguments).unwrap_or(usize::MAX)
+        }
+    };
+    let name = codex_tools::code_mode_name_for_tool_name(&call.tool_name);
+    let recorded_call = if original_bytes > MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES {
+        ExecutedToolCall::truncated(name, original_bytes, MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES)
+    } else {
+        let arguments = match &call.payload {
+            ToolPayload::Function { arguments } => serde_json::from_str(arguments)
+                .unwrap_or_else(|_| JsonValue::String(arguments.clone())),
+            ToolPayload::Custom { input } => JsonValue::String(input.clone()),
+            ToolPayload::ToolSearch { arguments } => {
+                serde_json::to_value(arguments).unwrap_or_default()
+            }
+        };
+        ExecutedToolCall::new(name, arguments)
+    };
+    (recorded_call, original_bytes)
 }
 
 fn input_call_id(item: &ResponseItem) -> Option<&str> {

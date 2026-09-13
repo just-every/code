@@ -120,7 +120,7 @@ pub(crate) fn validate_user_permission_profile_names(
     Ok(())
 }
 
-pub(crate) fn network_proxy_config_from_profile_network(
+pub fn network_proxy_config_from_profile_network(
     network: Option<&NetworkToml>,
 ) -> NetworkProxyConfig {
     let mut config = network.map_or_else(

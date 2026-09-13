@@ -1,4 +1,6 @@
 mod common;
+#[path = "exec_process/windows_sandbox.rs"]
+mod windows_sandbox;
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -100,6 +102,10 @@ async fn create_process_context(use_remote: bool) -> Result<ProcessContext> {
             _server: None,
         })
     }
+}
+
+fn selected_windows_sandbox_available(windows_sandbox_level: WindowsSandboxLevel) -> bool {
+    windows_sandbox_level != WindowsSandboxLevel::Mxc || codex_sandboxing::windows_mxc_available()
 }
 
 #[cfg(target_os = "macos")]
@@ -915,12 +921,19 @@ async fn collect_process_output_from_reads(
 async fn collect_process_output_from_events(
     session: Arc<dyn ExecProcess>,
 ) -> Result<(String, String, Option<i32>, bool)> {
+    collect_process_output_from_events_with_timeout(session, Duration::from_secs(2)).await
+}
+
+async fn collect_process_output_from_events_with_timeout(
+    session: Arc<dyn ExecProcess>,
+    event_timeout: Duration,
+) -> Result<(String, String, Option<i32>, bool)> {
     let mut events = session.subscribe_events();
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut exit_code = None;
     loop {
-        match timeout(Duration::from_secs(2), events.recv()).await?? {
+        match timeout(event_timeout, events.recv()).await?? {
             ExecProcessEvent::Output(chunk) => match chunk.stream {
                 ExecOutputStream::Stdout | ExecOutputStream::Pty => {
                     stdout.push_str(&String::from_utf8_lossy(&chunk.chunk.into_inner()));
@@ -1281,7 +1294,14 @@ async fn assert_exec_process_write_then_read_without_tty(use_remote: bool) -> Re
     Ok(())
 }
 
-async fn assert_remote_windows_sandbox_process_write() -> Result<()> {
+async fn assert_remote_windows_sandbox_process_write(
+    windows_sandbox_level: WindowsSandboxLevel,
+    expected_sandbox_type: codex_sandboxing::SandboxType,
+) -> Result<()> {
+    if !selected_windows_sandbox_available(windows_sandbox_level) {
+        eprintln!("skipping MXC enforcement test: native MXC is unavailable on this host");
+        return Ok(());
+    }
     let context = create_process_context(/*use_remote*/ true).await?;
     let workspace = TempDir::new()?;
     let blocked_file = workspace.path().join("blocked.txt");
@@ -1290,7 +1310,7 @@ async fn assert_remote_windows_sandbox_process_write() -> Result<()> {
         SandboxPolicy::new_read_only_policy(),
         cwd.clone(),
     )?;
-    sandbox.windows_sandbox_level = WindowsSandboxLevel::RestrictedToken;
+    sandbox.windows_sandbox_level = windows_sandbox_level;
 
     let session = match context
         .backend
@@ -1325,6 +1345,7 @@ async fn assert_remote_windows_sandbox_process_write() -> Result<()> {
         Ok(session) => session,
         Err(err) => return Err(err.into()),
     };
+    assert_eq!(session.sandbox_type, Some(expected_sandbox_type));
 
     let write_response = session.process.write(b"hello\n".to_vec()).await?;
     assert_eq!(write_response.status, WriteStatus::Accepted);
@@ -1743,11 +1764,24 @@ async fn exec_process_write_then_read_without_tty(use_remote: bool) -> Result<()
     assert_exec_process_write_then_read_without_tty(use_remote).await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[test_case(
+    WindowsSandboxLevel::RestrictedToken,
+    codex_sandboxing::SandboxType::WindowsRestrictedToken;
+    "restricted_token"
+)]
+#[test_case(
+    WindowsSandboxLevel::Mxc,
+    codex_sandboxing::SandboxType::WindowsMxc;
+    "mxc"
+)]
 #[cfg_attr(not(windows), ignore = "Windows-only exec-server sandbox process test")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial(remote_exec_server)]
-async fn remote_windows_sandbox_process_accepts_process_write() -> Result<()> {
-    assert_remote_windows_sandbox_process_write().await
+async fn remote_windows_sandbox_process_accepts_process_write(
+    windows_sandbox_level: WindowsSandboxLevel,
+    expected_sandbox_type: codex_sandboxing::SandboxType,
+) -> Result<()> {
+    assert_remote_windows_sandbox_process_write(windows_sandbox_level, expected_sandbox_type).await
 }
 
 #[test_case(false ; "local")]

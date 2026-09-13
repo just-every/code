@@ -7,9 +7,8 @@ dispatcher, edits host ACLs, creates sandbox users, runs setup, or requests
 elevation. The existing Codex Windows sandboxes remain separate backends.
 
 Windows executors record `codex.windows_mxc.available` once per process with an
-`available=true|false` tag. This measures capability independently of selection.
-The exec-server handshake also exposes `windows_mxc_available`; older or
-unsupported Windows executors reject MXC requests before execution.
+`available=true|false` tag. This measures runtime availability independently of
+selection. Unsupported Windows executors reject MXC requests before execution.
 
 `is_available()` uses MXC's cached create/close probe, rather than an OS build
 number or the SDK's broad `platform_support()` result. The latter also reports

@@ -38,18 +38,18 @@ use windows_sys::Win32::Storage::FileSystem::CREATE_NEW;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 
-use codex_windows_sandbox::SANDBOX_USERS_GROUP;
-use codex_windows_sandbox::SETUP_VERSION;
-use codex_windows_sandbox::SetupErrorCode;
-use codex_windows_sandbox::SetupFailure;
-use codex_windows_sandbox::dpapi_protect;
-use codex_windows_sandbox::ensure_sandbox_users_group;
-use codex_windows_sandbox::resolve_sid;
-use codex_windows_sandbox::sandbox_dir;
-use codex_windows_sandbox::sandbox_secrets_dir;
-use codex_windows_sandbox::string_from_sid_bytes;
-use codex_windows_sandbox::to_wide;
-use codex_windows_sandbox::write_file_atomically;
+use crate::SANDBOX_USERS_GROUP;
+use crate::SETUP_VERSION;
+use crate::SetupErrorCode;
+use crate::SetupFailure;
+use crate::dpapi_protect;
+use crate::ensure_sandbox_users_group;
+use crate::resolve_sid;
+use crate::sandbox_dir;
+use crate::sandbox_secrets_dir;
+use crate::string_from_sid_bytes;
+use crate::to_wide;
+use crate::write_file_atomically;
 
 use super::SetupMode;
 

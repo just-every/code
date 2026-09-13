@@ -20,6 +20,7 @@ pub(crate) mod chunking;
 mod code_fence;
 pub(crate) mod commit_tick;
 pub(crate) mod controller;
+mod prose_preview;
 mod render;
 mod table_holdback;
 

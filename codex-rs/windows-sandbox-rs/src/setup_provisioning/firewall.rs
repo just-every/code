@@ -26,8 +26,8 @@ use windows::Win32::System::Com::CoUninitialize;
 use windows::core::BSTR;
 use windows::core::Interface;
 
-use codex_windows_sandbox::SetupErrorCode;
-use codex_windows_sandbox::SetupFailure;
+use crate::SetupErrorCode;
+use crate::SetupFailure;
 
 // This is the stable identifier we use to find/update the rule idempotently.
 // It intentionally does not change between installs.

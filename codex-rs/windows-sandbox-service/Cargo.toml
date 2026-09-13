@@ -22,10 +22,11 @@ codex-cloud-config = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-windows-sandbox = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 toml = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"

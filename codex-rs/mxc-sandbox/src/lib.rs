@@ -106,7 +106,7 @@ pub fn run_main() -> ! {
         match windows::run() {
             Ok(exit_code) => std::process::exit(exit_code),
             Err(error) => {
-                eprintln!("MXC sandbox: {error:#}");
+                eprintln!("MXC launcher: {error:#}");
                 std::process::exit(1);
             }
         }

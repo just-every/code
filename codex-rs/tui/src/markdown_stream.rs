@@ -100,6 +100,11 @@ impl MarkdownStreamCollector {
         &self.buffer[..self.committed_source_len]
     }
 
+    /// Return the incomplete line without advancing the scrollback commit boundary.
+    pub fn pending_source(&self) -> &str {
+        &self.buffer[self.committed_source_len..]
+    }
+
     /// Finalize the stream and transfer its complete raw source.
     ///
     /// Ensures the returned source chunk is newline-terminated when non-empty so callers can

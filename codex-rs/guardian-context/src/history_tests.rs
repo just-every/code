@@ -1,3 +1,4 @@
+use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::ReasoningItemContent;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -89,6 +90,40 @@ fn byte_limits_are_independent_and_oversized_items_do_not_clear_history() {
         internal_chat_message_metadata_passthrough: None,
     });
     assert_eq!(history.items().collect::<Vec<_>>(), vec![&keep, &large]);
+}
+
+#[test]
+fn tool_metadata_is_retained_without_changing_retention_size() {
+    let before = tool("keep this");
+    let mut plain = tool(&"x".repeat(MAX_BYTES_PER_KIND - 4096));
+    plain.set_turn_id_if_missing("turn-1");
+    let mut recorded = plain.clone();
+    recorded.append_executed_tool_calls(vec![ExecutedToolCall::new(
+        "command".to_string(),
+        json!({"command": "x".repeat(7000)}),
+    )]);
+    recorded.mark_tool_calls_complete();
+    let mut baseline = TranscriptHistory::default();
+    let mut with_metadata = TranscriptHistory::default();
+    baseline.reset([&before, &plain]);
+    with_metadata.reset([&before, &recorded]);
+    assert_eq!(
+        with_metadata.items().collect::<Vec<_>>(),
+        vec![&before, &recorded]
+    );
+    assert_eq!(
+        with_metadata
+            .items
+            .iter()
+            .map(|(_, size)| *size)
+            .collect::<Vec<_>>(),
+        baseline
+            .items
+            .iter()
+            .map(|(_, size)| *size)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(with_metadata.generation(), baseline.generation());
 }
 
 #[test]

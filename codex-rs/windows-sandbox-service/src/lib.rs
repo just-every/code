@@ -11,6 +11,8 @@ mod package_identity;
 #[cfg(windows)]
 mod package_lifecycle;
 #[cfg(windows)]
+mod provisioning;
+#[cfg(windows)]
 mod service;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -115,7 +115,10 @@ pub(super) fn permission_profile_is_allowed(
     allowed_by_id && allowed_by_sandbox_mode && allowed_by_filesystem
 }
 
-pub(super) fn validate_permission_profile_for_deny_read(
+/// Validates that a permission candidate can enforce managed filesystem denials.
+/// Add this validator before applying profile requirements so the native
+/// constrained fallback can replace full-access or external candidates.
+pub fn validate_permission_profile_for_deny_read(
     permission_profile: &PermissionProfile,
     requirement_source: &RequirementSource,
 ) -> ConstraintResult<()> {

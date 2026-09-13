@@ -1,44 +1,47 @@
+//! Implements the Windows setup helper behind its shared library entrypoint.
+//! Payload validation and all provisioning modes retain the helper contract.
+
 mod firewall;
 mod read_acl_mutex;
 
+use crate::DirectoryOpenDisposition;
+use crate::SETUP_VERSION;
+use crate::SetupErrorCode;
+use crate::SetupErrorReport;
+use crate::SetupFailure;
+use crate::acquire_sandbox_setup_lock;
+use crate::add_deny_write_ace;
+use crate::convert_string_sid_to_sid;
+use crate::ensure_allow_mask_aces_with_inheritance;
+use crate::ensure_allow_write_aces;
+use crate::extract_setup_failure;
+use crate::hide_newly_created_users;
+use crate::install_wfp_filters;
+use crate::local_user_flags;
+use crate::log_note;
+use crate::log_writer;
+use crate::open_directory_no_reparse;
+use crate::path_mask_allows;
+use crate::path_write_aces_need_refresh;
+use crate::resolve_sid;
+use crate::sandbox_bin_dir;
+use crate::sandbox_dir;
+use crate::sandbox_secrets_dir;
+use crate::set_local_user_flags;
+use crate::setup_error_path;
+use crate::setup_log_writer;
+use crate::string_from_sid_bytes;
+use crate::sync_persistent_deny_read_acls;
+use crate::to_wide;
+use crate::workspace_write_cap_sid_for_root;
+use crate::workspace_write_root_overlaps_path;
+use crate::write_file_atomically;
+use crate::write_setup_error_report;
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use codex_otel::StatsigMetricsSettings;
-use codex_windows_sandbox::DirectoryOpenDisposition;
-use codex_windows_sandbox::SETUP_VERSION;
-use codex_windows_sandbox::SetupErrorCode;
-use codex_windows_sandbox::SetupErrorReport;
-use codex_windows_sandbox::SetupFailure;
-use codex_windows_sandbox::acquire_sandbox_setup_lock;
-use codex_windows_sandbox::add_deny_write_ace;
-use codex_windows_sandbox::convert_string_sid_to_sid;
-use codex_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
-use codex_windows_sandbox::ensure_allow_write_aces;
-use codex_windows_sandbox::extract_setup_failure;
-use codex_windows_sandbox::hide_newly_created_users;
-use codex_windows_sandbox::install_wfp_filters;
-use codex_windows_sandbox::local_user_flags;
-use codex_windows_sandbox::log_note;
-use codex_windows_sandbox::log_writer;
-use codex_windows_sandbox::open_directory_no_reparse;
-use codex_windows_sandbox::path_mask_allows;
-use codex_windows_sandbox::path_write_aces_need_refresh;
-use codex_windows_sandbox::resolve_sid;
-use codex_windows_sandbox::sandbox_bin_dir;
-use codex_windows_sandbox::sandbox_dir;
-use codex_windows_sandbox::sandbox_secrets_dir;
-use codex_windows_sandbox::set_local_user_flags;
-use codex_windows_sandbox::setup_error_path;
-use codex_windows_sandbox::setup_log_writer;
-use codex_windows_sandbox::string_from_sid_bytes;
-use codex_windows_sandbox::sync_persistent_deny_read_acls;
-use codex_windows_sandbox::to_wide;
-use codex_windows_sandbox::workspace_write_cap_sid_for_root;
-use codex_windows_sandbox::workspace_write_root_overlaps_path;
-use codex_windows_sandbox::write_file_atomically;
-use codex_windows_sandbox::write_setup_error_report;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -810,13 +813,14 @@ fn lock_persistent_sandbox_dirs(payload: &Payload, sandbox_group_sid: &[u8]) -> 
 }
 
 fn lock_sandbox_bin_dir(payload: &Payload, sandbox_group_sid: &[u8]) -> Result<()> {
+    // The owner's unelevated refresh must be able to reapply this protected DACL.
     lock_sandbox_dir(
         &sandbox_bin_dir(&payload.codex_home),
         &payload.real_user,
         sandbox_group_sid,
         GRANT_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE | WRITE_DAC,
         DaclInheritance::Protected,
         payload.mode,
     )
@@ -1117,7 +1121,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 }
 
 #[cfg(test)]
-#[path = "win_acl_tests.rs"]
+#[path = "setup_provisioning/acl_tests.rs"]
 mod acl_tests;
 
 #[cfg(test)]
@@ -1127,13 +1131,13 @@ mod tests {
     use super::WRITE_ROOT_ALLOW_MASK;
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
+    use crate::ensure_allow_mask_aces;
+    use crate::ensure_allow_write_aces;
+    use crate::load_or_create_cap_sids;
+    use crate::path_mask_allows;
+    use crate::path_write_aces_need_refresh;
+    use crate::workspace_write_cap_sid_for_root;
     use codex_otel::StatsigMetricsSettings;
-    use codex_windows_sandbox::ensure_allow_mask_aces;
-    use codex_windows_sandbox::ensure_allow_write_aces;
-    use codex_windows_sandbox::load_or_create_cap_sids;
-    use codex_windows_sandbox::path_mask_allows;
-    use codex_windows_sandbox::path_write_aces_need_refresh;
-    use codex_windows_sandbox::workspace_write_cap_sid_for_root;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::fs;

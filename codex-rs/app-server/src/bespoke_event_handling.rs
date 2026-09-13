@@ -1152,7 +1152,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::HookCompleted(notification))
                 .await;
         }
-        EventMsg::RawResponseItem(raw_response_item_event) => {
+        EventMsg::RawResponseItem(mut raw_response_item_event) => {
+            // Keep warehouse metadata out of app-server notifications.
+            raw_response_item_event.item.clear_executed_tool_calls();
             let mut notification = ServerNotification::RawResponseItemCompleted(
                 RawResponseItemCompletedNotification {
                     thread_id: conversation_id.to_string(),
@@ -3164,6 +3166,7 @@ mod tests {
                 })
             );
         }
+
         Ok(())
     }
 

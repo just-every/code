@@ -29,6 +29,7 @@ use crate::tools::router::ToolCallSource;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ToolResultMetadata;
 
 struct ToolCallTimingGuard {
     started_at: Instant,
@@ -79,17 +80,31 @@ impl ToolCallRuntime {
     ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
         let error_call = call.clone();
         let source = call.direct_source();
+        let recorder = self.session.services.executed_tool_calls.clone();
+        let recorded_call = recorder.prepare_direct_call(&call, &source, &self.step_context);
         let step_context = Arc::clone(&self.step_context);
         let future =
             self.handle_tool_call_with_source(step_context, call, source, cancellation_token);
         async move {
-            match future.await {
-                Ok(response) => Ok(response.into_response()),
-                Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
-                Err(other) => Ok(ResponseItemEnvelope::new(
-                    Self::failure_response(error_call, other).into(),
-                )),
-            }
+            let result = future.await;
+            let mut recorded_call =
+                recorded_call.filter(|(_, recording)| recording.strong_count() > 0);
+            let mut response = match result {
+                Ok(result) => {
+                    if let Some((call, _)) = recorded_call.as_mut()
+                        && let Some(metadata) = result.result.tool_result_metadata()
+                    {
+                        call.set_tool_result_metadata(ToolResultMetadata::new(metadata));
+                    }
+                    result.into_response()
+                }
+                Err(FunctionCallError::Fatal(message)) => return Err(CodexErr::Fatal(message)),
+                Err(other) => {
+                    ResponseItemEnvelope::new(Self::failure_response(error_call, other).into())
+                }
+            };
+            recorder.attach_direct_call_to_output(&mut response.item, recorded_call);
+            Ok(response)
         }
     }
 

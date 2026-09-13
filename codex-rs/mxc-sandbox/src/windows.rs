@@ -43,11 +43,11 @@ pub(super) fn run() -> Result<i32> {
             Ok((key, value))
         })
         .collect::<Result<HashMap<_, _>>>()?;
-    let command = crate::transport::decode(&mut env)?;
-    ensure!(
-        !env.is_empty(),
-        "MXC requires an explicit child environment"
-    );
+    // Serde errors can quote arbitrary payload values; do not print them to stderr.
+    let command = crate::transport::decode(&mut env)
+        .map_err(|_| anyhow::anyhow!("invalid MXC launcher request"))?;
+    // The transport itself proves this is an explicit child environment; it
+    // may intentionally contain no variables once launcher state is removed.
     let mask = unsafe { GetLogicalDrives() };
     ensure!(
         mask != 0,

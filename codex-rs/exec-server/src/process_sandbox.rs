@@ -84,6 +84,28 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
     network_policy_audit_observer: Option<NetworkPolicyAuditObserver>,
     telemetry: &ProcessTelemetry,
 ) -> Result<PreparedExecRequest, JSONRPCErrorError> {
+    if let Some(sandbox) = params.sandbox.as_ref()
+        && sandbox.windows_sandbox_level == codex_protocol::config_types::WindowsSandboxLevel::Mxc
+    {
+        if params.tty || params.arg0.is_some() {
+            return Err(invalid_params(
+                "MXC currently supports ordinary pipe launches only".to_owned(),
+            ));
+        }
+        if params.enforce_managed_network
+            || params.managed_network.is_some()
+            || params.network_proxy.is_some()
+        {
+            return Err(invalid_params(
+                "MXC managed networking is not supported yet".to_owned(),
+            ));
+        }
+        if !codex_sandboxing::windows_mxc_available() {
+            return Err(invalid_params(
+                "native MXC is unavailable on this executor".to_owned(),
+            ));
+        }
+    }
     #[cfg(target_os = "windows")]
     let mut env = env;
     #[cfg(target_os = "windows")]
@@ -241,7 +263,11 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
             environment_id: None,
             network: None,
             sandbox_policy_cwd,
-            codex_linux_sandbox_exe: runtime_paths.codex_linux_sandbox_exe.as_deref(),
+            sandbox_exe: if cfg!(windows) {
+                Some(runtime_paths.codex_self_exe.as_path())
+            } else {
+                runtime_paths.codex_linux_sandbox_exe.as_deref()
+            },
             use_legacy_landlock: sandbox_context.use_legacy_landlock,
             windows_sandbox_level: sandbox_context.windows_sandbox_level,
             windows_sandbox_private_desktop: sandbox_context.windows_sandbox_private_desktop,

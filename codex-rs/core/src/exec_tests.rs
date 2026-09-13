@@ -515,6 +515,7 @@ async fn process_exec_tool_call_preserves_full_buffer_capture_policy(
         &cwd,
         std::slice::from_ref(&cwd),
         &None,
+        /*codex_self_exe*/ &None,
         /*use_legacy_landlock*/ false,
         /*stdout_stream*/ None,
     )
@@ -1219,6 +1220,7 @@ fn build_exec_request_preserves_windows_workspace_roots() -> Result<()> {
         &cwd,
         workspace_roots.as_slice(),
         &None,
+        /*codex_self_exe*/ &None,
         /*use_legacy_landlock*/ false,
     )?;
 
@@ -1338,6 +1340,7 @@ async fn process_exec_tool_call_respects_cancellation_token() -> Result<()> {
             &cwd,
             std::slice::from_ref(&cwd),
             &None,
+            /*codex_self_exe*/ &None,
             /*use_legacy_landlock*/ false,
             /*stdout_stream*/ None,
         ),
@@ -1419,6 +1422,7 @@ while :; do sleep 1; done"#
             &cwd,
             std::slice::from_ref(&cwd),
             &None,
+            /*codex_self_exe*/ &None,
             /*use_legacy_landlock*/ false,
             /*stdout_stream*/ None,
         ),

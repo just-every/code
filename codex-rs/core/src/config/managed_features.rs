@@ -50,7 +50,9 @@ impl ManagedFeatures {
         )
     }
 
-    pub(crate) fn from_configured_with_warnings(
+    /// Applies managed feature requirements and dependency normalization to
+    /// configured features, collecting warnings for unsupported requirements.
+    pub fn from_configured_with_warnings(
         configured_features: Features,
         feature_requirements: Option<Sourced<FeatureRequirementsToml>>,
         startup_warnings: &mut Vec<String>,

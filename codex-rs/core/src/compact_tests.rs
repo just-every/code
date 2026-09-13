@@ -1,11 +1,157 @@
 use super::*;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
+use codex_login::CodexAuth;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
+use codex_protocol::models::ExecutedToolCall;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
+use core_test_support::responses;
+use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
+use serde_json::json;
+use test_case::test_case;
+
+#[test_case(true; "metadata enabled")]
+#[test_case(false; "metadata disabled after capture")]
+#[tokio::test]
+async fn local_compaction_respects_tool_metadata_state(
+    metadata_enabled: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let provider = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        move |config| {
+            config.model = Some("gpt-5.2".to_string());
+            config.model_provider = provider;
+            config.model_provider.supports_websockets = false;
+            config
+                .features
+                .enable(Feature::ExecutedToolCallMetadata)
+                .expect("enable tool-call metadata");
+        },
+    )
+    .await;
+
+    let mut items = vec![user_message("Update the plan")];
+    for index in 0..5 {
+        let call_id = format!("direct-{index}");
+        let arguments = json!({"plan": [{"step": "x".repeat(7 * 1024), "status": "completed"}]});
+        assert!(serde_json::to_vec(&arguments)?.len() < 8 * 1024);
+        items.push(ResponseItem::FunctionCall {
+            id: None,
+            name: "update_plan".to_string(),
+            namespace: None,
+            arguments: arguments.to_string(),
+            encrypted_function_args: None,
+            call_id: call_id.clone(),
+            internal_chat_message_metadata_passthrough: None,
+        });
+        let mut output = ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: Some(call_id),
+            name: None,
+            namespace: None,
+            output: FunctionCallOutputPayload::from_text("Plan updated".to_string()),
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    turn_id: Some("metadata-canary".to_string()),
+                    create_time: Some(123.into()),
+                    ..Default::default()
+                },
+            ),
+        };
+        output.append_executed_tool_calls(vec![ExecutedToolCall::new(
+            "update_plan".to_string(),
+            arguments,
+        )]);
+        output.mark_tool_calls_complete();
+        items.push(output);
+    }
+    session
+        .record_conversation_items(&turn, turn.model_info(), &items)
+        .await;
+    let live_history = session.clone_history().await;
+    let outputs = live_history
+        .raw_items()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCallOutput { .. } => Some(serde_json::to_value(item)),
+            _ => None,
+        })
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    assert_eq!(outputs.len(), 5);
+    let metadata_bytes: usize = outputs
+        .iter()
+        .map(|item| {
+            serde_json::to_vec(&item["internal_chat_message_metadata_passthrough"])
+                .unwrap()
+                .len()
+        })
+        .sum();
+    // Compaction does not rebudget source records as a normal inference request.
+    // Passthrough bytes are also excluded from model token estimates.
+    assert!(metadata_bytes > 32 * 1024);
+
+    if !metadata_enabled {
+        let mut config = (*session.get_config().await).clone();
+        config.features.disable(Feature::ExecutedToolCallMetadata)?;
+        session.refresh_runtime_config(config).await;
+    }
+
+    let mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("summary", "The prior calls finished."),
+            responses::ev_completed("compact-response"),
+        ]),
+    )
+    .await;
+    // OpenAI identity keeps the client from removing passthrough for compatibility.
+    run_compact_task(
+        Arc::clone(&session),
+        turn,
+        vec![UserInput::Text {
+            text: "Summarize the conversation.".to_string(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await?;
+
+    let request = mock.single_request();
+    assert!(request.inputs_of_type("compaction_trigger").is_empty());
+    for mut output in outputs {
+        let call_id = output["call_id"].as_str().expect("source call id");
+        let compact_output = request.function_call_output(call_id);
+        assert_eq!(compact_output["output"], json!("Plan updated"));
+        if !metadata_enabled {
+            let metadata = output["internal_chat_message_metadata_passthrough"]
+                .as_object_mut()
+                .expect("source metadata");
+            metadata.remove("executed_tool_calls");
+            metadata.remove("tool_calls_complete");
+        }
+        assert_eq!(
+            compact_output["internal_chat_message_metadata_passthrough"],
+            output["internal_chat_message_metadata_passthrough"]
+        );
+    }
+    let compacted_history = session.clone_history().await;
+    let expected_summary = format!("{SUMMARY_PREFIX}\nThe prior calls finished.");
+    assert!(compacted_history.raw_items().any(|item| {
+        matches!(item, ResponseItem::Message { role, content, .. }
+            if role == "user"
+                && content_items_to_text(content).as_deref() == Some(expected_summary.as_str()))
+    }));
+    Ok(())
+}
 
 fn annotated(items: Vec<ResponseItem>) -> Vec<ResponseItemEnvelope> {
     items.into_iter().map(ResponseItemEnvelope::new).collect()

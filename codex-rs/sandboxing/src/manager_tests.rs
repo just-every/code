@@ -26,6 +26,48 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 #[test]
+fn mxc_selection_preserves_unsandboxed_requests_and_other_platforms() {
+    let manager = SandboxManager::new();
+    let platform_sandbox = if cfg!(windows) {
+        SandboxType::WindowsMxc
+    } else {
+        get_platform_sandbox(/*windows_sandbox_enabled*/ false).unwrap_or(SandboxType::None)
+    };
+    for (permissions, preference, expected) in [
+        (
+            PermissionProfile::read_only(),
+            SandboxablePreference::Auto,
+            platform_sandbox,
+        ),
+        (
+            PermissionProfile::Disabled,
+            SandboxablePreference::Require,
+            platform_sandbox,
+        ),
+        (
+            PermissionProfile::read_only(),
+            SandboxablePreference::Forbid,
+            SandboxType::None,
+        ),
+        (
+            PermissionProfile::Disabled,
+            SandboxablePreference::Auto,
+            SandboxType::None,
+        ),
+    ] {
+        assert_eq!(
+            manager.select_initial(
+                &permissions,
+                preference,
+                WindowsSandboxLevel::Mxc,
+                /*has_managed_network_requirements*/ false,
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn danger_full_access_defaults_to_no_sandbox_without_network_requirements() {
     let manager = SandboxManager::new();
     let sandbox = manager.select_initial(
@@ -103,7 +145,7 @@ fn unsandboxed_transform_preserves_foreign_cwd_and_unrestricted_file_system_poli
             environment_id: None,
             network: None,
             sandbox_policy_cwd: &cwd_uri,
-            codex_linux_sandbox_exe: None,
+            sandbox_exe: None,
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -160,7 +202,7 @@ fn symlinked_workspace_reports_seatbelt_preparation_error() {
             environment_id: None,
             network: None,
             sandbox_policy_cwd: &workspace_uri,
-            codex_linux_sandbox_exe: None,
+            sandbox_exe: None,
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -215,7 +257,7 @@ fn transform_additional_permissions_enable_network_for_external_sandbox() {
             environment_id: None,
             network: None,
             sandbox_policy_cwd: &cwd_uri,
-            codex_linux_sandbox_exe: None,
+            sandbox_exe: None,
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -286,7 +328,7 @@ fn transform_additional_permissions_preserves_denied_entries() {
             environment_id: None,
             network: None,
             sandbox_policy_cwd: &cwd_uri,
-            codex_linux_sandbox_exe: None,
+            sandbox_exe: None,
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -388,7 +430,7 @@ fn transform_linux_seccomp_request(
             environment_id: None,
             network: None,
             sandbox_policy_cwd: &cwd_uri,
-            codex_linux_sandbox_exe: Some(codex_linux_sandbox_exe),
+            sandbox_exe: Some(codex_linux_sandbox_exe),
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
             windows_sandbox_private_desktop: false,
@@ -590,7 +632,7 @@ fn transform_for_direct_spawn_windows_materializes_inner_helper() {
                     environment_id: None,
                     network: None,
                     sandbox_policy_cwd: &cwd_uri,
-                    codex_linux_sandbox_exe: None,
+                    sandbox_exe: None,
                     use_legacy_landlock: false,
                     windows_sandbox_level: WindowsSandboxLevel::Elevated,
                     windows_sandbox_private_desktop: false,

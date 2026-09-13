@@ -1620,21 +1620,26 @@ fn assert_result_metadata_call(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(true, true, true, false, "employee@openai.com"; "copies_full_metadata_without_rules")]
-#[test_case(true, true, true, true, "employee@openai.com"; "accepted_error_keeps_metadata")]
-#[test_case(true, true, false, false, "employee@openai.com"; "missing_metadata_stays_absent")]
-#[test_case(false, true, true, false, "employee@openai.com"; "feature_off_does_not_record")]
-#[test_case(true, false, true, false, "employee@openai.com"; "extension_owned_apps_do_not_record")]
-#[test_case(true, true, true, false, "employee@example.com"; "external_user_keeps_calls_without_metadata")]
-#[test_case(true, true, true, false, "employee@openai.com.attacker.invalid"; "lookalike_domain_does_not_record")]
-async fn code_mode_result_metadata_follows_call_binding(
+#[test_case(true, true, true, false, "employee@openai.com", ToolMode::CodeModeOnly; "copies_full_metadata_without_rules")]
+#[test_case(true, true, true, true, "employee@openai.com", ToolMode::CodeModeOnly; "accepted_error_keeps_metadata")]
+#[test_case(true, true, false, false, "employee@openai.com", ToolMode::CodeModeOnly; "missing_metadata_stays_absent")]
+#[test_case(false, true, true, false, "employee@openai.com", ToolMode::CodeModeOnly; "feature_off_does_not_record")]
+#[test_case(true, false, true, false, "employee@openai.com", ToolMode::CodeModeOnly; "extension_owned_apps_do_not_record")]
+#[test_case(true, true, true, false, "employee@example.com", ToolMode::CodeModeOnly; "external_user_keeps_calls_without_metadata")]
+#[test_case(true, true, true, false, "employee@openai.com.attacker.invalid", ToolMode::CodeModeOnly; "lookalike_domain_does_not_record")]
+#[test_case(true, true, true, false, "employee@openai.com", ToolMode::Direct; "direct_keeps_metadata")]
+#[test_case(true, true, true, true, "employee@openai.com", ToolMode::Direct; "direct_accepted_error_keeps_metadata")]
+#[test_case(false, true, true, false, "employee@openai.com", ToolMode::Direct; "direct_feature_off_does_not_record")]
+async fn result_metadata_follows_call_binding(
     metadata_enabled: bool,
     host_owned: bool,
     has_metadata: bool,
     is_error: bool,
     account_email: &str,
+    tool_mode: ToolMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    let direct = matches!(tool_mode, ToolMode::Direct);
     let server = responses::start_mock_server().await;
     let result_metadata = has_metadata.then(|| {
         serde_json::json!({
@@ -1654,6 +1659,10 @@ async fn code_mode_result_metadata_follows_call_binding(
     let mut builder =
         result_metadata_apps_builder(apps_server.chatgpt_base_url.clone(), account_email)
             .with_config(move |config| {
+                if direct {
+                    config.features.disable(Feature::CodeMode).unwrap();
+                    config.features.disable(Feature::CodeModeOnly).unwrap();
+                }
                 if !metadata_enabled {
                     config
                         .features
@@ -1677,43 +1686,87 @@ async fn code_mode_result_metadata_follows_call_binding(
         builder = builder.with_extensions(Arc::new(extensions.build()));
     }
     let arguments = serde_json::json!({ "search": "launch plan" });
-    let code = format!(
-        "const tool = ALL_TOOLS.find(({{ name }}) => name.endsWith(\"{RESULT_METADATA_TOOL}\")); \
-         const result = await tools[tool.name]({arguments}); \
-         text(JSON.stringify({{ isError: Boolean(result.isError), hasMeta: Object.hasOwn(result, \"_meta\") }}));"
-    );
-    let (test, follow_up) =
-        run_code_mode_turn_with_builder(&server, "Search a connected app", &code, builder).await?;
+    let (test, follow_up) = if direct {
+        let test = builder.build(&server).await?;
+        responses::mount_sse_once(
+            &server,
+            sse(vec![
+                responses::ev_function_call_with_namespace(
+                    "call-1",
+                    "mcp__codex_apps__messagesearch",
+                    RESULT_METADATA_TOOL,
+                    &arguments.to_string(),
+                ),
+                ev_completed("resp-1"),
+            ]),
+        )
+        .await;
+        let follow_up = responses::mount_sse_once(&server, sse(vec![ev_completed("resp-2")])).await;
+        test.submit_turn("Search a connected app").await?;
+        (test, follow_up)
+    } else {
+        let code = format!(
+            "const tool = ALL_TOOLS.find(({{ name }}) => name.endsWith(\"{RESULT_METADATA_TOOL}\")); \
+             const result = await tools[tool.name]({arguments}); \
+             text(JSON.stringify({{ isError: Boolean(result.isError), hasMeta: Object.hasOwn(result, \"_meta\") }}));"
+        );
+        run_code_mode_turn_with_builder(&server, "Search a connected app", &code, builder).await?
+    };
     let request = follow_up.single_request();
     assert_eq!(recorded_apps_tool_calls(&server).await.len(), 1);
-    assert!(
-        !request
-            .body_json()
-            .to_string()
-            .contains(RESULT_METADATA_PRIVATE_RESULT)
-    );
-    let (body, success) = custom_tool_output_body_and_success(&request, "call-1");
-    assert_ne!(success, Some(false), "Code Mode failed: {body}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&body)?,
-        serde_json::json!({ "isError": is_error, "hasMeta": false }),
-    );
+    let output = if direct {
+        let output = request.function_call_output("call-1");
+        assert!(
+            output["output"]
+                .to_string()
+                .contains(RESULT_METADATA_PRIVATE_RESULT)
+        );
+        assert!(!output["output"].to_string().contains("provider_state"));
+        output
+    } else {
+        assert!(
+            !request
+                .body_json()
+                .to_string()
+                .contains(RESULT_METADATA_PRIVATE_RESULT)
+        );
+        let (body, success) = custom_tool_output_body_and_success(&request, "call-1");
+        assert_ne!(success, Some(false), "Code Mode failed: {body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body)?,
+            serde_json::json!({ "isError": is_error, "hasMeta": false }),
+        );
+        request.custom_tool_call_output("call-1")
+    };
     assert_eq!(
         result_metadata_fixture_calls(&request.input()).count(),
         usize::from(metadata_enabled),
     );
-    let output = request.custom_tool_call_output("call-1");
+    let captured = codex_core::test_support::history_with_tool_call_metadata(&test.codex).await;
+    if direct {
+        let result = captured
+            .iter()
+            .find_map(|item| match item {
+                codex_protocol::models::ResponseItem::FunctionCallOutput {
+                    call_id,
+                    output,
+                    ..
+                } if call_id.as_deref() == Some("call-1") => Some(output),
+                _ => None,
+            })
+            .expect("captured direct output");
+        assert_eq!(result.success, Some(!is_error));
+    }
     if metadata_enabled {
         // The custom inference endpoint gets no raw metadata; inspect capture independently.
         assert_result_metadata_call(&output, &arguments, /*expected_metadata*/ None);
-        let captured = codex_core::test_support::history_with_tool_call_metadata(&test.codex).await;
         let captured = serde_json::to_value(captured)?;
         let captured_output = captured
             .as_array()
             .unwrap()
             .iter()
-            .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == "call-1")
-            .expect("captured exec output");
+            .find(|item| item["type"] == output["type"] && item["call_id"] == "call-1")
+            .expect("captured tool output");
         // The public build never captures result metadata, even with employee test credentials.
         let expected_metadata = None;
         assert_result_metadata_call(captured_output, &arguments, expected_metadata);

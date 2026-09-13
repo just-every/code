@@ -91,6 +91,9 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_utils_absolute_path::test_support::PathExt;
+use core_test_support::apps_test_server::AppsTestServer;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
@@ -106,7 +109,12 @@ use tempfile::TempDir;
 use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use wiremock::Mock;
+use wiremock::Request;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::body_partial_json;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_analytics_event;
@@ -327,6 +335,187 @@ async fn turn_start_omits_notification_media_without_changing_model_input() -> R
     assert_eq!(model_input_images.len(), 1);
     assert_eq!(model_input_images[0]["image_url"], TINY_PNG_DATA_URL);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_call_metadata_stays_out_of_raw_response_item_notifications() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let arguments = json!({"query": "redaction"});
+    let result_metadata = json!({"provider/private": {"sentinel": "raw-result-metadata"}});
+    let responses = vec![
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call_with_namespace(
+                "mcp-call",
+                SEARCH_CALENDAR_NAMESPACE,
+                SEARCH_CALENDAR_LIST_TOOL,
+                &arguments.to_string(),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = responses::start_mock_server().await;
+    let model = responses::mount_sse_sequence(&server, responses).await;
+    let apps = AppsTestServer::mount(&server).await?;
+    let tool_result = json!({
+        "content": [{"type": "text", "text": "Calendar result"}],
+        "_meta": result_metadata,
+        "isError": false,
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/codex/ps/mcp"))
+        .and(body_partial_json(json!({
+            "method": "tools/call",
+            "params": {"name": "calendar_list_events", "arguments": arguments},
+        })))
+        .respond_with(move |request: &Request| {
+            let request: Value = serde_json::from_slice(&request.body).unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": tool_result,
+            }))
+        })
+        .with_priority(/*p*/ 1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_provider_name("OpenAI")
+        .with_provider_config("supports_websockets = false")
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ncli_auth_credentials_store = \"file\"",
+            apps.chatgpt_base_url
+        ))
+        .enable_feature(Feature::Apps)
+        .enable_feature(Feature::ExecutedToolCallMetadata)
+        .write(codex_home.path())?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-test-token")
+            .account_id("account-123")
+            .chatgpt_account_id("account-123")
+            .chatgpt_user_id("user-123")
+            .email("employee@openai.com"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            experimental_raw_events: true,
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            ..Default::default()
+        })
+        .await?;
+    let rollout_path = thread.path.context("thread rollout path")?;
+    let _: TurnStartResponse = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::Text {
+                    text: "list calendar events".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let raw_params = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let notification = mcp
+                .read_stream_until_matching_notification("raw output or turn completion", |n| {
+                    matches!(
+                        n.method.as_str(),
+                        "rawResponseItem/completed" | "turn/completed"
+                    )
+                })
+                .await?;
+            if notification.method == "turn/completed" {
+                anyhow::bail!("missing raw tool output notification");
+            }
+            let params = notification.params.context("raw notification params")?;
+            let item = &params["item"];
+            if item["type"] == "function_call_output" && item["call_id"] == "mcp-call" {
+                return Ok::<Value, anyhow::Error>(params);
+            }
+        }
+    })
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let follow_up = requests[1].body_json();
+    let output = follow_up["input"]
+        .as_array()
+        .context("follow-up model input")?
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "mcp-call")
+        .context("follow-up tool output")?;
+    assert!(serde_json::to_string(&output["output"])?.contains("Calendar result"));
+    assert_eq!(
+        output["internal_chat_message_metadata_passthrough"]["executed_tool_calls"],
+        json!([{"name": "mcp__codex_apps__calendar_list_events", "arguments": arguments}]),
+    );
+    assert_eq!(
+        output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+        true,
+    );
+
+    let raw_output = &raw_params["item"];
+    assert_eq!(raw_output["output"], output["output"]);
+    assert!(!serde_json::to_string(&raw_params)?.contains("raw-result-metadata"));
+    let public_metadata = raw_output["internal_chat_message_metadata_passthrough"]
+        .as_object()
+        .context("public passthrough metadata")?;
+    assert_eq!(
+        public_metadata.get("turn_id").context("public turn id")?,
+        &output["internal_chat_message_metadata_passthrough"]["turn_id"],
+    );
+    for field in ["executed_tool_calls", "tool_calls_complete", "cell_id"] {
+        assert!(
+            public_metadata.get(field).is_none(),
+            "notification leaked {field}"
+        );
+    }
+
+    let status = timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    assert!(status.success());
+    // Read raw JSON: ResponseItem deserialization intentionally discards host-owned metadata.
+    let rollout = std::fs::read_to_string(rollout_path)?;
+    let entries = rollout
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let captured = entries
+        .iter()
+        .filter(|entry| entry["type"] == "response_item")
+        .map(|entry| &entry["payload"])
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "mcp-call")
+        .context("persisted MCP output")?;
+    assert_eq!(captured["output"], raw_output["output"]);
+    // The custom inference endpoint omits raw metadata, so verify capture in the rollout.
+    let expected_metadata: Option<&Value> = None;
+    assert_eq!(
+        captured["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]
+            .get("tool_result_metadata"),
+        expected_metadata,
+    );
     Ok(())
 }
 

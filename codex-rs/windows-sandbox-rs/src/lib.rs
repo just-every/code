@@ -79,6 +79,8 @@ mod hide_users;
 #[cfg(target_os = "windows")]
 mod identity;
 #[cfg(target_os = "windows")]
+mod installation_record;
+#[cfg(target_os = "windows")]
 mod logging;
 #[cfg(target_os = "windows")]
 mod no_reparse_dir;
@@ -135,6 +137,13 @@ mod setup_launch;
 mod setup_mutex;
 
 #[cfg(target_os = "windows")]
+mod setup_provisioning;
+
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use setup_provisioning::main as setup_helper_main;
+
+#[cfg(target_os = "windows")]
 mod spawn_prep;
 
 #[cfg(target_os = "windows")]
@@ -153,6 +162,17 @@ pub(crate) use elevated::runner_client;
 
 #[cfg(target_os = "windows")]
 pub(crate) use elevated::runner_pipe;
+
+#[cfg(target_os = "windows")]
+pub use installation_record::DesktopInstallation;
+#[cfg(target_os = "windows")]
+pub use installation_record::InstallationRecord;
+#[cfg(target_os = "windows")]
+pub use installation_record::load as load_sandbox_installation;
+#[cfg(target_os = "windows")]
+pub use installation_record::remove as remove_sandbox_installation;
+#[cfg(target_os = "windows")]
+pub use installation_record::save as save_sandbox_installation;
 
 #[cfg(target_os = "windows")]
 pub use acl::add_deny_read_ace;
@@ -179,6 +199,8 @@ pub use acl::path_mask_allows;
 pub use acl::path_or_child_file_has_standard_user_mutation_allow;
 #[cfg(target_os = "windows")]
 pub use acl::path_write_aces_need_refresh;
+#[cfg(target_os = "windows")]
+pub use acl::revoke_ace;
 #[cfg(target_os = "windows")]
 pub use audit::apply_world_writable_scan_and_denies_for_permissions;
 #[cfg(target_os = "windows")]
@@ -299,6 +321,8 @@ pub use provisioning_client::WindowsSandboxProvisioningOutcome;
 #[cfg(target_os = "windows")]
 pub use provisioning_client::provision_windows_sandbox_via_service;
 #[cfg(target_os = "windows")]
+pub use provisioning_client::register_desktop_installation;
+#[cfg(target_os = "windows")]
 pub use provisioning_protocol::FramedProvisioningMessage;
 #[cfg(target_os = "windows")]
 pub use provisioning_protocol::PROVISIONING_PROTOCOL_VERSION;
@@ -394,7 +418,11 @@ pub use unified_exec::spawn_windows_sandbox_session_for_level;
 #[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_legacy;
 #[cfg(target_os = "windows")]
+pub use uninstall_windows::PreparedWindowsSandboxCleanup;
+#[cfg(target_os = "windows")]
 pub use uninstall_windows::clean_up_packaged_windows_sandbox;
+#[cfg(target_os = "windows")]
+pub use uninstall_windows::prepare_packaged_windows_sandbox_cleanup;
 #[cfg(target_os = "windows")]
 pub use wfp::install_wfp_filters_for_account;
 #[cfg(target_os = "windows")]

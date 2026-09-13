@@ -315,6 +315,7 @@ impl CommandExecRequestProcessor {
             &sandbox_cwd,
             windows_sandbox_workspace_roots.as_slice(),
             &codex_linux_sandbox_exe,
+            &self.arg0_paths.codex_self_exe,
             use_legacy_landlock,
         )
         .map_err(|err| internal_error(format!("exec failed: {err}")))?;

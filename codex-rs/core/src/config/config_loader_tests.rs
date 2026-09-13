@@ -1999,11 +1999,7 @@ extends = "first"
                 config.permissions.permission_profile(),
             )?
             .unwrap();
-        assert_eq!(
-            rebuilt.credential_broker_enabled(),
-            expected_enabled,
-            "{key}"
-        );
+        assert_eq!(Some(&rebuilt), config.permissions.network.as_ref(), "{key}");
     }
     Ok(())
 }

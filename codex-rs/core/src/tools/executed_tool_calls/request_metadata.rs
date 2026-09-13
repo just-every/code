@@ -4,30 +4,43 @@
 use super::*;
 
 impl ExecutedToolCalls {
+    /// Compaction preserves captured records without applying the sampling request budget.
+    pub(crate) fn strip_disabled_direct_metadata(&self, items: &mut [ResponseItem]) {
+        if self.lock_state().is_none() {
+            clear_direct_call_metadata(items);
+        }
+    }
+
     /// Attaches trusted completeness; request budgeting only revokes damaged inventories.
     pub(crate) fn attach_to_prompt(
         &self,
         items: &mut [ResponseItem],
         retry_cache: &mut ExecutedToolCallCache,
     ) {
-        if self.attach_pending_to_prompt(items, retry_cache) {
+        let attached = {
+            let mut state = self.lock_state();
+            state
+                .as_mut()
+                .map(|state| Self::attach_pending_to_prompt_with_state(state, items, retry_cache))
+        };
+        let Some(attached) = attached else {
+            // Direct records now live in history; disabling capture also stops replaying them.
+            clear_direct_call_metadata(items);
+            return;
+        };
+        if attached || items.iter().any(has_direct_call_metadata) {
             bound_executed_tool_calls_for_prompt(items);
         }
     }
 
-    fn attach_pending_to_prompt(
-        &self,
+    fn attach_pending_to_prompt_with_state(
+        state: &mut ExecutedToolCallRecorderState,
         items: &mut [ResponseItem],
         retry_cache: &mut ExecutedToolCallCache,
     ) -> bool {
-        let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return false;
-        };
         // Failed wrappers have no callback; only their bounded bitmap observation survives.
         state.pending_wrapper_origins.clear();
-        if state.direct_calls.is_empty()
-            && state.output_cells.is_empty()
+        if state.output_cells.is_empty()
             && state.retained_calls.is_empty()
             && retry_cache.is_empty()
         {
@@ -62,13 +75,13 @@ impl ExecutedToolCalls {
             .collect::<HashSet<_>>();
         let mut attached = false;
         for index in (0..items.len()).rev() {
-            if state.direct_calls.is_empty()
-                && state.output_cells.is_empty()
-                && pending_outputs.is_empty()
-            {
+            if state.output_cells.is_empty() && pending_outputs.is_empty() {
                 break;
             }
             let item = &items[index];
+            if has_direct_call_metadata(item) {
+                continue;
+            }
             let Some(call_id) = output_call_id(item) else {
                 continue;
             };
@@ -85,12 +98,7 @@ impl ExecutedToolCalls {
                 cached.clone()
             } else {
                 let mut runtime_cell_id = None;
-                let mut calls = state
-                    .direct_calls
-                    .remove(call_id)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let direct_call_collision = !calls.is_empty();
+                let mut calls = Vec::new();
                 let mut call_index_by_id = HashMap::new();
                 if let Some(output_cell_id) = state.output_cells.remove(call_id)
                     && let Some(cell) = state.cells.get_mut(&output_cell_id)
@@ -127,7 +135,6 @@ impl ExecutedToolCalls {
                     }
                     cell.pending_full_argument_bytes = 0;
                     complete = cell.completion == CellCompletion::Complete
-                        && !direct_call_collision
                         && (state.can_prove_wait_completion
                             || matches!(item, ResponseItem::CustomToolCallOutput { .. }));
                     if matches!(
@@ -179,6 +186,9 @@ impl ExecutedToolCalls {
         let mut invalid_cells = HashSet::new();
         for index in 0..items.len() {
             let item = &items[index];
+            if has_direct_call_metadata(item) {
+                continue;
+            }
             let Some(call_id) = output_call_id(item) else {
                 continue;
             };
@@ -232,6 +242,9 @@ impl ExecutedToolCalls {
             }
         }
         for item in items.iter_mut() {
+            if has_direct_call_metadata(item) {
+                continue;
+            }
             let Some(call_id) = output_call_id(item) else {
                 continue;
             };
@@ -254,6 +267,9 @@ impl ExecutedToolCalls {
             let retained_before_bounding = std::mem::take(&mut state.retained_calls);
             let mut bounded_outputs = HashSet::new();
             for item in items.iter_mut() {
+                if has_direct_call_metadata(item) {
+                    continue;
+                }
                 let Some(call_id) = output_call_id(item) else {
                     continue;
                 };
@@ -303,6 +319,22 @@ impl ExecutedToolCalls {
 
         attached
     }
+}
+
+// Direct records already belong to their output; never rebuild them from the Code Mode cache.
+fn clear_direct_call_metadata(items: &mut [ResponseItem]) {
+    for item in items
+        .iter_mut()
+        .filter(|item| has_direct_call_metadata(item))
+    {
+        item.clear_executed_tool_calls();
+    }
+}
+
+fn has_direct_call_metadata(item: &ResponseItem) -> bool {
+    item.executed_tool_call_metadata().is_some_and(|metadata| {
+        metadata.cell_id.is_none() && metadata.executed_tool_calls.is_some()
+    })
 }
 
 fn code_mode_input_matches_output(

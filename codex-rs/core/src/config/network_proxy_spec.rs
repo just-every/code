@@ -334,7 +334,7 @@ impl NetworkProxySpec {
         ))
     }
 
-    fn build_config_state_for_spec(&self) -> std::io::Result<ConfigState> {
+    pub(super) fn build_config_state_for_spec(&self) -> std::io::Result<ConfigState> {
         build_config_state(self.config.clone(), self.constraints.clone()).map_err(|err| {
             std::io::Error::other(format!("failed to build network proxy state: {err}"))
         })

@@ -1,5 +1,5 @@
+use crate::to_wide;
 use anyhow::Result;
-use codex_windows_sandbox::to_wide;
 use std::ffi::OsStr;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::executed_tool_call_metadata_bytes;
 
 use crate::SectionHistory;
 
@@ -52,8 +53,10 @@ impl TranscriptHistory {
     /// Non-user overflow removes at least half the existing entries; byte limits may need more.
     /// Oversized user images fall back to bounded text; other oversized items are skipped.
     pub fn record(&mut self, item: &ResponseItem) {
+        let metadata_bytes = executed_tool_call_metadata_bytes(item);
         let mut size = BoundedSize {
             bytes: std::mem::size_of::<ResponseItem>(),
+            max_bytes: MAX_BYTES_PER_KIND.saturating_add(metadata_bytes),
         };
         let measured = serde_json::to_writer(&mut size, item).and_then(|()| {
             // ResponseItem serialization can omit reasoning content that cloning retains.
@@ -111,6 +114,8 @@ impl TranscriptHistory {
             }
             return;
         }
+        // Analytics must not change which evidence fits Guardian's retention budget.
+        size.bytes = size.bytes.saturating_sub(metadata_bytes);
         let is_user = item.is_user_message();
         let (mut count, mut bytes) = self
             .items
@@ -178,11 +183,12 @@ impl SectionHistory for TranscriptHistory {
 // Count without allocating a serialized copy, and stop before cloning an oversized item.
 struct BoundedSize {
     bytes: usize,
+    max_bytes: usize,
 }
 
 impl Write for BoundedSize {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_BYTES_PER_KIND.saturating_sub(self.bytes) {
+        if bytes.len() > self.max_bytes.saturating_sub(self.bytes) {
             return Err(io::Error::other(
                 "review history item exceeds storage budget",
             ));

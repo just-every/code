@@ -54,6 +54,8 @@ pub(super) struct TableHoldbackScanner {
     previous_line: Option<PreviousLineState>,
     pending_header_start: Option<usize>,
     confirmed_table_start: Option<usize>,
+    /// Unlike scrollback holdback, partial-row holdback ends at a blank line.
+    in_table: bool,
 }
 
 impl TableHoldbackScanner {
@@ -64,6 +66,7 @@ impl TableHoldbackScanner {
             previous_line: None,
             pending_header_start: None,
             confirmed_table_start: None,
+            in_table: false,
         }
     }
 
@@ -86,6 +89,13 @@ impl TableHoldbackScanner {
         } else {
             TableHoldbackState::None
         }
+    }
+
+    /// Partial prose can be previewed only outside tables and fenced blocks.
+    pub(super) fn allows_prose_preview(&self) -> bool {
+        !self.in_table
+            && !self.previous_line.is_some_and(|line| line.is_header)
+            && self.fence_tracker.kind() == FenceKind::Outside
     }
 
     /// Advance the scanner with newly committed source.
@@ -129,15 +139,19 @@ impl TableHoldbackScanner {
         let is_header = candidate_text.is_some_and(is_table_header_line);
         let is_delimiter = candidate_text.is_some_and(is_table_delimiter_line);
 
-        if self.confirmed_table_start.is_none()
-            && let Some(previous_line) = self.previous_line
+        if strip_blockquote_prefix(line).is_empty() {
+            self.in_table = false;
+        }
+        if let Some(previous_line) = self.previous_line
             && previous_line.fence_kind != FenceKind::Other
             && fence_kind != FenceKind::Other
             && previous_line.is_header
             && is_delimiter
         {
-            self.confirmed_table_start = Some(previous_line.source_start);
+            self.confirmed_table_start
+                .get_or_insert(previous_line.source_start);
             self.pending_header_start = None;
+            self.in_table = true;
         }
 
         if self.confirmed_table_start.is_none() && !line.trim().is_empty() {
@@ -155,6 +169,9 @@ impl TableHoldbackScanner {
         });
 
         self.fence_tracker.advance(line);
+        if fence_kind != FenceKind::Outside && self.fence_tracker.kind() == FenceKind::Outside {
+            self.in_table = false;
+        }
         self.source_offset = self.source_offset.saturating_add(source_line.len());
     }
 }

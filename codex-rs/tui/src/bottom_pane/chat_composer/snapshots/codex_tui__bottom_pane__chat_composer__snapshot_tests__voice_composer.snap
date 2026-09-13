@@ -1,7 +1,6 @@
 ---
-source: tui/src/bottom_pane/chat_composer/sparkle_tests.rs
-assertion_line: 361
-expression: "baseline.content.chunks(60).map(|row|\nrow.iter().map(ratatui::buffer::Cell::symbol).collect::<String>()).collect::<Vec<_>>().join(\"\\n\")"
+source: tui/src/bottom_pane/chat_composer/snapshot_tests.rs
+expression: rows
 ---
                                                             
  voice ● listening                /voice mute   /voice stop 

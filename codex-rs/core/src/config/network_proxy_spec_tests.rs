@@ -1,4 +1,6 @@
 use super::*;
+use crate::config::EnvironmentNetworkConfigError;
+use crate::config::validate_environment_network_policy;
 use codex_config::NetworkDomainPermissionToml;
 use codex_config::NetworkDomainPermissionsToml;
 use codex_execpolicy::Decision::Allow;
@@ -121,6 +123,14 @@ fn environment_policy_replaces_soft_controller_allowlist_and_preserves_denials()
     owner.allow_local_binding = true;
     let owner_policy =
         EnvironmentNetworkPolicy::from_config(&owner, /*managed_allowed_domains_only*/ false);
+    assert_eq!(
+        validate_environment_network_policy(&owner_policy, &profile),
+        Ok(())
+    );
+    assert_eq!(
+        validate_environment_network_policy(&owner_policy, &PermissionProfile::Disabled),
+        Err(EnvironmentNetworkConfigError)
+    );
     let compose = NetworkProxySpec::for_environment;
     let empty = Policy::empty();
     let disabled_controller = NetworkProxySpec::from_config_and_constraints(
@@ -185,6 +195,17 @@ fn environment_policy_replaces_soft_controller_allowlist_and_preserves_denials()
     let wildcard_policy =
         EnvironmentNetworkPolicy::from_config(&owner, /*managed_allowed_domains_only*/ false);
     assert!(compose(Some(&spec), &wildcard_policy, &profile, &empty).is_err());
+    assert_eq!(
+        validate_environment_network_policy(&wildcard_policy, &profile),
+        Err(EnvironmentNetworkConfigError)
+    );
+    owner.set_allowed_domains(vec!["[".to_string()]);
+    let malformed_policy =
+        EnvironmentNetworkPolicy::from_config(&owner, /*managed_allowed_domains_only*/ false);
+    assert_eq!(
+        validate_environment_network_policy(&malformed_policy, &profile),
+        Err(EnvironmentNetworkConfigError)
+    );
 }
 
 #[test]

@@ -52,6 +52,7 @@ pub(super) async fn spawn_command_under_sandbox(
         sandbox_cwd,
         std::slice::from_ref(sandbox_cwd),
         &codex_linux_sandbox_exe,
+        /*codex_self_exe*/ &None,
         /*use_legacy_landlock*/ false,
     )
     .map_err(|err| io::Error::other(err.to_string()))?;

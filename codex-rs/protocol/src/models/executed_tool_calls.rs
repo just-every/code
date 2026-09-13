@@ -463,7 +463,7 @@ impl ResponseItem {
             .extend(calls);
     }
 
-    /// Marks a host-owned cell's recorded tool calls as complete.
+    /// Marks a host-owned direct invocation or Code Mode cell's call inventory as complete.
     pub fn mark_tool_calls_complete(&mut self) {
         if let Some(metadata) = self.ensure_tool_call_metadata() {
             metadata.tool_calls_complete = Some(true);

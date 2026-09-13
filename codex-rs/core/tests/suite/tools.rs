@@ -51,6 +51,8 @@ use serde_json::json;
 use test_case::test_case;
 use wiremock::ResponseTemplate;
 
+use super::direct_tool_metadata::tool_call_metadata;
+
 fn tool_names(body: &Value) -> Vec<String> {
     body.get("tools")
         .and_then(Value::as_array)
@@ -448,6 +450,7 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
                         "name": format!("{namespace}__{tool_name}"),
                         "arguments": input,
                     }],
+                    "tool_calls_complete": true,
                 },
             }),
         )
@@ -484,12 +487,14 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
     .await?;
     let escaped_request = escaped_mock.single_request();
     assert_eq!(
-        escaped_request.custom_tool_call_output(call_id)["internal_chat_message_metadata_passthrough"]
-            ["executed_tool_calls"],
-        json!([{
-            "name": format!("{namespace}__{tool_name}"),
-            "arguments": input,
-        }]),
+        tool_call_metadata(escaped_request.custom_tool_call_output(call_id)),
+        json!({
+            "executed_tool_calls": [{
+                "name": format!("{namespace}__{tool_name}"),
+                "arguments": input,
+            }],
+            "tool_calls_complete": true,
+        }),
     );
     let expected_escaped_calls = json!([{
         "name": format!("{namespace}__{tool_name}"),
@@ -501,9 +506,8 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
         },
     }]);
     assert_eq!(
-        escaped_request.custom_tool_call_output(escaped_call_id)["internal_chat_message_metadata_passthrough"]
-            ["executed_tool_calls"],
-        expected_escaped_calls,
+        tool_call_metadata(escaped_request.custom_tool_call_output(escaped_call_id)),
+        json!({"executed_tool_calls": expected_escaped_calls}),
     );
 
     let direct_exec_call_id = "custom-direct-exec";
@@ -538,17 +542,12 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
 
     let direct_exec_request = direct_exec_mock.single_request();
     assert_eq!(
-        direct_exec_request.custom_tool_call_output(call_id)["internal_chat_message_metadata_passthrough"]
-            ["executed_tool_calls"],
-        json!([{
-            "name": format!("{namespace}__{tool_name}"),
-            "arguments": input,
-        }]),
+        tool_call_metadata(direct_exec_request.custom_tool_call_output(call_id)),
+        tool_call_metadata(escaped_request.custom_tool_call_output(call_id)),
     );
     assert_eq!(
-        direct_exec_request.custom_tool_call_output(escaped_call_id)["internal_chat_message_metadata_passthrough"]
-            ["executed_tool_calls"],
-        expected_escaped_calls,
+        tool_call_metadata(direct_exec_request.custom_tool_call_output(escaped_call_id)),
+        tool_call_metadata(escaped_request.custom_tool_call_output(escaped_call_id)),
     );
     let direct_exec_output = direct_exec_request.custom_tool_call_output(direct_exec_call_id);
     assert_eq!(
@@ -556,11 +555,14 @@ async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_re
         json!("unsupported custom tool call: exec"),
     );
     assert_eq!(
-        direct_exec_output["internal_chat_message_metadata_passthrough"]["executed_tool_calls"],
-        json!([{
-            "name": codex_code_mode::PUBLIC_TOOL_NAME,
-            "arguments": input,
-        }]),
+        tool_call_metadata(direct_exec_output),
+        json!({
+            "executed_tool_calls": [{
+                "name": codex_code_mode::PUBLIC_TOOL_NAME,
+                "arguments": input,
+            }],
+            "tool_calls_complete": true,
+        }),
     );
 
     Ok(())

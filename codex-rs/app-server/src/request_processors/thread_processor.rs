@@ -4907,7 +4907,7 @@ impl ThreadRequestProcessor {
                         serde_json::json!("unelevated"),
                     );
                 }
-                WindowsSandboxLevel::Disabled => {}
+                WindowsSandboxLevel::Disabled | WindowsSandboxLevel::Mxc => {}
             }
         }
         let request_overrides = if cli_overrides.is_empty() {

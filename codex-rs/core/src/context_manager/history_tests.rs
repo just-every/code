@@ -2659,6 +2659,47 @@ fn non_base64_image_urls_use_image_estimates() {
 }
 
 #[test]
+fn passthrough_metadata_does_not_change_context_estimates() {
+    for output in [
+        serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}),
+        serde_json::json!({"type": "function_call_output", "call_id": "call", "output": "result"}),
+        serde_json::json!({"type": "custom_tool_call_output", "call_id": "call", "output": "result"}),
+        serde_json::json!({"type": "tool_search_output", "call_id": "call", "execution": "client", "status": "completed", "tools": []}),
+    ] {
+        let original: ResponseItem = serde_json::from_value(output.clone()).expect("response item");
+        let before = estimate_response_item_model_visible_bytes(&original);
+        for turn_metadata in [
+            None,
+            Some(InternalChatMessageMetadataPassthrough::default()),
+            Some(InternalChatMessageMetadataPassthrough {
+                turn_id: Some("turn-\"你好\"".to_string()),
+                create_time: Some(123.into()),
+                ..unknown_content_metadata()
+            }),
+        ] {
+            let mut output = output.clone();
+            output["internal_chat_message_metadata_passthrough"] =
+                serde_json::to_value(turn_metadata).expect("turn metadata");
+            let mut item: ResponseItem = serde_json::from_value(output).expect("response item");
+            assert_eq!(estimate_response_item_model_visible_bytes(&item), before);
+            let mut call = codex_protocol::models::ExecutedToolCall::new(
+                "test_tool".to_string(),
+                serde_json::json!({"input": "x".repeat(8 * 1024)}),
+            );
+            call.set_tool_result_metadata(codex_protocol::models::ToolResultMetadata::new(
+                &serde_json::json!({"provider": "x".repeat(16 * 1024)}),
+            ));
+            item.append_executed_tool_calls(vec![call]);
+            item.set_tool_call_cell_id("cell");
+            item.mark_tool_calls_complete();
+            assert_eq!(estimate_response_item_model_visible_bytes(&item), before);
+            item.clear_internal_chat_message_metadata_passthrough();
+            assert_eq!(item, original);
+        }
+    }
+}
+
+#[test]
 fn encrypted_function_output_uses_plaintext_byte_estimate() {
     let encrypted_content = "A".repeat(1_868);
     let item = ResponseItem::FunctionCallOutput {

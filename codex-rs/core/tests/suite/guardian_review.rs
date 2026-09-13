@@ -300,7 +300,7 @@ async fn guardian_review_compacts_with_summary_despite_parent_token_budget(
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
         Ok(()),
-        "Guardian approval actions require host-native paths"
+        "approved commands can collide on process IDs in the shared Wine exec server"
     );
 
     let server = start_mock_server().await;
@@ -437,6 +437,127 @@ async fn guardian_review_compacts_with_summary_despite_parent_token_budget(
         "the compactor should receive the follow-up policy reminder"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[test_case(false; "legacy_transcript")]
+#[test_case(true; "thread_owned_transcript")]
+async fn guardian_requests_record_only_their_own_tool_calls(thread_owned: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine exec is not passing yet"
+    );
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        config
+            .features
+            .set_enabled(Feature::GuardianThreadContext, thread_owned)
+            .expect("configure Guardian context mode");
+        config
+            .features
+            .enable(Feature::ExecutedToolCallMetadata)
+            .expect("enable tool-call metadata");
+        config.update_plan_enabled = true;
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let plan_args = json!({"plan": [{"step": "inspect", "status": "completed"}]});
+    let guardian_tool_args = json!({
+        "cmd": "printf guardian-metadata-own-call",
+        "login": false,
+        "yield_time_ms": 1000,
+    });
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call("plan", "update_plan", &plan_args.to_string()),
+                ev_completed("parent-plan"),
+            ]),
+            sse(vec![
+                ev_function_call(
+                    "reviewed-command",
+                    "exec_command",
+                    r#"{"cmd":"true","sandbox_permissions":"require_escalated","justification":"Exercise Guardian metadata filtering."}"#,
+                ),
+                ev_completed("parent-review"),
+            ]),
+            sse(vec![
+                ev_function_call(
+                    "guardian-command",
+                    "exec_command",
+                    &guardian_tool_args.to_string(),
+                ),
+                ev_completed("guardian-command-response"),
+            ]),
+            sse(vec![
+                ev_assistant_message(
+                    "guardian-denial",
+                    r#"{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"The test denies escalation."}"#,
+                ),
+                ev_completed("guardian-review"),
+            ]),
+            sse(vec![ev_completed("parent-done")]),
+        ],
+    )
+    .await;
+
+    test.submit_text_turn("Update the plan, then request a reviewed command")
+        .await?;
+
+    let expected_calls = json!([{"name": "update_plan", "arguments": plan_args}]);
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 5);
+    let parent_output = requests[1].function_call_output("plan");
+    assert_eq!(parent_output["output"], "Plan updated");
+    assert_eq!(
+        parent_output["internal_chat_message_metadata_passthrough"]["executed_tool_calls"],
+        expected_calls,
+    );
+    assert_eq!(
+        parent_output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+        true,
+    );
+    let guardian_output = requests[3].function_call_output("guardian-command");
+    let guardian_text = guardian_output["output"].as_str().expect("command output");
+    assert!(
+        guardian_text.contains("Process exited with code 0"),
+        "Guardian command did not complete successfully: {guardian_text}"
+    );
+    assert!(
+        guardian_text.ends_with("guardian-metadata-own-call"),
+        "Guardian command returned unexpected output: {guardian_text}"
+    );
+    assert_eq!(
+        super::direct_tool_metadata::tool_call_metadata(guardian_output),
+        json!({
+            "executed_tool_calls": [{"name": "exec_command", "arguments": guardian_tool_args}],
+            "tool_calls_complete": true,
+        }),
+    );
+    for guardian_request in &requests[2..4] {
+        assert_eq!(
+            guardian_request.body_json()["client_metadata"]["x-openai-subagent"],
+            "guardian",
+        );
+        assert!(guardian_request.body_contains_text("Plan updated"));
+        for item in guardian_request.input() {
+            if item["type"] == "function_call_output" && item["call_id"] == "guardian-command" {
+                continue;
+            }
+            let metadata = &item["internal_chat_message_metadata_passthrough"];
+            for field in ["executed_tool_calls", "tool_calls_complete", "cell_id"] {
+                assert!(
+                    metadata.get(field).is_none(),
+                    "Guardian reattributed parent {field} to an unrelated input item"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2214,10 +2335,6 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
 async fn yielded_code_mode_denials_interrupt_the_servicing_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
-    skip_if_wine_exec!(
-        Ok(()),
-        "Guardian approval actions require host-native paths"
-    );
 
     let server = start_mock_server().await;
     let mut builder = test_codex()
