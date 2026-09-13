@@ -1,11 +1,11 @@
-## @just-every/code v0.6.186
+## @just-every/code v0.6.187
 
-This release refreshes upstream parity and release metadata for Code.
+This release refreshes upstream Codex parity and updates the Linux musl build toolchain.
 
 ### Changes
 
-- Core: refresh upstream Codex ancestry for mainline parity.
-- Release: keep the codex-rs mirror aligned with upstream/main.
+- Core: refresh upstream Codex history for mainline parity.
+- Release: use OpenSSL 3.6.4 for Linux musl builds.
 
 ### Install
 
@@ -14,4 +14,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.185...v0.6.186
+Compare: https://github.com/just-every/code/compare/v0.6.186...v0.6.187

@@ -7,6 +7,11 @@
 
 - (none)
 
+## [0.6.187] - 2026-09-13
+
+- Core: refresh upstream Codex history for mainline parity. (17ed5ddf)
+- Release: use OpenSSL 3.6.4 for Linux musl builds. (a592c38c, 320c4e3c)
+
 ## [0.6.186] - 2026-09-12
 
 - Core: refresh upstream Codex ancestry for mainline parity. (cbe15cd1)
