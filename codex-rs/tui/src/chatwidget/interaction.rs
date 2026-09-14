@@ -43,6 +43,24 @@ impl ChatWidget {
             return;
         }
 
+        if (self.chat_keymap.interrupt_turn.is_pressed(key_event)
+            || key_hint::ctrl(KeyCode::Char('c')).is_press(key_event))
+            && self.bottom_pane.no_modal_or_popup_active()
+            && !self.should_handle_vim_insert_escape(key_event)
+            && self.pending_image_submission.is_some()
+        {
+            if self.is_cancellable_work_active() {
+                self.requeue_image_submission();
+                self.input_queue.recovered_queue = true;
+                if self.submit_op(AppCommand::interrupt()) {
+                    self.pause_active_goal_for_interrupt();
+                }
+            } else {
+                self.cancel_image_submission();
+            }
+            return;
+        }
+
         if self.handle_reasoning_shortcut(key_event) || self.handle_permission_shortcut(key_event) {
             self.bottom_pane.clear_quit_shortcut_hint();
             self.quit_shortcut_expires_at = None;
@@ -124,13 +142,15 @@ impl ChatWidget {
 
         if key_event.kind == KeyEventKind::Press
             && self.chat_keymap.edit_queued_message.is_pressed(key_event)
-            && self.has_queued_follow_up_messages()
+            && (self.has_queued_follow_up_messages() || self.pending_image_submission.is_some())
             && self.bottom_pane.no_modal_or_popup_active()
         {
             if let Some(composer) = self.pop_latest_queued_composer_state() {
                 self.restore_composer_state(composer);
                 self.refresh_pending_input_preview();
                 self.request_redraw();
+            } else {
+                self.cancel_image_submission();
             }
             return;
         }
@@ -306,7 +326,9 @@ impl ChatWidget {
         match self.transcript.last_agent_markdown.clone() {
             Some(markdown) if !markdown.is_empty() => match copy_fn(&markdown) {
                 Ok(lease) => {
-                    self.clipboard_lease = lease;
+                    if let Some(lease) = lease {
+                        self.clipboard_lease = Some(lease);
+                    }
                     self.add_to_history(history_cell::new_info_event(
                         "Copied last message to clipboard".into(),
                         /*hint*/ None,
@@ -435,7 +457,9 @@ impl ChatWidget {
     ) {
         match copy_fn(text) {
             Ok(lease) => {
-                self.clipboard_lease = lease;
+                if let Some(lease) = lease {
+                    self.clipboard_lease = Some(lease);
+                }
                 self.add_info_message(format!("Copied {label} to clipboard"), /*hint*/ None);
             }
             Err(error) => self.add_error_message(format!("Copy failed: {error}")),

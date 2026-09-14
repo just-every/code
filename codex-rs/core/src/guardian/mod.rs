@@ -20,6 +20,7 @@ mod review_session;
 mod reviewer_config;
 mod runtime;
 
+use codex_protocol::items::ModelInvocationContext;
 use std::sync::Arc;
 
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -78,10 +79,11 @@ pub(crate) const GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKENS: usize = 6_000;
 /// MCP elicitation reviews continue to use turn-only inputs.
 #[derive(Clone)]
 pub(crate) struct GuardianReviewContext {
-    /// The response currently handled in this execution context.
+    /// The latest response ID received in this turn when review was requested.
     pub(crate) parent_response_id: Option<String>,
     turn: Arc<TurnContext>,
     environments: TurnEnvironmentSnapshot,
+    // Model and reasoning inputs are carried for the follow-up Guardian and V2 migrations.
     pub(crate) model_info: Arc<ModelInfo>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) reasoning_summary: ReasoningSummary,
@@ -91,6 +93,17 @@ pub(crate) struct GuardianReviewContext {
 }
 
 impl GuardianReviewContext {
+    pub(crate) fn model_context(&self) -> ModelInvocationContext {
+        ModelInvocationContext {
+            model_slug: self.model_info.slug.clone(),
+            reasoning_effort: self
+                .reasoning_effort
+                .as_ref()
+                .or(self.model_info.default_reasoning_level.as_ref())
+                .map(ToString::to_string),
+        }
+    }
+
     pub(crate) fn from_resolved_settings(
         turn: Arc<TurnContext>,
         settings: &ResolvedStepSettings,

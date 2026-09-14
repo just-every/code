@@ -481,6 +481,19 @@ impl ThreadStore for LocalThreadStore {
         })
     }
 
+    fn read_pending_thread_metadata(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<ThreadMetadataPatch>> {
+        Box::pin(async move {
+            Ok(self
+                .pending_thread_metadata
+                .lock(thread_id)
+                .await
+                .and_then(|metadata| metadata.clone()))
+        })
+    }
+
     fn remove_pending_thread_metadata(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             self.pending_thread_metadata.remove(thread_id).await;
@@ -733,6 +746,8 @@ impl ThreadStore for LocalThreadStore {
 
 #[cfg(test)]
 mod tests {
+    #[path = "acquisition_tests.rs"]
+    mod acquisition_tests;
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;
@@ -1014,13 +1029,16 @@ mod tests {
             })
         };
 
+        let mut guard = crate::LiveThreadInitGuard::default();
         let live_thread = LiveThread::create_with_inherited_model_context(
             store,
             params,
             &[turn_context("parent-model", AskForApproval::Never)],
+            &mut guard,
         )
         .await
         .expect("create live thread with inherited context");
+        guard.commit();
         live_thread
             .persist(PersistContext::Standard)
             .await

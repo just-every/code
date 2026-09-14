@@ -157,9 +157,9 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
                 .map(str::to_string),
         });
 
-        ToolSearchInfo::from_spec(
+        ToolSearchInfo::from_shared_spec(
             build_mcp_search_text(&self.tool_info),
-            self.spec(),
+            Arc::clone(&self.spec),
             source_info,
         )
     }
@@ -200,7 +200,7 @@ impl McpHandler {
         });
         notify_tool_start(&invocation, mcp_tool.as_ref()).await;
 
-        let originating_item_id = invocation.originating_item_id().await;
+        let originating_call = invocation.originating_call().await;
         let ToolInvocation {
             session,
             step_context,
@@ -232,7 +232,7 @@ impl McpHandler {
             &step_context,
             &cancellation_token,
             call_id.clone(),
-            originating_item_id,
+            originating_call,
             &self.tool_info,
             prepared_mcp_call,
             self.hook_tool_name(),

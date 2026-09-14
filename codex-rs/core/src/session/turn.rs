@@ -438,7 +438,7 @@ pub(crate) async fn run_turn(
             &turn_context,
             &turn_context.capture_current_model_info(),
             &pending_input,
-            PersistContext::Standard,
+            PersistContext::SteeredUserInput,
         )
         .await
         {
@@ -834,13 +834,21 @@ pub(crate) async fn run_hooks_and_record_inputs(
             if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
                 accepted_user_input = true;
             }
+            // Tool outputs retain their durability barrier, including in mixed input batches.
+            let input_persist_context = if persist_context == PersistContext::SteeredUserInput
+                && matches!(input_item, TurnInput::FunctionCallOutput(_))
+            {
+                PersistContext::Standard
+            } else {
+                persist_context
+            };
             record_pending_input(
                 sess,
                 turn_context,
                 model_info,
                 input_item.clone(),
                 hook_outcome.additional_contexts,
-                persist_context,
+                input_persist_context,
             )
             .await;
         }
@@ -1564,10 +1572,8 @@ async fn run_sampling_request(
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
     loop {
-        // A retry must not attribute the next tool call to the previous response.
-        turn_context
-            .extension_data
-            .remove::<codex_api::ResponseId>();
+        // Running code-mode cells can request review while this response is in flight.
+        // Keep the latest received ID until response.created replaces it.
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
