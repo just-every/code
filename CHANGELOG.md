@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.188] - 2026-09-14
+
+- Core: align MCP metadata handling and login requirement reporting. (1646fdf7)
+- Core: expose effective login methods in configuration requirements. (1646fdf7, a20092a7)
+- Release: preserve JustEvery workflow state while refreshing upstream parity. (c50f5100, 505c0b58)
+
 ## [0.6.187] - 2026-09-13
 
 - Core: refresh upstream Codex history for mainline parity. (17ed5ddf)

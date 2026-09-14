@@ -1,11 +1,12 @@
-## @just-every/code v0.6.187
+## @just-every/code v0.6.188
 
-This release refreshes upstream Codex parity and updates the Linux musl build toolchain.
+This release tightens MCP metadata handling, login requirement reporting, and upstream workflow parity.
 
 ### Changes
 
-- Core: refresh upstream Codex history for mainline parity.
-- Release: use OpenSSL 3.6.4 for Linux musl builds.
+- Core: align MCP metadata handling and login requirement reporting.
+- Core: expose effective login methods in configuration requirements.
+- Release: preserve JustEvery workflow state while refreshing upstream parity.
 
 ### Install
 
@@ -14,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.186...v0.6.187
+Compare: https://github.com/just-every/code/compare/v0.6.187...v0.6.188
