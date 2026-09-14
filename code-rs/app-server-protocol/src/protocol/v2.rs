@@ -570,6 +570,9 @@ pub struct ConfigReadResponse {
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirements {
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
+    /// Effective login methods after managed restrictions.
+    /// An empty list permits no login method. Older servers may omit this field.
+    pub allowed_login_methods: Option<Vec<ForcedLoginMethod>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
     pub enforce_residency: Option<ResidencyRequirement>,

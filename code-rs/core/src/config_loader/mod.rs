@@ -317,6 +317,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_protocol::config_types::ForcedLoginMethod;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -401,6 +402,53 @@ extra = true
                 "expected empty table when configs missing"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn requirements_parse_allowed_login_methods() {
+        let tmp = tempdir().expect("tempdir");
+        let requirements_path = tmp.path().join("requirements.toml");
+        std::fs::write(
+            &requirements_path,
+            r#"allowed_login_methods = ["chatgpt"]
+"#,
+        )
+        .expect("write requirements");
+
+        let overrides = LoaderOverrides {
+            managed_config_path: Some(tmp.path().join("managed_config.toml")),
+            requirements_path: Some(requirements_path),
+            #[cfg(target_os = "macos")]
+            managed_preferences_base64: None,
+        };
+
+        let requirements = load_config_requirements_internal(tmp.path(), overrides)
+            .await
+            .expect("load requirements");
+        assert_eq!(
+            requirements.allowed_login_methods,
+            Some(vec![ForcedLoginMethod::Chatgpt])
+        );
+    }
+
+    #[tokio::test]
+    async fn requirements_allow_empty_login_methods() {
+        let tmp = tempdir().expect("tempdir");
+        let requirements_path = tmp.path().join("requirements.toml");
+        std::fs::write(&requirements_path, "allowed_login_methods = []\n")
+            .expect("write requirements");
+
+        let overrides = LoaderOverrides {
+            managed_config_path: Some(tmp.path().join("managed_config.toml")),
+            requirements_path: Some(requirements_path),
+            #[cfg(target_os = "macos")]
+            managed_preferences_base64: None,
+        };
+
+        let requirements = load_config_requirements_internal(tmp.path(), overrides)
+            .await
+            .expect("load requirements");
+        assert_eq!(requirements.allowed_login_methods, Some(Vec::new()));
     }
 
     #[cfg(target_os = "macos")]

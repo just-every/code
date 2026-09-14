@@ -226,10 +226,11 @@ impl McpClientAdapter {
         &self,
         name: String,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> Result<mcp_types::CallToolResult> {
         match self {
-            McpClientAdapter::Rmcp(client) => client.call_tool(name, arguments, timeout).await,
+            McpClientAdapter::Rmcp(client) => client.call_tool(name, arguments, meta, timeout).await,
         }
     }
 
@@ -479,6 +480,7 @@ impl McpConnectionManager {
         server: &str,
         tool: &str,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
         timeout_override: Option<Duration>,
     ) -> Result<mcp_types::CallToolResult> {
         let (client, timeout) = {
@@ -491,7 +493,7 @@ impl McpConnectionManager {
         };
 
         client
-            .call_tool(tool.to_string(), arguments, timeout)
+            .call_tool(tool.to_string(), arguments, meta, timeout)
             .await
             .with_context(|| format!("tool call failed for `{server}/{tool}`"))
     }

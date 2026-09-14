@@ -1,18 +1,21 @@
 use crate::config::Constrained;
 use crate::config::ConstraintError;
 use crate::protocol::AskForApproval;
+use code_protocol::config_types::ForcedLoginMethod;
 use serde::Deserialize;
 
 /// Normalized version of [`ConfigRequirementsToml`] after deserialization and normalization.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ConfigRequirements {
     pub(crate) approval_policy: Constrained<AskForApproval>,
+    pub(crate) allowed_login_methods: Option<Vec<ForcedLoginMethod>>,
 }
 
 impl Default for ConfigRequirements {
     fn default() -> Self {
         Self {
             approval_policy: Constrained::allow_any_from_default(),
+            allowed_login_methods: None,
         }
     }
 }
@@ -21,6 +24,7 @@ impl Default for ConfigRequirements {
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
 pub(crate) struct ConfigRequirementsToml {
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
+    pub allowed_login_methods: Option<Vec<ForcedLoginMethod>>,
 }
 
 impl TryFrom<ConfigRequirementsToml> for ConfigRequirements {
@@ -40,7 +44,10 @@ impl TryFrom<ConfigRequirementsToml> for ConfigRequirements {
             }
             None => Constrained::allow_any_from_default(),
         };
-        Ok(ConfigRequirements { approval_policy })
+        Ok(ConfigRequirements {
+            approval_policy,
+            allowed_login_methods: toml.allowed_login_methods,
+        })
     }
 }
 
@@ -55,4 +62,3 @@ impl TryFrom<ConfigRequirementsToml> for ConfigRequirements {
 pub(crate) struct LegacyManagedConfigToml {
     pub(crate) approval_policy: Option<AskForApproval>,
 }
-

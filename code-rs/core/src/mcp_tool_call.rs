@@ -10,6 +10,9 @@ use crate::protocol::McpToolCallEndEvent;
 use code_protocol::models::FunctionCallOutputPayload;
 use code_protocol::models::ResponseInputItem;
 
+const MCP_TOOL_SESSION_ID_META_KEY: &str = "sessionId";
+const MCP_TOOL_THREAD_ID_META_KEY: &str = "threadId";
+
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
 pub(crate) async fn handle_mcp_tool_call(
@@ -48,9 +51,16 @@ pub(crate) async fn handle_mcp_tool_call(
     notify_mcp_tool_call_event(sess, ctx, tool_call_begin_event).await;
 
     let start = Instant::now();
+    let request_meta = mcp_tool_call_ids_meta(ctx, &sess.session_uuid().to_string());
     // Perform the tool call.
     let result = sess
-        .call_tool(&server, &tool_name, arguments_value.clone(), None)
+        .call_tool(
+            &server,
+            &tool_name,
+            arguments_value.clone(),
+            Some(request_meta),
+            None,
+        )
         .await
         .map_err(|e| format!("tool call error: {e}"));
     let protocol_result = result.clone().and_then(|value| {
@@ -73,4 +83,34 @@ pub(crate) async fn handle_mcp_tool_call(
 
 async fn notify_mcp_tool_call_event(sess: &Session, ctx: &ToolCallCtx, event: EventMsg) {
     sess.send_ordered_from_ctx(ctx, event).await;
+}
+
+fn mcp_tool_call_ids_meta(ctx: &ToolCallCtx, session_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        MCP_TOOL_THREAD_ID_META_KEY: ctx.sub_id,
+        MCP_TOOL_SESSION_ID_META_KEY: session_id,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_tool_call_ids_meta_uses_turn_and_session_ids() {
+        let ctx = ToolCallCtx::new(
+            "turn-live".to_string(),
+            "call-live".to_string(),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            mcp_tool_call_ids_meta(&ctx, "session-live"),
+            serde_json::json!({
+                "threadId": "turn-live",
+                "sessionId": "session-live",
+            })
+        );
+    }
 }

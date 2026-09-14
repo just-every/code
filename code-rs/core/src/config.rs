@@ -48,6 +48,7 @@ use crate::config_types::ContextMode;
 use crate::config_types::ServiceTier;
 use crate::project_features::{load_project_commands, ProjectCommand, ProjectHooks};
 use code_app_server_protocol::AuthMode;
+use code_protocol::config_types::ForcedLoginMethod;
 use code_protocol::config_types::SandboxMode;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use std::time::Instant;
@@ -621,6 +622,16 @@ pub fn load_allowed_approval_policies(
     } else {
         Ok(Some(allowed))
     }
+}
+
+pub fn load_allowed_login_methods(
+    code_home: &Path,
+) -> std::io::Result<Option<Vec<ForcedLoginMethod>>> {
+    let requirements = crate::config_loader::load_config_requirements_blocking(
+        code_home,
+        crate::config_loader::LoaderOverrides::default(),
+    )?;
+    Ok(requirements.allowed_login_methods)
 }
 
 /// Base config deserialized from ~/.code/config.toml (legacy ~/.codex/config.toml is still read).

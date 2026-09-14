@@ -33,6 +33,7 @@ use code_app_server_protocol::MergeStrategy;
 use code_app_server_protocol::ToolsV2;
 use code_app_server_protocol::AskForApproval as V2AskForApproval;
 use code_app_server_protocol::WriteStatus;
+use code_protocol::config_types::ForcedLoginMethod;
 use code_protocol::config_types::Verbosity;
 use code_protocol::config_types::WebSearchMode;
 use code_protocol::config_types::WebSearchToolConfig;
@@ -332,23 +333,10 @@ impl MessageProcessor {
                 true
             }
             "configRequirements/read" => {
-                let requirements = match code_core::config::load_allowed_approval_policies(
+                let allowed_approval_policies = match code_core::config::load_allowed_approval_policies(
                     &self.base_config.code_home,
                 ) {
-                    Ok(Some(allowed_approval_policies)) => Some(ConfigRequirements {
-                        allowed_approval_policies: Some(
-                            allowed_approval_policies
-                                .into_iter()
-                                .map(map_approval_policy_to_v2)
-                                .collect(),
-                        ),
-                        allowed_sandbox_modes: None,
-                        allowed_web_search_modes: None,
-                        enforce_residency: None,
-                        network: None,
-                        auto_review: None,
-                    }),
-                    Ok(None) => None,
+                    Ok(allowed) => allowed,
                     Err(err) => {
                         let error = JSONRPCErrorError {
                             code: INTERNAL_ERROR_CODE,
@@ -359,6 +347,42 @@ impl MessageProcessor {
                         return true;
                     }
                 };
+                let allowed_login_methods = match code_core::config::load_allowed_login_methods(
+                    &self.base_config.code_home,
+                ) {
+                    Ok(allowed) => allowed,
+                    Err(err) => {
+                        let error = JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: format!("Unable to read config requirements: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return true;
+                    }
+                };
+
+                let requirements =
+                    if allowed_approval_policies.is_some() || allowed_login_methods.is_some() {
+                        Some(ConfigRequirements {
+                            allowed_approval_policies: allowed_approval_policies.map(|policies| {
+                                policies
+                                    .into_iter()
+                                    .map(map_approval_policy_to_v2)
+                                    .collect()
+                            }),
+                            allowed_login_methods: Some(
+                                allowed_login_methods.unwrap_or_else(default_allowed_login_methods),
+                            ),
+                            allowed_sandbox_modes: None,
+                            allowed_web_search_modes: None,
+                            enforce_residency: None,
+                            network: None,
+                            auto_review: None,
+                        })
+                    } else {
+                        None
+                    };
 
                 let response = ConfigRequirementsReadResponse { requirements };
                 self.outgoing.send_response(request_id, response).await;
@@ -786,6 +810,10 @@ fn map_approval_policy_to_v2(
         },
         code_core::protocol::AskForApproval::Never => V2AskForApproval::Never,
     }
+}
+
+fn default_allowed_login_methods() -> Vec<ForcedLoginMethod> {
+    vec![ForcedLoginMethod::Api, ForcedLoginMethod::Chatgpt]
 }
 
 fn apply_toml_edit(

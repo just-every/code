@@ -22,8 +22,6 @@ use std::io;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use mcp_types::CallToolRequest;
-use mcp_types::CallToolRequestParams;
 use mcp_types::InitializeRequest;
 use mcp_types::InitializeRequestParams;
 use mcp_types::InitializedNotification;
@@ -38,6 +36,7 @@ use mcp_types::ListToolsResult;
 use mcp_types::ModelContextProtocolNotification;
 use mcp_types::ModelContextProtocolRequest;
 use mcp_types::RequestId;
+use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncBufReadExt;
@@ -59,6 +58,24 @@ const CHANNEL_CAPACITY: usize = 128;
 
 /// Internal representation of a pending request sender.
 type PendingSender = oneshot::Sender<JSONRPCMessage>;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct CallToolRequestWithMetaParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    arguments: Option<serde_json::Value>,
+    name: String,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    meta: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+enum CallToolRequestWithMeta {}
+
+impl ModelContextProtocolRequest for CallToolRequestWithMeta {
+    const METHOD: &'static str = "tools/call";
+    type Params = CallToolRequestWithMetaParams;
+    type Result = mcp_types::CallToolResult;
+}
 
 async fn spawn_child_with_retry(cmd: &mut Command) -> io::Result<tokio::process::Child> {
     let mut last_err: Option<io::Error> = None;
@@ -361,11 +378,20 @@ impl McpClient {
         &self,
         name: String,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> Result<mcp_types::CallToolResult> {
-        let params = CallToolRequestParams { name, arguments };
+        match &meta {
+            Some(serde_json::Value::Object(_)) | None => {}
+            Some(other) => {
+                return Err(anyhow!(
+                    "MCP tool request _meta must be a JSON object, got {other}"
+                ));
+            }
+        }
+        let params = CallToolRequestWithMetaParams { name, arguments, meta };
         debug!("MCP tool call: {params:?}");
-        self.send_request::<CallToolRequest>(params, timeout).await
+        self.send_request::<CallToolRequestWithMeta>(params, timeout).await
     }
 
     /// Internal helper: route a JSON-RPC *response* object to the pending map.
@@ -498,6 +524,7 @@ fn create_env_for_mcp_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_create_env_for_mcp_server() {
@@ -508,5 +535,31 @@ mod tests {
         let mcp_server_env = create_env_for_mcp_server(Some(extra_env));
         assert!(mcp_server_env.contains_key("PATH"));
         assert_eq!(Some(&env_var_new_value), mcp_server_env.get(env_var));
+    }
+
+    #[test]
+    fn call_tool_request_params_serialize_meta() {
+        let params = CallToolRequestWithMetaParams {
+            name: "lookup".to_string(),
+            arguments: Some(json!({ "query": "weather" })),
+            meta: Some(json!({
+                "threadId": "turn-live",
+                "sessionId": "session-live",
+            })),
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            json!({
+                "name": "lookup",
+                "arguments": {
+                    "query": "weather",
+                },
+                "_meta": {
+                    "threadId": "turn-live",
+                    "sessionId": "session-live",
+                },
+            })
+        );
     }
 }

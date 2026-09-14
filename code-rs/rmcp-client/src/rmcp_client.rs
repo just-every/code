@@ -16,11 +16,16 @@ use mcp_types::InitializeResult;
 use mcp_types::ListToolsRequestParams;
 use mcp_types::ListToolsResult;
 use mcp_types::MCP_SCHEMA_VERSION;
+use rmcp::model::CallToolRequest;
 use rmcp::model::CallToolRequestParam;
+use rmcp::model::ClientRequest;
 use rmcp::model::InitializeRequestParam;
+use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParam;
+use rmcp::model::ServerResult;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
+use rmcp::service::ServiceError;
 use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
@@ -249,12 +254,22 @@ impl RmcpClient {
         &self,
         name: String,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> Result<CallToolResult> {
         let service = self.service().await?;
         let params = CallToolRequestParams { arguments, name };
         let rmcp_params: CallToolRequestParam = convert_to_rmcp(params)?;
-        let fut = service.call_tool(rmcp_params);
+        let rmcp_meta = match meta {
+            Some(serde_json::Value::Object(map)) => Some(map),
+            Some(other) => {
+                return Err(anyhow!(
+                    "MCP tool request _meta must be a JSON object, got {other}"
+                ));
+            }
+            None => None,
+        };
+        let fut = call_tool_with_meta(service, rmcp_params, rmcp_meta);
         let rmcp_result = run_with_timeout(fut, timeout, "tools/call").await?;
         convert_call_tool_result(rmcp_result)
     }
@@ -274,6 +289,26 @@ impl RmcpClient {
     }
 }
 
+async fn call_tool_with_meta(
+    service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
+    params: CallToolRequestParam,
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<rmcp::model::CallToolResult, ServiceError> {
+    let mut request = CallToolRequest::new(params);
+    if let Some(meta) = meta {
+        request.extensions.insert(Meta(meta));
+    }
+
+    let result = service
+        .peer()
+        .send_request(ClientRequest::CallToolRequest(request))
+        .await?;
+    match result {
+        ServerResult::CallToolResult(result) => Ok(result),
+        _ => Err(ServiceError::UnexpectedResponse),
+    }
+}
+
 fn handshake_failed_error(err: impl Into<anyhow::Error>) -> anyhow::Error {
     let err = err.into();
     anyhow!(
@@ -290,6 +325,7 @@ fn handshake_timeout_error(duration: Duration) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn mcp_schema_version_is_well_formed() {
@@ -301,6 +337,38 @@ mod tests {
             "MCP_SCHEMA_VERSION should be in YYYY-MM-DD format"
         );
         assert!(parts.iter().all(|segment| !segment.trim().is_empty()));
+    }
+
+    #[test]
+    fn call_tool_request_serializes_meta() {
+        let mut request = CallToolRequest::new(CallToolRequestParam {
+            name: "lookup".into(),
+            arguments: Some(serde_json::Map::from_iter([(
+                "query".to_string(),
+                json!("weather"),
+            )])),
+        });
+        request.extensions.insert(Meta(serde_json::Map::from_iter([
+            ("threadId".to_string(), json!("turn-live")),
+            ("sessionId".to_string(), json!("session-live")),
+        ])));
+
+        assert_eq!(
+            serde_json::to_value(ClientRequest::CallToolRequest(request)).unwrap(),
+            json!({
+                "method": "tools/call",
+                "params": {
+                    "_meta": {
+                        "threadId": "turn-live",
+                        "sessionId": "session-live",
+                    },
+                    "name": "lookup",
+                    "arguments": {
+                        "query": "weather",
+                    },
+                },
+            })
+        );
     }
 
     #[test]

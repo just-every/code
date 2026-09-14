@@ -2223,10 +2223,11 @@ impl Session {
         server: &str,
         tool: &str,
         arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> anyhow::Result<mcp_types::CallToolResult> {
         self.mcp_connection_manager
-            .call_tool(server, tool, arguments, timeout)
+            .call_tool(server, tool, arguments, meta, timeout)
             .await
     }
 
