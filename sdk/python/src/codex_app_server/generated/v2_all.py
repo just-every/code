@@ -5719,6 +5719,17 @@ class WorkspaceMessageType(Enum):
     unknown = "unknown"
 
 
+class WorkspaceRouting(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_routing_override: Annotated[
+        AccountRoutingOverride, Field(alias="accountRoutingOverride")
+    ]
+    backend_origin: Annotated[str, Field(alias="backendOrigin")]
+    chatgpt_account_id: Annotated[str, Field(alias="chatgptAccountId")]
+
+
 class WriteStatus(Enum):
     ok = "ok"
     ok_overridden = "okOverridden"
@@ -8071,11 +8082,11 @@ class InputImageFunctionCallOutputContentItem(BaseModel):
         populate_by_name=True,
     )
     detail: ImageDetail | None = None
-    image_url: str
     type: Annotated[
         Literal["input_image"],
         Field(title="InputImageFunctionCallOutputContentItemType"),
     ]
+    image_url: str
 
 
 class FunctionCallOutputContentItem(
@@ -11087,6 +11098,13 @@ class ThreadResumeResponse(BaseModel):
             description="Reviewer currently used for approval requests on this thread.",
         ),
     ]
+    collaboration_mode: Annotated[
+        CollaborationMode | None,
+        Field(
+            alias="collaborationMode",
+            description="Effective collaboration mode. Absent when resuming from an older server.",
+        ),
+    ] = None
     cwd: AbsolutePathBuf
     instruction_sources: Annotated[
         list[LegacyAppPathString] | None,

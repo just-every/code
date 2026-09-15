@@ -212,6 +212,15 @@ def stage_python_runtime_package(
     binary_path: Path,
     platform_tag: str | None = None,
 ) -> Path:
+    if package_source.is_dir():
+        source = package_source.resolve()
+        destination = staging_dir.resolve()
+        if source.is_relative_to(destination) or destination.is_relative_to(source):
+            raise RuntimeError("Codex package and runtime staging directories must not overlap")
+        for path in package_source.rglob("*"):
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise RuntimeError(f"Expected a regular Codex package entry: {path}")
+
     package_version = normalize_codex_version(codex_version)
     _copy_package_tree(python_runtime_root(), staging_dir)
 
@@ -525,6 +534,7 @@ def generate_v2_all() -> None:
             ],
             cwd=sdk_root(),
         )
+    _preserve_inline_image_class_names(out_path)
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
