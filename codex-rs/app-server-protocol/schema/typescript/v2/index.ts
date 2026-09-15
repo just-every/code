@@ -3,6 +3,7 @@
 export type { Account } from "./Account";
 export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
 export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
+export type { AccountRoutingOverride } from "./AccountRoutingOverride";
 export type { AccountTokenUsageDailyBucket } from "./AccountTokenUsageDailyBucket";
 export type { AccountTokenUsageSummary } from "./AccountTokenUsageSummary";
 export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
@@ -615,6 +616,7 @@ export type { TurnsPage } from "./TurnsPage";
 export type { UserInput } from "./UserInput";
 export type { WarningNotification } from "./WarningNotification";
 export type { WebSearchAction } from "./WebSearchAction";
+export type { WindowsSandboxImplementation } from "./WindowsSandboxImplementation";
 export type { WindowsSandboxReadiness } from "./WindowsSandboxReadiness";
 export type { WindowsSandboxReadinessResponse } from "./WindowsSandboxReadinessResponse";
 export type { WindowsSandboxSetupCompletedNotification } from "./WindowsSandboxSetupCompletedNotification";
@@ -624,4 +626,5 @@ export type { WindowsSandboxSetupStartResponse } from "./WindowsSandboxSetupStar
 export type { WindowsWorldWritableWarningNotification } from "./WindowsWorldWritableWarningNotification";
 export type { WorkspaceMessage } from "./WorkspaceMessage";
 export type { WorkspaceMessageType } from "./WorkspaceMessageType";
+export type { WorkspaceRouting } from "./WorkspaceRouting";
 export type { WriteStatus } from "./WriteStatus";

@@ -383,6 +383,10 @@
     },
     "AutoReviewToml": {
       "properties": {
+        "experimental_policy_template": {
+          "description": "Experimental full Guardian prompt template containing the tenant policy placeholder.",
+          "type": "string"
+        },
         "policy": {
           "description": "Additional policy instructions inserted into the guardian prompt.",
           "type": "string"
@@ -631,6 +635,9 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "analytics_plan_history": {
+              "type": "boolean"
+            },
             "api_key_model_discovery": {
               "type": "boolean"
             },
@@ -1613,7 +1620,7 @@
           "type": "boolean"
         },
         "free_guardian": {
-          "description": "Route Guardian review and classification through the unmetered Codex endpoints.",
+          "description": "Legacy setting retained for config compatibility; the backend now controls Guardian billing.",
           "type": "boolean"
         },
         "max_action_tokens": {
@@ -6259,6 +6266,9 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "analytics_plan_history": {
+          "type": "boolean"
+        },
         "api_key_model_discovery": {
           "type": "boolean"
         },

@@ -213,7 +213,6 @@ impl ChatWidget {
         self.model_popup_request_id = None;
         self.invalidate_permission_discovery();
         self.invalidate_connector_scope();
-        self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_requests();
         self.clear_backend_banner();
         self.luna_reserve_notice_account_id = None;
@@ -524,7 +523,7 @@ impl ChatWidget {
             .set_workspace_roots(self.config.workspace_roots.clone());
     }
 
-    pub(super) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
+    pub(crate) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {
         let mode_kind = mode.mode;
         let settings = mode.settings;
         if mode_kind == ModeKind::Default {

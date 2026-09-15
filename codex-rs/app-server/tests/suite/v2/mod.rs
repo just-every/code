@@ -91,6 +91,8 @@ mod process_exec;
 mod projects;
 mod rate_limit_reset_credits;
 mod rate_limits;
+#[path = "rate_limits_identity_tests.rs"]
+mod rate_limits_identity;
 mod realtime_conversation;
 mod recommended_plugins;
 mod remote_control;
@@ -146,6 +148,7 @@ mod turn_steer;
 mod view_image;
 mod web_search;
 mod windows_sandbox_setup;
+mod workspace_routing;
 
 mod user_verification;
 mod user_verification_mcp;

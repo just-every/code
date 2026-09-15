@@ -232,6 +232,18 @@ pub struct ThreadManager {
     _test_codex_home_guard: Option<TempCodexHomeGuard>,
 }
 
+/// Captured parent identity for an internal child, including inline parents that
+/// do not have a public entry in the thread manager. Authentication and the shared
+/// agent budget remain bound to the parent that created this value.
+#[derive(Clone)]
+pub struct InternalSessionParent {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) agent_control: AgentControl,
+    pub(crate) originator: String,
+    pub(crate) inherited_instructions: Option<SessionInstructions>,
+}
+
 pub struct StartThreadOptions {
     pub config: Config,
     /// Host-owned provider for this root thread's additional instructions.
@@ -249,6 +261,8 @@ pub struct StartThreadOptions {
     pub thread_instructions_provider: Option<Arc<dyn ThreadInstructionsProvider>>,
     pub allow_provider_model_fallback: bool,
     pub initial_history: InitialHistory,
+    /// Parent captured for `start_thread`, including a parent not in the live registry.
+    pub internal_parent: Option<InternalSessionParent>,
     pub history_mode: Option<ThreadHistoryMode>,
     pub session_source: Option<SessionSource>,
     pub thread_source: Option<ThreadSource>,
@@ -275,6 +289,7 @@ impl StartThreadOptions {
             thread_instructions_provider: None,
             allow_provider_model_fallback: false,
             initial_history: InitialHistory::New,
+            internal_parent: None,
             history_mode: None,
             session_source: None,
             thread_source: None,
@@ -298,6 +313,7 @@ struct ThreadSpawnRequest {
     auth_manager: Arc<AuthManager>,
     agent_control: AgentControl,
     parent_thread_id: Option<ThreadId>,
+    parent_originator: Option<String>,
     forked_from_thread_id: Option<ThreadId>,
     fork_persistence: ForkPersistence,
     inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -318,6 +334,7 @@ impl ThreadSpawnRequest {
             auth_manager,
             agent_control,
             parent_thread_id: None,
+            parent_originator: None,
             forked_from_thread_id: None,
             fork_persistence: ForkPersistence::Copied,
             inherited_environments: None,
@@ -1044,17 +1061,15 @@ impl ThreadManager {
             ));
         }
         let parent = self.get_thread(parent_thread_id).await?;
-        let forked_from_thread_id = history.forked_from_id();
         options.initial_history = history;
-        let mut request = ThreadSpawnRequest::new(
-            options,
-            Arc::clone(&parent.session.services.auth_manager),
-            parent.session.services.agent_control.clone(),
-        );
-        request.parent_thread_id = Some(parent_thread_id);
-        request.forked_from_thread_id = forked_from_thread_id;
-        request.inherited_instructions = inherited_instructions;
-        Box::pin(self.state.spawn_thread(request)).await
+        options.internal_parent = Some(InternalSessionParent {
+            thread_id: parent_thread_id,
+            auth_manager: Arc::clone(&parent.session.services.auth_manager),
+            agent_control: parent.session.services.agent_control.clone(),
+            originator: parent.config_snapshot().await.originator,
+            inherited_instructions,
+        });
+        self.start_thread(options).await
     }
 
     /// Allocates a thread ID before startup so a caller can associate host-owned state with it.
@@ -1068,7 +1083,6 @@ impl ThreadManager {
         forked_from_thread_id: Option<ThreadId>,
         startup: Option<Arc<crate::session::startup::SessionStartup>>,
     ) -> CodexResult<NewThread> {
-        let agent_control = self.agent_control_for_config(&options.config);
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
             .get_resumed_session_sources()
@@ -1080,9 +1094,33 @@ impl ThreadManager {
                 .unwrap_or(resumed_session_source),
         );
         options.thread_source = options.thread_source.take().or(resumed_thread_source);
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
-        request.forked_from_thread_id = forked_from_thread_id;
+        let parent = options.internal_parent.take();
+        if parent.is_some()
+            && (!matches!(options.session_source, Some(SessionSource::Internal(_)))
+                || matches!(options.initial_history, InitialHistory::Resumed(_)))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "a captured internal parent requires a new or forked internal session".to_owned(),
+            ));
+        }
+        let mut request = if let Some(parent) = parent {
+            let mut request =
+                ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
+            request.parent_thread_id = Some(parent.thread_id);
+            request.parent_originator = Some(parent.originator);
+            request.inherited_instructions = parent.inherited_instructions;
+            request.forked_from_thread_id = request.options.initial_history.forked_from_id();
+            request
+        } else {
+            let agent_control = self.agent_control_for_config(&options.config);
+            let mut request = ThreadSpawnRequest::new(
+                options,
+                Arc::clone(&self.state.auth_manager),
+                agent_control,
+            );
+            request.forked_from_thread_id = forked_from_thread_id;
+            request
+        };
         request.startup = startup;
         Box::pin(self.state.spawn_thread(request)).await
     }
@@ -1748,6 +1786,7 @@ impl ThreadManagerState {
         session_source: &SessionSource,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        parent_originator: Option<String>,
     ) -> String {
         let persisted_originator = initial_history.get_session_originator();
         let inherited_originator = match initial_history {
@@ -1777,7 +1816,7 @@ impl ThreadManagerState {
             metrics_service_name,
             env_originator,
             persisted_originator,
-            inherited_originator,
+            inherited_originator.or(parent_originator),
             originator().value,
         )
     }
@@ -1938,6 +1977,7 @@ impl ThreadManagerState {
             auth_manager,
             agent_control,
             parent_thread_id,
+            parent_originator,
             forked_from_thread_id,
             fork_persistence,
             inherited_environments,
@@ -1950,6 +1990,7 @@ impl ThreadManagerState {
             thread_instructions_provider,
             allow_provider_model_fallback,
             initial_history,
+            internal_parent: _,
             history_mode,
             session_source,
             thread_source,
@@ -2084,6 +2125,7 @@ impl ThreadManagerState {
                 &session_source,
                 parent_thread_id,
                 forked_from_thread_id,
+                parent_originator,
             )
             .await;
         let source_changed_during_startup = Arc::new(AtomicBool::new(false));
@@ -2103,6 +2145,8 @@ impl ThreadManagerState {
         } else {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile
         };
+        let attachment_source =
+            forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
         let (session, io) = Session::spawn(SessionSpawnArgs {
             startup,
             config,
@@ -2149,6 +2193,7 @@ impl ThreadManagerState {
             client_mcp_extensions,
             reserved_thread_id,
             analytics_events_client: self.analytics_events_client.clone(),
+            image_store: Arc::clone(&self.image_store),
             thread_store: Arc::clone(&self.thread_store),
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
@@ -2164,6 +2209,21 @@ impl ThreadManagerState {
             windows_sandbox_proxy_settings_mode,
         })
         .await?;
+        if let Some(source_thread_id) = attachment_source
+            && session.live_thread().is_some()
+            && self.thread_store.supports_thread_attachments()
+        {
+            // Fork initialization already handles persistence. Copy current membership before
+            // registration, but do not fail the conversation fork for attachment metadata errors.
+            let thread_id = session.thread_id();
+            if let Err(error) = self
+                .thread_store
+                .copy_thread_attachments(source_thread_id, thread_id)
+                .await
+            {
+                warn!(%thread_id, %source_thread_id, %error, "failed to copy fork attachments");
+            }
+        }
         // Enable Full Access form input only after session startup so a required MCP server cannot
         // block startup while waiting for form input.
         if session

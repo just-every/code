@@ -1,7 +1,6 @@
-//! Selects Guardian answer evidence once per thread and retains completed reviews.
-//! The temporary legacy mode preserves its bounded runtime buffer; thread-owned
-//! mode reads retained answers from history. Capture uses the same thread feature setting;
-//! legacy mode does not produce new retained-answer events.
+//! Selects Guardian answer evidence from the review's history snapshot and retains reviews.
+//! Retained answers survive restart even while incompatible checkpoints use legacy review.
+//! Sessions without retained capture continue using the bounded runtime buffer.
 
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
@@ -19,7 +18,6 @@ use codex_protocol::request_user_input::RequestUserInputResponse;
 use serde_json::json;
 
 use super::ContextualUserFragment;
-use super::GuardianContextMode;
 use crate::codex_thread::GuardianAuthorizationVersion;
 use crate::codex_thread::GuardianRootMessage;
 use crate::guardian::guardian_truncate_text;
@@ -43,7 +41,6 @@ pub struct GuardianUserInputSnapshot {
 /// completed reviews remain thread-local, and authorization changes invalidate stale records.
 #[derive(Debug, Default)]
 pub struct GuardianReviewEvidence {
-    mode: GuardianContextMode,
     state: Mutex<GuardianReviewEvidenceState>,
 }
 
@@ -57,26 +54,15 @@ struct GuardianReviewEvidenceState {
 }
 
 impl GuardianReviewEvidence {
-    /// Reports the fixed thread mode used for both capture and reviewer policy.
-    pub fn context_mode(&self) -> GuardianContextMode {
-        self.mode
-    }
-
-    pub(crate) fn new(mode: GuardianContextMode) -> Self {
-        Self {
-            mode,
-            state: Mutex::default(),
-        }
-    }
-
     /// Preserves the legacy capture limits before hooks can replace the tool output.
     pub(crate) fn record_user_input(
         &self,
+        history: &dyn ConversationHistorySnapshot,
         call_id: &str,
         questions: &[RequestUserInputQuestion],
         response: &RequestUserInputResponse,
     ) {
-        if !matches!(self.mode, GuardianContextMode::Legacy) {
+        if history.retained_context().is_some() {
             return;
         }
         let fragment = questions
@@ -128,24 +114,20 @@ impl GuardianReviewEvidence {
         &self,
         history: &dyn ConversationHistorySnapshot,
     ) -> GuardianUserInputSnapshot {
-        match self.mode {
-            GuardianContextMode::ThreadOwned => {
-                let answers = history
-                    .retained_context()
-                    .map(codex_guardian_context::render_verified_answers);
+        match history.retained_context() {
+            Some(context) => {
+                let answers = codex_guardian_context::render_verified_answers(context);
                 let authorization_version = GuardianAuthorizationVersion {
                     user_message_revision: history.user_message_revision(),
                     user_input_response_count: 0,
-                    retained_context_complete: answers
-                        .as_ref()
-                        .is_none_or(|answers| answers.complete),
+                    retained_context_complete: answers.complete,
                 };
                 GuardianUserInputSnapshot {
-                    fragments: answers.map(|answers| answers.fragments).unwrap_or_default(),
+                    fragments: answers.fragments,
                     authorization_version,
                 }
             }
-            GuardianContextMode::Legacy => {
+            None => {
                 let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
                 let fragments = state
                     .user_inputs
@@ -181,13 +163,12 @@ impl GuardianReviewEvidence {
         history: &dyn ConversationHistorySnapshot,
         call_id: &str,
     ) -> Option<String> {
-        match self.mode {
-            GuardianContextMode::ThreadOwned => history
-                .retained_context()?
+        match history.retained_context() {
+            Some(context) => context
                 .verified_answers()
                 .find(|answer| answer.call_id == call_id)
                 .and_then(codex_guardian_context::render_verified_answer),
-            GuardianContextMode::Legacy => self
+            None => self
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)

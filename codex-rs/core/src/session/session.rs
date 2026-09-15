@@ -21,6 +21,7 @@ use crate::shell_snapshot::ShellSnapshot;
 use crate::shell_snapshot::SnapshotCredentialBrokerState;
 use crate::state::ActiveTurn;
 use crate::turn_metadata::ExecutionMetadata;
+use codex_attachment_store::AttachmentStore;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
@@ -39,6 +40,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_sandboxing::SandboxType;
 use codex_skills::SkillError;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_path::replace_path_and_deduplicate;
@@ -68,6 +70,7 @@ pub(crate) struct Session {
     pub(super) features: ManagedFeatures,
     pub(crate) guardian_context_mode: GuardianContextMode,
     pub(super) isolation: codex_extension_api::SessionIsolation,
+    pub(crate) allowed_tools: Option<Arc<codex_extension_api::AllowedTools>>,
     pub(crate) windows_sandbox_proxy_settings_mode:
         codex_sandboxing::WindowsSandboxProxySettingsMode,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
@@ -117,6 +120,7 @@ pub(crate) struct SessionConfiguration {
     // TODO(anp): Reconcile these legacy thread defaults with TurnEnvironment::sandbox_context;
     // internal sandbox decisions should use the selected environment's configuration.
     pub(super) windows_sandbox_level: WindowsSandboxLevel,
+    pub(super) windows_sandbox_type: SandboxType,
     pub(super) windows_sandbox_private_desktop: bool,
     pub(super) use_legacy_landlock: bool,
 
@@ -753,6 +757,7 @@ impl Session {
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         analytics_events_client: Option<AnalyticsEventsClient>,
+        image_store: Arc<dyn AttachmentStore>,
         thread_store: Arc<dyn ThreadStore>,
         parent_rollout_thread_trace: ThreadTraceContext,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
@@ -944,16 +949,21 @@ impl Session {
             .get::<codex_extension_api::SessionIsolation>()
             .map(|policy| *policy)
             .unwrap_or_default();
+        let allowed_tools = thread_extension_init
+            .get::<codex_extension_api::AllowedTools>()
+            .or_else(|| {
+                // Older reviewer rollouts predate the explicit startup setting.
+                crate::guardian::is_basic_session_source(&session_configuration.session_source)
+                    .then(|| Arc::new(codex_guardian_reviewer::reviewer_allowed_tools()))
+            });
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
         );
-        // Resolve once for live history, replay, and all reviewer consumers.
+        // Capture follows the flag; replay selects reviewer policy from the saved checkpoint.
         let guardian_context_mode = GuardianContextMode::from_features(&config.features);
-        thread_extension_data.insert(crate::context::GuardianReviewEvidence::new(
-            guardian_context_mode,
-        ));
+        thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
@@ -1480,6 +1490,7 @@ impl Session {
                         spec,
                         current_exec_policy.as_ref(),
                         config.permissions.permission_profile(),
+                        config.permissions.windows_sandbox_type,
                         network_policy_decider.as_ref().map(Arc::clone),
                         blocked_request_observer.as_ref().map(Arc::clone),
                         managed_network_requirements_configured,
@@ -1590,6 +1601,7 @@ impl Session {
                 &config.features,
                 &initial_history,
             );
+            let codex_responses_headers = thread_extension_data.get::<crate::CodexResponsesHeaders>();
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -1636,6 +1648,7 @@ impl Session {
                 network_approval: Arc::clone(&network_approval),
                 state_db: state_db_ctx.clone(),
                 live_thread: live_thread.clone(),
+                image_store,
                 thread_store: Arc::clone(&thread_store),
                 attestation_provider: attestation_provider.clone(),
                 time_provider,
@@ -1661,7 +1674,6 @@ impl Session {
                     attestation_provider,
                     config.http_client_factory(),
                 )
-                .with_free_guardian_enabled(config.free_guardian_enabled())
                 .with_session_context(
                     crate::guardian::prompt_cache_key_override_for_review_session(
                         &session_configuration.session_source,
@@ -1669,6 +1681,7 @@ impl Session {
                     )
                     .or(fork_cache_key),
                     tx_event.clone(),
+                    codex_responses_headers,
                 ),
                 executed_tool_calls: executed_tool_calls.clone(),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(
@@ -1692,6 +1705,7 @@ impl Session {
                 features: config.features.clone(),
                 guardian_context_mode,
                 isolation,
+                allowed_tools,
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),

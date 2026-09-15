@@ -803,6 +803,8 @@ impl MessageProcessor {
         connection_id: ConnectionId,
         request_attestation: bool,
     ) {
+        self.account_processor
+            .notify_workspace_routing_to_connection(connection_id);
         self.thread_processor
             .connection_initialized(
                 connection_id,
@@ -932,13 +934,7 @@ impl MessageProcessor {
                 )
                 .await?;
             if connection_initialized {
-                self.thread_processor
-                    .connection_initialized(
-                        connection_id,
-                        ConnectionCapabilities {
-                            request_attestation: session.request_attestation(),
-                        },
-                    )
+                self.connection_initialized(connection_id, session.request_attestation())
                     .await;
             }
             return Ok(());
@@ -1124,11 +1120,11 @@ impl MessageProcessor {
                 .read(params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::WindowsSandboxReadiness { .. } => self
-                .windows_sandbox_processor
-                .windows_sandbox_readiness()
-                .await
-                .map(|response| Some(response.into())),
+            ClientRequest::WindowsSandboxReadiness { .. } => {
+                self.windows_sandbox_processor
+                    .windows_sandbox_readiness(&request_id)
+                    .await
+            }
             ClientRequest::ExternalAgentConfigDetect { params, .. } => self
                 .external_agent_config_processor
                 .detect(params)

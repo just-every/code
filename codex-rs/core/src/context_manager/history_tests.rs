@@ -18,6 +18,7 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::LocalShellExecAction;
@@ -153,8 +154,12 @@ fn conversation_history_snapshot_shares_response_items_until_history_changes() {
     );
 }
 
-#[test]
-fn conversation_history_snapshot_binds_compaction_hash_to_the_latest_item() {
+#[test_case(None; "missing hash")]
+#[test_case(Some(""); "empty hash")]
+#[test_case(Some("other-producer"); "incompatible hash")]
+fn conversation_history_snapshot_binds_review_mode_and_hash_to_the_latest_item(
+    latest_hash: Option<&str>,
+) {
     let checkpoint = ResponseItemEnvelope {
         item: serde_json::from_value(serde_json::json!({
             "type": "compaction", "id": "known", "encrypted_content": "opaque checkpoint"
@@ -165,34 +170,146 @@ fn conversation_history_snapshot_binds_compaction_hash_to_the_latest_item() {
             ..Default::default()
         }),
     };
-    let mut history = ContextManager::new();
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
     history.replace_annotated(vec![checkpoint.clone()]);
+    history.restore_review_context(
+        /*retained_context*/ None,
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
     let snapshot = history.conversation_history_snapshot();
     let mut unknown = checkpoint.clone();
-    unknown.metadata = None;
+    unknown.metadata = latest_hash.map(|hash| CodexHarnessMetadata {
+        compaction_model_hash: Some(hash.to_owned()),
+        ..Default::default()
+    });
     unknown.item = serde_json::from_value(serde_json::json!({
         "type": "compaction", "id": "unknown", "encrypted_content": "newer opaque checkpoint"
     }))
     .expect("unknown checkpoint fixture");
     history.replace_annotated(vec![checkpoint.clone(), unknown]);
+    let mut legacy_context = RetainedContext::default();
+    legacy_context.mark_user_messages_incomplete();
+    history.restore_review_context(
+        Some(&legacy_context),
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::Legacy,
+    );
     assert_eq!(
         history
             .conversation_history_snapshot()
             .latest_compaction_model_hash(),
-        None
+        latest_hash
     );
     assert_eq!(
         snapshot.latest_compaction_model_hash(),
         Some("producer-hash")
     );
+    assert_eq!(
+        GuardianContextMode::from_history(snapshot.as_ref()),
+        GuardianContextMode::ThreadOwned,
+    );
     // Checkpoint replay/rollback restores the item's own provenance, not a new model's metadata.
     history.replace_annotated(vec![checkpoint]);
+    history.restore_review_context(
+        /*retained_context*/ None,
+        /*checkpoint*/ None,
+        Some("producer-hash"),
+    );
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::ThreadOwned,
+    );
     assert_eq!(
         history
             .conversation_history_snapshot()
             .latest_compaction_model_hash(),
         Some("producer-hash")
     );
+}
+
+#[test_case(serde_json::json!({
+    "verified_answers": [], "incomplete": true
+}); "missing answers")]
+#[test_case(serde_json::json!({
+    "verified_answers": [], "incomplete": false, "next_order": 1,
+    "user_messages": [{
+        "turn_id": "turn", "message_id": "restriction",
+        "text": "Only publish to a private repository.", "complete": true
+    }]
+}); "retained instructions")]
+fn checkpoint_retained_evidence_survives_legacy_review(saved_context: serde_json::Value) {
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
+    history.replace_annotated(vec![ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
+        }))
+        .expect("checkpoint fixture"),
+    )]);
+    let retained: RetainedContext =
+        serde_json::from_value(saved_context).expect("retained evidence checkpoint");
+    for (checkpoint, expected_mode) in [
+        (None, GuardianContextMode::ThreadOwned),
+        (
+            Some(GuardianHistoryCheckpoint(vec![assistant_msg(
+                "Original transcript",
+            )])),
+            GuardianContextMode::Legacy,
+        ),
+    ] {
+        history.restore_review_context(Some(&retained), checkpoint.as_ref(), Some("reviewer"));
+        let snapshot = history.conversation_history_snapshot();
+        assert_eq!(
+            GuardianContextMode::from_history(snapshot.as_ref()),
+            expected_mode
+        );
+        assert_eq!(snapshot.retained_context(), Some(&retained));
+        assert_eq!(snapshot.latest_compaction_model_hash(), None);
+    }
+}
+
+#[test]
+fn checkpoint_replayed_instructions_keep_legacy_review_when_the_source_survives() {
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Cli,
+    );
+    history.replace_annotated(vec![ResponseItemEnvelope::new(
+        serde_json::from_value(serde_json::json!({
+            "type": "compaction", "id": "unknown", "encrypted_content": "opaque checkpoint"
+        }))
+        .expect("checkpoint fixture"),
+    )]);
+    history.restore_review_context(
+        /*retained_context*/ None, /*checkpoint*/ None,
+        /*reviewer_compaction_hash*/ None,
+    );
+    history.record_items(
+        &[user_input_text_msg("Only publish privately.")],
+        TruncationPolicy::Bytes(10_000),
+    );
+    let retained = history.retained_context().clone();
+    history.restore_review_context(
+        Some(&retained),
+        /*checkpoint*/ None,
+        /*reviewer_compaction_hash*/ None,
+    );
+
+    assert_eq!(
+        GuardianContextMode::from_history(history.conversation_history_snapshot().as_ref()),
+        GuardianContextMode::Legacy,
+    );
+    assert_eq!(history.retained_context(), &retained);
 }
 
 #[test]
@@ -715,7 +832,9 @@ fn for_prompt_annotated_preserves_metadata_while_normalizing_item() {
                     text: "keep".to_string(),
                 },
                 ContentItem::InputImage {
-                    image_url: "data:image/png;base64,abc".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/png;base64,abc".to_string(),
+                    },
                     detail: None,
                 },
             ],
@@ -796,7 +915,9 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                     text: "look at this".to_string(),
                 },
                 ContentItem::InputImage {
-                    image_url: "https://example.com/img.png".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "https://example.com/img.png".to_string(),
+                    },
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 },
                 ContentItem::InputAudio {
@@ -838,7 +959,9 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                     text: "image result".to_string(),
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "https://example.com/result.png".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "https://example.com/result.png".to_string(),
+                    },
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 },
                 FunctionCallOutputContentItem::InputAudio {
@@ -865,7 +988,9 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                     text: "js repl result".to_string(),
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "https://example.com/js-repl-result.png".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "https://example.com/js-repl-result.png".to_string(),
+                    },
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 },
                 FunctionCallOutputContentItem::InputAudio {
@@ -991,7 +1116,9 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                 text: "look".to_string(),
             },
             ContentItem::InputImage {
-                image_url: "https://example.com/img.png".to_string(),
+                image: ImageReference::Inline {
+                    image_url: "https://example.com/img.png".to_string(),
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ],
@@ -1311,7 +1438,7 @@ fn drop_last_n_user_turns_preserves_prefix() {
         }
     }
     history.drop_last_n_user_turns(/*num_turns*/ 1);
-    history.replace_compacted(Vec::new());
+    history.replace_compacted(Vec::new(), /*reviewer_compaction_hash*/ None);
     let retained = history.retained_context();
     assert!(retained.user_messages_complete());
     assert!(retained.verified_answers_complete());
@@ -2414,7 +2541,7 @@ fn image_data_url_payload_does_not_dominate_message_estimate() {
                 text: "Here is the screenshot".to_string(),
             },
             ContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ],
@@ -2455,7 +2582,7 @@ fn image_data_url_payload_does_not_dominate_function_call_output_estimate() {
                 text: "Screenshot captured".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]),
@@ -2484,7 +2611,7 @@ fn image_data_url_payload_does_not_dominate_custom_tool_call_output_estimate() {
                 text: "Screenshot captured".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]),
@@ -2628,7 +2755,9 @@ fn non_base64_image_urls_use_image_estimates() {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputImage {
-            image_url: "https://example.com/foo.png".to_string(),
+            image: ImageReference::Inline {
+                image_url: "https://example.com/foo.png".to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }],
         phase: None,
@@ -2641,7 +2770,9 @@ fn non_base64_image_urls_use_image_estimates() {
         namespace: None,
         output: FunctionCallOutputPayload::from_content_items(vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url: "file:///tmp/foo.png".to_string(),
+                image: ImageReference::Inline {
+                    image_url: "file:///tmp/foo.png".to_string(),
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]),
@@ -2746,7 +2877,10 @@ fn data_url_without_base64_marker_uses_image_estimate() {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputImage {
-            image_url: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>".to_string(),
+            image: ImageReference::Inline {
+                image_url: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>"
+                    .to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }],
         phase: None,
@@ -2771,7 +2905,7 @@ fn non_image_base64_data_url_uses_image_estimate() {
         namespace: None,
         output: FunctionCallOutputPayload::from_content_items(vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]),
@@ -2791,7 +2925,7 @@ fn mixed_case_data_url_markers_are_adjusted() {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputImage {
-            image_url,
+            image: ImageReference::Inline { image_url },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }],
         phase: None,
@@ -2818,11 +2952,15 @@ fn multiple_inline_images_apply_multiple_fixed_costs() {
                 text: "images".to_string(),
             },
             ContentItem::InputImage {
-                image_url: image_url_one,
+                image: ImageReference::Inline {
+                    image_url: image_url_one,
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
             ContentItem::InputImage {
-                image_url: image_url_two,
+                image: ImageReference::Inline {
+                    image_url: image_url_two,
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ],
@@ -2858,7 +2996,7 @@ fn original_detail_images_scale_with_dimensions() {
         namespace: None,
         output: FunctionCallOutputPayload::from_content_items(vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(ImageDetail::Original),
             },
         ]),
@@ -2891,7 +3029,7 @@ fn original_detail_images_are_capped_at_max_patch_count() {
         namespace: None,
         output: FunctionCallOutputPayload::from_content_items(vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(ImageDetail::Original),
             },
         ]),
@@ -2927,7 +3065,7 @@ fn original_detail_webp_images_scale_with_dimensions() {
         namespace: None,
         output: FunctionCallOutputPayload::from_content_items(vec![
             FunctionCallOutputContentItem::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: Some(ImageDetail::Original),
             },
         ]),

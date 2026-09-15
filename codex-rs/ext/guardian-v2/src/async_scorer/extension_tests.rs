@@ -38,6 +38,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::LocalShellExecAction;
@@ -410,9 +411,14 @@ struct TestRetainedHistory {
     current: TestConversationHistory,
     retained: Vec<ResponseItem>,
     compaction_model_hash: Option<String>,
+    retained_context: Option<codex_history::RetainedContext>,
 }
 
 impl ConversationHistorySnapshot for TestRetainedHistory {
+    fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
+        self.retained_context.as_ref()
+    }
+
     fn latest_compaction_model_hash(&self) -> Option<&str> {
         self.compaction_model_hash.as_deref()
     }
@@ -1641,7 +1647,9 @@ async fn contributor_includes_transcript_images_by_default() -> Result<()> {
                     text: "Review what is shown on screen.".to_owned(),
                 },
                 ContentItem::InputImage {
-                    image_url: user_image.to_owned(),
+                    image: ImageReference::Inline {
+                        image_url: user_image.to_owned(),
+                    },
                     detail: Some(ImageDetail::High),
                 },
             ],
@@ -1667,7 +1675,9 @@ async fn contributor_includes_transcript_images_by_default() -> Result<()> {
                     text: "Screenshot captured.".to_owned(),
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: tool_image.to_owned(),
+                    image: ImageReference::Inline {
+                        image_url: tool_image.to_owned(),
+                    },
                     detail: Some(ImageDetail::High),
                 },
             ]),
@@ -2203,6 +2213,8 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
         .await;
     model_info.slug = "protected-model".to_owned();
     thread_store.insert(model_info);
+    // A late prewarm preview must leave the active model's review requirements intact.
+    let _ = codex_core::guardian_review::prepare_review_prewarm(&test.codex).await?;
     let authorization = ScoreAuthorization::current(&test.codex).await;
     let progress = thread_store
         .get::<GuardianV2ScoreProgress>()
@@ -2990,6 +3002,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
         retained,
         current: conversation_history,
         compaction_model_hash: parent_model.comp_hash.clone(),
+        retained_context: thread_context_enabled.then(codex_history::RetainedContext::default),
     };
     thread_store.insert(parent_model);
 
@@ -3084,6 +3097,8 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             conversation_history: Arc::new(TestRetainedHistory {
                 current: TestConversationHistory(vec![latest_compaction, oversized_compaction]),
                 retained: Vec::new(),
+                retained_context: thread_context_enabled
+                    .then(codex_history::RetainedContext::default),
                 compaction_model_hash: thread_store
                     .get::<ModelInfo>()
                     .and_then(|model| model.comp_hash.clone()),

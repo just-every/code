@@ -201,6 +201,8 @@ Attachments record the resources currently associated with a thread, independent
 
 `thread/attachment/list` accepts one `threadId` and returns at most 100 attachments per page, ordered by creation time and attachment id. Continue with `nextCursor` and the same `threadId` until the cursor is `null`. Each thread can retain up to 100 attachments. Removing an attachment frees a slot for a new attachment.
 
+A non-ephemeral fork copies the source thread's current attachments, even when forking at an earlier turn. The copies have new attachment IDs and creation timestamps, but retain the same resource identities and payloads. Clients use `forkedFromId` on `thread/started` to detect forks and call `thread/attachment/list` with the new thread ID to load their attachments. Fork copying does not emit per-attachment updates; explicit add/remove operations still do. Copying is awaited before publishing the fork, but is best effort: a copy failure is logged and the conversation fork succeeds without attachments. Membership can then change independently on either thread; the referenced resources themselves are not copied. Resuming a fork does not repeat the copy.
+
 Attachment creation and deletion requests using the same thread ID are serialized across connections. The requesting client receives its response before the compact update is broadcast, and duplicate creates or absent deletes do not emit updates. Deleting the owning thread removes its attachments under the same lifecycle exclusion; queued attachment mutations then report that the thread was not found.
 
 # Thread plugin settings
@@ -235,3 +237,24 @@ Existing rollouts may contain historical `ThreadRolledBack` events. Their replay
 and migration remain supported so resuming, reading, and forking those threads
 preserves the surviving history. This disk compatibility does not require restoring
 support for new `thread/rollback` requests.
+
+# Selected workspace routing
+
+The experimental `account/read.workspaceRouting` response field returns the selected ChatGPT workspace's `chatgptAccountId`, resolved HTTPS `backendOrigin`, and backend-provided `accountRoutingOverride`. The routing value is `us`, `us_cr`, or the explicit `NO_CONSTRAINT` value. API-only and signed-out accounts return `null` and do not need `accounts/check`.
+
+App-server discovers routing for saved ChatGPT logins at startup and for new logins or workspace switches. After requirements and routing are ready, it sends the existing `account/updated` notification. Newly initialized connections also receive this notification once saved-workspace routing is ready, including when discovery finished before the connection initialized. Clients then reread `configRequirements/read` and `account/read`. Saved ChatGPT credentials without a selected workspace ID retain their account information and return `workspaceRouting: null`; app-server does not guess a workspace from the backend's default account. Discovery failures for a selected workspace, including missing or null fields from older backends, return an `account/read` error. They never produce a successful unrestricted result. A later read retries failed discovery. Logout clears the cached routing, and results from earlier authentication owners are discarded. Token refreshes for the same known user and workspace invalidate cached routing without cancelling discovery or failing sign-in. Configuration is reloaded after discovery; a changed backend, model provider, or required backend rejects the result so the next read discovers against current configuration. Account notifications recheck the auth owner generation after waiting for outbound queue capacity. Superseded sign-in attempts emit a failed `account/login/completed` event instead of silently dropping completion. Notifications remain snapshots: clients reread current account and requirements state rather than treating a queued notification as authorization.
+
+The origin of a required `chatgpt_base_url` must match the discovered origin by scheme, host, and effective port. The base URL's API path is not part of this comparison. Either origin alone is sufficient. If requirements specify no base URL and discovery explicitly returns `NO_CONSTRAINT`, the effective `chatgpt_base_url` supplies the origin, including its existing default. `backendOrigin` is always a resolved origin; `accountRoutingOverride` preserves `NO_CONSTRAINT` when the backend explicitly returns it. Discovering an origin does not change API paths or apply routing headers to requests.
+
+## Windows sandbox implementation selection
+
+`windowsSandbox/setupStart` and `windowsSandbox/readiness` apply only to the
+legacy `elevated` and `unelevated` backends. Clients resolve the desired sandbox
+implementation from configuration. When it is `mxc`, they skip both methods;
+`allowedWindowsSandboxImplementations` can allow `mxc` independently of the
+legacy setup modes. Non-Windows hosts report `notConfigured` for the legacy
+readiness API.
+
+MXC uses the standard `command/exec` streaming and process-control path, including
+ConPTY when `tty` is enabled. The buffered legacy Windows sandbox restrictions on
+process control and custom output caps do not apply to MXC.

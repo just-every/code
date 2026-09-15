@@ -1,3 +1,4 @@
+mod allowed_tools;
 mod capabilities;
 mod contributors;
 mod registry;
@@ -6,14 +7,13 @@ mod state;
 mod turn_admission;
 mod user_instructions;
 
+pub use allowed_tools::AllowedTools;
 pub use session_isolation::SessionIsolation;
 
 pub use capabilities::ConversationHistorySnapshot;
 pub use capabilities::ExtensionEventSink;
 pub use capabilities::ExtensionMetrics;
 pub use capabilities::ExtensionWarning;
-pub use capabilities::InternalSessionSpawnFuture;
-pub use capabilities::InternalSessionSpawner;
 pub use capabilities::NoopExtensionEventSink;
 pub use capabilities::NoopResponseItemInjector;
 pub use capabilities::ResponseItemInjectionFuture;
@@ -46,8 +46,6 @@ pub use codex_tools::parse_tool_input_schema_without_compaction;
 pub use contributors::ApprovalDecision;
 pub use contributors::ApprovalDecisionInput;
 pub use contributors::ApprovalReviewContributor;
-pub use contributors::ApprovalReviewError;
-pub use contributors::ApprovalReviewInput;
 pub use contributors::ConfigContributor;
 pub use contributors::ContextContributor;
 pub use contributors::ExtensionFuture;

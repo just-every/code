@@ -18,16 +18,17 @@ mod pool;
 mod reporting;
 mod retry;
 mod review;
+mod routing;
 mod settings;
 
 pub use assessment::GuardianAssessment;
 pub use assessment::guardian_output_contract_prompt;
 pub use assessment::guardian_output_schema;
-pub use assessment::parse_guardian_assessment;
-pub use circuit_breaker::AUTO_REVIEW_DENIAL_WINDOW_SIZE;
-pub use circuit_breaker::GuardianRejectionCircuitBreaker;
-pub use circuit_breaker::GuardianRejectionCircuitBreakerAction;
-pub use circuit_breaker::GuardianRejectionCircuitBreakerPolicy;
+pub(crate) use assessment::parse_guardian_assessment;
+pub(crate) use circuit_breaker::AUTO_REVIEW_DENIAL_WINDOW_SIZE;
+pub(crate) use circuit_breaker::GuardianRejectionCircuitBreaker;
+pub(crate) use circuit_breaker::GuardianRejectionCircuitBreakerAction;
+pub(crate) use circuit_breaker::GuardianRejectionCircuitBreakerPolicy;
 pub use model::ReviewModel;
 pub use model::select_review_model;
 pub use outcome::GuardianReviewError;
@@ -40,15 +41,13 @@ pub const MAX_REVIEW_ATTEMPTS: i64 = 3;
 pub const REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 pub use deadline::run_before_review_deadline;
-pub(crate) use deadline::run_before_review_deadline_with_cancel;
 pub use pool::ReviewerPool;
 pub use pool::ReviewerRequest;
 pub use pool::ReviewerSession;
-pub use pool::ReviewerSessionFactory;
+pub use pool::ReviewerTasks;
 pub use pool::SessionDisposition;
 
 pub use review::ReviewHost;
-pub use review::SynchronousReview;
 
 pub use completion::ReviewCompletion;
 pub use completion::complete_review;
@@ -57,9 +56,10 @@ pub use completion::guardian_timeout_message;
 pub use execution::ReviewerRuntime;
 pub use execution::start_review_turn;
 pub use execution::wait_for_guardian_review;
-pub use settings::ReviewerConfigOverrides;
+pub use settings::ReviewerConfig;
 pub use settings::ReviewerTurn;
-pub use settings::reviewer_config_overrides;
+pub use settings::reviewer_allowed_tools;
+pub use settings::reviewer_permission_profile;
 
 pub use feedback::FailedReviewFeedback;
 pub use feedback::ReviewFeedbackContext;
@@ -67,3 +67,6 @@ pub use feedback::ReviewFeedbackSettings;
 pub use reporting::ReviewDenials;
 pub use reporting::ReviewMetadata;
 pub use reporting::ReviewReport;
+
+pub use routing::ReviewRequest;
+pub use routing::routes_approval_policy_to_guardian;

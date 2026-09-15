@@ -34,8 +34,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
 
+pub(crate) mod analytics;
 mod chatgpt_turn_cost;
+pub(crate) mod plan_history;
+pub(crate) mod profile;
 mod rate_limit_resets;
+pub(crate) mod task_usage;
 mod thread_usage;
 pub(crate) mod turn_usage;
 
@@ -338,14 +342,17 @@ impl Client {
         Ok(self.get_rate_limits_with_reset_credits().await?.rate_limits)
     }
 
-    pub async fn get_accounts_check(&self) -> Result<AccountsCheckResponse> {
+    pub async fn get_accounts_check(
+        &self,
+    ) -> std::result::Result<AccountsCheckResponse, RequestError> {
         let url = match self.path_style {
             PathStyle::CodexApi => format!("{}/api/codex/accounts/check", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/accounts/check", self.base_url),
         };
         let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request(req, "GET", &url).await?;
-        self.decode_json(&url, &ct, &body)
+        let (body, _) = self.exec_request_detailed(req, "GET", &url).await?;
+        serde_json::from_str(&body)
+            .map_err(|_| RequestError::Other(anyhow::anyhow!("Invalid accounts response.")))
     }
 
     pub async fn get_token_usage_profile(&self) -> Result<TokenUsageProfile> {

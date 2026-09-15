@@ -1,4 +1,5 @@
 //! Restores owner-scoped uninstall notifications and ties file cleanup to pinned directories.
+//! Registered runtime policy stays in its private module; owner tokens and pins stay here.
 
 use std::cell::RefCell;
 use std::io;
@@ -7,13 +8,14 @@ use std::os::windows::io::IntoRawHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use codex_windows_sandbox::DirectoryOpenDisposition;
+use codex_windows_sandbox::PreparedWindowsSandboxCleanup;
 use codex_windows_sandbox::create_directory_guard;
+use codex_windows_sandbox::prepare_packaged_windows_sandbox_cleanup;
 use codex_windows_sandbox::string_from_sid_bytes;
 use windows::ApplicationModel::Package;
 use windows::ApplicationModel::PackageCatalog;
@@ -36,11 +38,15 @@ use crate::installation_record::InstallationRecord;
 use crate::ipc::OwnedHandle;
 
 mod cleanup;
+mod registered;
+
+pub(crate) use registered::runtime_owner_removed;
 
 struct UserInstallation {
     codex_home: Option<PathBuf>,
-    // Ancestors, home, then a guard that prevents in-place junction conversion.
+    // Ancestors and home remain pinned until owner-scoped cleanup finishes.
     directory_handles: Vec<OwnedHandle>,
+    directory_guard: Option<OwnedHandle>,
     record: InstallationRecord,
     user_token: OwnedHandle,
     catalog: PackageCatalog,
@@ -86,7 +92,7 @@ impl PackageLifecycle {
                 .desktop_installation
                 .or(record.desktop_installation);
         }
-        crate::installation_record::save(&record)?;
+        record = crate::installation_record::save(record)?;
         if let Some(installation) = active.as_mut()
             && installation.codex_home.is_some()
         {
@@ -98,6 +104,7 @@ impl PackageLifecycle {
         let saved_record = record.clone();
         with_owner_impersonation(user_token.0, || {
             let mut directory_handles = Vec::new();
+            let mut directory_guard = None;
             let codex_home = match crate::ipc::pin_existing_ancestors(
                 &record.codex_home,
                 &mut directory_handles,
@@ -114,7 +121,7 @@ impl PackageLifecycle {
                     filesystem::FILE_READ_ATTRIBUTES,
                     DirectoryOpenDisposition::OpenExisting,
                 )?);
-                directory_handles.push(OwnedHandle(guard.into_raw_handle() as HANDLE));
+                directory_guard = Some(OwnedHandle(guard.into_raw_handle() as HANDLE));
                 Ok(())
             }) {
                 Ok(()) => Some(record.codex_home.clone()),
@@ -132,6 +139,7 @@ impl PackageLifecycle {
             if let Some(installation) = active.as_mut() {
                 installation.codex_home = codex_home;
                 installation.directory_handles = directory_handles;
+                installation.directory_guard = directory_guard;
                 installation.record = record;
                 return Ok(());
             }
@@ -140,6 +148,7 @@ impl PackageLifecycle {
             )?;
             let package_name = self.package_name.clone();
             let uninstalling = Arc::clone(&self.uninstalling);
+            let owner_sid = record.user_sid.clone();
             let token = catalog
                 .PackageUninstalling(&TypedEventHandler::<
                     PackageCatalog,
@@ -148,7 +157,7 @@ impl PackageLifecycle {
                     if let Some(event) = event
                         && event.Package()?.Id()?.FullName()? == package_name
                     {
-                        uninstalling.store(!event.IsComplete()?, Ordering::Release);
+                        registered::on_package_uninstalling(event, &owner_sid, &uninstalling)?;
                     }
                     Ok(())
                 }))
@@ -158,6 +167,7 @@ impl PackageLifecycle {
             active.replace(UserInstallation {
                 codex_home,
                 directory_handles,
+                directory_guard,
                 record,
                 user_token,
                 catalog,
@@ -204,23 +214,18 @@ impl PackageLifecycle {
             return Ok(());
         };
 
+        if record.runtime.is_some()
+            && !crate::installation_record::is_current_package_family(&record)?
+        {
+            return Ok(());
+        }
         let mut raw_token = 0;
         if unsafe { WTSQueryUserToken(session_id, &mut raw_token) } == 0 {
             return Err(io::Error::last_os_error()).context("open the logged-in user's token");
         }
         let token = crate::ipc::OwnedHandle(raw_token);
-        let user = crate::package_identity::token_user(token.0)?;
-        let sid = unsafe { std::ptr::read_unaligned(user.as_ptr().cast::<security::TOKEN_USER>()) }
-            .User
-            .Sid;
-        let sid_length = unsafe { security::GetLengthSid(sid) };
-        if sid_length == 0 {
-            return Err(io::Error::last_os_error()).context("read the logged-in user's SID");
-        }
-        let user_sid = string_from_sid_bytes(unsafe {
-            std::slice::from_raw_parts(sid.cast::<u8>(), sid_length as usize)
-        })
-        .map_err(anyhow::Error::msg)?;
+        let user = unsafe { codex_windows_sandbox::get_user_sid_bytes(token.0) }?;
+        let user_sid = string_from_sid_bytes(&user).map_err(anyhow::Error::msg)?;
         ensure!(
             user_sid == record.user_sid,
             "logged-in user does not match the recorded sandbox owner"
@@ -237,18 +242,36 @@ impl PackageLifecycle {
     }
 
     pub(crate) fn clean_up(&self) -> Result<()> {
+        let _setup_lock =
+            codex_windows_sandbox::acquire_sandbox_setup_lock(/*timeout_ms*/ 5_000)?;
+        if let Some(record) = crate::installation_record::load_runtime()? {
+            return registered::clean_up(self, record);
+        }
+        // Preserve the legacy path's ownership retirement before native preparation.
+        crate::installation_record::remove()?;
+        self.clean_up_resources(
+            &prepare_packaged_windows_sandbox_cleanup()?,
+            /*runtime*/ None,
+        )
+    }
+
+    fn clean_up_resources(
+        &self,
+        prepared: &PreparedWindowsSandboxCleanup,
+        runtime: Option<&InstallationRecord>,
+    ) -> Result<()> {
         let mut installation = self.installation.borrow_mut();
         let installation = installation
             .as_mut()
             .context("the authenticated package installation was not recorded")?;
-        cleanup::clean_up(installation)
+        cleanup::clean_up(installation, prepared, runtime)
     }
 }
 
-fn with_owner_impersonation(
+pub(crate) fn with_owner_impersonation<T>(
     user_token: HANDLE,
-    operation: impl FnOnce() -> Result<()>,
-) -> Result<()> {
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     if unsafe { security::ImpersonateLoggedOnUser(user_token) } == 0 {
         return Err(io::Error::last_os_error()).context("impersonate the sandbox owner");
     }

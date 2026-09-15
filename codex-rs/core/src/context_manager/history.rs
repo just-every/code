@@ -1,5 +1,6 @@
 //! Parent model history and bounded host-owned context facts.
-//! Compaction replaces only the model window. Snapshots include retained facts atomically;
+//! Compaction replaces the model window and can activate thread-owned Guardian review.
+//! Snapshots include reviewer policy and retained facts atomically;
 //! checkpoint replay and source-call rollback share their live lifecycle.
 //! Token estimates charge item content rather than transport metadata.
 //! Oversized instructions keep an incomplete excerpt for bounded root review, including
@@ -33,6 +34,7 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::GuardianHistoryCheckpoint;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RetainedContext;
+use codex_history::RetainedContextEntry;
 use codex_history::RetainedContextEvent;
 use codex_history::RetainedInputSource;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
@@ -43,6 +45,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -73,12 +76,14 @@ pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector. Snapshots share the vector until a
     /// caller needs to mutate it, avoiding deep copies for read-only history consumers.
     items: Arc<Vec<ResponseItemEnvelope>>,
-    /// Legacy-only history, started at first compaction. Thread-owned mode reads parent context.
+    /// Legacy-only history preserved across compaction and resume. Thread-owned review uses parent context.
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
     retained_context: Arc<RetainedContext>,
-    /// Capture, replay, and snapshot selection share the immutable session mode.
+    /// Capture follows the session flag, including while an older checkpoint uses legacy review.
     guardian_context_mode: GuardianContextMode,
+    /// Reviewer policy travels with the history snapshot, independently of capture.
+    guardian_review_mode: GuardianContextMode,
     retain_inherited_user_messages: bool,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
@@ -107,12 +112,15 @@ struct SharedConversationHistory {
     review_history: Option<TranscriptHistory>,
     retained_context: Arc<RetainedContext>,
     guardian_context_mode: GuardianContextMode,
+    guardian_review_mode: GuardianContextMode,
     history_version: u64,
     user_message_revision: u64,
 }
 
 pub(crate) enum HistoryReplacement {
-    Compaction,
+    Compaction {
+        reviewer_compaction_hash: Option<String>,
+    },
     Reset,
 }
 
@@ -134,6 +142,10 @@ impl ConversationHistorySnapshot for SharedConversationHistory {
     fn retained_context(&self) -> Option<&RetainedContext> {
         (self.guardian_context_mode == GuardianContextMode::ThreadOwned)
             .then_some(&self.retained_context)
+    }
+
+    fn uses_parent_context_for_review(&self) -> bool {
+        self.guardian_review_mode == GuardianContextMode::ThreadOwned
     }
 
     fn review_items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
@@ -180,6 +192,7 @@ impl ContextManager {
             review_history: None,
             retained_context: Arc::default(),
             guardian_context_mode: GuardianContextMode::Legacy,
+            guardian_review_mode: GuardianContextMode::Legacy,
             retain_inherited_user_messages: false,
             history_version: 0,
             reset_version: 0,
@@ -198,6 +211,7 @@ impl ContextManager {
             review_history: self.review_history.clone(),
             retained_context: Arc::clone(&self.retained_context),
             guardian_context_mode: self.guardian_context_mode,
+            guardian_review_mode: self.guardian_review_mode,
             history_version: self.history_version,
             user_message_revision: self.user_message_revision,
         })
@@ -213,6 +227,7 @@ impl ContextManager {
     ) -> Self {
         Self {
             guardian_context_mode,
+            guardian_review_mode: guardian_context_mode,
             retain_inherited_user_messages: guardian_context_mode
                 == GuardianContextMode::ThreadOwned
                 && !source.is_non_root_agent(),
@@ -233,7 +248,7 @@ impl ContextManager {
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
-        if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
+        if self.guardian_review_mode == GuardianContextMode::ThreadOwned {
             return None;
         }
         self.review_history
@@ -245,7 +260,52 @@ impl ContextManager {
         &mut self,
         retained_context: Option<&RetainedContext>,
         checkpoint: Option<&GuardianHistoryCheckpoint>,
+        reviewer_compaction_hash: Option<&str>,
     ) {
+        // A previously promoted checkpoint may have discarded the only complete transcript.
+        // Keep requiring parent context in that case; a compatibility failure must not turn
+        // a partial model window into a legacy fallback. Migrating checkpoints keep a backup
+        // and can expose retained facts independently of which transcript review uses.
+        let requires_parent_context = checkpoint.is_none()
+            && retained_context.is_some_and(|context| {
+                !context.verified_answers_complete()
+                    || context.ordered_entries().any(|(_, entry)| match entry {
+                        RetainedContextEntry::VerifiedAnswer(_) => true,
+                        RetainedContextEntry::UserMessage(message) => {
+                            !self.raw_items().any(|item| {
+                                if item.id().map(codex_protocol::ResponseItemId::as_str)
+                                    != message.message_id.as_deref()
+                                    || item.turn_id().unwrap_or_default() != message.turn_id
+                                {
+                                    return false;
+                                }
+                                let ResponseItem::Message { role, content, .. } = item else {
+                                    return false;
+                                };
+                                if role != "user" || is_contextual_user_message_content(content) {
+                                    return false;
+                                }
+                                let text = content
+                                    .iter()
+                                    .filter_map(|content| match content {
+                                        ContentItem::InputText { text }
+                                        | ContentItem::OutputText { text } => Some(text.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0
+                                    == message.text
+                            })
+                        }
+                    })
+            });
+        self.guardian_review_mode = if requires_parent_context {
+            self.guardian_context_mode
+        } else {
+            self.guardian_context_mode
+                .for_checkpoint(&self.items, reviewer_compaction_hash)
+        };
         self.restore_retained_context(retained_context);
         if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
             // Older retained checkpoints cleared oversized instructions. Recover their
@@ -266,6 +326,10 @@ impl ContextManager {
                     guardian_truncate_text(&original.message(), GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                 )
             });
+        }
+        if self.guardian_review_mode == GuardianContextMode::ThreadOwned
+            || (self.guardian_context_mode == GuardianContextMode::Legacy && checkpoint.is_none())
+        {
             self.review_history = None;
             return;
         }
@@ -274,11 +338,17 @@ impl ContextManager {
             .as_ref()
             .map_or(self.history_version, TranscriptHistory::generation)
             .saturating_add(1);
-        self.review_history = checkpoint.map(|checkpoint| {
-            let mut history = TranscriptHistory::new(generation);
+        let mut history = TranscriptHistory::new(generation);
+        if let Some(checkpoint) = checkpoint {
             history.reset(checkpoint.0.iter());
-            history
-        });
+        } else {
+            // Retain the legacy window through replay, including answers captured in its suffix.
+            history.reset(self.raw_items().filter(|item| {
+                !matches!(item, ResponseItem::Message { role, content, .. }
+                    if role == "user" && is_contextual_user_message_content(content))
+            }));
+        }
+        self.review_history = Some(history);
     }
 
     pub(crate) fn token_info(&self) -> Option<TokenUsageInfo> {
@@ -504,10 +574,23 @@ impl ContextManager {
         self.world_state_baseline = None;
     }
 
-    /// Compaction changes the model's history without changing the user's authorization.
-    pub(crate) fn replace_compacted(&mut self, items: Vec<ResponseItemEnvelope>) {
-        if self.guardian_context_mode == GuardianContextMode::Legacy
-            && self.review_history.is_none()
+    /// Returns whether compaction changed Guardian's evidence policy, invalidating older reviews.
+    pub(crate) fn replace_compacted(
+        &mut self,
+        items: Vec<ResponseItemEnvelope>,
+        reviewer_compaction_hash: Option<&str>,
+    ) -> bool {
+        let promoted = self.guardian_review_mode == GuardianContextMode::Legacy
+            && self
+                .guardian_context_mode
+                .for_checkpoint(&items, reviewer_compaction_hash)
+                == GuardianContextMode::ThreadOwned;
+        if promoted {
+            self.guardian_review_mode = GuardianContextMode::ThreadOwned;
+            self.review_history = None;
+            self.user_message_revision = self.user_message_revision.saturating_add(/*rhs*/ 1);
+        }
+        if self.guardian_review_mode == GuardianContextMode::Legacy && self.review_history.is_none()
         {
             let mut retained = TranscriptHistory::new(self.history_version.saturating_add(1));
             for item in self.raw_items().filter(|item| {
@@ -520,7 +603,11 @@ impl ContextManager {
         }
         self.items = Arc::new(items);
         self.history_version = self.history_version.saturating_add(1);
+        if promoted {
+            self.reset_version = self.history_version;
+        }
         self.world_state_baseline = None;
+        promoted
     }
 
     /// Drop the last `num_turns` instruction turns from this history.
@@ -850,9 +937,10 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
                 ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                     text_bytes(text)
                 }
-                ContentItem::InputImage { image_url, detail } => {
-                    estimate_image_bytes(image_url, *detail)
-                }
+                ContentItem::InputImage {
+                    image: ImageReference::Inline { image_url },
+                    detail,
+                } => estimate_image_bytes(image_url, *detail),
                 ContentItem::InputAudio { audio_url } => estimate_audio_bytes(audio_url),
             })
             .fold(0i64, i64::saturating_add),
@@ -1055,9 +1143,10 @@ fn estimate_function_output_bytes(output: &FunctionCallOutputBody) -> i64 {
             .iter()
             .map(|part| match part {
                 FunctionCallOutputContentItem::InputText { text } => text_bytes(text),
-                FunctionCallOutputContentItem::InputImage { image_url, detail } => {
-                    estimate_image_bytes(image_url, *detail)
-                }
+                FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline { image_url },
+                    detail,
+                } => estimate_image_bytes(image_url, *detail),
                 FunctionCallOutputContentItem::InputAudio { audio_url } => {
                     estimate_audio_bytes(audio_url)
                 }

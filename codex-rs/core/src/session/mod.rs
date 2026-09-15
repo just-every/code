@@ -24,7 +24,6 @@ use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
-use crate::context::GuardianContextMode;
 use crate::context::GuardianPolicy;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::ModelSwitchInstructions;
@@ -64,6 +63,7 @@ use codex_analytics::ImagePreparationMetadata;
 use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
 use codex_async_utils::OrCancelExt;
+use codex_attachment_store::AttachmentStore;
 use codex_connectors::connector_runtime_context_key;
 use codex_context_fragments::RenderedFragment;
 use codex_exec_server::Environment;
@@ -162,6 +162,7 @@ use codex_rollout::state_db;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
+use codex_sandboxing::SandboxType;
 use codex_sandboxing::policy_transforms::intersect_permission_profiles_with_context;
 use codex_shell_command::parse_command::parse_command;
 use codex_terminal_detection::user_agent;
@@ -227,6 +228,7 @@ use codex_protocol::exec_output::StreamOutput;
 mod code_mode_warning;
 pub(crate) mod context_window;
 mod environment;
+mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod handlers;
 mod inject;
@@ -327,6 +329,7 @@ use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
+use crate::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
@@ -468,6 +471,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
     pub(crate) reserved_thread_id: Option<ThreadId>,
     pub(crate) analytics_events_client: Option<AnalyticsEventsClient>,
+    pub(crate) image_store: Arc<dyn AttachmentStore>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
@@ -570,6 +574,7 @@ impl Session {
             client_mcp_extensions,
             reserved_thread_id,
             analytics_events_client,
+            image_store,
             thread_store,
             attestation_provider,
             external_time_provider,
@@ -761,6 +766,34 @@ impl Session {
         });
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
+        let persisted_collaboration_mode = match &conversation_history {
+            InitialHistory::Resumed(resumed) => resumed
+                .history
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                        if event.thread_id == Some(resumed.conversation_id) =>
+                    {
+                        Some(&event.thread_settings.collaboration_mode)
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    resumed
+                        .history
+                        .iter()
+                        .rev()
+                        .find_map(|item| match item {
+                            RolloutItem::TurnContext(context) => {
+                                Some(context.collaboration_mode.as_ref())
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                }),
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+        };
         let collaboration_mode = CollaborationMode {
             mode: ModeKind::Default,
             settings: Settings {
@@ -769,6 +802,13 @@ impl Session {
                 developer_instructions: None,
             },
         };
+        let collaboration_mode = persisted_collaboration_mode.map_or(collaboration_mode, |saved| {
+            saved.with_updates(
+                Some(model.clone()),
+                Some(config.model_reasoning_effort.clone()),
+                /*developer_instructions*/ None,
+            )
+        });
         let fast_mode_enabled = config.features.enabled(Feature::FastMode);
         let initial_service_tier_warning = unsupported_service_tier_warning(
             config.service_tier.as_deref(),
@@ -797,6 +837,7 @@ impl Session {
             allow_login_shell: config.permissions.allow_login_shell,
             shell_environment_policy: config.permissions.shell_environment_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+            windows_sandbox_type: config.permissions.windows_sandbox_type,
             windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
             use_legacy_landlock: config.features.use_legacy_landlock(),
             legacy_fallback_cwd: config.cwd.clone(),
@@ -855,6 +896,7 @@ impl Session {
             environment_manager,
             inherited_environments,
             analytics_events_client,
+            image_store,
             thread_store,
             parent_rollout_thread_trace,
             attestation_provider,
@@ -1144,10 +1186,12 @@ impl Session {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn start_managed_network_proxy(
         spec: &crate::config::NetworkProxySpec,
         exec_policy: &codex_execpolicy::Policy,
         permission_profile: &PermissionProfile,
+        windows_sandbox_type: SandboxType,
         network_policy_decider: Option<Arc<dyn codex_network_proxy::NetworkPolicyDecider>>,
         blocked_request_observer: Option<Arc<dyn codex_network_proxy::BlockedRequestObserver>>,
         managed_network_requirements_enabled: bool,
@@ -1165,6 +1209,7 @@ impl Session {
         let network_proxy = spec
             .start_proxy(
                 permission_profile,
+                managed_proxy_routing_for_windows_sandbox(windows_sandbox_type),
                 network_policy_decider,
                 blocked_request_observer,
                 managed_network_requirements_enabled,
@@ -1233,7 +1278,15 @@ impl Session {
                 .set_snapshot_credential_broker(SnapshotCredentialBrokerState::Inactive);
             return;
         }
-        if let Some(started_proxy) = self.services.network_proxy.load_full() {
+        let managed_proxy_routing =
+            managed_proxy_routing_for_windows_sandbox(session_configuration.windows_sandbox_type);
+        let started_proxy = self.services.network_proxy.load_full();
+        let network_policy_decider = started_proxy
+            .as_ref()
+            .and_then(|started_proxy| started_proxy.network_policy_decider());
+        if let Some(started_proxy) = started_proxy
+            && started_proxy.proxy().managed_proxy_routing() == managed_proxy_routing
+        {
             if let Err(err) = spec.apply_to_started_proxy(started_proxy.as_ref()).await {
                 warn!("failed to refresh managed network proxy for sandbox change: {err}");
             } else {
@@ -1252,7 +1305,8 @@ impl Session {
             &spec,
             current_exec_policy.as_ref(),
             &session_configuration.permission_profile(),
-            /*network_policy_decider*/ None,
+            session_configuration.windows_sandbox_type,
+            network_policy_decider,
             Some(build_blocked_request_observer(Arc::clone(
                 &self.services.network_approval,
             ))),
@@ -1624,7 +1678,7 @@ impl Session {
     )]
     async fn apply_rollout_reconstruction(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
     ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
@@ -1666,6 +1720,14 @@ impl Session {
             .zip(metadata)
             .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
             .collect();
+        let reviewer_compaction_hash =
+            if self.guardian_context_mode == crate::context::GuardianContextMode::ThreadOwned {
+                let context = crate::guardian::GuardianReviewContext::from(turn_context);
+                let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
+                reviewer.comp_hash.clone()
+            } else {
+                None
+            };
         {
             let mut state = self.state.lock().await;
             state.replace_annotated_history(
@@ -1673,9 +1735,11 @@ impl Session {
                 reference_context_item,
                 HistoryReplacement::Reset,
             );
-            state
-                .history
-                .restore_review_context(Some(&retained_context), guardian_history.as_ref());
+            state.history.restore_review_context(
+                Some(&retained_context),
+                guardian_history.as_ref(),
+                reviewer_compaction_hash.as_deref(),
+            );
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -2210,11 +2274,11 @@ impl Session {
             ));
     }
 
-    /// Uses the extension-owned reviewer, or the same manager for standalone hosts.
-    pub(crate) fn guardian_review_session(&self) -> Arc<GuardianReviewSessionManager> {
+    /// Returns the reviewer pool installed by the Guardian extension.
+    pub(crate) fn guardian_review_session(&self) -> Option<Arc<GuardianReviewSessionManager>> {
         self.services
             .thread_extension_data
-            .get_or_init(GuardianReviewSessionManager::default)
+            .get::<GuardianReviewSessionManager>()
     }
 
     pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext) {
@@ -3948,14 +4012,12 @@ impl Session {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
-        if self.guardian_context_mode == GuardianContextMode::ThreadOwned
-            && let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
-                matches!(
-                    envelope.item,
-                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-                )
-            })
-        {
+        if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+            matches!(
+                envelope.item,
+                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+            )
+        }) {
             checkpoint
                 .metadata
                 .get_or_insert_default()
@@ -3987,7 +4049,9 @@ impl Session {
             state.replace_annotated_history(
                 items,
                 reference_context_item.clone(),
-                HistoryReplacement::Compaction,
+                HistoryReplacement::Compaction {
+                    reviewer_compaction_hash: metadata.reviewer_compaction_hash,
+                },
             );
             compacted_item.guardian_history = state.history.guardian_history_checkpoint();
             compacted_item.retained_context = Some(state.history.retained_context().clone());
@@ -4356,6 +4420,15 @@ impl Session {
         state.clone_history()
     }
 
+    /// Captures the history lifetime without exposing mutable session state.
+    pub(crate) async fn history_reset(&self) -> (u64, CancellationToken) {
+        let state = self.state.lock().await;
+        (
+            state.history.reset_version,
+            state.history_reset.child_token(),
+        )
+    }
+
     pub(crate) async fn conversation_history_snapshot(
         &self,
     ) -> Arc<dyn ConversationHistorySnapshot> {
@@ -4440,6 +4513,7 @@ impl Session {
                 window_ids,
                 compaction_response_id: None,
                 compaction_model_hash: None,
+                reviewer_compaction_hash: None,
             },
         )
         .await;

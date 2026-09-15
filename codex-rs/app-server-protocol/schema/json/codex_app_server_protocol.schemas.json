@@ -6705,6 +6705,15 @@
         "title": "AccountRateLimitsUpdatedNotification",
         "type": "object"
       },
+      "AccountRoutingOverride": {
+        "description": "Backend routing policy. Wire values match the accounts/check contract.",
+        "enum": [
+          "NO_CONSTRAINT",
+          "us",
+          "us_cr"
+        ],
+        "type": "string"
+      },
       "AccountTokenUsageDailyBucket": {
         "properties": {
           "startDate": {
@@ -9867,7 +9876,7 @@
           },
           "allowedWindowsSandboxImplementations": {
             "items": {
-              "$ref": "#/definitions/v2/WindowsSandboxSetupMode"
+              "$ref": "#/definitions/v2/WindowsSandboxImplementation"
             },
             "type": [
               "array",
@@ -10463,6 +10472,20 @@
             "type": "object"
           },
           {
+            "anyOf": [
+              {
+                "properties": {
+                  "image_url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "image_url"
+                ],
+                "title": "ImageUrlContentItem",
+                "type": "object"
+              }
+            ],
             "properties": {
               "detail": {
                 "anyOf": [
@@ -10474,9 +10497,6 @@
                   }
                 ]
               },
-              "image_url": {
-                "type": "string"
-              },
               "type": {
                 "enum": [
                   "input_image"
@@ -10486,7 +10506,6 @@
               }
             },
             "required": [
-              "image_url",
               "type"
             ],
             "title": "InputImageContentItem",
@@ -12324,6 +12343,20 @@
             "type": "object"
           },
           {
+            "anyOf": [
+              {
+                "properties": {
+                  "image_url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "image_url"
+                ],
+                "title": "ImageUrlFunctionCallOutputContentItem",
+                "type": "object"
+              }
+            ],
             "properties": {
               "detail": {
                 "anyOf": [
@@ -12335,9 +12368,6 @@
                   }
                 ]
               },
-              "image_url": {
-                "type": "string"
-              },
               "type": {
                 "enum": [
                   "input_image"
@@ -12347,7 +12377,6 @@
               }
             },
             "required": [
-              "image_url",
               "type"
             ],
             "title": "InputImageFunctionCallOutputContentItem",
@@ -23344,6 +23373,17 @@
             ],
             "description": "Reviewer currently used for approval requests on this thread."
           },
+          "collaborationMode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/CollaborationMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Effective collaboration mode. Absent when resuming from an older server."
+          },
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
@@ -25751,6 +25791,14 @@
         },
         "type": "object"
       },
+      "WindowsSandboxImplementation": {
+        "enum": [
+          "elevated",
+          "unelevated",
+          "mxc"
+        ],
+        "type": "string"
+      },
       "WindowsSandboxReadiness": {
         "enum": [
           "ready",
@@ -25906,6 +25954,25 @@
           "unknown"
         ],
         "type": "string"
+      },
+      "WorkspaceRouting": {
+        "properties": {
+          "accountRoutingOverride": {
+            "$ref": "#/definitions/v2/AccountRoutingOverride"
+          },
+          "backendOrigin": {
+            "type": "string"
+          },
+          "chatgptAccountId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountRoutingOverride",
+          "backendOrigin",
+          "chatgptAccountId"
+        ],
+        "type": "object"
       },
       "WriteStatus": {
         "enum": [

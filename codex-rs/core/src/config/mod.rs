@@ -128,6 +128,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::McpOAuthRefreshMode;
+use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -345,6 +346,8 @@ pub struct Permissions {
     /// Effective Windows sandbox mode derived from `[windows].sandbox` or
     /// legacy feature keys.
     pub windows_sandbox_mode: Option<WindowsSandboxModeToml>,
+    /// Selected Windows sandbox implementation, separate from the legacy setup level.
+    pub windows_sandbox_type: SandboxType,
     /// Whether the final Windows sandboxed child should run on a private desktop.
     pub windows_sandbox_private_desktop: bool,
 }
@@ -367,6 +370,7 @@ impl Permissions {
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
+            windows_sandbox_type: SandboxType::None,
             windows_sandbox_private_desktop: true,
         })
     }
@@ -682,6 +686,11 @@ pub struct Config {
     /// `# Policy Configuration` section rather than replacing the whole
     /// guardian developer prompt.
     pub guardian_policy_config: Option<String>,
+
+    /// Guardian prompt template override from config.toml.
+    /// The resolved policy config replaces its `{{ tenant_policy_config }}`
+    /// placeholder when a review session is built.
+    pub guardian_policy_template: Option<String>,
 
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: bool,
@@ -1515,17 +1524,6 @@ impl ConfigBuilder {
 impl Config {
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
-    }
-
-    /// Whether Guardian may use the unmetered Codex inference endpoints.
-    pub fn free_guardian_enabled(&self) -> bool {
-        self.config_layer_stack
-            .effective_config()
-            .get("features")
-            .and_then(|features| features.get("guardianv2"))
-            .and_then(|guardian| guardian.get("free_guardian"))
-            .and_then(toml::Value::as_bool)
-            .unwrap_or(false)
     }
 
     /// Resolves the configured, reviewer-catalog, or bundled Guardian policy.
@@ -3325,6 +3323,7 @@ impl Config {
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let PreparedWindowsSandboxConfig {
             mode: windows_sandbox_mode,
+            sandbox_type: windows_sandbox_type,
             level: windows_sandbox_level,
         } = prepare_windows_sandbox_config(
             resolve_windows_sandbox_mode(&cfg),
@@ -3910,6 +3909,14 @@ impl Config {
                             auto_review.policy.as_deref(),
                         ))
                 });
+        let guardian_policy_template = cfg
+            .auto_review
+            .as_ref()
+            .and_then(|auto_review| {
+                normalize_guardian_policy_config(
+                    auto_review.experimental_policy_template.as_deref(),
+                )
+            });
         let personality = personality.or(cfg.personality);
 
         let experimental_compact_prompt_path = cfg.experimental_compact_prompt_file.as_ref();
@@ -4152,6 +4159,7 @@ impl Config {
                 allow_login_shell,
                 shell_environment_policy,
                 windows_sandbox_mode,
+                windows_sandbox_type,
                 windows_sandbox_private_desktop,
             },
             explicit_permission_profile_mode,
@@ -4253,6 +4261,7 @@ impl Config {
                 .or(show_raw_agent_reasoning)
                 .unwrap_or(false),
             guardian_policy_config,
+            guardian_policy_template,
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,

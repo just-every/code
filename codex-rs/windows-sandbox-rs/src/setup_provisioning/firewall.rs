@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::io::Write;
 
+use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::Foundation::S_OK;
 use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::NetworkManagement::WindowsFirewall::INetFwPolicy2;
@@ -58,6 +59,34 @@ struct BlockRuleSpec<'a> {
     remote_ports: Option<&'a str>,
 }
 
+// Firewall COM also supports the service's existing MTA. Balance only our own initialization.
+struct FirewallComApartment {
+    initialized: bool,
+}
+
+impl FirewallComApartment {
+    fn initialize() -> Result<Self> {
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperFirewallComInitFailed,
+                format!("CoInitializeEx failed: {hr:?}"),
+            )));
+        }
+        Ok(Self {
+            initialized: hr.is_ok(),
+        })
+    }
+}
+
+impl Drop for FirewallComApartment {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
 pub fn ensure_offline_proxy_allowlist(
     offline_sid: &str,
     proxy_ports: &[u16],
@@ -66,15 +95,9 @@ pub fn ensure_offline_proxy_allowlist(
 ) -> Result<()> {
     let local_user_spec = format!("O:LSD:(A;;CC;;;{offline_sid})");
 
-    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if hr.is_err() {
-        return Err(anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperFirewallComInitFailed,
-            format!("CoInitializeEx failed: {hr:?}"),
-        )));
-    }
+    let _apartment = FirewallComApartment::initialize()?;
 
-    let result = unsafe {
+    unsafe {
         (|| -> Result<()> {
             let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)
                 .map_err(|err| {
@@ -154,26 +177,15 @@ pub fn ensure_offline_proxy_allowlist(
             }
             Ok(())
         })()
-    };
-
-    unsafe {
-        CoUninitialize();
     }
-    result
 }
 
 pub fn ensure_offline_network_blocks(offline_sid: &str, log: &mut dyn Write) -> Result<()> {
     let local_user_spec = format!("O:LSD:(A;;CC;;;{offline_sid})");
 
-    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if hr.is_err() {
-        return Err(anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperFirewallComInitFailed,
-            format!("CoInitializeEx failed: {hr:?}"),
-        )));
-    }
+    let _apartment = FirewallComApartment::initialize()?;
 
-    let result = unsafe {
+    unsafe {
         (|| -> Result<()> {
             let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)
                 .map_err(|err| {
@@ -221,12 +233,7 @@ pub fn ensure_offline_network_blocks(offline_sid: &str, log: &mut dyn Write) -> 
             )?;
             Ok(())
         })()
-    };
-
-    unsafe {
-        CoUninitialize();
     }
-    result
 }
 
 fn remove_rule_if_present(
@@ -489,6 +496,10 @@ fn log_line(log: &mut dyn Write, msg: &str) -> Result<()> {
     writeln!(log, "[{ts}] {msg}")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "firewall_apartment_tests.rs"]
+mod apartment_tests;
 
 #[cfg(test)]
 mod tests {

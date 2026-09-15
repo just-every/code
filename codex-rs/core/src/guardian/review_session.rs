@@ -2,13 +2,11 @@
 //! The extension owns review policy and pooling; this module binds runtime operations
 //! to the captured parent action, environments, authorization and context snapshots.
 
-#[path = "review_session_factory.rs"]
-mod factory;
-pub(crate) use factory::prewarm_guardian_review_session;
-pub(crate) use factory::run_guardian_review_session;
-
-#[path = "review_session_threads.rs"]
-mod managed_threads;
+#[path = "review_session_setup.rs"]
+mod setup;
+pub use setup::PreparedGuardianContext;
+pub use setup::prepare_review_prewarm;
+pub(crate) use setup::run_guardian_review_session;
 
 #[path = "review_session_context.rs"]
 mod context_policy;
@@ -27,6 +25,7 @@ use codex_analytics::GuardianReviewSessionKind;
 use codex_extension_api::Instructions;
 use codex_guardian_reviewer::ConversationCheckpoint;
 use codex_guardian_reviewer::ConversationState;
+use codex_guardian_reviewer::ReviewModel;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
@@ -37,6 +36,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
@@ -55,7 +55,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::agents_md_manager::SessionInstructions;
-use crate::codex_delegate::run_codex_thread_interactive;
 use crate::config::Config;
 use crate::config::Constrained;
 use crate::config::ManagedFeatures;
@@ -70,7 +69,6 @@ use crate::image_preparation::ImagePreparationMode;
 use crate::image_preparation::ImageResizeNoticeMode;
 use crate::image_preparation::prepare_response_items;
 use crate::image_preparation::unified_image_budget_enabled;
-use crate::session::GitEnrichmentPolicy;
 use crate::session::SessionIo;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -115,45 +113,19 @@ pub(crate) struct GuardianReviewSessionParams {
     pub(crate) request: GuardianApprovalRequest,
     pub(crate) reasons: ApprovalRequestReasons,
     pub(crate) schema: Value,
-    pub(crate) model: String,
+    pub(crate) review_model: ReviewModel,
     pub(crate) compaction_model_hash: Option<String>,
-    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
-    pub(crate) guardian_default_review_model_id: String,
-    pub(crate) guardian_catalog_contains_auto_review: bool,
-    pub(crate) guardian_review_model_overridden: bool,
-    pub(crate) guardian_review_model_override: Option<String>,
     pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) personality: Option<Personality>,
     pub(crate) external_cancel: Option<CancellationToken>,
     pub(crate) deadline: tokio::time::Instant,
 }
 
-/// Host capability used to spawn private reviewer runtimes for this parent.
-/// The extension owns pooling; this adapter keeps the existing context and runtime paths.
-#[derive(Default)]
-pub struct GuardianReviewSessionHost {
-    managed_threads: Option<managed_threads::ManagedReviewerThreads>,
-}
-
-impl GuardianReviewSessionHost {
-    pub fn with_thread_manager(manager: std::sync::Weak<crate::ThreadManager>) -> Self {
-        Self {
-            managed_threads: Some(managed_threads::ManagedReviewerThreads::new(manager)),
-        }
-    }
-
-    pub fn mark_ready(&self) {
-        if let Some(threads) = &self.managed_threads {
-            threads.mark_ready();
-        }
-    }
-}
-
 pub(crate) type GuardianReviewSessionManager =
     codex_guardian_reviewer::ReviewerPool<GuardianReviewSession>;
 
 /// Opaque host session handle. Its state belongs to the existing context builder.
-pub(crate) struct GuardianReviewSession {
+pub struct GuardianReviewSession {
     session: Arc<Session>,
     io: SessionIo,
     cancel_token: CancellationToken,
@@ -161,7 +133,8 @@ pub(crate) struct GuardianReviewSession {
     state: Mutex<GuardianReviewState>,
 }
 
-struct GuardianReviewState {
+/// Opaque conversation progress retained while ThreadManager starts a reviewer.
+pub struct GuardianReviewState {
     conversation: ConversationState<GuardianReviewHistory>,
     last_admitted_node_repl_response_sequence: u64,
     pending_node_repl_evidence_admission: Option<PendingNodeReplEvidenceAdmission>,
@@ -347,16 +320,17 @@ async fn run_review_on_session(
     bool,
     GuardianReviewAnalyticsResult,
 ) {
+    let review_model = &params.review_model;
     let model_info = params
         .parent_session
         .services
         .models_manager
         .get_model_info(
-            params.model.as_str(),
+            review_model.model.as_str(),
             &params.spawn_config.to_models_manager_config(),
         )
         .await;
-    let guardian_reasoning_effort = params
+    let guardian_reasoning_effort = review_model
         .reasoning_effort
         .clone()
         .or_else(|| model_info.default_reasoning_level.clone());
@@ -371,12 +345,12 @@ async fn run_review_on_session(
         GuardianReviewAnalyticsResult::from_session(GuardianReviewSessionAnalyticsParams {
             guardian_thread_id: review_session.session.thread_id().to_string(),
             guardian_session_kind,
-            guardian_model: params.model.clone(),
+            guardian_model: review_model.model.clone(),
             guardian_reasoning_effort: guardian_reasoning_effort.map(|effort| effort.to_string()),
-            guardian_default_review_model_id: params.guardian_default_review_model_id.clone(),
-            guardian_catalog_contains_auto_review: params.guardian_catalog_contains_auto_review,
-            guardian_review_model_overridden: params.guardian_review_model_overridden,
-            guardian_review_model_override: params.guardian_review_model_override.clone(),
+            guardian_default_review_model_id: review_model.default_review_model_id.clone(),
+            guardian_catalog_contains_auto_review: review_model.catalog_contains_auto_review,
+            guardian_review_model_overridden: review_model.model_overridden,
+            guardian_review_model_override: review_model.model_override.clone(),
             guardian_model_provider_id: params.spawn_config.model_provider_id.clone(),
             had_prior_review_context: had_prior_context,
         });
@@ -495,10 +469,10 @@ async fn run_review_on_session(
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
-            let history = if params.parent_session.guardian_context_mode
-                == GuardianContextMode::ThreadOwned
-            {
-                params.parent_history.conversation_history_snapshot()
+            let parent_history = params.parent_history.conversation_history_snapshot();
+            let history = if GuardianContextMode::from_history(parent_history.as_ref())
+                == GuardianContextMode::ThreadOwned {
+                parent_history
             } else {
                 params.parent_session.conversation_history_snapshot().await
             };
@@ -526,7 +500,7 @@ async fn run_review_on_session(
                         _ => &[],
                     })
                     .filter_map(|item| match item {
-                        ContentItem::InputImage { image_url, .. } => Some(image_url.as_str()),
+                        ContentItem::InputImage { image: ImageReference::Inline { image_url }, .. } => Some(image_url.as_str()),
                         _ => None,
                     })
                     .collect::<HashSet<_>>();
@@ -574,7 +548,7 @@ async fn run_review_on_session(
                             return false;
                         };
                         content.iter().any(|item| {
-                            matches!(item, ContentItem::InputImage { image_url, .. }
+                            matches!(item, ContentItem::InputImage { image: ImageReference::Inline { image_url }, .. }
                                 if !reviewer_image_urls.contains(image_url.as_str()))
                         })
                     });
@@ -663,8 +637,8 @@ async fn run_review_on_session(
         permission_profile: params.spawn_config.permissions.permission_profile().clone(),
         reasoning_summary: params.reasoning_summary,
         personality: params.personality,
-        model: params.model.clone(),
-        reasoning_effort: params.reasoning_effort.clone(),
+        model: review_model.model.clone(),
+        reasoning_effort: review_model.reasoning_effort.clone(),
         parent_response_id: params.parent_context.parent_response_id.clone(),
         schema: params.schema.clone(),
         parent_turn_id: parent_turn.sub_id.clone(),
@@ -890,21 +864,13 @@ impl codex_guardian_reviewer::ReviewerRuntime for GuardianReviewSession {
 mod tests;
 
 impl codex_guardian_reviewer::ReviewerSession for GuardianReviewSession {
+    type Setup = PreparedGuardianContext;
     type Context = GuardianReviewSessionReuseKey;
     type Snapshot = GuardianReviewForkSnapshot;
 
     fn context(&self) -> &Self::Context {
         &self.reuse_key
     }
-    fn cancel(&self) {
-        self.cancel_token.cancel();
-    }
-
-    async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        let _ = self.io.shutdown_and_wait().await;
-    }
-
     async fn snapshot(&self) -> Option<GuardianReviewForkSnapshot> {
         self.state.lock().await.conversation.snapshot().cloned()
     }
