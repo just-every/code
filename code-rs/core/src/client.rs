@@ -208,7 +208,12 @@ fn try_parse_retry_after(err: &Error, now: DateTime<Utc>) -> Option<RetryAfter> 
 fn is_quota_exceeded_error(error: &Error) -> bool {
     matches!(
         error.code.as_deref().or_else(|| error.r#type.as_deref()),
-        Some("insufficient_quota")
+        Some(
+            "insufficient_quota"
+                | "credit_balance_exhausted"
+                | "organization_spend_limit_exceeded"
+                | "project_spend_limit_exceeded"
+        )
     )
 }
 
@@ -225,10 +230,7 @@ fn should_store_responses(
 }
 
 fn is_server_overloaded_error(error: &Error) -> bool {
-    matches!(
-        error.code.as_deref(),
-        Some("server_is_overloaded") | Some("slow_down")
-    )
+    matches!(error.code.as_deref(), Some("server_is_overloaded"))
 }
 
 fn is_reasoning_summary_rejected(error: &Error) -> bool {
@@ -3036,7 +3038,10 @@ async fn process_sse<S>(
                                     ));
                                 } else if error.r#type.as_deref() == Some("usage_not_included") {
                                     response_error = Some(CodexErr::UsageNotIncluded);
-                                } else if error.code.as_deref() == Some("rate_limit_exceeded") {
+                                } else if matches!(
+                                    error.code.as_deref(),
+                                    Some("rate_limit_exceeded" | "slow_down")
+                                ) {
                                     let retry_after = try_parse_retry_after(&error, Utc::now());
                                     let message = error.message.unwrap_or_default();
                                     response_error = Some(CodexErr::RateLimitExceeded(
@@ -4253,27 +4258,37 @@ mod tests {
 
     #[test]
     fn quota_error_detected_for_common_statuses() {
-        let error = Error {
-            r#type: Some("invalid_request_error".to_string()),
-            message: Some("You exceeded your current quota".to_string()),
-            code: Some("insufficient_quota".to_string()),
-            param: None,
-            plan_type: None,
-            resets_in_seconds: None,
-        };
-
-        for status in [
-            StatusCode::BAD_REQUEST,
-            StatusCode::FORBIDDEN,
-            StatusCode::TOO_MANY_REQUESTS,
+        for code in [
+            "insufficient_quota",
+            "credit_balance_exhausted",
+            "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
         ] {
-            assert!(is_quota_exceeded_http_error(status, &error), "status {status} should be fatal");
-        }
+            let error = Error {
+                r#type: Some("invalid_request_error".to_string()),
+                message: Some("You exceeded your current quota".to_string()),
+                code: Some(code.to_string()),
+                param: None,
+                plan_type: None,
+                resets_in_seconds: None,
+            };
 
-        assert!(
-            !is_quota_exceeded_http_error(StatusCode::INTERNAL_SERVER_ERROR, &error),
-            "server errors should not map to quota handling"
-        );
+            for status in [
+                StatusCode::BAD_REQUEST,
+                StatusCode::FORBIDDEN,
+                StatusCode::TOO_MANY_REQUESTS,
+            ] {
+                assert!(
+                    is_quota_exceeded_http_error(status, &error),
+                    "{code} with status {status} should be fatal"
+                );
+            }
+
+            assert!(
+                !is_quota_exceeded_http_error(StatusCode::INTERNAL_SERVER_ERROR, &error),
+                "server errors should not map to quota handling"
+            );
+        }
     }
 
     #[test]
@@ -4362,6 +4377,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slow_down_error_is_retryable_rate_limit() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_slow_down","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"slow_down","message":"Please try again in 2s."},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            openrouter: None,
+        };
+
+        let events = collect_events(&[sse1.as_bytes()], provider).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(CodexErr::RateLimitExceeded(message, retry_after, _)) => {
+                assert_eq!(message, "Please try again in 2s.");
+                assert_eq!(
+                    retry_after.as_ref().map(|info| info.delay),
+                    Some(Duration::from_secs(2))
+                );
+            }
+            other => panic!("unexpected slow_down event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn response_failed_usage_limit_maps_to_typed_error() {
         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_limit","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"type":"usage_limit_reached","message":"You've hit your usage limit.","plan_type":"pro","resets_in_seconds":120},"incomplete_details":null}}"#;
 
@@ -4432,7 +4486,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_overloaded_error_is_typed() {
-        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_slow_down","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"slow_down","message":"Server is overloaded. Please retry shortly."},"incomplete_details":null}}"#;
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_server_overloaded","object":"response","created_at":1759771626,"status":"failed","background":false,"error":{"code":"server_is_overloaded","message":"Server is overloaded. Please retry shortly."},"incomplete_details":null}}"#;
 
         let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
         let provider = ModelProviderInfo {
