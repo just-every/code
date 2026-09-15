@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.189] - 2026-09-15
+
+- Core: align retry and quota error classification for client errors. (82539c3b)
+- Release: preserve standalone install pins during daemon updates. (321dcf5a, 923c6028)
+- Release: gate DotSlash publishing on release success and improve Windows artifact compression. (8a30bc31, b44af92c)
+
 ## [0.6.188] - 2026-09-14
 
 - Core: align MCP metadata handling and login requirement reporting. (1646fdf7)
