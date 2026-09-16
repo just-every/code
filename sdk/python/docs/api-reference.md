@@ -85,6 +85,9 @@ Properties/methods:
 - `thread_unarchive(thread_id: str) -> Awaitable[AsyncThread]`
 - `models(*, include_hidden: bool = False) -> Awaitable[ModelListResponse]`
 
+The [deprecated personality selection](#deprecated-personality-selection)
+notes also apply to the async methods and model results.
+
 Async context manager:
 
 ```python
