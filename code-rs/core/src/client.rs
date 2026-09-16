@@ -397,17 +397,20 @@ impl ModelClient {
         ))
     }
 
-    /// Use the session-correlation header names emitted by codex-rs.
+    /// Attach session-correlation headers for prompt-cache and gateway routing.
     ///
-    /// The older fork used underscore-style `conversation_id`, `session_id`,
-    /// and `thread_id` headers. OpenAI-compatible gateways may route those
-    /// legacy names differently from codex-rs's hyphenated headers.
+    /// Preserve the fork's underscore-style headers for existing prompt-cache
+    /// routing while also sending codex-rs-compatible hyphenated headers for
+    /// OpenAI-compatible gateways.
     fn apply_responses_session_headers(
         &self,
         req_builder: reqwest::RequestBuilder,
         session_id: &str,
     ) -> reqwest::RequestBuilder {
         req_builder
+            .header("conversation_id", session_id)
+            .header("session_id", session_id)
+            .header("thread_id", session_id)
             .header("x-client-request-id", session_id)
             .header("session-id", session_id)
             .header("thread-id", session_id)
