@@ -1488,7 +1488,9 @@ async fn interrupt_during_mcp_startup_preserves_user_input_in_history(
         unreachable!("read_only_user_turn creates user input");
     };
     content.push(UserInput::Image {
-        image_url: OPENAI_PNG.to_string(),
+        image: ImageReference::Inline {
+            image_url: OPENAI_PNG.to_string(),
+        },
         detail: Some(ImageDetail::High),
     });
     fixture.codex.start_or_steer_turn(input).await?;
@@ -2527,6 +2529,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
             },
             connector_id: None,
             mcp_app_resource_uri: None,
+            mcp_app_ui: None,
             link_id: None,
             app_name: None,
             action_name: None,

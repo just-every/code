@@ -11,6 +11,25 @@ use crate::tui::test_support::make_test_tui;
 use codex_state::SqliteConfig;
 use pretty_assertions::assert_eq;
 
+async fn confirm_permission_selection(
+    app: &mut App,
+    server: &mut AppServerSession,
+    thread_id: ThreadId,
+) -> Result<()> {
+    for _ in 0..20 {
+        let settings = next_thread_settings_updated(server, thread_id).await;
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ThreadSettingsUpdated(settings),
+        )
+        .await?;
+        if !app.pending_server_profiles.contains_key(&thread_id) {
+            return Ok(());
+        }
+    }
+    color_eyre::eyre::bail!("permission update was not confirmed");
+}
+
 fn trust_launch_folder(app: &mut App) {
     let projects = serde_json::json!({
         app.config.cwd.display().to_string(): {"trust_level": "trusted"},
@@ -676,6 +695,7 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
                 Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
             }
         }
+        confirm_permission_selection(&mut app, &mut server, first).await?;
         // Test both immediate creation and creation after A -> B -> A.
         for switch in [false, true] {
             if switch {
@@ -819,6 +839,7 @@ async fn command_center_new_checkout_and_worktree_preserve_source_and_default_br
         let (mut app, mut events, _) = make_test_app_with_channels().await;
         app.config.codex_home = home.clone().abs();
         app.config.cwd = selected.cwd.clone().abs();
+        app.chat_widget.windows_sandbox_local_server = cfg!(target_os = "windows");
         app.harness_overrides.cwd = Some(selected.cwd.clone());
         app.cli_kv_overrides
             .push(("features.worktrees".into(), TomlValue::Boolean(true)));
@@ -857,12 +878,13 @@ async fn command_center_new_checkout_and_worktree_preserve_source_and_default_br
         // Exercise the menu's ordered events, not the separate profile-selection API.
         app.chat_widget
             .set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
-        app.chat_widget.open_permissions_popup();
+        Box::pin(app.handle_event(&mut tui, &mut server, AppEvent::OpenPermissionsPopup)).await?;
         app.chat_widget.handle_key_event(KeyCode::Up.into());
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         while let Ok(event) = events.try_recv() {
             Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
         }
+        confirm_permission_selection(&mut app, &mut server, first).await?;
         assert_eq!(
             app.chat_widget.config_ref().approvals_reviewer,
             ApprovalsReviewer::User

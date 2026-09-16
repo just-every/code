@@ -37,6 +37,7 @@ use codex_history::RetainedContext;
 use codex_history::RetainedContextEntry;
 use codex_history::RetainedContextEvent;
 use codex_history::RetainedInputSource;
+use codex_prompts::render_model_instructions;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
@@ -125,18 +126,8 @@ pub(crate) enum HistoryReplacement {
 }
 
 impl ConversationHistorySnapshot for SharedConversationHistory {
-    fn latest_compaction_model_hash(&self) -> Option<&str> {
-        self.items
-            .iter()
-            .rev()
-            .find(|envelope| {
-                matches!(
-                    envelope.item,
-                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-                )
-            })
-            .and_then(|envelope| envelope.metadata.as_ref())
-            .and_then(|metadata| metadata.compaction_model_hash.as_deref())
+    fn latest_compaction(&self) -> Option<codex_history::CompactionCheckpoint<'_>> {
+        codex_history::CompactionCheckpoint::latest(&self.items)
     }
 
     fn retained_context(&self) -> Option<&RetainedContext> {
@@ -514,11 +505,8 @@ impl ContextManager {
     // This is a coarse lower bound, not a tokenizer-accurate count.
     pub(crate) fn estimate_token_count(&self, turn_context: &TurnContext) -> Option<i64> {
         let model_info = &turn_context.model_info();
-        let personality = turn_context
-            .personality()
-            .or(turn_context.config.personality);
         let base_instructions = BaseInstructions {
-            text: model_info.get_model_instructions(personality),
+            text: render_model_instructions(model_info),
             provenance: None,
         };
         self.estimate_token_count_with_base_instructions(&base_instructions)
@@ -930,6 +918,7 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<BlockingLruCache<[u8; 20], Option
     });
 
 fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
+    // TODO(kc) Account for file-backed image size after its token-cost contract is defined.
     match item {
         ResponseItem::Message { content, .. } => content
             .iter()
@@ -941,6 +930,10 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
                     image: ImageReference::Inline { image_url },
                     detail,
                 } => estimate_image_bytes(image_url, *detail),
+                ContentItem::InputImage {
+                    image: ImageReference::File { .. },
+                    ..
+                } => 0,
                 ContentItem::InputAudio { audio_url } => estimate_audio_bytes(audio_url),
             })
             .fold(0i64, i64::saturating_add),
@@ -1147,6 +1140,10 @@ fn estimate_function_output_bytes(output: &FunctionCallOutputBody) -> i64 {
                     image: ImageReference::Inline { image_url },
                     detail,
                 } => estimate_image_bytes(image_url, *detail),
+                FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::File { .. },
+                    ..
+                } => 0,
                 FunctionCallOutputContentItem::InputAudio { audio_url } => {
                     estimate_audio_bytes(audio_url)
                 }

@@ -1,3 +1,15 @@
+# MCP App UI
+
+`mcpToolCall.mcpAppUi` records the invoked descriptor's `resourceUri`
+and `preferredModelDisplayMode` (`inline` or `fullscreen`). Descriptors with a widget
+URI default to `inline` when the preference is missing or unsupported. The
+UI information is preserved in tool-call events and saved history so clients can
+render without waiting for the full MCP catalog.
+
+The field is null for older history and tools that declare widgets only in
+result metadata; clients retain catalog discovery for those calls. Existing
+resource URI fields remain available for older clients.
+
 # Initial Daybreak choice (experimental)
 
 Persistent threads accept `daybreakEnabled` on `thread/start` with the
@@ -124,6 +136,20 @@ Failures use the normal JSON-RPC error envelope with closed `{type, reason}` dat
 `invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
 these values rather than message text. Native diagnostic payloads stay private.
 
+## Local rollout compression
+
+The experimental `rollout/compress` method takes no parameters and immediately
+returns `{}` after scheduling one best-effort background pass over the app-server's
+local rollout storage. It does not change `features.local_thread_store_compression`
+or require that startup flag to be enabled. Non-local thread stores do not support
+this method.
+
+The worker retains its existing cold-file checks, maintenance and writer locks,
+concurrency limit, and cooldown. Acknowledgement does not imply completion or that
+any files were compressed; failures are reported through existing logs and metrics.
+There are no progress notifications or cancellation API. Clients sharing this
+Codex home must support compressed rollout files, including shared histories.
+
 ## Managed model provider requirements
 
 Existing threads retain their provider configuration. Input RPCs reject requests when managed
@@ -218,6 +244,19 @@ Read the selection from `threadSettings.disabledPluginIds` in
 `thread/start`, `thread/resume`, and `thread/fork` responses. Selections persist
 across resume. Forks restore the selection from the history retained at the
 requested fork boundary.
+
+# Deprecated thread personality setting
+
+`thread/start`, `thread/resume`, `thread/settings/update`, and `turn/start` still
+accept `personality`, but `friendly` and `pragmatic` no longer select a style.
+`model/list` returns `supportsPersonality: false` for every model.
+
+`none` removes the literal `# Personality` section when Codex prepares
+instructions from the model catalog, for example when starting a thread or
+switching models. Setting `friendly` or `pragmatic` can replace a previous
+`none` setting for that purpose. Changing the setting does not rewrite the
+thread's existing instructions or change explicitly supplied base instructions.
+The old `features.personality` flag is ignored.
 
 # MCP server capabilities
 

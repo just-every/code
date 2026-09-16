@@ -27,10 +27,12 @@ use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
+use codex_prompts::render_model_instructions;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::ProfileWorkspaceRoot;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EnvironmentConfig;
@@ -545,7 +547,7 @@ impl SessionConfiguration {
         &mut self,
         permission_profile: PermissionProfile,
         active_permission_profile: Option<ActivePermissionProfile>,
-        profile_workspace_roots: Vec<AbsolutePathBuf>,
+        profile_workspace_roots: Vec<ProfileWorkspaceRoot>,
         preserve_deny_reads_from: Option<&FileSystemSandboxPolicy>,
     ) -> ConstraintResult<()> {
         let enforcement = permission_profile.enforcement();
@@ -589,7 +591,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) step_settings: StepSettingsUpdate,
     pub(crate) environments: Option<TurnEnvironmentSelections>,
     pub(crate) runtime_workspace_roots: Option<Vec<AbsolutePathBuf>>,
-    pub(crate) profile_workspace_roots: Option<Vec<AbsolutePathBuf>>,
+    pub(crate) profile_workspace_roots: Option<Vec<ProfileWorkspaceRoot>>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
@@ -784,7 +786,7 @@ impl Session {
         } else if let Some(inherited_base_instructions) = initial_history.get_base_instructions() {
             let BaseInstructions { text, provenance } = inherited_base_instructions;
             provenance.or_else(|| {
-                (text == model_info.get_model_instructions(config.personality)).then(|| {
+                (text == render_model_instructions(&model_info)).then(|| {
                     BaseInstructionsProvenance::Model {
                         model: model_info.slug.clone(),
                     }
@@ -1445,6 +1447,12 @@ impl Session {
                     &session_configuration.session_source,
                 ),
             );
+            state.last_started_turn_id = initial_history.get_rollout_items().iter().rev().find_map(|item| {
+                match item {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event)) => Some(event.turn_id.clone()),
+                    _ => None,
+                }
+            });
             state.base_instructions_provenance = base_instructions_provenance.clone();
             state.active_disabled_plugin_ids = session_configuration.disabled_plugin_ids.clone();
             let managed_network_requirements_configured = config
@@ -1673,6 +1681,7 @@ impl Session {
                         .enabled(Feature::ConcurrentReasoningSummaries),
                     attestation_provider,
                     config.http_client_factory(),
+                    config.workspace_routing_context(),
                 )
                 .with_session_context(
                     crate::guardian::prompt_cache_key_override_for_review_session(

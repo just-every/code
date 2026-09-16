@@ -1,7 +1,6 @@
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
-use crate::guardian::BUNDLED_GUARDIAN_POLICY;
 use crate::session::handlers::submission_loop;
 use crate::session::step_context::StepContext;
 use crate::session::step_settings::StepSettings;
@@ -513,10 +512,9 @@ async fn submitted_sparse_updates_preserve_captured_steps_and_ordering() {
     let model_manager_config = {
         let state = session.state.lock().await;
         let configuration = &state.session_configuration;
-        configuration.model_info_overrides.models_manager_config(
-            configuration.step_settings.personality,
-            session.features.enabled(Feature::Personality),
-        )
+        configuration
+            .model_info_overrides
+            .models_manager_config(configuration.step_settings.personality)
     };
     let expected_destination = with_config_overrides(expected_destination, &model_manager_config);
     let desired = desired_step_settings(&session).await;
@@ -1243,6 +1241,7 @@ async fn parent_fallback_policy_uses_both_config_lifetimes(
 
 #[tokio::test]
 async fn parent_fallback_preserves_explicit_empty_and_bundled_defaults() {
+    let defaults = ResolvedModelMessages::bundled().auto_review();
     let (_, turn) = make_session_and_context().await;
     let mut config = turn.config.as_ref().clone();
     config.guardian_policy_config = None;
@@ -1250,9 +1249,9 @@ async fn parent_fallback_preserves_explicit_empty_and_bundled_defaults() {
     let check = |destination: &ModelInfo| {
         check_legacy_model_safety(&admitted, &admitted, destination, &config, &config)
     };
-    parent_review_messages(&mut destination).policy = Some(BUNDLED_GUARDIAN_POLICY.to_string());
+    parent_review_messages(&mut destination).policy = Some(defaults.policy.to_string());
     parent_review_messages(&mut destination).policy_template =
-        Some(BUNDLED_GUARDIAN_POLICY_TEMPLATE.to_string());
+        Some(defaults.policy_template.to_string());
     assert_eq!(check(&destination), Ok(()));
     parent_review_messages(&mut destination).policy_template = Some(String::new());
     assert_eq!(

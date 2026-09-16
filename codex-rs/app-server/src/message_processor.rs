@@ -520,7 +520,6 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
-            arg0_paths.clone(),
             Arc::clone(&config),
             config_manager.clone(),
             pending_thread_unloads,
@@ -757,24 +756,26 @@ impl MessageProcessor {
         self.thread_processor.thread_created_receiver()
     }
 
-    pub(crate) async fn daemon_recovery_candidates(&self) -> Vec<String> {
-        self.thread_processor.daemon_recovery_candidates().await
+    pub(crate) async fn daemon_recovery_snapshot(
+        &self,
+    ) -> codex_app_server_transport::daemon_recovery::RecoverySnapshot {
+        self.thread_processor.daemon_recovery_snapshot().await
     }
 
     pub(crate) async fn restore_daemon_threads(
         &self,
-        candidates: std::collections::BTreeSet<String>,
+        mut snapshot: codex_app_server_transport::daemon_recovery::RecoverySnapshot,
     ) {
-        for thread_id in candidates {
+        for thread_id in snapshot.loaded {
             let Ok(_permit) = self.turn_admission.admit() else {
                 break;
             };
             if let Err(err) = self
                 .thread_processor
                 .thread_resume(
-                    ThreadResumeTarget::DaemonRecovery,
+                    ThreadResumeTarget::DaemonRecovery(snapshot.interrupted.remove(&thread_id)),
                     codex_app_server_protocol::ThreadResumeParams {
-                        thread_id,
+                        thread_id: thread_id.clone(),
                         exclude_turns: true,
                         ..Default::default()
                     },
@@ -1416,6 +1417,7 @@ impl MessageProcessor {
                 self.thread_processor.memory_status(params).await
             }
             ClientRequest::MemoryReset { .. } => self.thread_processor.memory_reset().await,
+            ClientRequest::RolloutCompress { .. } => self.thread_processor.rollout_compress(),
             ClientRequest::ThreadUnarchive { params, .. } => {
                 self.thread_processor
                     .thread_unarchive(request_id.clone(), params)

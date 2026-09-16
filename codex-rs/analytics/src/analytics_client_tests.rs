@@ -126,6 +126,7 @@ use codex_app_server_protocol::GuardianApprovalReviewAction;
 use codex_app_server_protocol::GuardianApprovalReviewStatus;
 use codex_app_server_protocol::GuardianCommandSource as AppServerGuardianCommandSource;
 use codex_app_server_protocol::ImageGenerationItem;
+use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -396,7 +397,9 @@ fn sample_turn_start_request(thread_id: &str, request_id: i64) -> ClientRequest 
                     text_elements: vec![],
                 },
                 UserInput::Image {
-                    url: "https://example.com/a.png".to_string(),
+                    image: ImageReference::Inline {
+                        url: "https://example.com/a.png".to_string(),
+                    },
                     detail: None,
                 },
             ],
@@ -5656,6 +5659,7 @@ async fn turn_event_counts_completed_tool_items() {
             action_name: None,
         }),
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         plugin_id: Some("sample@test".to_string()),
         read_only_hint: None,
         result: None,
@@ -5909,6 +5913,7 @@ async fn mcp_elicitation_classification_survives_turn_completion_and_preserves_c
                 action_name: None,
             }),
             mcp_app_resource_uri: None,
+            mcp_app_ui: None,
             plugin_id: None,
             read_only_hint: None,
             result: None,

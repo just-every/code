@@ -163,16 +163,18 @@ impl ConfigManager {
         manager.load_latest_config(/*fallback_cwd*/ None).await
     }
 
-    pub(crate) async fn load_latest_config_for_thread(
+    pub(crate) async fn load_latest_config_with_session_layers(
         &self,
-        thread_config: &Config,
+        session_layers: &ConfigLayerStack,
+        cwd: &Path,
     ) -> std::io::Result<Config> {
-        let refreshed_config = self
-            .load_latest_config(Some(thread_config.cwd.to_path_buf()))
-            .await?;
-        let mut config = thread_config
-            .rebuild_preserving_session_layers(&refreshed_config)
-            .await?;
+        let refreshed_config = self.load_latest_config(Some(cwd.to_path_buf())).await?;
+        let mut config = Config::rebuild_with_session_layers(
+            session_layers,
+            cwd.to_path_buf(),
+            &refreshed_config,
+        )
+        .await?;
         self.apply_runtime_feature_enablement(&mut config);
         self.apply_arg0_paths(&mut config);
         Ok(config)
@@ -275,6 +277,45 @@ impl ConfigManager {
             request_overrides,
             typesafe_overrides,
             cwd,
+        )
+        .await
+    }
+
+    /// Reload sources using the task's session flags before materializing config.
+    pub(crate) async fn load_permission_config_for_thread(
+        &self,
+        thread_config: &Config,
+        cwd: AbsolutePathBuf,
+        permission_profile: String,
+    ) -> std::io::Result<Config> {
+        let mut session_flags = TomlValue::Table(Default::default());
+        for layer in thread_config.config_layer_stack.layers_low_to_high() {
+            if matches!(layer.name, codex_config::ConfigLayerSource::SessionFlags) {
+                codex_config::merge_toml_values(&mut session_flags, &layer.config);
+            }
+        }
+        let overrides = session_flags
+            .as_table()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "session flags must be a table",
+                )
+            })?
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        self.load_with_cli_overrides(
+            &overrides,
+            /*request_overrides*/ None,
+            ConfigOverrides {
+                cwd: Some(cwd.to_path_buf()),
+                default_permissions: Some(permission_profile),
+                codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
+                main_execve_wrapper_exe: self.arg0_paths.main_execve_wrapper_exe.clone(),
+                ..Default::default()
+            },
+            Some(cwd.to_path_buf()),
         )
         .await
     }

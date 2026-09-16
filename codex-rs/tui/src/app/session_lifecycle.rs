@@ -19,7 +19,6 @@ use std::collections::HashSet;
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
     SessionLineage,
-    PromptEdit,
 }
 
 /// Reports whether a loaded-thread backfill completed and which descendants already had their
@@ -498,7 +497,8 @@ impl App {
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
         chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
         chat_widget.set_local_worktree_operations(self.chat_widget.local_worktree_operations);
-        chat_widget.windows_sandbox_host = self.chat_widget.windows_sandbox_host;
+        chat_widget.windows_sandbox_local_server = self.chat_widget.windows_sandbox_local_server;
+        chat_widget.windows_sandbox_host = WindowsSandboxHost::Unknown;
         #[cfg(any(target_os = "windows", test))]
         {
             chat_widget.windows_sandbox_elevated_setup_complete =
@@ -540,6 +540,9 @@ impl App {
             None
         };
         if self.active_thread_id == Some(thread_id) && !self.thread_unavailable(thread_id) {
+            return Ok(());
+        }
+        if self.reject_pending_permission_root_switch() {
             return Ok(());
         }
         if self.windows_sandbox_blocks_thread_switch() {
@@ -920,6 +923,12 @@ impl App {
         initial_user_message: Option<crate::chatwidget::UserMessage>,
         new_thread_name: Option<String>,
     ) {
+        if self.reject_pending_permission_root_switch() {
+            if let Some(message) = initial_user_message {
+                self.chat_widget.restore_user_message_to_composer(message);
+            }
+            return;
+        }
         // Start a fresh in-memory session while preserving resumability via persisted rollout
         // history. If an initial message is provided, `enqueue_primary_thread_session` suppresses it
         // until the new session is configured and any replayed turns have been rendered.
@@ -1196,11 +1205,6 @@ impl App {
             .adjacent_thread_id(self.current_displayed_thread_id(), direction)
     }
 
-    pub(super) fn fresh_session_config(&self) -> Config {
-        let mut config = self.config.clone();
-        config.service_tier = self.chat_widget.configured_service_tier();
-        config
-    }
     pub(super) async fn resume_target_session(
         &mut self,
         tui: &mut tui::Tui,
@@ -1223,6 +1227,9 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
+        if self.reject_pending_permission_root_switch() {
+            return Ok(AppRunControl::Continue);
+        }
         let (mut resume_config, local_settings) = match self
             .resume_config_for_target(tui, app_server, &target_session)
             .await
@@ -1251,13 +1258,17 @@ impl App {
                 self.resume_model_settings(),
             )
             .await;
+        let mut history_notice = None;
         let (resumed, read_only) = match resumed {
             Ok(resumed) => (resumed, false),
             Err(err) if crate::app_server_session::is_active_writer_error(&err) => match app_server
                 .read_thread_for_viewing(&resume_config, &local_settings, target_session.thread_id)
                 .await
             {
-                Ok(thread) => (thread, true),
+                Ok((thread, notice)) => {
+                    history_notice = notice;
+                    (thread, true)
+                }
                 Err(read_err) => {
                     self.add_session_picker_error(format!(
                         "Failed to view thread open elsewhere: {read_err}"
@@ -1315,6 +1326,10 @@ impl App {
                     self.ensure_thread_channel(resumed_thread_id)
                         .mark_external_writer();
                     self.chat_widget.show_external_writer_thread();
+                    if let Some(notice) = history_notice {
+                        self.chat_widget
+                            .add_info_message(notice.to_string(), /*hint*/ None);
+                    }
                 }
                 if self.app_server_target.uses_remote_workspace() {
                     let config = self.chat_widget.config_ref();

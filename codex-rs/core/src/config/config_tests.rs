@@ -81,6 +81,7 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
+use codex_prompts::ResolvedMessage;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -91,7 +92,6 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
-use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -3174,9 +3174,9 @@ async fn workspace_profile_applies_rules_to_runtime_and_profile_workspace_roots(
     assert_eq!(
         config.effective_workspace_roots(),
         vec![
-            cwd_abs.clone(),
-            runtime_root_abs.clone(),
-            profile_root_abs.clone()
+            PathUri::from_abs_path(&cwd_abs),
+            PathUri::from_abs_path(&runtime_root_abs),
+            PathUri::from_abs_path(&profile_root_abs),
         ]
     );
 
@@ -3197,7 +3197,7 @@ async fn workspace_profile_applies_rules_to_runtime_and_profile_workspace_roots(
     }
     assert_eq!(
         config.permissions.profile_workspace_roots(),
-        std::slice::from_ref(&profile_root_abs)
+        &[profile_root_abs.into()]
     );
     assert_eq!(
         config.permissions.active_permission_profile(),
@@ -5307,7 +5307,7 @@ fn filter_plugin_mcp_servers_by_matchers_enforces_name_and_invocation() {
 }
 
 #[tokio::test]
-async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::Result<()> {
+async fn rebuild_with_session_layers_refreshes_requirements() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let user_file = AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home.path());
     let project_dot_codex =
@@ -5476,9 +5476,12 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         thread_layer_stack,
     )
     .await?;
-    let config = thread_config
-        .rebuild_preserving_session_layers(&refreshed_config)
-        .await?;
+    let config = Config::rebuild_with_session_layers(
+        &thread_config.config_layer_stack,
+        thread_config.cwd.to_path_buf(),
+        &refreshed_config,
+    )
+    .await?;
 
     assert_eq!(
         config.mcp_servers.get(),
@@ -5516,8 +5519,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
 }
 
 #[tokio::test]
-async fn rebuild_preserving_session_layers_refreshes_plugin_derived_mcp_config()
--> anyhow::Result<()> {
+async fn rebuild_with_session_layers_refreshes_plugin_derived_mcp_config() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
     let plugin_root = codex_home
         .path()
@@ -5599,9 +5601,12 @@ async fn rebuild_preserving_session_layers_refreshes_plugin_derived_mcp_config()
         thread_layer_stack,
     )
     .await?;
-    let config = thread_config
-        .rebuild_preserving_session_layers(&refreshed_config)
-        .await?;
+    let config = Config::rebuild_with_session_layers(
+        &thread_config.config_layer_stack,
+        thread_config.cwd.to_path_buf(),
+        &refreshed_config,
+    )
+    .await?;
     let plugins_manager =
         plugins_manager_for_config(&config, auth_manager_from_optional_auth(/*auth*/ None));
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
@@ -11201,7 +11206,7 @@ async fn feature_requirements_normalize_effective_feature_values() -> std::io::R
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
                 r#"
 [features]
-personality = true
+view_image = true
 shell_tool = false
 use_xaa = true
 "#,
@@ -11210,7 +11215,7 @@ use_xaa = true
         .build()
         .await?;
 
-    assert!(config.features.enabled(Feature::Personality));
+    assert!(config.features.enabled(Feature::ViewImage));
     assert!(!config.features.enabled(Feature::ShellTool));
     assert!(
         !config
@@ -11396,7 +11401,7 @@ async fn explicit_feature_config_is_normalized_by_requirements() -> std::io::Res
         codex_home.path().join(CONFIG_TOML_FILE),
         r#"
 [features]
-personality = false
+view_image = false
 shell_tool = true
 "#,
     )?;
@@ -11408,7 +11413,7 @@ shell_tool = true
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
                 r#"
 [features]
-personality = true
+view_image = true
 shell_tool = false
 "#,
             ),
@@ -11416,7 +11421,7 @@ shell_tool = false
         .build()
         .await?;
 
-    assert!(config.features.enabled(Feature::Personality));
+    assert!(config.features.enabled(Feature::ViewImage));
     assert!(!config.features.enabled(Feature::ShellTool));
     assert!(
         !config
@@ -11426,6 +11431,55 @@ shell_tool = false
         "{:?}",
         config.startup_warnings
     );
+
+    Ok(())
+}
+
+#[test]
+fn retired_personality_feature_requirements_do_not_reject_configured_values() -> std::io::Result<()>
+{
+    for (configured, required) in [(true, false), (false, true)] {
+        let cfg: ConfigToml = toml::from_str(&format!(
+            "[features]\npersonality = {configured}\nshell_tool = false\n"
+        ))
+        .expect("valid config");
+        let requirement = Sourced::new(
+            FeatureRequirementsToml {
+                entries: BTreeMap::from([
+                    ("personality".to_string(), required),
+                    ("shell_tool".to_string(), false),
+                ]),
+            },
+            RequirementSource::EnterpriseManaged {
+                id: "enterprise-id".to_string(),
+                name: "enterprise".to_string(),
+            },
+        );
+        validate_feature_requirements_for_config_toml(&cfg, Some(&requirement))?;
+
+        let configured_features = Features::from_sources(
+            FeatureConfigSource {
+                features: cfg.features.as_ref(),
+                ..Default::default()
+            },
+            FeatureConfigSource::default(),
+            FeatureOverrides::default(),
+        );
+        let mut warnings = Vec::new();
+        let features = ManagedFeatures::from_configured_with_warnings(
+            configured_features,
+            Some(requirement),
+            &mut warnings,
+        )?;
+        assert_eq!(
+            (
+                features.enabled(Feature::Personality),
+                features.enabled(Feature::ShellTool),
+                warnings,
+            ),
+            (false, false, Vec::new()),
+        );
+    }
 
     Ok(())
 }
@@ -11781,12 +11835,13 @@ max_concurrent_threads_per_session = 17
 
     let config = resolve_multi_agent_v2_config(&config_toml);
     let concurrency_guidance = "There are 17 available concurrency slots, meaning that up to 17 agents can be active at once, including you.";
+    let messages = ResolvedModelMessages::bundled().multi_agent();
     assert!(config.wait_agent_enabled);
     for wait_agent_enabled in [true, false] {
         let mut config = config.clone();
         config.wait_agent_enabled = wait_agent_enabled;
         let usage_hints = resolve_usage_hints(
-            &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+            &config, messages, /*omit_update_plan_instructions*/ false,
         );
         for hint in [usage_hints.root, usage_hints.subagent] {
             let hint = hint.expect("default usage hints should be present").body();
@@ -11798,12 +11853,12 @@ max_concurrent_threads_per_session = 17
         }
     }
 
+    let mut empty_messages = messages;
+    empty_messages.root = ResolvedMessage::Catalog("");
+    empty_messages.subagent = ResolvedMessage::Catalog("");
     let usage_hints = resolve_usage_hints(
         &config,
-        Some(&MultiAgentRoleMessages {
-            root: Some(String::new()),
-            subagent: Some(String::new()),
-        }),
+        empty_messages,
         /*omit_update_plan_instructions*/ false,
     );
     assert!(usage_hints.root.is_none() && usage_hints.subagent.is_none());
@@ -11831,13 +11886,11 @@ expose_spawn_agent_model_overrides = true
         config.subagent_usage_hint_text.as_deref(),
         Some("## `update_plan`\nSubagent guidance.")
     );
+    let mut messages = ResolvedModelMessages::bundled().multi_agent();
+    messages.root = ResolvedMessage::Catalog("Catalog root base.");
+    messages.subagent = ResolvedMessage::Catalog("Catalog subagent base.");
     let usage_hints = resolve_usage_hints(
-        &config,
-        Some(&MultiAgentRoleMessages {
-            root: Some("Catalog root base.".to_string()),
-            subagent: Some("Catalog subagent base.".to_string()),
-        }),
-        /*omit_update_plan_instructions*/ true,
+        &config, messages, /*omit_update_plan_instructions*/ true,
     );
     assert_eq!(
         (
@@ -11858,12 +11911,13 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
 
     let mut config = resolve_multi_agent_v2_config(&config_toml);
     assert!(config.expose_spawn_agent_model_overrides);
+    let messages = ResolvedModelMessages::bundled().multi_agent();
     let usage_hints = resolve_usage_hints(
-        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+        &config, messages, /*omit_update_plan_instructions*/ false,
     );
     config.expose_spawn_agent_model_overrides = false;
     let usage_hints_without_model_overrides = resolve_usage_hints(
-        &config, /*catalog*/ None, /*omit_update_plan_instructions*/ false,
+        &config, messages, /*omit_update_plan_instructions*/ false,
     );
 
     for (hint, hint_without_model_overrides) in [
@@ -11973,12 +12027,12 @@ subagent_usage_hint_text = ""
         .build()
         .await?;
 
+    let mut messages = ResolvedModelMessages::bundled().multi_agent();
+    messages.root = ResolvedMessage::Catalog("catalog root");
+    messages.subagent = ResolvedMessage::Catalog("catalog subagent");
     let usage_hints = resolve_usage_hints(
         &config.multi_agent_v2,
-        Some(&MultiAgentRoleMessages {
-            root: Some("catalog root".to_string()),
-            subagent: Some("catalog subagent".to_string()),
-        }),
+        messages,
         /*omit_update_plan_instructions*/ false,
     );
     assert_eq!(
@@ -12327,7 +12381,7 @@ async fn feature_requirements_normalize_runtime_feature_mutations() -> std::io::
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
                 r#"
 [features]
-personality = true
+view_image = true
 shell_tool = false
 "#,
             ),
@@ -12337,7 +12391,7 @@ shell_tool = false
 
     let mut requested = config.features.get().clone();
     requested
-        .disable(Feature::Personality)
+        .disable(Feature::ViewImage)
         .enable(Feature::ShellTool);
     assert!(config.features.can_set(&requested).is_ok());
     config
@@ -12345,7 +12399,7 @@ shell_tool = false
         .set(requested)
         .expect("managed feature mutations should normalize successfully");
 
-    assert!(config.features.enabled(Feature::Personality));
+    assert!(config.features.enabled(Feature::ViewImage));
     assert!(!config.features.enabled(Feature::ShellTool));
 
     Ok(())

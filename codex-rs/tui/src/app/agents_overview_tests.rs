@@ -1466,15 +1466,18 @@ async fn failed_root_switch_keeps_background_requests_on_the_active_session() ->
 
 #[tokio::test]
 async fn root_switch_preserves_vim_line_yank() -> Result<()> {
-    let mut app = make_test_app().await;
+    // Keep the large setup and root-switch futures off the test thread's stack.
+    let mut app = Box::pin(make_test_app()).await;
     trust_fixture_folders(&mut app);
     std::fs::write(
         app.local_settings.user_config_path.as_path(),
         "[tui]\nresume_cwd = \"session\"\n",
     )?;
-    let mut app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    let previous = app_server.start_thread(&app.config).await?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let previous = Box::pin(app_server.start_thread(&app.config)).await?;
     app.enqueue_primary_thread_session(previous.session, previous.turns)
         .await?;
     let target_thread_id = ThreadId::from_string(
@@ -1497,7 +1500,7 @@ async fn root_switch_preserves_vim_line_yank() -> Result<()> {
     assert_eq!(app.chat_widget.composer_text_with_pending(), "");
     let mut tui = crate::tui::test_support::make_test_tui()?;
 
-    app.select_agents_overview_thread(&mut tui, &mut app_server, target_thread_id)
+    Box::pin(app.select_agents_overview_thread(&mut tui, &mut app_server, target_thread_id))
         .await?;
 
     assert_eq!(app.current_displayed_thread_id(), Some(target_thread_id));
@@ -1564,8 +1567,10 @@ async fn root_switch_loads_local_preferences_from_disk() -> Result<()> {
 async fn root_switch_preserves_idle_root_with_running_subagent() -> Result<()> {
     let mut app = make_test_app().await;
     trust_fixture_folders(&mut app);
-    let mut app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
     let previous = app_server.start_thread(&app.config).await?;
     let previous_root_id = previous.session.thread_id;
     app.enqueue_primary_thread_session(previous.session, previous.turns)
@@ -1662,7 +1667,8 @@ async fn overview_selection_applies_user_permissions_only_to_unloaded_threads() 
             .expect("create historical session"),
         )?);
     }
-    let mut app_server = crate::start_embedded_app_server_for_picker(&server_config).await?;
+    let mut app_server =
+        Box::pin(crate::start_embedded_app_server_for_picker(&server_config)).await?;
     let loaded = app_server
         .resume_thread(
             &crate::local_settings::LocalSettings::from(&server_config),
@@ -1781,7 +1787,8 @@ async fn overview_cold_resume_honors_working_directory_selection() -> Result<()>
         ("session", true, true),
         ("session", false, false),
     ] {
-        let mut app = make_test_app().await;
+        // Keep the large setup and cold-resume futures off the Windows test stack.
+        let mut app = Box::pin(make_test_app()).await;
         trust_fixture_folders(&mut app);
         let chosen = app.config.codex_home.join("chosen");
         let overridden = app.config.codex_home.join("overridden");
@@ -1808,7 +1815,8 @@ async fn overview_cold_resume_honors_working_directory_selection() -> Result<()>
             )
             .expect("create historical session"),
         )?;
-        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
         app.launch_cwd = chosen.to_path_buf();
         app.harness_overrides.cwd = cli_cwd.then(|| {
             if runtime_cwd {
@@ -1824,17 +1832,46 @@ async fn overview_cold_resume_honors_working_directory_selection() -> Result<()>
             test_path_buf("/").abs()
         };
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.select_agents_overview_thread(&mut tui, &mut app_server, thread_id)
-            .await?;
-        let observed = app_server
-            .resume_thread(
-                &app.local_settings,
-                app.config.clone(),
-                thread_id,
-                crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
-            )
-            .await?
-            .session;
+        // On this current-thread runtime, the server cannot answer until we yield. Cancel the
+        // pending selection to release its terminal borrow and inspect what the user sees now.
+        let mut selection =
+            Box::pin(app.select_agents_overview_thread(&mut tui, &mut app_server, thread_id));
+        assert!(futures::poll!(&mut selection).is_pending());
+        drop(selection);
+        let pending_loading =
+            crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal).clone();
+        Box::pin(app.select_agents_overview_thread(&mut tui, &mut app_server, thread_id)).await?;
+        // The widget replacement clears the terminal; feedback must remain until the next draw.
+        let loading =
+            crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal).clone();
+        assert_eq!(pending_loading, loading);
+        let loading_text = loading
+            .content
+            .chunks(usize::from(loading.area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .map(|line| line.trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(loading_text.trim_end(), @"Loading task…");
+        }
+        Box::pin(app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Draw)).await?;
+        assert_ne!(
+            crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal),
+            &loading,
+        );
+        let observed = Box::pin(app_server.resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+        ))
+        .await?
+        .session;
         assert_eq!(
             (app.config.cwd.clone(), observed.cwd),
             (expected_cwd.clone(), expected_cwd),

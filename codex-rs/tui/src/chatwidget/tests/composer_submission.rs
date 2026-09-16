@@ -2,6 +2,7 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::history_cell::ThreadRecapLoadingCell;
 use base64::Engine;
+use codex_app_server_protocol::ImageReference;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -383,6 +384,7 @@ async fn submission_preserves_text_elements_and_local_images() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -492,6 +494,7 @@ async fn submission_includes_configured_active_permission_profile() {
     };
     let expected_active_permission_profile = ActivePermissionProfile::new("custom");
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -547,6 +550,7 @@ async fn submission_omits_active_permission_profile_for_legacy_snapshot() {
         file_system: ManagedFileSystemPermissions::Unrestricted,
     };
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -592,6 +596,7 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -640,7 +645,9 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
     assert_eq!(
         items[0],
         UserInput::Image {
-            url: remote_url.clone(),
+            image: ImageReference::Inline {
+                url: remote_url.clone(),
+            },
             detail: None,
         }
     );
@@ -690,6 +697,7 @@ async fn enter_with_only_remote_images_submits_user_turn() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -727,7 +735,9 @@ async fn enter_with_only_remote_images_submits_user_turn() {
     assert_eq!(
         items,
         vec![UserInput::Image {
-            url: remote_url.clone(),
+            image: ImageReference::Inline {
+                url: remote_url.clone(),
+            },
             detail: None,
         }]
     );
@@ -757,6 +767,7 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -798,6 +809,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -839,6 +851,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -883,6 +896,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let configured = crate::session_state::ThreadSessionState {
+        windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
         thread_id,
         forked_from_id: None,
         fork_parent_title: None,
@@ -1779,6 +1793,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
         submit_pending_steers_after_interrupt: true,
         current_collaboration_mode: chat.current_collaboration_mode.clone(),
         active_collaboration_mask: chat.active_collaboration_mask.clone(),
+        plan_mode_reasoning_effort: chat.config.plan_mode_reasoning_effort.clone(),
         task_running: true,
         agent_turn_running: true,
     };
@@ -2157,7 +2172,9 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
             text_elements: vec![TextElement::new((0..5).into(), /*placeholder*/ None).into()],
         },
         UserInput::Image {
-            url: "https://example.com/remote.png".to_string(),
+            image: ImageReference::Inline {
+                url: "https://example.com/remote.png".to_string(),
+            },
             detail: None,
         },
         UserInput::LocalImage {
@@ -2522,7 +2539,13 @@ async fn image_submission_is_portable_for_new_turns_and_steers() {
                     _ => {}
                 }
             };
-            let [UserInput::Image { url, detail }, UserInput::Text { .. }] = items.as_slice()
+            let [
+                UserInput::Image {
+                    image: ImageReference::Inline { url },
+                    detail,
+                },
+                UserInput::Text { .. },
+            ] = items.as_slice()
             else {
                 panic!("local image must be portable on the wire");
             };

@@ -64,8 +64,6 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::SandboxMode;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_rollout::StateDbHandle;
 use codex_rollout::state_db;
 use codex_state::log_db;
@@ -225,6 +223,7 @@ mod ui_consts;
 mod unarchive_prompt;
 pub(crate) mod update_action;
 mod worktree_startup;
+pub use update_action::DaemonUpdateSource;
 pub use update_action::UpdateAction;
 #[cfg(not(debug_assertions))]
 pub use update_action::get_update_action;
@@ -236,7 +235,6 @@ mod updates_cache;
 mod version;
 mod vim_search;
 mod width;
-#[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
 mod workspace_command;
 mod workspace_messages;
@@ -1811,20 +1809,7 @@ async fn run_ratatui_app(
     set_default_client_residency_requirement(config.enforce_residency.value());
     let should_show_trust_screen = should_show_trust_screen(&config);
     #[cfg(target_os = "windows")]
-    let windows_sandbox_level = crate::windows_sandbox::level_from_config(&config);
-    #[cfg(target_os = "windows")]
-    let required_elevated_sandbox_needs_setup = windows_sandbox_level
-        == WindowsSandboxLevel::Elevated
-        && config
-            .config_layer_stack
-            .requirements()
-            .windows_sandbox_mode
-            .source
-            .is_some();
-    #[cfg(target_os = "windows")]
-    let should_prompt_windows_sandbox_nux_at_startup = (trust_decision_was_made
-        && windows_sandbox_level == WindowsSandboxLevel::Disabled)
-        || required_elevated_sandbox_needs_setup;
+    let should_prompt_windows_sandbox_nux_at_startup = trust_decision_was_made;
     #[cfg(not(target_os = "windows"))]
     let should_prompt_windows_sandbox_nux_at_startup = false;
 
@@ -1832,6 +1817,7 @@ async fn run_ratatui_app(
         prompt,
         shared,
         no_alt_screen,
+        daemon_cli_executable,
         ..
     } = cli;
     let images = shared.into_inner().images;
@@ -1924,6 +1910,7 @@ async fn run_ratatui_app(
         startup_hooks_browser,
         startup_draft,
         managed_worktree,
+        daemon_cli_executable,
     ))
     .await;
 

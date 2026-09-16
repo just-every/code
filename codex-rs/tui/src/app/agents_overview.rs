@@ -8,6 +8,9 @@ pub(crate) use new::PendingWorktree;
 #[path = "agents_overview_errors.rs"]
 mod errors;
 
+#[path = "agents_overview_loading.rs"]
+mod loading;
+
 use super::agents_overview_view::AgentsOverviewGroup;
 use super::agents_overview_view::AgentsOverviewRow;
 use super::agents_overview_view::AgentsOverviewView;
@@ -332,6 +335,10 @@ impl App {
             self.chat_widget.pre_draw_tick();
             return Ok(AppRunControl::Continue);
         }
+        if self.reject_pending_permission_root_switch() {
+            return Ok(AppRunControl::Continue);
+        }
+        loading::draw(tui)?;
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             if let Some(id) = previous_displayed_thread_id
@@ -456,6 +463,8 @@ impl App {
                 }
                 local_settings = crate::local_settings::LocalSettings::from(&resume_config);
             }
+            // Folder selection and trust prompts can replace or clear the loading frame.
+            loading::draw(tui)?;
             let baseline_approval = resume_config.permissions.approval_policy.value();
             let baseline_permissions =
                 RuntimePermissionProfileOverride::from_config(&resume_config);
@@ -491,6 +500,7 @@ impl App {
                     crate::app_server_session::ResumeModelSettings::PreserveExistingThread
                 }
             };
+            let mut history_notice = None;
             let (resumed, read_only) = if let Some((_, started)) = started {
                 (started, false)
             } else if !unloaded
@@ -519,11 +529,16 @@ impl App {
                             )
                             .await
                         {
-                            Ok(thread) => (thread, true),
-                            Err(error) => {
-                                self.add_agents_overview_error(format!(
-                                    "Failed to view task open elsewhere: {error}"
-                                ));
+                            Ok((thread, notice)) => {
+                                history_notice = notice;
+                                (thread, true)
+                            }
+                            Err(_) => {
+                                tracing::warn!("Failed to load read-only conversation history");
+                                self.add_agents_overview_error(
+                                    "Couldn't load this conversation. Please try again."
+                                        .to_string(),
+                                );
                                 return Ok(AppRunControl::Continue);
                             }
                         }
@@ -602,10 +617,16 @@ impl App {
                 self.add_agents_overview_error(format!("Failed to attach to task: {error}"));
                 return Ok(AppRunControl::Continue);
             }
+            // Replacing the widget clears the terminal before the remaining server requests.
+            loading::draw(tui)?;
             if read_only {
                 self.ensure_thread_channel(root_thread_id)
                     .mark_external_writer();
                 self.chat_widget.show_external_writer_thread();
+                if let Some(notice) = history_notice {
+                    self.chat_widget
+                        .add_info_message(notice.to_string(), /*hint*/ None);
+                }
             }
             let mut destination_config = self.chat_widget.config_ref().clone();
             if self.app_server_target.uses_remote_workspace() {

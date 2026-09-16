@@ -6,6 +6,7 @@ use crate::codex_thread::CodexThread;
 use crate::config::PermissionProfileSnapshot;
 use crate::context::ContextualUserFragment;
 use crate::context::CurrentTimeReminder;
+use crate::context::CurrentTimeUnavailable;
 use crate::context::DeveloperInstructions;
 use crate::context::GuardianContextMode;
 use crate::context::ManagedDeveloperInstructions;
@@ -17,6 +18,7 @@ use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
 use codex_history::ResponseItemEnvelope;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
@@ -135,6 +137,7 @@ fn retain_forked_developer_message(
                 ))
             || MultiAgentModeInstructions::matches_text(text)
             || CurrentTimeReminder::matches_text(text)
+            || CurrentTimeUnavailable::matches_text(text)
             || usage_hint_texts
                 .iter()
                 .any(|usage_hint_text| usage_hint_text == text))
@@ -915,7 +918,7 @@ impl AgentControl {
                 let parent_config = parent_thread.session.get_config().await;
                 let parent_usage_hints = resolve_usage_hints(
                     &parent_config.multi_agent_v2,
-                    /*catalog*/ None,
+                    ResolvedModelMessages::bundled().multi_agent(),
                     !parent_config.update_plan_enabled,
                 );
                 [parent_usage_hints.root, parent_usage_hints.subagent]
@@ -1103,7 +1106,7 @@ impl AgentControl {
                 .unwrap_or_else(|| {
                     resolve_usage_hints(
                         &config.multi_agent_v2,
-                        /*catalog*/ None,
+                        ResolvedModelMessages::bundled().multi_agent(),
                         !config.update_plan_enabled,
                     )
                     .subagent

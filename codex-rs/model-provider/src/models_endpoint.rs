@@ -35,7 +35,6 @@ use tokio::time::timeout;
 
 use crate::auth::agent_identity_telemetry;
 use crate::auth::resolve_provider_auth;
-use crate::provider::enforce_managed_residency;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_ENDPOINT: &str = "/models";
@@ -92,7 +91,6 @@ impl OpenAiModelsEndpoint {
             // Codex metadata is served by the Codex backend, not the public /v1/models API.
             api_provider.base_url = CHATGPT_CODEX_BASE_URL.to_string();
         }
-        enforce_managed_residency(&mut api_provider);
         let api_auth = resolve_provider_auth(auth.as_ref(), &self.provider_info)?;
         let request_url =
             ModelsClient::<ReqwestTransport>::request_url(&api_provider, client_version);
@@ -122,7 +120,7 @@ impl OpenAiModelsEndpoint {
                 .map_err(map_api_error)
         })
         .await
-        .map_err(|_| CodexErr::Timeout)??;
+        .map_err(|_| CodexErr::RequestTimeout)??;
         Ok(ModelsEndpointResponse {
             models,
             etag,
@@ -300,6 +298,10 @@ impl RequestTelemetry for ModelsRequestTelemetry {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "models_endpoint_timeout_tests.rs"]
+mod timeout_tests;
 
 #[cfg(test)]
 mod tests {

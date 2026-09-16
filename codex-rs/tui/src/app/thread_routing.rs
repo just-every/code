@@ -1023,9 +1023,7 @@ impl App {
             runtime_permission_profile_override.map(|profile| {
                 profile
                     .clone()
-                    .materialize_project_roots_with_workspace_roots(
-                        &config.effective_workspace_roots(),
-                    )
+                    .materialize_project_roots_with_path_uris(&config.effective_workspace_roots())
             });
         if runtime_permission_profile_override
             .as_ref()
@@ -1284,6 +1282,34 @@ impl App {
             notification = None;
         }
         if permission_change_confirmed {
+            if self.chat_widget.thread_id() == Some(thread_id)
+                && let Some(profile) = self
+                    .chat_widget
+                    .config_ref()
+                    .permissions
+                    .active_permission_profile()
+                && profile.id.starts_with(':')
+            {
+                let config = self.chat_widget.config_ref();
+                let network = config
+                    .network_proxy_spec_for_active_permission_profile(
+                        &profile,
+                        config.permissions.permission_profile(),
+                    )
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(%err, "failed to refresh local permission network settings");
+                        None
+                    });
+                self.chat_widget.set_permission_network(network);
+                self.config.permissions = self.chat_widget.config_ref().permissions.clone();
+                self.config.approvals_reviewer = self.chat_widget.config_ref().approvals_reviewer;
+                self.runtime_approval_policy_override =
+                    Some(RuntimeApprovalPolicyOverride::Explicit(
+                        self.config.permissions.approval_policy.value().into(),
+                    ));
+                self.runtime_permission_profile_override =
+                    Some(RuntimePermissionProfileOverride::from_config(&self.config));
+            }
             self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
         }
 
@@ -1366,6 +1392,9 @@ impl App {
     ) -> Option<ThreadSessionState> {
         let mut session = self.primary_session_configured.clone()?;
         session.thread_id = thread_id;
+        session.windows_sandbox_host = crate::windows_sandbox::host_from_environments(
+            notification.thread.environments.as_deref(),
+        );
         session.thread_name = notification.thread.name.clone();
         session.model_provider_id = notification.thread.model_provider.clone();
         session
@@ -1539,9 +1568,6 @@ impl App {
             ThreadAttachPresentation::SessionLineage => {
                 self.chat_widget.handle_thread_session(session);
             }
-            ThreadAttachPresentation::PromptEdit => {
-                self.chat_widget.handle_prompt_edit_thread_session(session);
-            }
         }
         let should_buffer_initial_replay = !turns.is_empty();
         let replayed_final_items = realtime_delivery::completed_agent_items_from_turns(&turns);
@@ -1567,9 +1593,6 @@ impl App {
             &replayed_final_items,
             retained_assistant_captions,
         );
-        if matches!(presentation, ThreadAttachPresentation::PromptEdit) {
-            self.chat_widget.emit_prompt_edit_thread_event();
-        }
         let pending = std::mem::take(&mut self.pending_primary_events);
         for pending_event in pending {
             match pending_event {
