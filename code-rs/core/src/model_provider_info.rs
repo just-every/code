@@ -135,6 +135,10 @@ pub struct ModelProviderInfo {
     /// Timeout (in milliseconds) when establishing a websocket transport connection.
     pub websocket_connect_timeout_ms: Option<u64>,
 
+    /// Whether this provider supports the Responses API WebSocket transport.
+    #[serde(default)]
+    pub supports_websockets: bool,
+
     /// Whether this provider requires some form of standard authentication (API key, ChatGPT token).
     #[serde(default)]
     pub requires_openai_auth: bool,
@@ -783,6 +787,7 @@ pub fn built_in_model_providers(
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 websocket_connect_timeout_ms: None,
+                supports_websockets: true,
                 requires_openai_auth: true,
                 openrouter: None,
             },
@@ -831,6 +836,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
+        supports_websockets: false,
         requires_openai_auth: false,
         openrouter: None,
     }
@@ -878,6 +884,7 @@ base_url = "http://localhost:11434/v1"
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -911,6 +918,7 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -947,6 +955,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -973,6 +982,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 websocket_connect_timeout_ms: None,
+                supports_websockets: false,
                 requires_openai_auth: false,
                 openrouter: None,
             }
@@ -1009,6 +1019,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };
@@ -1046,6 +1057,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 websocket_connect_timeout_ms: None,
+                supports_websockets: false,
                 requires_openai_auth: false,
                 openrouter: None,
             }
@@ -1099,6 +1111,27 @@ args = ["--format=text"]
     }
 
     #[test]
+    fn custom_provider_websocket_support_defaults_to_false() {
+        let provider: ModelProviderInfo = toml::from_str(
+            r#"
+name = "Gateway"
+wire_api = "responses"
+"#,
+        )
+        .unwrap();
+
+        assert!(!provider.supports_websockets);
+    }
+
+    #[test]
+    fn built_in_openai_provider_explicitly_supports_websockets() {
+        let providers = built_in_model_providers(None);
+
+        assert!(providers["openai"].supports_websockets);
+        assert!(!providers[BUILT_IN_OSS_MODEL_PROVIDER_ID].supports_websockets);
+    }
+
+    #[test]
     fn test_deserialize_provider_auth_config_allows_zero_refresh_interval() {
         let base_dir = tempdir().unwrap();
         let provider_toml = r#"
@@ -1142,6 +1175,7 @@ refresh_interval_ms = 0
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };

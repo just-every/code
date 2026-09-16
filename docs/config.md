@@ -48,6 +48,9 @@ base_url = "https://api.openai.com/v1"
 env_key = "OPENAI_API_KEY"
 # Valid values for wire_api are "chat" and "responses". Defaults to "chat" if omitted.
 wire_api = "chat"
+# Set true only when this provider supports Responses over WebSocket.
+# Defaults to false for custom providers.
+supports_websockets = false
 # If necessary, extra query params that need to be added to the URL.
 # See the Azure example below.
 query_params = {}
