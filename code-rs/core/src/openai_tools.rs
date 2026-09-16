@@ -208,8 +208,6 @@ impl ToolsConfig {
             model_family,
             &sandbox_policy,
             use_streamable_shell_tool,
-            include_apply_patch_tool,
-            cfg!(target_os = "windows"),
         );
         if matches!(approval_policy, AskForApproval::OnRequest)
             && !use_streamable_shell_tool
@@ -262,8 +260,6 @@ fn select_shell_type_for_platform(
     model_family: &ModelFamily,
     sandbox_policy: &SandboxPolicy,
     use_streamable_shell_tool: bool,
-    include_apply_patch_tool: bool,
-    is_windows: bool,
 ) -> ConfigShellToolType {
     if use_streamable_shell_tool {
         return ConfigShellToolType::StreamableShell;
@@ -273,11 +269,10 @@ fn select_shell_type_for_platform(
         return ConfigShellToolType::LocalShell;
     }
 
-    // Keep Windows on the argv-style shell path while apply_patch is enabled.
-    // That keeps the dedicated JSON tool as the preferred edit mechanism until
-    // shell_command/apply_patch parity is covered by fork tests.
-    let should_use_shell_command = model_family.uses_shell_command_tool
-        && !(is_windows && include_apply_patch_tool);
+    // Keep the shell-command contract when the model advertises it. Windows
+    // uses the dedicated JSON apply_patch tool independently, so apply_patch
+    // support does not require downgrading shell execution to argv semantics.
+    let should_use_shell_command = model_family.uses_shell_command_tool;
 
     if should_use_shell_command {
         ConfigShellToolType::ShellCommand {
@@ -2149,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_apply_patch_prefers_default_shell_for_shell_command_models() {
+    fn windows_apply_patch_keeps_shell_command_for_shell_command_models() {
         let model_family =
             find_family_for_model("gpt-5.4").expect("gpt-5.4 should be a valid model family");
 
@@ -2157,11 +2152,14 @@ mod tests {
             &model_family,
             &SandboxPolicy::ReadOnly,
             false,
-            true,
-            true,
         );
 
-        assert!(matches!(shell_type, ConfigShellToolType::DefaultShell));
+        assert!(matches!(
+            shell_type,
+            ConfigShellToolType::ShellCommand {
+                sandbox_policy: SandboxPolicy::ReadOnly,
+            }
+        ));
     }
 
     #[test]
@@ -2173,8 +2171,6 @@ mod tests {
             &model_family,
             &SandboxPolicy::ReadOnly,
             false,
-            false,
-            true,
         );
 
         assert!(matches!(
