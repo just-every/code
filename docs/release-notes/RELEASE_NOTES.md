@@ -1,18 +1,18 @@
-## @just-every/code v0.6.189
+## @just-every/code v0.6.190
 
-This release improves client error handling and release packaging reliability.
+This release refreshes upstream parity while carrying forward SDK, MCP metadata, and release publishing improvements.
 
 ### Changes
 
-- Core: align retry and quota error classification for client errors.
-- Release: preserve standalone install pins during daemon updates.
-- Release: gate DotSlash publishing on release success and improve Windows artifact compression.
+- SDK: preserve image user input and support file ID image references in app-server APIs.
+- Core: preserve MCP App UI metadata in tool-call events and history.
+- Core: retire the personality feature flag and document deprecated settings.
+- Release: run R2 publishing after release dependencies succeed.
+- Release: preserve JustEvery workflow state while refreshing upstream parity.
 
 ### Install
 
-```
+```bash
 npm install -g @just-every/code@latest
 code
 ```
-
-Compare: https://github.com/just-every/code/compare/v0.6.188...v0.6.189
