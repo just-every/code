@@ -1,18 +1,19 @@
-## @just-every/code v0.6.190
+## @just-every/code v0.6.191
 
-This release refreshes upstream parity while carrying forward SDK, MCP metadata, and release publishing improvements.
+This release improves provider transport handling and preserves legacy Responses compatibility.
 
 ### Changes
 
-- SDK: preserve image user input and support file ID image references in app-server APIs.
-- Core: preserve MCP App UI metadata in tool-call events and history.
-- Core: retire the personality feature flag and document deprecated settings.
-- Release: run R2 publishing after release dependencies succeed.
-- Release: preserve JustEvery workflow state while refreshing upstream parity.
+- Core: advertise provider transport capabilities for model providers.
+- Core: guard WebSocket transport selection by provider support.
+- Core: preserve legacy Responses session headers.
+- Core: complete provider transport test fixtures.
 
 ### Install
 
-```bash
+```sh
 npm install -g @just-every/code@latest
 code
 ```
+
+Compare: https://github.com/just-every/code/compare/v0.6.190...v0.6.191

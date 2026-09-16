@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.191] - 2026-09-16
+
+- Core: advertise provider transport capabilities for model providers. (15d5d9d6)
+- Core: guard WebSocket transport selection by provider support. (6acde3ce)
+- Core: preserve legacy Responses session headers. (1f137d75)
+- Core: complete provider transport test fixtures. (654a2b04)
+
 ## [0.6.190] - 2026-09-16
 
 - SDK: preserve image user input and support file ID image references in app-server APIs. (63c09ed2, 7b8b17b9)
