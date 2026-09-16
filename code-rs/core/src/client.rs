@@ -344,7 +344,9 @@ impl ModelClient {
     }
 
     fn active_ws_version_for_prompt(&self, prompt: &Prompt) -> Option<ResponsesWebsocketVersion> {
-        if self.websockets_disabled.load(Ordering::Relaxed) {
+        if self.websockets_disabled.load(Ordering::Relaxed)
+            || !self.provider.supports_websockets
+        {
             return None;
         }
 
@@ -393,6 +395,22 @@ impl ModelClient {
             Some(self.config.responses_originator_header.as_str()),
             model,
         ))
+    }
+
+    /// Use the session-correlation header names emitted by codex-rs.
+    ///
+    /// The older fork used underscore-style `conversation_id`, `session_id`,
+    /// and `thread_id` headers. OpenAI-compatible gateways may route those
+    /// legacy names differently from codex-rs's hyphenated headers.
+    fn apply_responses_session_headers(
+        &self,
+        req_builder: reqwest::RequestBuilder,
+        session_id: &str,
+    ) -> reqwest::RequestBuilder {
+        req_builder
+            .header("x-client-request-id", session_id)
+            .header("session-id", session_id)
+            .header("thread-id", session_id)
     }
 
     fn current_reasoning_param(
@@ -658,6 +676,12 @@ impl ModelClient {
                 }
             }
             WireApi::ResponsesWebsocket => {
+                if !self.provider.supports_websockets {
+                    warn!(
+                        "responses_websocket transport is disabled for this provider; using responses HTTP stream"
+                    );
+                    return self.stream_responses(prompt, log_tag).await;
+                }
                 if self.websockets_disabled.load(Ordering::Relaxed) {
                     warn!(
                         "responses_websocket transport disabled for this session; using responses HTTP stream"
@@ -946,10 +970,7 @@ impl ModelClient {
             if let Some(state) = turn_state.get() {
                 req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
             }
-            req_builder = req_builder
-                .header("conversation_id", session_id_str.clone())
-                .header("session_id", session_id_str.clone())
-                .header("thread_id", session_id_str.clone());
+            req_builder = self.apply_responses_session_headers(req_builder, &session_id_str);
             if let Ok(window_id) = HeaderValue::from_str(&self.current_window_id(session_id)) {
                 req_builder = req_builder.header(X_CODEX_WINDOW_ID_HEADER, window_id);
             }
@@ -1450,11 +1471,8 @@ impl ModelClient {
                 req_builder = req_builder.header(X_CODEX_TURN_STATE_HEADER, state);
             }
 
-            req_builder = req_builder
-                // Send `conversation_id`/`session_id` so the server can hit the prompt-cache.
-                .header("conversation_id", session_id_str.clone())
-                .header("session_id", session_id_str.clone())
-                .header("thread_id", session_id_str.clone())
+            req_builder = self
+                .apply_responses_session_headers(req_builder, &session_id_str)
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .json(&payload_json);
             if let Ok(window_id) = HeaderValue::from_str(&self.current_window_id(session_id)) {
@@ -2108,10 +2126,7 @@ impl ModelClient {
                 request = request.header(X_CODEX_WINDOW_ID_HEADER, window_id);
             }
 
-            request = request
-                .header("conversation_id", session_id_str.clone())
-                .header("session_id", session_id_str.clone())
-                .header("thread_id", session_id_str.clone());
+            request = self.apply_responses_session_headers(request, &session_id_str);
 
             if let Some(auth) = auth.as_ref()
                 && auth.mode.is_chatgpt()
