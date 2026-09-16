@@ -7,6 +7,14 @@
 
 - (none)
 
+## [0.6.190] - 2026-09-16
+
+- SDK: preserve image user input and support file ID image references in app-server APIs. (63c09ed2, 7b8b17b9)
+- Core: preserve MCP App UI metadata in tool-call events and history. (b71af39f)
+- Core: retire the personality feature flag and document deprecated settings. (883af106)
+- Release: run R2 publishing after release dependencies succeed. (fac58c11)
+- Release: preserve JustEvery workflow state while refreshing upstream parity. (9fbfc4d0, 727101ab)
+
 ## [0.6.189] - 2026-09-15
 
 - Core: align retry and quota error classification for client errors. (82539c3b)
