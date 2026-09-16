@@ -68,7 +68,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
-use crate::model_family::{find_family_for_model, ModelFamily};
+use crate::model_family::{derive_default_model_family, find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_tools::create_tools_json_for_responses_api;
@@ -370,6 +370,46 @@ impl ModelClient {
             }
             WireApi::Chat => None,
         }
+    }
+
+    /// Resolve the model family used to build a request.
+    ///
+    /// The newer codex-rs path passes resolved `ModelInfo` into the request
+    /// builder. This older code-rs path still reconstructs families from the
+    /// slug, so keep that reconstruction provider-aware at the final boundary.
+    pub(crate) fn normalize_model_family_for_provider(
+        &self,
+        mut family: ModelFamily,
+    ) -> ModelFamily {
+        if !self.uses_first_party_openai_model_metadata() {
+            family.use_responses_lite = false;
+            family.prefer_websockets = false;
+        }
+        family
+    }
+
+    fn uses_first_party_openai_model_metadata(&self) -> bool {
+        // Provider-owned ModelInfo is the codex-rs source of truth. This
+        // compatibility check identifies the one built-in first-party path;
+        // proxy/custom endpoints must not inherit embedded OpenAI capabilities.
+        self.config.model_provider_id == "openai"
+            && self.provider.is_public_openai_responses_endpoint()
+    }
+
+    fn model_family_for_request(&self, prompt: &Prompt, model: &str) -> ModelFamily {
+        let family = prompt
+            .model_family_override
+            .clone()
+            .unwrap_or_else(|| {
+                if self.uses_first_party_openai_model_metadata() {
+                    find_family_for_model(model)
+                        .unwrap_or_else(|| self.config.model_family.clone())
+                } else {
+                    derive_default_model_family(model)
+                }
+            });
+
+        self.normalize_model_family_for_provider(family)
     }
 
     /// Get the reasoning effort configuration
@@ -778,11 +818,7 @@ impl ModelClient {
             .as_deref()
             .unwrap_or(self.config.model.as_str());
         let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
-        let request_family = prompt
-            .model_family_override
-            .clone()
-            .or_else(|| find_family_for_model(request_model))
-            .unwrap_or_else(|| self.config.model_family.clone());
+        let request_family = self.model_family_for_request(prompt, request_model);
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
@@ -1265,11 +1301,7 @@ impl ModelClient {
             .as_deref()
             .unwrap_or(self.config.model.as_str());
         let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
-        let request_family = prompt
-            .model_family_override
-            .clone()
-            .or_else(|| find_family_for_model(request_model))
-            .unwrap_or_else(|| self.config.model_family.clone());
+        let request_family = self.model_family_for_request(prompt, request_model);
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
@@ -2059,11 +2091,7 @@ impl ModelClient {
             .model_override
             .as_deref()
             .unwrap_or(self.config.model.as_str());
-        let family = prompt
-            .model_family_override
-            .clone()
-            .or_else(|| find_family_for_model(model_slug))
-            .unwrap_or_else(|| self.config.model_family.clone());
+        let family = self.model_family_for_request(prompt, model_slug);
         let session_id = prompt.session_id_override.unwrap_or(self.session_id);
         let session_id_str = session_id.to_string();
         let instructions = prompt.get_full_instructions(&family).into_owned();
