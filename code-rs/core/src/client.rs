@@ -4423,6 +4423,7 @@ mod tests {
             stream_max_retries: Some(0),
             stream_idle_timeout_ms: Some(1000),
             websocket_connect_timeout_ms: None,
+            supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
         };
