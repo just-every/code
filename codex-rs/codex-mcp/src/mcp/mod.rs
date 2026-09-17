@@ -126,6 +126,8 @@ pub struct McpConfig {
     pub chatgpt_base_url: String,
     /// Optional product SKU forwarded to the host-owned apps MCP server.
     pub apps_mcp_product_sku: Option<String>,
+    /// Requests server-side read-only filtering and invocation checks for MCP tools.
+    pub requires_read_only_mcp_tools: bool,
     /// Codex home directory used for MCP OAuth state and app-tool cache files.
     pub codex_home: PathBuf,
     /// Trusted enterprise IdP inherited after normal catalog and policy resolution.
@@ -456,6 +458,7 @@ pub async fn read_mcp_resource(
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: auth.cloned(),
             auth_manager: None,
+            allow_user_interaction: true,
             elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },
@@ -535,6 +538,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
             client_mcp_extensions: ClientMcpExtensions::default(),
             auth: auth.cloned(),
             auth_manager: None,
+            allow_user_interaction: true,
             elicitation_reviewer: None,
             elicitation_lifecycle: None,
         },

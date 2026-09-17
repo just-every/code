@@ -76,8 +76,11 @@ pub(super) async fn test_credential_broker_network_proxy() -> anyhow::Result<Net
 async fn test_network_proxy_with_config(
     config: NetworkProxyConfig,
 ) -> anyhow::Result<NetworkProxy> {
-    let state =
-        codex_network_proxy::build_config_state(config, NetworkProxyConstraints::default())?;
+    let state = codex_network_proxy::build_config_state(
+        config,
+        NetworkProxyConstraints::default(),
+        codex_network_proxy::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+    )?;
     NetworkProxy::builder()
         .state(Arc::new(NetworkProxyState::with_reloader(
             state,
@@ -126,6 +129,7 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
         workspace_roots: std::slice::from_ref(&sandbox_policy_cwd),
         sandbox_exe: None,
         use_legacy_landlock: false,
+        windows_sandbox_type: SandboxType::None,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
         windows_sandbox_private_desktop: false,
         network_denial_cancellation_token: None,

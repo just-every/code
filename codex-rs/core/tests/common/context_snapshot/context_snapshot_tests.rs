@@ -59,6 +59,7 @@ fn lite_tool_catalog_and_code_calls_are_visible() {
             json!({ "type": "custom_tool_call_output", "output": {
                 "content": "plan updated", "success": true
             } }),
+            json!({ "type": "function_call_output", "output": "Wall time: 0.0025 seconds\nOutput: Report ready." }),
         ],
         &ContextSnapshotOptions::default(),
     );
@@ -72,6 +73,26 @@ fn lite_tool_catalog_and_code_calls_are_visible() {
     ));
     assert!(rendered.contains("     | ready"));
     assert!(rendered.contains("03:custom_tool_call_output:success=true:plan updated"));
+    assert!(rendered.contains("04:function_call_output:Wall time: <DURATION> seconds"));
+}
+
+#[test]
+fn code_mode_timing_normalization_preserves_status_and_user_output() {
+    for status in ["Script completed", "Script failed", "Script terminated"] {
+        let text = format!(
+            "{status}\nWall time 1.000 seconds (code-mode 1.001 seconds; overhead -0.001 seconds)\nOutput:\nWall time 2.0 seconds"
+        );
+        assert_eq!(
+            Normalizer::default().text(
+                &text,
+                TextSource::Other,
+                &ContextSnapshotOptions::default(),
+            ),
+            format!(
+                "{status}\nWall time <DURATION> seconds (code-mode <DURATION> seconds; overhead <DURATION> seconds)\nOutput:\nWall time 2.0 seconds"
+            ),
+        );
+    }
 }
 
 #[test]

@@ -177,6 +177,7 @@ impl SessionConfiguration {
             permission_profile: self.permission_profile_state.snapshot(),
             shell_environment_policy: self.shell_environment_policy.clone(),
             windows_sandbox_level: self.windows_sandbox_level,
+            windows_sandbox_type: self.windows_sandbox_type,
             windows_sandbox_private_desktop: self.windows_sandbox_private_desktop,
             use_legacy_landlock: self.use_legacy_landlock,
             exec_policy: None,
@@ -1244,6 +1245,9 @@ impl Session {
             )
             .with_auth_env(auth_env_telemetry.to_otel_metadata())
             .with_tool_result_log_config(config.otel.tool_result);
+            if let Some(metrics) = thread_extension_data.get::<codex_otel::MetricsClient>() {
+                session_telemetry = session_telemetry.with_metrics(metrics.as_ref().clone());
+            }
             if let Some(service_name) = session_configuration.metrics_service_name.as_deref() {
                 session_telemetry = session_telemetry.with_metrics_service_name(service_name);
             }
@@ -1673,6 +1677,7 @@ impl Session {
                     session_configuration.originator.clone(),
                     config.model_verbosity,
                     config.features.enabled(Feature::ContentItemKinds),
+                    config.features.enabled(Feature::ReasoningEffortOverride),
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
@@ -1683,6 +1688,10 @@ impl Session {
                     config.http_client_factory(),
                     config.workspace_routing_context(),
                 )
+                .with_restored_history(matches!(
+                    &initial_history,
+                    InitialHistory::Resumed(_) | InitialHistory::Forked(_)
+                ))
                 .with_session_context(
                     crate::guardian::prompt_cache_key_override_for_review_session(
                         &session_configuration.session_source,

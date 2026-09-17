@@ -20,6 +20,7 @@ pub use codex_protocol::config_types::ApprovalsReviewer;
 pub use codex_protocol::config_types::ModeKind;
 pub use codex_protocol::config_types::Personality;
 pub use codex_protocol::config_types::ServiceTier;
+use codex_protocol::config_types::ToolExposureSurface;
 pub use codex_protocol::config_types::WebSearchMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
@@ -162,14 +163,15 @@ impl Default for AuthKeyringBackendKind {
 pub enum WindowsSandboxModeToml {
     Elevated,
     Unelevated,
+    Mxc,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct WindowsToml {
     pub sandbox: Option<WindowsSandboxModeToml>,
-    /// Defaults to `true`. Set to `false` to launch the final sandboxed child
-    /// process on `Winsta0\\Default` instead of a private desktop.
+    /// Defaults to `true` for legacy sandboxes and `false` for MXC. Set to `false`
+    /// to launch the final sandboxed child process on `Winsta0\\Default`.
     pub sandbox_private_desktop: Option<bool>,
 }
 
@@ -499,6 +501,12 @@ pub struct AppConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
+    /// Model-facing surfaces from which this connector's tools must be omitted,
+    /// in addition to any server-level omissions. `None` leaves lower-priority
+    /// configuration unchanged; an empty list clears connector-level omissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
+
     /// Reviewer for approval prompts from this app, overriding the thread default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvals_reviewer: Option<ApprovalsReviewer>,
@@ -744,6 +752,9 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub animations: bool,
+
+    /// Records the one-time screen-reader detection attempt. Either value skips detection.
+    pub screen_reader_detection_done: Option<bool>,
 
     /// Enable decorative effects such as Astra composer stars. Also requires animations.
     /// Defaults to `true`.

@@ -2489,6 +2489,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2668,6 +2669,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "url",
+ "vt100",
  "which 8.0.0",
  "windows-sys 0.52.0",
  "wiremock",
@@ -3262,6 +3264,7 @@ dependencies = [
  "codex-shell-command",
  "codex-test-binary-support",
  "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
  "codex-utils-home-dir",
  "codex-utils-path-uri",
  "codex-utils-pty",
@@ -4765,6 +4768,7 @@ dependencies = [
  "clap",
  "codex-ansi-escape",
  "codex-app-server-client",
+ "codex-app-server-daemon",
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",
@@ -4784,6 +4788,7 @@ dependencies = [
  "codex-install-context",
  "codex-login",
  "codex-mcp",
+ "codex-mermaid",
  "codex-message-history",
  "codex-model-provider",
  "codex-model-provider-info",
@@ -4854,6 +4859,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml 0.9.11+spec-1.1.0",
+ "toml_edit 0.24.0+spec-1.1.0",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

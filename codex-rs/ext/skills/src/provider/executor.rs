@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::FileSystemEnvironmentAccessor;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_extension_api::SelectedPluginSnapshot;
 use codex_protocol::capabilities::CapabilityRootLocation;
@@ -113,8 +114,10 @@ impl SkillProvider for ExecutorSkillProvider {
                     ));
                     continue;
                 };
+                // TODO(anp): Take this accessor from the selected turn root when discovery receives
+                // turn permissions; until then, preserve direct access through its existing filesystem.
                 let outcome = load_environment_skills_from_root(
-                    file_system.as_ref(),
+                    &FileSystemEnvironmentAccessor::unrestricted(&file_system),
                     path,
                     self.restriction_product,
                 )
@@ -333,7 +336,7 @@ async fn read_bounded_text(
             "failed to read executor skill resource {resource}: {err}"
         ))
     };
-    if sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox)
+    if sandbox.is_some_and(FileSystemSandboxContext::should_read_from_sandbox)
         && path.infer_path_convention() == Some(PathConvention::Windows)
         && sandbox.is_some_and(|context| !context.windows_sandbox_is_requested())
     {

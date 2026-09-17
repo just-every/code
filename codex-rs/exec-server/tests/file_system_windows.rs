@@ -14,6 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use anyhow::Result;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::FileSystemSandboxContext;
@@ -22,6 +23,13 @@ use codex_exec_server::ReadFileOptions;
 use codex_exec_server::RemoveOptions;
 use codex_exec_server::WindowsSandboxSelection;
 use codex_exec_server::WriteFileOptions;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::FileSystemSpecialPath;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_sandboxing::SandboxType;
 use codex_utils_path_uri::PathUri;
@@ -228,10 +236,20 @@ async fn file_system_operations_can_reject_junctions_in_any_path_component(
         .file_system
         .read_file(&uri(&existing)?, no_follow_read, Some(&sandbox))
         .await;
-    if is_unsupported_restricted_token_host(&read_result) {
+    assert_eq!(read_result?, b"unchanged");
+    let write_result = context
+        .file_system
+        .write_file(
+            &uri(&existing)?,
+            b"unchanged".to_vec(),
+            no_follow_write,
+            Some(&sandbox),
+        )
+        .await;
+    if is_unsupported_restricted_token_host(&write_result) {
         return Ok(());
     }
-    assert_eq!(read_result?, b"unchanged");
+    write_result?;
     assert!(
         context
             .file_system
@@ -372,6 +390,17 @@ async fn file_system_remote_fs_helper_respects_windows_sandbox_write_policy(
         }
     }
 
+    let readable_file = readonly_dir.join("readable.txt");
+    std::fs::write(&readable_file, b"readable")?;
+    let read_result = file_system
+        .read_file(
+            &PathUri::from_host_native_path(&readable_file)?,
+            ReadFileOptions::default(),
+            Some(&sandbox),
+        )
+        .await;
+    assert_eq!(read_result?, b"readable");
+
     let blocked_file = readonly_dir.join("blocked.txt");
     if sandbox_type == SandboxType::WindowsMxc && !codex_sandboxing::windows_mxc_available() {
         let error = file_system
@@ -394,39 +423,140 @@ async fn file_system_remote_fs_helper_respects_windows_sandbox_write_policy(
         return Ok(());
     }
 
-    let readable_file = readonly_dir.join("readable.txt");
-    std::fs::write(&readable_file, b"readable")?;
-    let read_result = file_system
-        .read_file(
-            &PathUri::from_host_native_path(&readable_file)?,
-            ReadFileOptions::default(),
-            Some(&sandbox),
-        )
-        .await;
-    // Some local Windows hosts cannot create restricted tokens. Reaching that
-    // error still proves the remote fs helper went through the Windows sandbox
-    // launcher; before the wrapper fix this read would have run unsandboxed.
-    if sandbox_type == SandboxType::WindowsRestrictedToken
-        && is_unsupported_restricted_token_host(&read_result)
-    {
-        return Ok(());
-    }
-    assert_eq!(read_result?, b"readable");
-
-    let error = file_system
+    let write_result = file_system
         .write_file(
             &PathUri::from_host_native_path(&blocked_file)?,
             b"blocked".to_vec(),
             WriteFileOptions::default(),
             Some(&sandbox),
         )
-        .await
-        .expect_err("write outside the sandbox should fail");
+        .await;
+    // Some local Windows hosts cannot create restricted tokens. Reaching that
+    // error still proves the write went through the Windows sandbox launcher.
+    if sandbox_type == SandboxType::WindowsRestrictedToken
+        && is_unsupported_restricted_token_host(&write_result)
+    {
+        assert!(!blocked_file.exists());
+        return Ok(());
+    }
+    let error = write_result.expect_err("write outside the sandbox should fail");
     assert!(
         !blocked_file.exists(),
         "sandboxed fs helper must not create blocked file after error: {error}"
     );
 
+    Ok(())
+}
+
+/// An elevated filesystem helper must enforce relative deny globs from the policy cwd.
+#[test_case(FileSystemImplementation::Local ; "local")]
+#[test_case(FileSystemImplementation::Remote ; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(remote_exec_server)]
+async fn file_system_elevated_relative_read_denial_uses_policy_cwd(
+    implementation: FileSystemImplementation,
+) -> Result<()> {
+    // Both implementations re-enter this test binary; the elevated backend finds its helpers
+    // next to that binary, while Cargo and Bazel provide them separately.
+    let test_exe = std::env::current_exe()?;
+    let resources = test_exe
+        .parent()
+        .context("Windows test executable should have a parent directory")?
+        .join("codex-resources");
+    if let Err(error) = std::fs::create_dir_all(&resources)
+        && !(error.kind() == std::io::ErrorKind::PermissionDenied && resources.is_dir())
+    {
+        return Err(error).context("create Windows sandbox test resources");
+    }
+    for name in ["codex-windows-sandbox-setup", "codex-command-runner"] {
+        let source = codex_utils_cargo_bin::cargo_bin(name)?;
+        let destination = resources.join(Path::new(name).with_extension("exe"));
+        if let Err(error) = std::fs::copy(&source, &destination)
+            && !(error.kind() == std::io::ErrorKind::PermissionDenied && destination.is_file())
+        {
+            return Err(error).with_context(|| format!("stage Windows sandbox helper {name}"));
+        }
+    }
+    let context = create_file_system_context(implementation).await?;
+    let tmp = tempfile::TempDir::new()?;
+    let policy_cwd = tmp.path().join("checkout");
+    let selected_files = policy_cwd.join("files");
+    let other_files = tmp.path().join("files");
+    std::fs::create_dir_all(&selected_files)?;
+    std::fs::create_dir(&other_files)?;
+    let allowed_neighbor = selected_files.join("allowed.txt");
+    let denied = selected_files.join("blocked.env");
+    let same_name_outside = other_files.join("blocked.env");
+    std::fs::write(&allowed_neighbor, b"allowed neighbor")?;
+    std::fs::write(&denied, b"denied")?;
+    std::fs::write(&same_name_outside, b"allowed outside")?;
+
+    let cwd = PathUri::from_host_native_path(&policy_cwd)?;
+    let policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry::new(
+            FileSystemPath::Special {
+                value: FileSystemSpecialPath::Root,
+            },
+            FileSystemAccessMode::Read,
+        ),
+        FileSystemSandboxEntry::new(
+            FileSystemPath::Path {
+                path: PathUri::from_host_native_path(tmp.path())?,
+            },
+            FileSystemAccessMode::Write,
+        ),
+        FileSystemSandboxEntry::new(
+            FileSystemPath::GlobPattern {
+                pattern: "files/*.env".to_string(),
+            },
+            FileSystemAccessMode::Deny,
+        ),
+    ]);
+    let mut sandbox = FileSystemSandboxContext::from_permission_profile(
+        PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
+        cwd,
+    );
+    sandbox.windows_sandbox_selection = WindowsSandboxSelection::Elevated;
+
+    let file_system = &context.file_system;
+    let allowed_neighbor = file_system
+        .read_file(
+            &PathUri::from_host_native_path(&allowed_neighbor)?,
+            ReadFileOptions::default(),
+            Some(&sandbox),
+        )
+        .await?;
+    let same_name_outside = file_system
+        .read_file(
+            &PathUri::from_host_native_path(&same_name_outside)?,
+            ReadFileOptions::default(),
+            Some(&sandbox),
+        )
+        .await?;
+    let denied = file_system
+        .read_file(
+            &PathUri::from_host_native_path(&denied)?,
+            ReadFileOptions::default(),
+            Some(&sandbox),
+        )
+        .await
+        .expect_err("read matching the policy-cwd denial must be rejected");
+    assert_eq!(
+        (
+            allowed_neighbor.as_slice(),
+            same_name_outside.as_slice(),
+            denied.kind(),
+        ),
+        (
+            b"allowed neighbor".as_slice(),
+            b"allowed outside".as_slice(),
+            std::io::ErrorKind::InvalidInput,
+        )
+    );
+    assert!(
+        denied.to_string().contains("Access is denied"),
+        "expected Windows access denial, got: {denied}"
+    );
     Ok(())
 }
 
@@ -442,14 +572,19 @@ async fn file_system_private_desktop_survives_helper_exits_and_separates_permiss
     let mut sandbox = workspace_write_sandbox(tmp.path().to_path_buf());
     sandbox.windows_sandbox_private_desktop = true;
     let before = process_private_desktops()?;
-    let read = file_system
-        .read_file(&uri, ReadFileOptions::default(), Some(&sandbox))
+    let write = file_system
+        .write_file(
+            &uri,
+            b"initial".to_vec(),
+            WriteFileOptions::default(),
+            Some(&sandbox),
+        )
         .await;
-    if is_unsupported_restricted_token_host(&read) {
+    if is_unsupported_restricted_token_host(&write) {
         eprintln!("Skipping private desktop reuse: this host cannot create restricted tokens");
         return Ok(());
     }
-    assert_eq!(read?, b"initial");
+    write?;
 
     // Ownership must outlive each helper; a desktop held only by the helper disappears here.
     let warmed = process_private_desktops()?;
@@ -490,15 +625,6 @@ async fn file_system_private_desktop_survives_helper_exits_and_separates_permiss
     let mut readonly = read_only_sandbox_for_cwd(tmp.path().to_path_buf())?;
     readonly.windows_sandbox_selection = WindowsSandboxSelection::RestrictedToken;
     readonly.windows_sandbox_private_desktop = true;
-    assert_eq!(
-        file_system
-            .read_file(&uri, ReadFileOptions::default(), Some(&readonly))
-            .await?,
-        b"updated again"
-    );
-    let separated = process_private_desktops()?;
-    assert!(warmed.is_subset(&separated));
-    assert_eq!(separated.difference(&warmed).count(), 1);
     file_system
         .write_file(
             &uri,
@@ -509,6 +635,15 @@ async fn file_system_private_desktop_survives_helper_exits_and_separates_permiss
         .await
         .expect_err("read-only filesystem requests must reject writes");
     assert_eq!(std::fs::read(&path)?, b"updated again");
+    let separated = process_private_desktops()?;
+    assert!(warmed.is_subset(&separated));
+    assert_eq!(separated.difference(&warmed).count(), 1);
+    assert_eq!(
+        file_system
+            .read_file(&uri, ReadFileOptions::default(), Some(&readonly))
+            .await?,
+        b"updated again"
+    );
     assert_eq!(process_private_desktops()?, separated);
     Ok(())
 }

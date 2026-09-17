@@ -25,11 +25,18 @@ use codex_tools::ToolSpec;
 #[derive(Default)]
 pub(crate) struct Handler {
     options: SpawnAgentToolOptions,
+    description_override: Option<String>,
 }
 
 impl Handler {
-    pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {
-        Self { options }
+    pub(crate) fn new(
+        options: SpawnAgentToolOptions,
+        description_override: Option<String>,
+    ) -> Self {
+        Self {
+            options,
+            description_override,
+        }
     }
 }
 
@@ -39,7 +46,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_spawn_agent_tool_v2(self.options.clone())
+        create_spawn_agent_tool_v2(self.options.clone(), self.description_override.as_deref())
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -129,7 +136,7 @@ async fn handle_spawn_agent(
     let child_depth = next_thread_spawn_depth(&session_source);
     let prepared = prepare_agent_spawn_config(
         &session,
-        turn.as_ref(),
+        step_context.as_ref(),
         SpawnConfigOptions {
             version: SpawnConfigVersion::V2,
             full_history_fork: matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)),

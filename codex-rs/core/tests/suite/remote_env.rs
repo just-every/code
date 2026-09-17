@@ -597,6 +597,7 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
                         permission_profile: owner_permission_profile,
                         shell_environment_policy: Default::default(),
                         windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                        windows_sandbox_type: test.config.permissions.windows_sandbox_type,
                         windows_sandbox_private_desktop: test
                             .config
                             .permissions
@@ -1461,6 +1462,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
             permission_profile: permission_profile.clone(),
             shell_environment_policy: Default::default(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+            windows_sandbox_type: test.config.permissions.windows_sandbox_type,
             windows_sandbox_private_desktop: test
                 .config
                 .permissions
@@ -1506,6 +1508,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                     permission_profile: permission_profile.clone(),
                     shell_environment_policy: Default::default(),
                     windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                    windows_sandbox_type: test.config.permissions.windows_sandbox_type,
                     windows_sandbox_private_desktop: test
                         .config
                         .permissions
@@ -1535,6 +1538,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                         permission_profile: permission_profile.clone(),
                         shell_environment_policy: Default::default(),
                         windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                        windows_sandbox_type: test.config.permissions.windows_sandbox_type,
                         windows_sandbox_private_desktop: test
                             .config
                             .permissions
@@ -1603,6 +1607,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                             permission_profile: permission_profile.clone(),
                             shell_environment_policy: Default::default(),
                             windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                            windows_sandbox_type: test.config.permissions.windows_sandbox_type,
                             windows_sandbox_private_desktop: test
                                 .config
                                 .permissions
@@ -1679,6 +1684,7 @@ async fn owner_network_policy_rejects_unsupported_environment_authority() -> Res
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
         shell_environment_policy: test.config.permissions.shell_environment_policy.clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+        windows_sandbox_type: test.config.permissions.windows_sandbox_type,
         windows_sandbox_private_desktop: test.config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: test.config.features.use_legacy_landlock(),
         exec_policy: None,
@@ -1768,6 +1774,7 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
         shell_environment_policy: Default::default(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+        windows_sandbox_type: test.config.permissions.windows_sandbox_type,
         windows_sandbox_private_desktop: test.config.permissions.windows_sandbox_private_desktop,
         use_legacy_landlock: test.config.features.use_legacy_landlock(),
         exec_policy: None,
@@ -2435,6 +2442,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
             ),
             shell_environment_policy: Default::default(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+            windows_sandbox_type: test.config.permissions.windows_sandbox_type,
             windows_sandbox_private_desktop: test
                 .config
                 .permissions
@@ -2940,7 +2948,8 @@ fn absolute_path(path: PathBuf) -> AbsolutePathBuf {
 
 fn read_only_sandbox(readable_root: PathBuf) -> FileSystemSandboxContext {
     let readable_root = absolute_path(readable_root);
-    FileSystemSandboxContext::from_permission_profile(PermissionProfile::from_runtime_permissions(
+    let cwd = PathUri::from_abs_path(&readable_root);
+    let permissions = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: readable_root.into(),
@@ -2949,12 +2958,14 @@ fn read_only_sandbox(readable_root: PathBuf) -> FileSystemSandboxContext {
             missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
-    ))
+    );
+    FileSystemSandboxContext::from_permission_profile(permissions, cwd)
 }
 
 fn workspace_write_sandbox(writable_root: PathBuf) -> FileSystemSandboxContext {
     let writable_root = absolute_path(writable_root);
-    FileSystemSandboxContext::from_permission_profile(PermissionProfile::from_runtime_permissions(
+    let cwd = PathUri::from_abs_path(&writable_root);
+    let permissions = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: writable_root.into(),
@@ -2963,7 +2974,8 @@ fn workspace_write_sandbox(writable_root: PathBuf) -> FileSystemSandboxContext {
             missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
-    ))
+    );
+    FileSystemSandboxContext::from_permission_profile(permissions, cwd)
 }
 
 fn assert_normalized_path_rejected(error: &std::io::Error) {

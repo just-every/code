@@ -28,6 +28,7 @@ async fn windows_sandbox_setup_uses_local_app_server_connection() {
         auth_token: None,
     };
     app.app_server_target = crate::AppServerTarget::LocalDaemon {
+        allow_embedded_fallback: true,
         endpoint: endpoint.clone(),
     };
     assert!(app.windows_sandbox_setup_is_local());
@@ -1665,6 +1666,7 @@ async fn windows_sandbox_config_refresh_uses_connected_server() -> Result<()> {
         Some(codex_app_server_protocol::WindowsSandboxSetupMode::Elevated);
     assert!(app.refresh_windows_sandbox_config(&server).await);
     let loaded_config = crate::windows_sandbox::WindowsSandboxConfig {
+        mxc_selected: false,
         mode: Some(codex_app_server_protocol::WindowsSandboxSetupMode::Unelevated),
         requirements: Some(None),
     };

@@ -87,6 +87,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EnvironmentConfigState;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
@@ -351,11 +352,13 @@ async fn default_turn_context_assigns_missing_response_item_ids() {
     let (session, turn_context) = make_session_and_context().await;
     let response_item = user_message("hello");
 
-    let (items, _) = session.prepare_conversation_items_for_history(
-        &turn_context,
-        turn_context.model_info(),
-        std::slice::from_ref(&response_item),
-    );
+    let (items, _) = session
+        .prepare_conversation_items_for_history(
+            &turn_context,
+            turn_context.model_info(),
+            std::slice::from_ref(&response_item),
+        )
+        .await;
 
     assert!(
         items[0]
@@ -650,7 +653,8 @@ async fn request_mcp_server_elicitation_auto_accepts_when_auto_deny_is_enabled()
                 }),
             },
         )
-        .await;
+        .await
+        .expect("root thread elicitation should be accepted");
 
     assert_eq!(
         response.response,
@@ -662,6 +666,58 @@ async fn request_mcp_server_elicitation_auto_accepts_when_auto_deny_is_enabled()
     );
     assert!(!response.sent);
     assert!(rx.try_recv().is_err());
+}
+
+#[test_case(false; "interactive")]
+#[test_case(true; "auto_accept")]
+#[tokio::test]
+async fn request_mcp_server_elicitation_rejects_non_root_threads(auto_deny: bool) {
+    for source in [
+        SessionSource::SubAgent(SubAgentSource::Review),
+        SessionSource::Internal(InternalSessionSource::Guardian),
+    ] {
+        let (session, mut turn_context, rx) = make_session_and_context_with_rx().await;
+        Arc::get_mut(&mut turn_context)
+            .expect("turn context should not be shared")
+            .session_source = source;
+        *session.active_turn.lock().await = Some(ActiveTurn::default());
+        session
+            .services
+            .mcp_runtime
+            .set_elicitations_auto_deny(auto_deny);
+        let paused = session.subscribe_elicitation_pause_state();
+
+        let Err(error) = tokio::time::timeout(
+            Duration::from_secs(1),
+            session.request_mcp_server_elicitation(
+                turn_context.as_ref(),
+                "codex_apps".to_string(),
+                RequestId::String("request-1".into()),
+                ElicitationRequest::Url {
+                    meta: None,
+                    message: "Connect this app to continue.".to_string(),
+                    url: "https://example.com/connect".to_string(),
+                    elicitation_id: "connect-1".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect("non-root elicitation must not wait for user input") else {
+            panic!("non-root elicitation must be rejected");
+        };
+
+        assert_eq!(
+            error.to_string(),
+            codex_mcp::MCP_ELICITATION_HANDOFF_MESSAGE
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(!*paused.borrow());
+        assert!(
+            !paused
+                .has_changed()
+                .expect("elicitation service should remain available")
+        );
+    }
 }
 
 #[tokio::test]
@@ -738,6 +794,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         "test_originator".to_string(),
         /*model_verbosity*/ None,
         /*content_item_kinds_enabled*/ true,
+        /*reasoning_effort_override_enabled*/ false,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -4572,14 +4629,6 @@ fn get_service_tier_drops_unsupported_configured_tier_when_fast_mode_enabled() {
     );
     assert_eq!(
         get_service_tier(
-            Some(ServiceTier::Flex.request_value().to_string()),
-            /*fast_mode_enabled*/ true,
-            &model_info,
-        ),
-        None
-    );
-    assert_eq!(
-        get_service_tier(
             Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
             /*fast_mode_enabled*/ true,
             &model_info,
@@ -4589,7 +4638,22 @@ fn get_service_tier_drops_unsupported_configured_tier_when_fast_mode_enabled() {
 }
 
 #[test]
-fn get_service_tier_ignores_configured_tier_when_fast_mode_disabled() {
+fn get_service_tier_preserves_flex_without_catalog_support_or_fast_mode() {
+    let model_info = model_with_default_service_tier(/*default_service_tier*/ None);
+    for fast_mode_enabled in [false, true] {
+        assert_eq!(
+            get_service_tier(
+                Some(ServiceTier::Flex.request_value().to_string()),
+                fast_mode_enabled,
+                &model_info,
+            ),
+            Some(ServiceTier::Flex.request_value().to_string())
+        );
+    }
+}
+
+#[test]
+fn get_service_tier_ignores_non_flex_tiers_when_fast_mode_disabled() {
     let model_info = model_with_default_service_tier(Some(ServiceTier::Fast.request_value()));
 
     assert_eq!(
@@ -6114,6 +6178,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             session_configuration.originator.clone(),
             config.model_verbosity,
             config.features.enabled(Feature::ContentItemKinds),
+            config.features.enabled(Feature::ReasoningEffortOverride),
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
@@ -8300,6 +8365,7 @@ where
             session_configuration.originator.clone(),
             config.model_verbosity,
             config.features.enabled(Feature::ContentItemKinds),
+            config.features.enabled(Feature::ReasoningEffortOverride),
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
@@ -9006,8 +9072,8 @@ async fn capability_discovery_uses_environment_permission_profile() {
     environment_config.windows_sandbox_private_desktop = false;
     environment_config.use_legacy_landlock = true;
     let expected_sandbox = FileSystemSandboxContext {
-        permissions: environment.permission_profile().clone().into(),
-        cwd: Some(environment.cwd().clone()),
+        permissions: environment.permission_profile().clone(),
+        cwd: environment.cwd().clone(),
         workspace_roots: environment.workspace_roots().to_vec(),
         user_home_dir: environment.user_home_dir.clone(),
         temporary_directories: environment.temporary_directories.clone(),

@@ -75,6 +75,7 @@ use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::create_client_for_route;
 use codex_otel::SessionTelemetry;
+use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
@@ -202,6 +203,7 @@ struct ModelClientState {
     originator: String,
     model_verbosity: Option<VerbosityConfig>,
     content_item_kinds_enabled: bool,
+    reasoning_effort_override_enabled: bool,
     enable_request_compression: bool,
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
@@ -262,6 +264,7 @@ pub struct ModelClient {
     codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
+    restored_history: bool,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -300,6 +303,12 @@ struct LastResponse {
     items_added: Vec<ResponseItem>,
 }
 
+struct WebsocketContinuation {
+    response_id: String,
+    items: Vec<ResponseItem>,
+    from_untraced_warmup: bool,
+}
+
 #[derive(Debug, Default)]
 struct WebsocketSession {
     connection: Option<ApiWebSocketConnection>,
@@ -311,6 +320,7 @@ struct WebsocketSession {
     last_response_rx: Option<oneshot::Receiver<LastResponse>>,
     last_response_from_untraced_warmup: bool,
     connection_reused: StdMutex<bool>,
+    continuation_reset_reason: Option<&'static str>,
 }
 
 // This is intentionally not a `PartialEq` implementation: request equality includes `input` and
@@ -395,6 +405,19 @@ fn response_items_equal_ignoring_internal_metadata(
 }
 
 impl WebsocketSession {
+    fn reset(&mut self, reason: Option<&'static str>) {
+        // Per-socket backend metrics call a resend after reconnect "initial".
+        // Retain the loss reason across reconnects/turns until the next send.
+        let continuation_reset_reason = self
+            .continuation_reset_reason
+            .or_else(|| self.last_request.as_ref().and(reason));
+        *self = Self {
+            auth_owner_generation: self.auth_owner_generation,
+            continuation_reset_reason,
+            ..Default::default()
+        };
+    }
+
     fn set_connection_reused(&self, connection_reused: bool) {
         *self
             .connection_reused
@@ -454,6 +477,7 @@ impl ModelClient {
         originator: String,
         model_verbosity: Option<VerbosityConfig>,
         content_item_kinds_enabled: bool,
+        reasoning_effort_override_enabled: bool,
         enable_request_compression: bool,
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
@@ -470,6 +494,10 @@ impl ModelClient {
         let auth_env_telemetry =
             collect_auth_env_telemetry(model_provider.info(), codex_api_key_env_enabled);
         let include_attestation = model_provider.supports_attestation();
+        // Reviewers use their own request-level effort even when managed requirements
+        // pin the parent's feature on. Share this decision with update injection and pinning.
+        let reasoning_effort_override_enabled = reasoning_effort_override_enabled
+            && !crate::guardian::is_basic_session_source(&session_source);
         Self {
             state: Arc::new(ModelClientState {
                 thread_id,
@@ -480,6 +508,7 @@ impl ModelClient {
                 originator,
                 model_verbosity,
                 content_item_kinds_enabled,
+                reasoning_effort_override_enabled,
                 enable_request_compression,
                 include_timing_metrics,
                 beta_features_header,
@@ -495,7 +524,17 @@ impl ModelClient {
             codex_responses_headers: None,
             event_sender: None,
             http_client_factory,
+            restored_history: false,
         }
+    }
+
+    pub(crate) fn reasoning_effort_override_enabled(&self) -> bool {
+        self.state.reasoning_effort_override_enabled
+    }
+
+    pub(crate) fn with_restored_history(mut self, restored_history: bool) -> Self {
+        self.restored_history = restored_history;
+        self
     }
 
     pub(crate) fn with_session_context(
@@ -543,10 +582,8 @@ impl ModelClient {
         let mut websocket_session = self.take_cached_websocket_session();
         if websocket_session.auth_owner_generation != auth_owner_generation {
             // Drop the old owner's cache before this turn can establish fresh routing state.
-            websocket_session = WebsocketSession {
-                auth_owner_generation,
-                ..Default::default()
-            };
+            websocket_session.reset(Some("other"));
+            websocket_session.auth_owner_generation = auth_owner_generation;
         }
         ModelClientSession {
             client: self.clone(),
@@ -830,6 +867,11 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
+        if !self.state.reasoning_effort_override_enabled {
+            // Disabling overrides must also recover threads with saved updates.
+            // Filter only the request copy; persisted history remains unchanged.
+            input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
+        }
         let is_openai = self.state.provider.info().is_openai();
         let (instructions, tools) = if model_info.use_responses_lite {
             // These prompt-only items are rebuilt on every request. Hash their visible payloads
@@ -906,7 +948,12 @@ impl ModelClient {
             prompt.output_schema_strict,
         );
         let prompt_cache_key = Some(self.prompt_cache_key(responses_metadata));
-        let service_tier = model_info.service_tier_for_request(service_tier);
+        let service_tier = if self.state.provider.info().is_amazon_bedrock() {
+            // Bedrock only supports the implicit default tier, including with custom catalogs.
+            None
+        } else {
+            model_info.service_tier_for_request(service_tier)
+        };
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions,
@@ -1283,17 +1330,6 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
-    fn reset_websocket_session(&mut self) {
-        self.websocket_session.connection = None;
-        self.websocket_session.responses_headers.clear();
-        self.websocket_session.connection_key = None;
-        self.websocket_session.last_request = None;
-        self.websocket_session.last_response_rx = None;
-        self.websocket_session.last_response_from_untraced_warmup = false;
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
-    }
-
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///
@@ -1332,13 +1368,12 @@ impl ModelClientSession {
 
     /// Checks whether the current request is an incremental extension of the previous request.
     /// We only reuse an incremental input delta when non-input request fields are unchanged and
-    /// `input` is a strict extension of the previous known input. Server-returned output items
+    /// `input` extends or equals the previous known input. Server-returned output items
     /// are treated as part of the baseline so we do not resend them.
     fn get_incremental_items(
         &self,
         request: &ResponsesApiRequest,
-        last_response: Option<&LastResponse>,
-        allow_empty_delta: bool,
+        last_response: &LastResponse,
     ) -> Option<Vec<ResponseItem>> {
         let previous_request = self.websocket_session.last_request.as_ref()?;
         if !responses_request_properties_match(previous_request, request) {
@@ -1346,8 +1381,7 @@ impl ModelClientSession {
             return None;
         }
 
-        let response_items =
-            last_response.map_or(&[][..], |response| response.items_added.as_slice());
+        let response_items = &last_response.items_added;
         let previous_items_len = previous_request
             .input
             .len()
@@ -1368,9 +1402,6 @@ impl ModelClientSession {
             trace!("incremental request failed, items didn't match");
             return None;
         }
-        if !allow_empty_delta && incremental_items.is_empty() {
-            return None;
-        }
         Some(incremental_items.to_vec())
     }
 
@@ -1387,29 +1418,20 @@ impl ModelClientSession {
     fn prepare_websocket_request(
         &mut self,
         request: &ResponsesApiRequest,
-    ) -> (Option<(String, Vec<ResponseItem>)>, bool) {
-        let Some(last_response) = self.get_last_response() else {
-            return (None, false);
-        };
-        let previous_response_id_from_untraced_warmup =
-            self.websocket_session.last_response_from_untraced_warmup;
-        let Some(incremental_items) = self.get_incremental_items(
-            request,
-            Some(&last_response),
-            /*allow_empty_delta*/ true,
-        ) else {
-            return (None, false);
-        };
+    ) -> Option<WebsocketContinuation> {
+        let last_response = self.get_last_response()?;
+        let items = self.get_incremental_items(request, &last_response)?;
 
         if last_response.response_id.is_empty() {
             trace!("incremental request failed, no previous response id");
-            return (None, false);
+            return None;
         }
 
-        (
-            Some((last_response.response_id, incremental_items)),
-            previous_response_id_from_untraced_warmup,
-        )
+        Some(WebsocketContinuation {
+            response_id: last_response.response_id,
+            items,
+            from_untraced_warmup: self.websocket_session.last_response_from_untraced_warmup,
+        })
     }
 
     /// Opportunistically preconnects a websocket for this turn-scoped client session.
@@ -1440,7 +1462,7 @@ impl ModelClientSession {
         {
             return Ok(());
         }
-        self.reset_websocket_session();
+        self.websocket_session.reset(Some("other"));
         let auth_context = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
             client_setup.api_auth.as_ref(),
@@ -1493,14 +1515,17 @@ impl ModelClientSession {
             responses_headers,
         } = params;
         let connection_key = ResponsesConnectionKey::new(&api_provider, auth_revision);
-        let needs_new = match self.websocket_session.connection.as_ref() {
-            Some(conn) => {
-                self.websocket_session.responses_headers != *responses_headers
-                    || self.websocket_session.connection_key.as_ref() != Some(&connection_key)
-                    || conn.is_closed().await
+        let reset_reason = match self.websocket_session.connection.as_ref() {
+            Some(_)
+                if self.websocket_session.responses_headers != *responses_headers
+                    || self.websocket_session.connection_key.as_ref() != Some(&connection_key) =>
+            {
+                Some("other")
             }
-            None => true,
+            Some(conn) if conn.is_closed().await => Some("connection_closed"),
+            Some(_) | None => None,
         };
+        let needs_new = self.websocket_session.connection.is_none() || reset_reason.is_some();
         // Resolving an external auth provider can change ownership during client setup.
         let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
             || self.client.auth_owner_generation() != auth_owner_generation;
@@ -1509,8 +1534,12 @@ impl ModelClientSession {
         }
 
         if needs_new || owner_changed {
-            self.reset_websocket_session();
-            let new_conn = match self
+            self.websocket_session.reset(if owner_changed {
+                Some("other")
+            } else {
+                reset_reason
+            });
+            let new_conn = self
                 .client
                 .connect_websocket(
                     session_telemetry,
@@ -1521,16 +1550,7 @@ impl ModelClientSession {
                     request_route_telemetry,
                     responses_headers,
                 )
-                .await
-            {
-                Ok(new_conn) => new_conn,
-                Err(err) => {
-                    if matches!(err, ApiError::Transport(TransportError::Timeout)) {
-                        self.reset_websocket_session();
-                    }
-                    return Err(err);
-                }
-            };
+                .await?;
             self.websocket_session.connection = Some(new_conn);
             self.websocket_session.responses_headers = responses_headers.clone();
             self.websocket_session.auth_owner_generation = auth_owner_generation;
@@ -1882,8 +1902,26 @@ impl ModelClientSession {
             if let Some(turn_state) = self.turn_state.get() {
                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
             }
-            let (incremental_request, previous_response_id_from_untraced_warmup) =
-                self.prepare_websocket_request(&request);
+            let continuation = self.prepare_websocket_request(&request);
+            let (mode, reason) = if continuation.is_some() {
+                ("incremental", "incremental")
+            } else {
+                let reason = self
+                    .websocket_session
+                    .continuation_reset_reason
+                    .take()
+                    .unwrap_or(if self.websocket_session.last_request.is_some() {
+                        "other"
+                    } else if self.client.restored_history {
+                        "restored_history"
+                    } else {
+                        "no_previous_request"
+                    });
+                ("full", reason)
+            };
+            let previous_response_id_from_untraced_warmup = continuation
+                .as_ref()
+                .is_some_and(|c| c.from_untraced_warmup);
             let inference_trace_attempt = if warmup {
                 // Prewarm sends `generate=false`; it is connection setup, not a
                 // model inference attempt that should appear in rollout traces.
@@ -1898,8 +1936,8 @@ impl ModelClientSession {
                 inference_trace_attempt.record_started(&request);
             }
 
-            let (previous_response_id, mut incremental_items) = match incremental_request {
-                Some((response_id, items)) => (Some(response_id), Some(items)),
+            let (previous_response_id, mut incremental_items) = match continuation {
+                Some(continuation) => (Some(continuation.response_id), Some(continuation.items)),
                 None => (None, None),
             };
             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
@@ -1944,6 +1982,15 @@ impl ModelClientSession {
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
+            request_session_telemetry.counter(
+                WEBSOCKET_CONTINUATION_COUNT_METRIC,
+                /*inc*/ 1,
+                &[
+                    ("mode", mode),
+                    ("reason", reason),
+                    ("phase", if warmup { "warmup" } else { "generation" }),
+                ],
+            );
             let stream_result = websocket_connection
                 .stream_request(
                     ws_request,

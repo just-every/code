@@ -13,6 +13,11 @@ pub(super) async fn run_main_inner(
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    if cli.no_daemon && explicit_remote_endpoint.is_some() {
+        return Err(std::io::Error::other(
+            "--no-daemon cannot be used with --remote.",
+        ));
+    }
     let strict_config = cli.strict_config;
     if cli.shared.worktree {
         if explicit_remote_endpoint.is_some() {
@@ -150,16 +155,14 @@ pub(super) async fn run_main_inner(
         .await;
     }
 
-    let reuse_implicit_local_daemon = !cli.shared.worktree
-        && !cli.oss
-        && !workload_identity_selected
-        && (cli.agents_overview
-            || can_reuse_implicit_local_daemon(
-                &cli_kv_overrides,
-                &launch_loader_overrides,
-                strict_config,
-                cli.bypass_hook_trust,
-            ));
+    let mut daemon_exclusion = daemon_startup::exclusion(
+        &cli,
+        &cli_kv_overrides,
+        &launch_loader_overrides,
+        workload_identity_selected,
+        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+    );
+    let reuse_implicit_local_daemon = daemon_exclusion.is_none();
     let search_only_config_override = !workload_identity_selected
         && cli.web_search
         && startup_preflight::has_only_search_config_override(&cli_kv_overrides)
@@ -199,7 +202,7 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let app_server_target = app_server_target_for_launch(
+    let mut app_server_target = app_server_target_for_launch(
         explicit_remote_endpoint,
         default_daemon,
         reuse_implicit_local_daemon,
@@ -258,6 +261,15 @@ pub(super) async fn run_main_inner(
             CloudConfigBundleLoader::default(),
         ))
         .await?;
+    let screen_reader_result = if !loader_overrides.ignore_user_config {
+        startup_draft
+            .run_until(screen_reader::initialize(
+                &bootstrap_config.config_layer_stack,
+            ))
+            .await?
+    } else {
+        Ok(())
+    };
     let cloud_config_bundle = startup_draft
         .run_until(cloud_config_bundle_for_app_server_target(
             &app_server_target,
@@ -372,6 +384,56 @@ pub(super) async fn run_main_inner(
             strict_config,
         ))
         .await?;
+    let auto_start_daemon = config.features.enabled(Feature::DaemonAutoStart)
+        && !cli.agents_overview
+        && !cli.no_daemon
+        && !app_server_target.uses_remote_workspace();
+    if auto_start_daemon
+        && daemon_exclusion.is_none()
+        && should_show_bedrock_setup_wizard(
+            LoginStatus::NotAuthenticated,
+            config.model_provider.requires_openai_auth,
+            &config,
+            &AppServerTarget::Embedded,
+        )
+        && startup_draft
+            .run_until(
+                config
+                    .auth_config()
+                    .load_auth(/*enable_codex_api_key_env*/ false),
+            )
+            .await?
+            .ok()
+            .flatten()
+            .is_none()
+    {
+        // The Bedrock wizard configures its provider through the embedded server.
+        daemon_exclusion = Some("Bedrock sign-in");
+        app_server_target = AppServerTarget::Embedded;
+    }
+    if auto_start_daemon && daemon_exclusion.is_none() {
+        startup_draft.flush_pending_events().await?;
+        let output = startup_draft
+            .tui_mut()
+            .with_restored(|| async {
+                // Package installation may print progress; keep ordinary Ctrl+C handling.
+                crossterm::terminal::disable_raw_mode()?;
+                let result =
+                    codex_app_server_daemon::run(codex_app_server_daemon::LifecycleCommand::Start)
+                        .await;
+                daemon_telemetry::record_start(&config, &result).await;
+                result.map_err(|err| {
+                    std::io::Error::other(format!("{err:#}\n{}", daemon_startup::FAILURE_HINT))
+                })
+            })
+            .await?;
+        app_server_target = AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket {
+                socket_path: AbsolutePathBuf::from_absolute_path_checked(output.socket_path)?,
+            },
+            allow_embedded_fallback: false,
+        };
+    }
     startup_draft.apply_config(&config);
 
     let mut cloud_config_bundle = if workload_identity_selected {
@@ -406,6 +468,13 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
+    let daemon_startup_warning = daemon_exclusion
+        .filter(|_| auto_start_daemon)
+        .map(|reason| {
+            format!(
+                "Running without the shared background server: {reason} requires embedded mode."
+            )
+        });
     #[cfg(target_os = "macos")]
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
@@ -450,13 +519,52 @@ pub(super) async fn run_main_inner(
             None
         }
     };
-    if let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics) {
+    let metrics = otel
+        .as_ref()
+        .and_then(codex_otel::OtelProvider::metrics)
+        .cloned();
+    if let Some(metrics) = &metrics {
         let _ = codex_otel::record_process_start_once(metrics, otel_originator.as_str());
-        // Count the selected mode once per TUI launch, independently of reconnects.
-        let app_server_mode = match &app_server_target {
-            AppServerTarget::Embedded => "in_process",
-            AppServerTarget::LocalDaemon { .. } => "local_daemon",
-            AppServerTarget::Remote { .. } => "remote",
+        let telemetry =
+            codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
+        let _ = codex_state::install_process_db_telemetry(telemetry);
+    }
+    let selection_reason = match (&app_server_target, daemon_exclusion) {
+        (AppServerTarget::Remote { .. }, _) => "explicit_remote",
+        _ if cli.agents_overview => "agents",
+        (_, Some("--no-daemon")) => "explicit_no_daemon",
+        (_, Some(_)) => "incompatible_option",
+        _ if auto_start_daemon => "auto_start",
+        (AppServerTarget::LocalDaemon { .. }, _) => "existing_daemon",
+        (AppServerTarget::Embedded, None) => "auto_start_disabled",
+    };
+    let daemon_settings = if metrics.is_some() {
+        codex_app_server_daemon::telemetry::settings_tags(&config.codex_home)
+            .await
+            .to_vec()
+    } else {
+        Vec::new()
+    };
+    let mut launch_tags = daemon_settings.to_vec();
+    launch_tags.extend([
+        ("daemon_selection_reason", selection_reason),
+        (
+            "daemon_auto_start",
+            if config.features.enabled(Feature::DaemonAutoStart) {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        ),
+    ]);
+    // Record the first connection attempt's actual mode, including embedded fallback; never reconnects.
+    let launch_telemetry = move |target: &AppServerTarget, connected: bool| {
+        let Some(metrics) = metrics else { return };
+        let app_server_mode = match (connected, target) {
+            (false, _) => "unconfirmed",
+            (true, AppServerTarget::Embedded) => "in_process",
+            (true, AppServerTarget::LocalDaemon { .. }) => "local_daemon",
+            (true, AppServerTarget::Remote { .. }) => "remote",
         };
         // Use a fixed category, not the versioned or user-provided terminal identifier.
         let terminal_info = codex_terminal_detection::terminal_info();
@@ -481,19 +589,14 @@ pub(super) async fn run_main_inner(
             Some(Multiplexer::Zellij { .. }) => "zellij",
             None => "none",
         };
-        let _ = metrics.counter(
-            "codex.tui.start",
-            /*inc*/ 1,
-            &[
-                ("app_server_mode", app_server_mode),
-                ("terminal_name", terminal_name),
-                ("multiplexer", multiplexer),
-            ],
-        );
-        let telemetry =
-            codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
-        let _ = codex_state::install_process_db_telemetry(telemetry);
-    }
+        launch_tags.extend([
+            ("app_server_mode", app_server_mode),
+            ("terminal_name", terminal_name),
+            ("multiplexer", multiplexer),
+        ]);
+        let _ = metrics.counter("codex.tui.start", /*inc*/ 1, &launch_tags);
+    };
+    let launch_telemetry = daemon_telemetry::Launch(Some(launch_telemetry));
     let state_db = startup_draft
         .run_until(init_state_db_for_app_server_target(
             &config,
@@ -525,6 +628,12 @@ pub(super) async fn run_main_inner(
             if let Some(worktree) = managed_worktree.as_ref() {
                 worktree.report_startup_failure();
             }
+            launch_telemetry.record(&app_server_target, /*connected*/ false);
+            if let Some(otel) = otel {
+                let _ = otel
+                    .shutdown_with_timeout(INTERACTIVE_OTEL_SHUTDOWN_TIMEOUT)
+                    .await;
+            }
             std::process::exit(1);
         }
     }
@@ -539,6 +648,12 @@ pub(super) async fn run_main_inner(
             eprintln!("{err}");
             if let Some(worktree) = managed_worktree.as_ref() {
                 worktree.report_startup_failure();
+            }
+            launch_telemetry.record(&app_server_target, /*connected*/ false);
+            if let Some(otel) = otel {
+                let _ = otel
+                    .shutdown_with_timeout(INTERACTIVE_OTEL_SHUTDOWN_TIMEOUT)
+                    .await;
             }
             std::process::exit(1);
         }
@@ -626,6 +741,10 @@ pub(super) async fn run_main_inner(
         .with(otel_tracing_layer)
         .try_init();
 
+    if let Err(err) = screen_reader_result {
+        tracing::warn!("Could not save screen-reader detection: {err}");
+    }
+
     let app_result = run_ratatui_app(
         cli,
         arg0_paths,
@@ -643,6 +762,8 @@ pub(super) async fn run_main_inner(
         state_db,
         environment_manager,
         managed_worktree.clone(),
+        daemon_startup_warning,
+        launch_telemetry,
         startup_draft,
     )
     .await
@@ -653,6 +774,26 @@ pub(super) async fn run_main_inner(
 
     if let Some(worktree) = managed_worktree.as_ref() {
         worktree.report_startup_failure();
+    }
+
+    // The TUI owns this request's consent. The child is silent; installation remains unconfirmed.
+    if let Ok(exit) = &app_result
+        && let Some(UpdateAction::Daemon(source)) = exit.update_action
+        && let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics)
+    {
+        let mut tags = daemon_settings.to_vec();
+        tags.extend([
+            ("initiation_source", "tui_handoff"),
+            (
+                "update_target",
+                match source {
+                    DaemonUpdateSource::PublicStable => "public_stable",
+                    DaemonUpdateSource::ThisCli => "this_cli",
+                },
+            ),
+            ("outcome", "handoff_requested"),
+        ]);
+        let _ = metrics.counter("codex.daemon.update", /*inc*/ 1, &tags);
     }
 
     if let Some(otel) = otel

@@ -97,12 +97,13 @@ impl ApplyPatchRuntime {
             req.additional_permissions.as_ref(),
         );
         Some(FileSystemSandboxContext {
-            permissions: permissions.into(),
-            cwd: Some(attempt.sandbox_cwd.clone()),
+            permissions,
+            cwd: attempt.sandbox_cwd.clone(),
             workspace_roots: attempt.workspace_roots.to_vec(),
             user_home_dir: req.turn_environment.user_home_dir.clone(),
             temporary_directories: None,
             windows_sandbox_selection: executor_windows_sandbox_selection(
+                attempt.windows_sandbox_type,
                 attempt.windows_sandbox_level,
                 attempt.sandbox_cwd,
             ),

@@ -43,8 +43,75 @@ fn trust_launch_folder(app: &mut App) {
 }
 
 #[tokio::test]
+async fn review_regression_agents_overview_creation_is_fresh_but_returning_is_not() -> Result<()> {
+    let render = |chat: &ChatWidget| {
+        crate::terminal_palette::with_test_default_colors(
+            crate::terminal_probe::DefaultColors {
+                fg: (230, 216, 255),
+                bg: (36, 27, 53),
+            },
+            || render_bottom_popup(chat, /*width*/ 80),
+        )
+    };
+    let has_stars = |text: &str| text.chars().any(|ch| "⠁⠂⠄⠈⠐⠠⡀⢀".contains(ch));
+    for model in ["gpt-6-astra", "gpt-5.5"] {
+        let (mut app, _events, _ops) = make_test_app_with_channels().await;
+        trust_launch_folder(&mut app);
+        app.cli_kv_overrides.extend([
+            ("tui.animations".into(), TomlValue::Boolean(true)),
+            ("tui.whimsy".into(), TomlValue::Boolean(true)),
+        ]);
+        app.harness_overrides.model = Some(model.into());
+        let mut server = start_config_write_test_app_server(&app).await?;
+        let mut tui = make_test_tui()?;
+        tui.pause_events();
+        app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
+            .await?;
+        let original = app.chat_widget.thread_id().expect("new dashboard task");
+        assert_eq!(app.chat_widget.current_model(), model);
+        let created = render(&app.chat_widget);
+        assert_eq!(has_stars(&created), model == "gpt-6-astra", "{model}");
+        if model != "gpt-6-astra" {
+            app.chat_widget.set_model("gpt-6-astra");
+            app.chat_widget
+                .on_sparkle_model_selected_from_picker("gpt-6-astra");
+            assert!(has_stars(&render(&app.chat_widget)));
+        }
+        app.harness_overrides.model = Some("gpt-6-astra".into());
+        app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
+            .await?;
+        assert_ne!(app.chat_widget.thread_id(), Some(original));
+        app.select_agents_overview_thread(&mut tui, &mut server, original)
+            .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(original));
+        let returned = render(&app.chat_widget);
+        assert!(!has_stars(&returned));
+        app.chat_widget
+            .on_sparkle_model_selected_from_picker("gpt-6-astra");
+        assert!(!has_stars(&render(&app.chat_widget)));
+        if model == "gpt-6-astra" {
+            let before_footer = |output: &str| {
+                output
+                    .lines()
+                    .take_while(|line| !line.contains("gpt-6-astra"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            insta::assert_snapshot!(format!(
+                "created from the dashboard:\n{}\nreturned to the existing task:\n{}",
+                before_footer(&created),
+                before_footer(&returned)
+            ));
+        }
+        server.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn command_center_new_reads_server_defaults_for_actual_destination() -> Result<()> {
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     for (mode, explicit_cwd, launch_override, expected_cwd, expected_model) in [
         ("local", false, false, "launch", "server-model"),
         ("local", true, false, "destination", "destination-model"),
@@ -263,6 +330,7 @@ async fn command_center_new_reads_server_defaults_for_actual_destination() -> Re
 #[tokio::test]
 async fn command_center_new_preserves_explicit_choices_and_managed_defaults() -> Result<()> {
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     for (choice, expected_model, expected_effort) in [
         ("saved", "server-model", "high"),
         ("cli_effort", "server-model", "low"),
@@ -362,6 +430,7 @@ async fn command_center_new_preserves_explicit_choices_and_managed_defaults() ->
 #[tokio::test]
 async fn command_center_new_read_failure_keeps_overview_and_does_not_start() -> Result<()> {
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     for capability in [
         HistoryCapabilities::ConfigReadFails,
         HistoryCapabilities::ThreadStartFails,
@@ -459,6 +528,7 @@ async fn command_center_new_preserves_permissions_across_sessions() -> Result<()
         .await
     );
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     for _ in 0..2 {
         app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
             .await?;
@@ -545,6 +615,7 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
         RuntimePermissionProfileOverride::from_restored_config(app.chat_widget.config_ref()),
     );
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
         .await?;
     assert_eq!(
@@ -647,6 +718,7 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
     )
     .await?;
     let mut tui = make_test_tui()?;
+    tui.pause_events();
     app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
         .await?;
     let first = app.chat_widget.thread_id().unwrap();
@@ -855,6 +927,7 @@ async fn command_center_new_checkout_and_worktree_preserve_source_and_default_br
         )
         .await?;
         let mut tui = make_test_tui()?;
+        tui.pause_events();
         let new_session = app.new_agents_overview_session(
             &mut tui,
             &mut server,
@@ -958,6 +1031,7 @@ async fn command_center_new_checkout_and_worktree_preserve_source_and_default_br
                 &mut failed_server,
                 Some(unused.cwd.clone().abs()),
                 Some((manager.clone(), unused.clone())),
+                /*startup_draft*/ None,
             )
             .await?;
             assert_eq!(app.chat_widget.thread_id(), Some(second));

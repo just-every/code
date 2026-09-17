@@ -145,19 +145,18 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
             windows_sandbox: None,
         });
     };
+    let runtime_paths = runtime_paths
+        .ok_or_else(|| invalid_params("sandbox runtime paths are not configured".to_string()))?;
+    sandbox_context
+        .validate_file_system_paths_for_current_host()
+        .map_err(|err| invalid_params(err.to_string()))?;
     let windows_sandbox_proxy_settings_mode = sandbox_context
         .windows_sandbox_proxy_settings_mode
         .unwrap_or_default();
-    let runtime_paths = runtime_paths
-        .ok_or_else(|| invalid_params("sandbox runtime paths are not configured".to_string()))?;
     // TODO(jif): Transport permissions before orchestrator-local paths are materialized,
     // then resolve executor-local helper and workspace paths here.
-    let permissions: PermissionProfile = sandbox_context
-        .permissions
-        .clone()
-        .try_into()
-        .map_err(|err| invalid_params(format!("invalid sandbox permission path URI: {err}")))?;
-    let sandbox_policy_cwd = sandbox_context.cwd.as_ref().unwrap_or(&params.cwd);
+    let permissions = sandbox_context.permissions.clone();
+    let sandbox_policy_cwd = &sandbox_context.cwd;
     let native_sandbox_policy_cwd = native_path(sandbox_policy_cwd, "sandbox cwd")?;
     let native_workspace_roots = sandbox_context
         .workspace_roots
@@ -349,8 +348,11 @@ async fn prepare_managed_network(
     let Some(network_proxy) = network_proxy.cloned() else {
         return Ok((env, managed_network.cloned(), None, None));
     };
-    let mut state = NetworkProxyState::from_remote_launch_config(network_proxy)
-        .map_err(|err| invalid_params(format!("invalid network proxy config: {err}")))?;
+    let mut state = NetworkProxyState::from_remote_launch_config(
+        network_proxy,
+        codex_network_proxy::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+    )
+    .map_err(|err| invalid_params(format!("invalid network proxy config: {err}")))?;
     if let Some(observer) = network_policy_audit_observer {
         state.set_policy_audit_observer(observer);
     }

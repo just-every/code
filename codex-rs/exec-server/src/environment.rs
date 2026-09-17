@@ -989,7 +989,7 @@ impl Environment {
                     if params.roots.iter().any(|root| {
                         root.sandbox
                             .as_ref()
-                            .is_some_and(crate::FileSystemSandboxContext::should_run_in_sandbox)
+                            .is_some_and(crate::FileSystemSandboxContext::should_read_from_sandbox)
                     }) && !client
                         .environment_info()
                         .await?
@@ -1121,6 +1121,11 @@ impl Environment {
 
     pub fn get_filesystem(&self) -> Arc<dyn ExecutorFileSystem> {
         Arc::clone(&self.filesystem)
+    }
+
+    /// Borrows the shared filesystem identity without extending the environment's lifetime.
+    pub fn filesystem_ref(&self) -> &Arc<dyn ExecutorFileSystem> {
+        &self.filesystem
     }
 
     /// Returns a filesystem view that fails instead of starting or waiting for a connection.
@@ -1838,7 +1843,7 @@ mod tests {
         let source = sandbox_cwd
             .to_abs_path()
             .expect_err("sandbox cwd should not be native to this host");
-        let sandbox = crate::FileSystemSandboxContext::from_permission_profile_with_cwd(
+        let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
             codex_protocol::models::PermissionProfile::workspace_write(),
             sandbox_cwd.clone(),
         );
@@ -1890,6 +1895,8 @@ mod tests {
                 &codex_protocol::permissions::FileSystemSandboxPolicy::restricted(Vec::new()),
                 codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
             ),
+            PathUri::from_host_native_path(std::env::current_dir().expect("read current dir"))
+                .expect("cwd URI"),
         );
 
         let err = environment

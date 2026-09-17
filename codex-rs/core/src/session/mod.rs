@@ -64,6 +64,7 @@ use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
 use codex_async_utils::OrCancelExt;
 use codex_attachment_store::AttachmentStore;
+use codex_attachment_store::InlineAttachmentStore;
 use codex_connectors::connector_runtime_context_key;
 use codex_context_fragments::RenderedFragment;
 use codex_exec_server::Environment;
@@ -106,6 +107,7 @@ use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -120,6 +122,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
@@ -1075,13 +1078,17 @@ fn get_service_tier(
     fast_mode_enabled: bool,
     model_info: &ModelInfo,
 ) -> Option<String> {
-    if !fast_mode_enabled {
-        return None;
+    let service_tier = configured_service_tier?;
+    if service_tier == ServiceTier::Flex.request_value() {
+        return Some(service_tier);
     }
-    configured_service_tier.filter(|service_tier| {
-        service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
-            || model_info.supports_service_tier(service_tier)
-    })
+    if fast_mode_enabled
+        && (service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+            || model_info.supports_service_tier(&service_tier))
+    {
+        return Some(service_tier);
+    }
+    None
 }
 
 fn unsupported_service_tier_warning(
@@ -1706,11 +1713,16 @@ impl Session {
             .into_iter()
             .map(|envelope| (envelope.item, envelope.metadata))
             .unzip();
-        let _ = prepare_image_response_items(
+        // Replay must not upload or migrate recorded history. The inline store returns prepared
+        // inline bytes, while existing file references bypass preparation and remain unchanged.
+        // Bound replay future size now that image preparation can await storage.
+        let _ = Box::pin(prepare_image_response_items(
             &mut prepared_history,
             ImagePreparationMode::DetailBased,
             ImageResizeNoticeMode::Disabled,
-        );
+            &InlineAttachmentStore,
+        ))
+        .await;
         prepare_audio_response_items(&mut prepared_history);
         assert_eq!(
             prepared_history.len(),
@@ -2160,6 +2172,7 @@ impl Session {
             warn!("failed to refresh MCP OAuth coordination config: {err}");
         }
         state.session_configuration.original_config_do_not_use = Arc::new(config);
+        self.services.mcp_runtime.invalidate_resource_caches();
         self.mark_mcp_runtime_dirty();
         drop(state);
         self.schedule_mcp_prewarm();
@@ -3048,13 +3061,7 @@ impl Session {
 
         let requested_permissions = args.permissions;
         let sandbox_context = environment.sandbox_context(/*additional_permissions*/ None);
-        let Some(context) = sandbox_context.policy_context() else {
-            return Some(RequestPermissionsResponse {
-                permissions: RequestPermissionProfile::default(),
-                scope: PermissionGrantScope::Turn,
-                strict_auto_review: false,
-            });
-        };
+        let context = sandbox_context.policy_context();
         {
             let originating_turn_state = {
                 let active = self.active_turn.lock().await;
@@ -3285,19 +3292,11 @@ impl Session {
                 let sandbox_context = entry
                     .environment
                     .sandbox_context(/*additional_permissions*/ None);
-                let response = if let Some(context) = sandbox_context.policy_context() {
-                    Self::normalize_request_permissions_response(
-                        entry.requested_permissions,
-                        response,
-                        &context,
-                    )
-                } else {
-                    RequestPermissionsResponse {
-                        permissions: RequestPermissionProfile::default(),
-                        scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
-                    }
-                };
+                let response = Self::normalize_request_permissions_response(
+                    entry.requested_permissions,
+                    response,
+                    &sandbox_context.policy_context(),
+                );
                 self.record_granted_request_permissions_for_turn(
                     &response,
                     &entry.environment.selection.environment_id,
@@ -3475,7 +3474,7 @@ impl Session {
     }
 
     /// Prepares media using the originating model and preserves existing item identity.
-    pub(crate) fn prepare_conversation_items_for_history<'a>(
+    pub(crate) async fn prepare_conversation_items_for_history<'a>(
         &self,
         turn_context: &TurnContext,
         model_info: &ModelInfo,
@@ -3497,11 +3496,14 @@ impl Session {
         } else {
             ImageResizeNoticeMode::Disabled
         };
-        let image_preparations = prepare_image_response_items(
+        // Keep nested image-upload futures out of every caller's future frame.
+        let image_preparations = Box::pin(prepare_image_response_items(
             &mut items,
             image_preparation_mode,
             image_resize_notice_mode,
-        );
+            self.services.image_store.as_ref(),
+        ))
+        .await;
         prepare_audio_response_items(&mut items);
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in &mut items {
@@ -3547,9 +3549,18 @@ impl Session {
     }
 
     pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
+        self.response_item_from_user_input_with_image_positions(input, &mut HashMap::new())
+    }
+
+    fn response_item_from_user_input_with_image_positions(
+        &self,
+        input: Vec<UserInput>,
+        user_image_content_indices: &mut HashMap<usize, usize>,
+    ) -> ResponseItem {
         let mut item = ResponseItem::from(ResponseInputItem::from_user_input(
             input,
             LocalImagePreparation::Defer,
+            user_image_content_indices,
         ));
         if let ResponseItem::Message {
             content,
@@ -3590,8 +3601,9 @@ impl Session {
         model_info: &ModelInfo,
         items: &[ResponseItem],
     ) {
-        let (items, image_preparations) =
-            self.prepare_conversation_items_for_history(turn_context, model_info, items);
+        let (items, image_preparations) = self
+            .prepare_conversation_items_for_history(turn_context, model_info, items)
+            .await;
         let items = items
             .into_owned()
             .into_iter()
@@ -3910,11 +3922,13 @@ impl Session {
         communication: InterAgentCommunication,
     ) {
         let response_item = communication.to_model_input_item();
-        let (items, _) = self.prepare_conversation_items_for_history(
-            turn_context,
-            model_info,
-            std::slice::from_ref(&response_item),
-        );
+        let (items, _) = self
+            .prepare_conversation_items_for_history(
+                turn_context,
+                model_info,
+                std::slice::from_ref(&response_item),
+            )
+            .await;
         let items = items.as_ref();
         let response_item = items[0].clone();
         {
@@ -4839,20 +4853,37 @@ impl Session {
         // Persist the user message to history, but emit the turn item from `UserInput` so
         // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
         // those spans, and `record_response_item_and_emit_turn_item` would drop them.
-        let response_item = self.response_item_from_user_input(input.to_vec());
-        self.record_annotated_conversation_items(
+        let mut user_image_content_indices = HashMap::new();
+        let response_item = self.response_item_from_user_input_with_image_positions(
+            input.to_vec(),
+            &mut user_image_content_indices,
+        );
+        let (prepared_items, image_preparations) = self
+            .prepare_annotated_conversation_items_for_history(
+                turn_context,
+                model_info,
+                vec![ResponseItemEnvelope {
+                    item: response_item,
+                    metadata: acceptance_order.map(|order| CodexHarnessMetadata {
+                        user_input_order: Some(order),
+                        ..Default::default()
+                    }),
+                }],
+            )
+            .await;
+        let mut user_message_item = UserMessageItem::new(input);
+        apply_prepared_image_file_ids(
+            &mut user_message_item,
+            &prepared_items,
+            &user_image_content_indices,
+        );
+        self.record_prepared_conversation_items(
             turn_context,
             model_info,
-            vec![ResponseItemEnvelope {
-                item: response_item,
-                metadata: acceptance_order.map(|order| CodexHarnessMetadata {
-                    user_input_order: Some(order),
-                    ..Default::default()
-                }),
-            }],
+            prepared_items,
+            image_preparations,
         )
         .await;
-        let mut user_message_item = UserMessageItem::new(input);
         user_message_item.client_id = client_id;
         let turn_item = TurnItem::UserMessage(user_message_item);
         self.emit_turn_item_started(turn_context, &turn_item).await;
@@ -4936,6 +4967,37 @@ impl Session {
 
     fn show_raw_agent_reasoning(&self) -> bool {
         self.services.show_raw_agent_reasoning
+    }
+}
+
+fn apply_prepared_image_file_ids(
+    user_message_item: &mut UserMessageItem,
+    prepared_items: &[ResponseItemEnvelope],
+    user_image_content_indices: &HashMap<usize, usize>,
+) {
+    // Preparation replaces image slots in place; resize notices are separate messages.
+    // Read the references from the original message while retaining UI-only input spans.
+    if let Some(ResponseItemEnvelope {
+        item: ResponseItem::Message { content, .. },
+        ..
+    }) = prepared_items.first()
+    {
+        for (&input_index, &content_index) in user_image_content_indices {
+            if let Some(ContentItem::InputImage {
+                image: ImageReference::File { file_id },
+                ..
+            }) = content.get(content_index)
+                && let UserInput::Image { detail, .. } | UserInput::LocalImage { detail, .. } =
+                    &user_message_item.content[input_index]
+            {
+                user_message_item.content[input_index] = UserInput::Image {
+                    image: ImageReference::File {
+                        file_id: file_id.clone(),
+                    },
+                    detail: *detail,
+                };
+            }
+        }
     }
 }
 
