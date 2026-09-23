@@ -17,11 +17,11 @@ use mcp_types::ListToolsRequestParams;
 use mcp_types::ListToolsResult;
 use mcp_types::MCP_SCHEMA_VERSION;
 use rmcp::model::CallToolRequest;
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::CallToolRequestParams as RmcpCallToolRequestParams;
 use rmcp::model::ClientRequest;
-use rmcp::model::InitializeRequestParam;
+use rmcp::model::InitializeRequestParams as RmcpInitializeRequestParams;
 use rmcp::model::Meta;
-use rmcp::model::PaginatedRequestParam;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ServerResult;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
@@ -188,7 +188,7 @@ impl RmcpClient {
             }
         };
 
-        let client_info = convert_to_rmcp::<_, InitializeRequestParam>(params.clone())?;
+        let client_info = convert_to_rmcp::<_, RmcpInitializeRequestParams>(params.clone())?;
         let client_handler = LoggingClientHandler::new(client_info);
         let service_future = match transport {
             PendingTransport::ChildProcess(transport) => {
@@ -242,7 +242,7 @@ impl RmcpClient {
     ) -> Result<ListToolsResult> {
         let service = self.service().await?;
         let rmcp_params = params
-            .map(convert_to_rmcp::<_, PaginatedRequestParam>)
+            .map(convert_to_rmcp::<_, PaginatedRequestParams>)
             .transpose()?;
 
         let fut = service.list_tools(rmcp_params);
@@ -259,7 +259,7 @@ impl RmcpClient {
     ) -> Result<CallToolResult> {
         let service = self.service().await?;
         let params = CallToolRequestParams { arguments, name };
-        let rmcp_params: CallToolRequestParam = convert_to_rmcp(params)?;
+        let rmcp_params: RmcpCallToolRequestParams = convert_to_rmcp(params)?;
         let rmcp_meta = match meta {
             Some(serde_json::Value::Object(map)) => Some(map),
             Some(other) => {
@@ -291,7 +291,7 @@ impl RmcpClient {
 
 async fn call_tool_with_meta(
     service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
-    params: CallToolRequestParam,
+    params: RmcpCallToolRequestParams,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<rmcp::model::CallToolResult, ServiceError> {
     let mut request = CallToolRequest::new(params);
