@@ -1353,8 +1353,17 @@ impl Config {
             .or(cfg.context_mode)
             .or(Some(ContextMode::Auto));
 
-        let model_family =
+        let mut model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
+        if model_provider_id != "openai"
+            || !model_provider.is_public_openai_responses_endpoint()
+        {
+            // codex-rs resolves custom providers through their provider-owned
+            // ModelInfo manager; unknown custom-provider models use fallback
+            // metadata. Legacy code-rs starts from its embedded OpenAI catalog,
+            // so remove OpenAI-only Lite semantics at this compatibility seam.
+            model_family.use_responses_lite = false;
+        }
         let default_tool_output_max_bytes = model_family.tool_output_max_bytes();
 
         // Chat model reasoning effort (used when other flows follow the chat model).
@@ -2715,6 +2724,72 @@ model_verbosity = "high"
         assert_eq!(gpt3_profile_config.model_provider_id, default_profile_config.model_provider_id);
         assert_eq!(gpt3_profile_config.approval_policy, default_profile_config.approval_policy);
         assert_eq!(gpt3_profile_config.sandbox_policy, default_profile_config.sandbox_policy);
+        Ok(())
+    }
+
+    #[test]
+    fn model_metadata_uses_provider_appropriate_catalog_boundary() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let mut custom_cfg = fixture.cfg.clone();
+        custom_cfg
+            .profiles
+            .get_mut("gpt3")
+            .expect("gpt3 profile should exist")
+            .model = Some("gpt-5.6-luna".to_string());
+        let custom_config = Config::load_from_base_config_with_overrides(
+            custom_cfg,
+            ConfigOverrides {
+                config_profile: Some("gpt3".to_string()),
+                cwd: Some(fixture.cwd()),
+                ..Default::default()
+            },
+            fixture.code_home(),
+        )?;
+
+        assert!(!custom_config.model_family.use_responses_lite);
+        assert_eq!(
+            Some(crate::model_family::EXTENDED_CONTEXT_WINDOW_1M),
+            custom_config.model_context_window
+        );
+
+        let mut openai_cfg = fixture.cfg.clone();
+        openai_cfg
+            .profiles
+            .get_mut("o3")
+            .expect("o3 profile should exist")
+            .model = Some("gpt-5.6-luna".to_string());
+        let openai_config = Config::load_from_base_config_with_overrides(
+            openai_cfg,
+            ConfigOverrides {
+                config_profile: Some("o3".to_string()),
+                cwd: Some(fixture.cwd()),
+                ..Default::default()
+            },
+            fixture.code_home(),
+        )?;
+
+        assert!(openai_config.model_family.use_responses_lite);
+
+        let mut proxied_cfg = fixture.cfg.clone();
+        proxied_cfg.openai_base_url = Some("https://proxy.example.test/v1".to_string());
+        proxied_cfg
+            .profiles
+            .get_mut("o3")
+            .expect("o3 profile should exist")
+            .model = Some("gpt-5.6-luna".to_string());
+        let proxied_config = Config::load_from_base_config_with_overrides(
+            proxied_cfg,
+            ConfigOverrides {
+                config_profile: Some("o3".to_string()),
+                cwd: Some(fixture.cwd()),
+                ..Default::default()
+            },
+            fixture.code_home(),
+        )?;
+
+        assert!(!proxied_config.model_family.use_responses_lite);
+
         Ok(())
     }
 
