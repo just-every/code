@@ -593,11 +593,12 @@ mod tests {
     }
 
     #[test]
-    fn extended_context_support_includes_gpt_5_6_variants() {
-        for model in ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] {
+    fn extended_context_support_includes_supported_gpt_5_6_variants() {
+        for model in ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol"] {
             assert!(supports_extended_context(model), "{model} should support 1M context");
         }
 
+        assert!(!supports_extended_context("gpt-5.6-terra"));
         assert!(!supports_extended_context("gpt-5.5"));
     }
 
@@ -646,7 +647,7 @@ pub const fn default_auto_compact_limit_for_context_window(context_window: u64) 
 }
 
 pub fn supports_extended_context(model: &str) -> bool {
-    ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
+    ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol"]
         .iter()
         .any(|supported| model.eq_ignore_ascii_case(supported))
 }
