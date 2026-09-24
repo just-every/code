@@ -1,13 +1,12 @@
-## @just-every/code v0.6.191
+## @just-every/code v0.6.192
 
-This release improves provider transport handling and preserves legacy Responses compatibility.
+This release improves session-log redaction and refreshes security-related dependencies.
 
 ### Changes
 
-- Core: advertise provider transport capabilities for model providers.
-- Core: guard WebSocket transport selection by provider support.
-- Core: preserve legacy Responses session headers.
-- Core: complete provider transport test fixtures.
+- TUI: redact fallback session event payloads in session logs.
+- Core: update RMCP SDK dependencies for Dependabot alerts.
+- Core: update quinn-proto to address security alert 128.
 
 ### Install
 
@@ -16,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.190...v0.6.191
+Compare: https://github.com/just-every/code/compare/v0.6.191...v0.6.192

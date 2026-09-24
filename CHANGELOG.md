@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.192] - 2026-09-24
+
+- TUI: redact fallback session event payloads in session logs. (ba4dc761)
+- Core: update RMCP SDK dependencies for Dependabot alerts. (c56cce74, 414ef8f3)
+- Core: update quinn-proto to address security alert 128. (9ef31497)
+
 ## [0.6.191] - 2026-09-16
 
 - Core: advertise provider transport capabilities for model providers. (15d5d9d6)
