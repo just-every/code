@@ -341,13 +341,12 @@ mod tests {
 
     #[test]
     fn call_tool_request_serializes_meta() {
-        let mut request = CallToolRequest::new(CallToolRequestParam {
-            name: "lookup".into(),
-            arguments: Some(serde_json::Map::from_iter([(
-                "query".to_string(),
-                json!("weather"),
-            )])),
-        });
+        let mut params = RmcpCallToolRequestParams::new("lookup");
+        params.arguments = Some(serde_json::Map::from_iter([(
+            "query".to_string(),
+            json!("weather"),
+        )]));
+        let mut request = CallToolRequest::new(params);
         request.extensions.insert(Meta(serde_json::Map::from_iter([
             ("threadId".to_string(), json!("turn-live")),
             ("sessionId".to_string(), json!("session-live")),
