@@ -1,19 +1,18 @@
-## @just-every/code v0.6.191
+## @just-every/code v0.6.192
 
-This release improves provider transport handling and preserves legacy Responses compatibility.
+This release tightens model metadata handling and remote model refresh behavior.
 
 ### Changes
 
-- Core: advertise provider transport capabilities for model providers.
-- Core: guard WebSocket transport selection by provider support.
-- Core: preserve legacy Responses session headers.
-- Core: complete provider transport test fixtures.
+- Core: keep GPT-5.6-Terra on standard context handling.
+- Core: restrict remote model refreshes to safer metadata updates.
+- Core: normalize model metadata across providers.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.190...v0.6.191
+Compare: https://github.com/just-every/code/compare/v0.6.192...v0.6.192
