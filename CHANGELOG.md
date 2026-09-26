@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.193] - 2026-09-26
+
+- CLI: preserve shell-command tools on Windows. (f9e25998)
+- Core: restrict remote model refreshes to safer metadata updates. (1d49f246)
+- Core: normalize model metadata across providers. (802eb9c2)
+
 ## [0.6.192] - 2026-09-24
 
 - Core: keep GPT-5.6-Terra on standard context handling. (b77317af)
