@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use code_app_server_protocol::AuthMode;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use crate::token_data::TokenData;
 
 const ACCOUNTS_FILE_NAME: &str = "auth_accounts.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct StoredAccount {
     pub id: String,
     pub mode: AuthMode,
@@ -35,7 +36,22 @@ pub struct StoredAccount {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl fmt::Debug for StoredAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredAccount")
+            .field("id", &self.id)
+            .field("mode", &self.mode)
+            .field("label", &self.label)
+            .field("openai_api_key", &self.openai_api_key.as_ref().map(|_| "<redacted>"))
+            .field("tokens", &self.tokens)
+            .field("last_refresh", &self.last_refresh)
+            .field("created_at", &self.created_at)
+            .field("last_used_at", &self.last_used_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 struct AccountsFile {
     #[serde(default = "default_version")]
     version: u32,
@@ -54,6 +70,16 @@ impl Default for AccountsFile {
             active_account_id: None,
             accounts: Vec::new(),
         }
+    }
+}
+
+impl fmt::Debug for AccountsFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountsFile")
+            .field("version", &self.version)
+            .field("active_account_id", &self.active_account_id)
+            .field("accounts", &self.accounts)
+            .finish()
     }
 }
 
@@ -415,8 +441,8 @@ mod tests {
                 chatgpt_account_is_fedramp: false,
                 raw_jwt: fake_jwt(account_id, email, "pro"),
             },
-            access_token: "access".to_string(),
-            refresh_token: "refresh".to_string(),
+            access_token: "secret-access-token".to_string(),
+            refresh_token: "secret-refresh-token".to_string(),
             account_id: account_id.map(|s| s.to_string()),
         }
     }
@@ -438,6 +464,31 @@ mod tests {
         let accounts = list_accounts(home.path()).expect("list accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, stored.id);
+    }
+
+    #[test]
+    fn debug_output_redacts_stored_credentials() {
+        let account = StoredAccount {
+            id: "acct".to_string(),
+            mode: AuthMode::ChatGPT,
+            label: Some("user@example.com".to_string()),
+            openai_api_key: Some("sk-secret".to_string()),
+            tokens: Some(make_chatgpt_tokens(
+                Some("account-id"),
+                Some("user@example.com"),
+            )),
+            last_refresh: None,
+            created_at: None,
+            last_used_at: None,
+        };
+
+        let debug = format!("{account:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("sk-secret"));
+        assert!(!debug.contains("secret-access-token"));
+        assert!(!debug.contains("secret-refresh-token"));
+        assert!(!debug.contains("sig"));
     }
 
     #[test]
