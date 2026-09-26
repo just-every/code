@@ -7,6 +7,10 @@
 
 - (none)
 
+## [0.6.193] - 2026-09-26
+
+- Core: redact credential debug output from auth data. (d3bfd82c)
+
 ## [0.6.192] - 2026-09-24
 
 - Core: keep GPT-5.6-Terra on standard context handling. (b77317af)
