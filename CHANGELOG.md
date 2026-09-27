@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.194] - 2026-09-27
+
+- Core: expose per-app tool exposure configuration in app-server config schemas. (fd76b22c, a6d4741d)
+- Core: align flex-tier model metadata with upstream parity. (fd76b22c)
+- Core: keep credential debug output redacted across auth token data. (fd76b22c, d3bfd82c)
+- Release: reduce R2 upload concurrency and rely on standard retries for publishing stability. (3ed49879)
+
 ## [0.6.193] - 2026-09-26
 
 - Core: redact credential debug output from auth data. (d3bfd82c)
