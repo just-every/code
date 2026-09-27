@@ -213,6 +213,7 @@ export type { TokenCountEvent } from "./TokenCountEvent";
 export type { TokenUsage } from "./TokenUsage";
 export type { TokenUsageInfo } from "./TokenUsageInfo";
 export type { Tool } from "./Tool";
+export type { ToolExposureSurface } from "./ToolExposureSurface";
 export type { Tools } from "./Tools";
 export type { TurnAbortReason } from "./TurnAbortReason";
 export type { TurnAbortedEvent } from "./TurnAbortedEvent";

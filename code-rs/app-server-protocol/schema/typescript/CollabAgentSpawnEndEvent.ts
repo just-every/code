@@ -4,24 +4,24 @@
 import type { AgentStatus } from "./AgentStatus";
 import type { ThreadId } from "./ThreadId";
 
-export type CollabAgentSpawnEndEvent = { 
+export type CollabAgentSpawnEndEvent = {
 /**
  * Identifier for the collab tool call.
  */
-call_id: string, 
+call_id: string,
 /**
  * Thread ID of the sender.
  */
-sender_thread_id: ThreadId, 
+sender_thread_id: ThreadId,
 /**
  * Thread ID of the newly spawned agent, if it was created.
  */
-new_thread_id: ThreadId | null, 
+new_thread_id: ThreadId | null,
 /**
  * Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
  * beginning.
  */
-prompt: string, 
+prompt: string,
 /**
  * Last known status of the new agent reported to the sender agent.
  */

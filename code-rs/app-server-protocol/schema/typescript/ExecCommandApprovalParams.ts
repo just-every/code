@@ -4,12 +4,12 @@
 import type { ParsedCommand } from "./ParsedCommand";
 import type { ThreadId } from "./ThreadId";
 
-export type ExecCommandApprovalParams = { conversationId: ThreadId, 
+export type ExecCommandApprovalParams = { conversationId: ThreadId,
 /**
  * Use to correlate this with [codex_core::protocol::ExecCommandBeginEvent]
  * and [codex_core::protocol::ExecCommandEndEvent].
  */
-callId: string, 
+callId: string,
 /**
  * Identifier for this specific approval callback.
  */

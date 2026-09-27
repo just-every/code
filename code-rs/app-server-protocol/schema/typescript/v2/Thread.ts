@@ -5,43 +5,43 @@ import type { GitInfo } from "./GitInfo";
 import type { SessionSource } from "./SessionSource";
 import type { Turn } from "./Turn";
 
-export type Thread = { id: string, 
+export type Thread = { id: string,
 /**
  * Usually the first user message in the thread, if available.
  */
-preview: string, 
+preview: string,
 /**
  * Model provider used for this thread (for example, 'openai').
  */
-modelProvider: string, 
+modelProvider: string,
 /**
  * Unix timestamp (in seconds) when the thread was created.
  */
-createdAt: number, 
+createdAt: number,
 /**
  * Unix timestamp (in seconds) when the thread was last updated.
  */
-updatedAt: number, 
+updatedAt: number,
 /**
  * [UNSTABLE] Path to the thread on disk.
  */
-path: string | null, 
+path: string | null,
 /**
  * Working directory captured for the thread.
  */
-cwd: string, 
+cwd: string,
 /**
  * Version of the CLI that created the thread.
  */
-cliVersion: string, 
+cliVersion: string,
 /**
  * Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
  */
-source: SessionSource, 
+source: SessionSource,
 /**
  * Optional Git metadata captured when the thread was created.
  */
-gitInfo: GitInfo | null, 
+gitInfo: GitInfo | null,
 /**
  * Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
  * (when `includeTurns` is true) responses.

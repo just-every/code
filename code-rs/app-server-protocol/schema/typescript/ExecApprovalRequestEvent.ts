@@ -5,43 +5,43 @@ import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
 import type { NetworkApprovalContext } from "./NetworkApprovalContext";
 import type { ParsedCommand } from "./ParsedCommand";
 
-export type ExecApprovalRequestEvent = { 
+export type ExecApprovalRequestEvent = {
 /**
  * Identifier for the associated command execution item.
  */
-call_id: string, 
+call_id: string,
 /**
  * Identifier for this specific approval callback.
  *
  * When absent, the approval is for the command item itself (`call_id`).
  * This is present for subcommand approvals (via execve intercept).
  */
-approval_id?: string, 
+approval_id?: string,
 /**
  * Turn ID that this command belongs to.
  * Uses `#[serde(default)]` for backwards compatibility.
  */
-turn_id: string, 
+turn_id: string,
 /**
  * Environment in which the command will run.
  */
-environmentId?: string, 
+environmentId?: string,
 /**
  * The command to be executed.
  */
-command: Array<string>, 
+command: Array<string>,
 /**
  * The command's working directory.
  */
-cwd: string, 
+cwd: string,
 /**
  * Optional human-readable reason for the approval (e.g. retry without sandbox).
  */
-reason: string | null, 
+reason: string | null,
 /**
  * Optional network context for a blocked request that can be approved.
  */
-network_approval_context?: NetworkApprovalContext, 
+network_approval_context?: NetworkApprovalContext,
 /**
  * Proposed execpolicy amendment that can be applied to allow future runs.
  */

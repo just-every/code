@@ -7,45 +7,45 @@ import type { ReasoningEffort } from "./ReasoningEffort";
 import type { SandboxPolicy } from "./SandboxPolicy";
 import type { ThreadId } from "./ThreadId";
 
-export type SessionConfiguredEvent = { session_id: ThreadId, forked_from_id: ThreadId | null, 
+export type SessionConfiguredEvent = { session_id: ThreadId, forked_from_id: ThreadId | null,
 /**
  * Optional user-facing thread name (may be unset).
  */
-thread_name?: string, 
+thread_name?: string,
 /**
  * Tell the client what model is being queried.
  */
-model: string, model_provider_id: string, 
+model: string, model_provider_id: string,
 /**
  * When to escalate for approval for execution
  */
-approval_policy: AskForApproval, 
+approval_policy: AskForApproval,
 /**
  * How to sandbox commands executed in the system
  */
-sandbox_policy: SandboxPolicy, 
+sandbox_policy: SandboxPolicy,
 /**
  * Working directory that should be treated as the *root* of the
  * session.
  */
-cwd: string, 
+cwd: string,
 /**
  * The effort the model is putting into reasoning about the user's request.
  */
-reasoning_effort: ReasoningEffort | null, 
+reasoning_effort: ReasoningEffort | null,
 /**
  * Identifier of the history log file (inode on Unix, 0 otherwise).
  */
-history_log_id: bigint, 
+history_log_id: bigint,
 /**
  * Current number of entries in the history log.
  */
-history_entry_count: number, 
+history_entry_count: number,
 /**
  * Optional initial messages (as events) for resumed sessions.
  * When present, UIs can use these to seed the history.
  */
-initial_messages: Array<EventMsg> | null, 
+initial_messages: Array<EventMsg> | null,
 /**
  * Path in which the rollout is stored. Can be `None` for ephemeral threads
  */

@@ -4,55 +4,55 @@
 import type { ExecCommandSource } from "./ExecCommandSource";
 import type { ParsedCommand } from "./ParsedCommand";
 
-export type ExecCommandEndEvent = { 
+export type ExecCommandEndEvent = {
 /**
  * Identifier for the ExecCommandBegin that finished.
  */
-call_id: string, 
+call_id: string,
 /**
  * Identifier for the underlying PTY process (when available).
  */
-process_id?: string, 
+process_id?: string,
 /**
  * Turn ID that this command belongs to.
  */
-turn_id: string, 
+turn_id: string,
 /**
  * The command that was executed.
  */
-command: Array<string>, 
+command: Array<string>,
 /**
  * The command's working directory if not the default cwd for the agent.
  */
-cwd: string, parsed_cmd: Array<ParsedCommand>, 
+cwd: string, parsed_cmd: Array<ParsedCommand>,
 /**
  * Where the command originated. Defaults to Agent for backward compatibility.
  */
-source: ExecCommandSource, 
+source: ExecCommandSource,
 /**
  * Raw input sent to a unified exec session (if this is an interaction event).
  */
-interaction_input?: string, 
+interaction_input?: string,
 /**
  * Captured stdout
  */
-stdout: string, 
+stdout: string,
 /**
  * Captured stderr
  */
-stderr: string, 
+stderr: string,
 /**
  * Captured aggregated output
  */
-aggregated_output: string, 
+aggregated_output: string,
 /**
  * The command's exit code.
  */
-exit_code: number, 
+exit_code: number,
 /**
  * The duration of the command execution.
  */
-duration: string, 
+duration: string,
 /**
  * Formatted output from the command, as seen by the model.
  */

@@ -4,31 +4,31 @@
 import type { ExecCommandSource } from "./ExecCommandSource";
 import type { ParsedCommand } from "./ParsedCommand";
 
-export type ExecCommandBeginEvent = { 
+export type ExecCommandBeginEvent = {
 /**
  * Identifier so this can be paired with the ExecCommandEnd event.
  */
-call_id: string, 
+call_id: string,
 /**
  * Identifier for the underlying PTY process (when available).
  */
-process_id?: string, 
+process_id?: string,
 /**
  * Turn ID that this command belongs to.
  */
-turn_id: string, 
+turn_id: string,
 /**
  * The command to be executed.
  */
-command: Array<string>, 
+command: Array<string>,
 /**
  * The command's working directory if not the default cwd for the agent.
  */
-cwd: string, parsed_cmd: Array<ParsedCommand>, 
+cwd: string, parsed_cmd: Array<ParsedCommand>,
 /**
  * Where the command originated. Defaults to Agent for backward compatibility.
  */
-source: ExecCommandSource, 
+source: ExecCommandSource,
 /**
  * Raw input sent to a unified exec session (if this is an interaction event).
  */

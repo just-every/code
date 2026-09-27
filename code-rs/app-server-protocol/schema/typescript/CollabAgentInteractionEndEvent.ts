@@ -4,24 +4,24 @@
 import type { AgentStatus } from "./AgentStatus";
 import type { ThreadId } from "./ThreadId";
 
-export type CollabAgentInteractionEndEvent = { 
+export type CollabAgentInteractionEndEvent = {
 /**
  * Identifier for the collab tool call.
  */
-call_id: string, 
+call_id: string,
 /**
  * Thread ID of the sender.
  */
-sender_thread_id: ThreadId, 
+sender_thread_id: ThreadId,
 /**
  * Thread ID of the receiver.
  */
-receiver_thread_id: ThreadId, 
+receiver_thread_id: ThreadId,
 /**
  * Prompt sent from the sender to the receiver. Can be empty to prevent CoT
  * leaking at the beginning.
  */
-prompt: string, 
+prompt: string,
 /**
  * Last known status of the receiver agent reported to the sender agent.
  */

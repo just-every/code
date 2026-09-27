@@ -6,7 +6,7 @@ import type { TextElement } from "./TextElement";
 /**
  * User input
  */
-export type UserInput = { "type": "text", text: string, 
+export type UserInput = { "type": "text", text: string,
 /**
  * UI-defined spans within `text` that should be treated as special elements.
  * These are byte ranges into the UTF-8 `text` buffer and are used to render

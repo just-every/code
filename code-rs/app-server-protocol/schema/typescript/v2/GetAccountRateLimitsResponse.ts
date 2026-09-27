@@ -4,11 +4,11 @@
 import type { RateLimitResetCreditsSummary } from "./RateLimitResetCreditsSummary";
 import type { RateLimitSnapshot } from "./RateLimitSnapshot";
 
-export type GetAccountRateLimitsResponse = { 
+export type GetAccountRateLimitsResponse = {
 /**
  * Backward-compatible single-bucket view.
  */
-rateLimits: RateLimitSnapshot, 
+rateLimits: RateLimitSnapshot,
 /**
  * Multi-bucket view keyed by metered `limit_id`.
  */

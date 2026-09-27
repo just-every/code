@@ -6,39 +6,39 @@ import type { CommandAction } from "./CommandAction";
 import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
 import type { NetworkApprovalContext } from "./NetworkApprovalContext";
 
-export type CommandExecutionRequestApprovalParams = { threadId: string, turnId: string, itemId: string, 
+export type CommandExecutionRequestApprovalParams = { threadId: string, turnId: string, itemId: string,
 /**
  * Identifier for this specific approval callback.
  */
-approvalId?: string | null, 
+approvalId?: string | null,
 /**
  * Environment in which the command will run.
  */
-environmentId?: string | null, 
+environmentId?: string | null,
 /**
  * Optional explanatory reason (e.g. request for network access).
  */
-reason?: string | null, 
+reason?: string | null,
 /**
  * Optional context for a managed-network approval prompt.
  */
-networkApprovalContext?: NetworkApprovalContext | null, 
+networkApprovalContext?: NetworkApprovalContext | null,
 /**
  * The command to be executed.
  */
-command?: string | null, 
+command?: string | null,
 /**
  * The command's working directory.
  */
-cwd?: string | null, 
+cwd?: string | null,
 /**
  * Best-effort parsed command actions for friendly display.
  */
-commandActions?: Array<CommandAction> | null, 
+commandActions?: Array<CommandAction> | null,
 /**
  * Optional additional permissions requested for this command.
  */
-additionalPermissions?: AdditionalPermissionProfile | null, 
+additionalPermissions?: AdditionalPermissionProfile | null,
 /**
  * Optional proposed execpolicy amendment to allow similar commands without prompting.
  */

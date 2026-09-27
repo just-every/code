@@ -13,6 +13,7 @@ use code_protocol::config_types::ForcedLoginMethod;
 use code_protocol::config_types::Personality;
 use code_protocol::config_types::ReasoningSummary;
 use code_protocol::config_types::SandboxMode as CoreSandboxMode;
+use code_protocol::config_types::ToolExposureSurface;
 use code_protocol::config_types::Verbosity;
 use code_protocol::config_types::WebSearchMode;
 use code_protocol::config_types::WebSearchToolConfig;
@@ -426,6 +427,8 @@ pub enum AppDisabledReason {
 pub struct AppConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Additional model-facing surfaces omitted for this connector's tools.
+    pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
     pub disabled_reason: Option<AppDisabledReason>,
 }
 

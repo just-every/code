@@ -11,7 +11,7 @@ import type { MessagePhase } from "./MessagePhase";
  * should use it when present, but retain legacy completion semantics when it
  * is `None`.
  */
-export type AgentMessageItem = { id: string, content: Array<AgentMessageContent>, 
+export type AgentMessageItem = { id: string, content: Array<AgentMessageContent>,
 /**
  * Optional phase metadata carried through from `ResponseItem::Message`.
  *

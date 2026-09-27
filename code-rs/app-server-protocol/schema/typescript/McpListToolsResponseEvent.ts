@@ -7,27 +7,27 @@ import type { Resource } from "./Resource";
 import type { ResourceTemplate } from "./ResourceTemplate";
 import type { Tool } from "./Tool";
 
-export type McpListToolsResponseEvent = { 
+export type McpListToolsResponseEvent = {
 /**
  * Fully qualified tool name -> tool definition.
  */
-tools: { [key in string]?: Tool }, 
+tools: { [key in string]?: Tool },
 /**
  * Legacy server -> tool names map used by existing UI surfaces.
  */
-server_tools?: { [key in string]?: Array<string> } | null, 
+server_tools?: { [key in string]?: Array<string> } | null,
 /**
  * Legacy server failure map keyed by server name.
  */
-server_failures?: { [key in string]?: McpServerFailure } | null, 
+server_failures?: { [key in string]?: McpServerFailure } | null,
 /**
  * Known resources grouped by server name.
  */
-resources: { [key in string]?: Array<Resource> }, 
+resources: { [key in string]?: Array<Resource> },
 /**
  * Known resource templates grouped by server name.
  */
-resource_templates: { [key in string]?: Array<ResourceTemplate> }, 
+resource_templates: { [key in string]?: Array<ResourceTemplate> },
 /**
  * Authentication status for each configured MCP server.
  */

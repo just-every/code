@@ -4,23 +4,23 @@
 import type { RateLimitResetCreditStatus } from "./RateLimitResetCreditStatus";
 import type { RateLimitResetType } from "./RateLimitResetType";
 
-export type RateLimitResetCredit = { 
+export type RateLimitResetCredit = {
 /**
  * Opaque backend identifier for this reset credit.
  */
-id: string, resetType: RateLimitResetType, status: RateLimitResetCreditStatus, 
+id: string, resetType: RateLimitResetType, status: RateLimitResetCreditStatus,
 /**
  * Unix timestamp in seconds when the credit was granted.
  */
-grantedAt: number, 
+grantedAt: number,
 /**
  * Unix timestamp in seconds when the credit expires, or `null` if it does not expire.
  */
-expiresAt: number | null, 
+expiresAt: number | null,
 /**
  * Backend-provided display title for this credit, or `null` when unavailable.
  */
-title: string | null, 
+title: string | null,
 /**
  * Backend-provided display description for this credit, or `null` when unavailable.
  */
