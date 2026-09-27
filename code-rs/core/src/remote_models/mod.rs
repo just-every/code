@@ -47,6 +47,10 @@ struct RemoteModelsState {
 ///
 /// Any error (disk, auth, network, parse) results in an empty remote model list
 /// so callers can safely fall back to built-in behaviour.
+///
+/// This is a compatibility layer for the older code-rs architecture. In
+/// codex-rs, the selected provider owns the model manager and decides whether
+/// `/models` is authoritative; the refresh gate below preserves that policy.
 #[derive(Debug)]
 pub struct RemoteModelsManager {
     state: RwLock<RemoteModelsState>,
@@ -174,9 +178,13 @@ impl RemoteModelsManager {
         identity: Option<String>,
         stale_etag: Option<String>,
     ) {
-        let auth_mode = auth.as_ref().map(|a| a.mode);
-        if !auth_mode.is_some_and(AuthMode::is_chatgpt) {
-            // Only the ChatGPT backend exposes the Codex `/models` schema.
+        let should_refresh = auth
+            .as_ref()
+            .is_some_and(CodexAuth::uses_codex_backend)
+            || self.provider.has_command_auth();
+        if !should_refresh {
+            // Match codex-rs: refresh provider-owned model catalogs only for
+            // Codex-backend auth or command-backed provider auth.
             return;
         }
 

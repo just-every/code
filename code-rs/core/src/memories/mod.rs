@@ -557,11 +557,12 @@ async fn collect_json_response(session: &Session, prompt: &Prompt) -> anyhow::Re
 
 async fn resolve_model_family(session: &Session, model: &str) -> crate::model_family::ModelFamily {
     let base = find_family_for_model(model).unwrap_or_else(|| derive_default_model_family(model));
-    if let Some(remote) = session.remote_models_manager() {
+    let family = if let Some(remote) = session.remote_models_manager() {
         remote.apply_remote_overrides(model, base).await
     } else {
         base
-    }
+    };
+    session.client().normalize_model_family_for_provider(family)
 }
 
 fn build_stage1_user_prompt(

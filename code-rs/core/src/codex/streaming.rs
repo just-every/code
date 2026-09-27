@@ -764,13 +764,26 @@ pub(super) async fn submission_loop(
                 tools_config.set_agent_models(agent_models);
 
                 let model_descriptions = model_guide_markdown_with_custom(&config.agents);
-                let remote_models_manager = auth_manager.as_ref().map(|mgr| {
-                    Arc::new(RemoteModelsManager::new(
-                        Arc::clone(mgr),
-                        provider.clone(),
-                        config.code_home.clone(),
-                    ))
-                });
+                // codex-rs gives each provider ownership of its model manager.
+                // code-rs still has one legacy RemoteModelsManager, so only
+                // wire it for the equivalent first-party/command-auth cases;
+                // ordinary OpenAI-compatible providers must not be treated as
+                // if their /models endpoint returned Codex ModelInfo records.
+                let should_create_remote_models_manager =
+                    (config.model_provider_id == "openai"
+                        && provider.is_public_openai_responses_endpoint())
+                        || provider.has_command_auth();
+                let remote_models_manager = should_create_remote_models_manager
+                    .then(|| {
+                        auth_manager.as_ref().map(|mgr| {
+                            Arc::new(RemoteModelsManager::new(
+                                Arc::clone(mgr),
+                                provider.clone(),
+                                config.code_home.clone(),
+                            ))
+                        })
+                    })
+                    .flatten();
                 if let Some(remote) = remote_models_manager.as_ref() {
                     let remote = Arc::clone(remote);
                     tokio::spawn(async move {
@@ -1481,8 +1494,10 @@ async fn spawn_review_thread(
 
     // Determine model + family for review mode.
     let review_model = config.review_model.clone();
-    let review_family = find_family_for_model(&review_model)
-        .unwrap_or_else(|| derive_default_model_family(&review_model));
+    let review_family = sess.client().normalize_model_family_for_provider(
+        find_family_for_model(&review_model)
+            .unwrap_or_else(|| derive_default_model_family(&review_model)),
+    );
 
     // Prepare a per-review configuration that favors deterministic feedback.
     let mut review_config = (*config).clone();
@@ -2183,7 +2198,10 @@ async fn maybe_run_auto_context_compaction(
     let mut raw_decision: Option<String> = None;
     for model in auto_context_judge_models() {
         prompt.model_override = Some(model.to_string());
-        prompt.model_family_override = Some(derive_default_model_family(model));
+        prompt.model_family_override = Some(
+            sess.client()
+                .normalize_model_family_for_provider(derive_default_model_family(model)),
+        );
 
         match tokio::time::timeout(
             std::time::Duration::from_secs(12),
@@ -3145,7 +3163,10 @@ async fn run_turn(
                     .unwrap_or_else(|| derive_default_model_family(&override_model))
             };
             prompt.model_override = Some(override_model);
-            prompt.model_family_override = Some(override_family);
+            prompt.model_family_override = Some(
+                tc.client
+                    .normalize_model_family_for_provider(override_family),
+            );
         }
 
         if used_fallback_model_metadata

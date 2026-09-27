@@ -43,6 +43,7 @@ use code_protocol::request_user_input::RequestUserInputResponse;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
+use strum_macros::AsRefStr;
 use crate::cloud_tasks_service::CloudEnvironment;
 use crate::resume::discovery::ResumeCandidate;
 
@@ -111,7 +112,7 @@ pub(crate) use code_auto_drive_core::{
 };
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Debug, AsRefStr)]
 pub(crate) enum AppEvent {
     CodexEvent(Event),
 

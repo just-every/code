@@ -1,13 +1,10 @@
-## @just-every/code v0.6.191
+## @just-every/code v0.6.193
 
-This release improves provider transport handling and preserves legacy Responses compatibility.
+This release improves credential handling in core authentication debug output.
 
 ### Changes
 
-- Core: advertise provider transport capabilities for model providers.
-- Core: guard WebSocket transport selection by provider support.
-- Core: preserve legacy Responses session headers.
-- Core: complete provider transport test fixtures.
+- Core: redact credential debug output from auth data.
 
 ### Install
 
@@ -16,4 +13,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.190...v0.6.191
+Compare: https://github.com/just-every/code/compare/v0.6.193...v0.6.193

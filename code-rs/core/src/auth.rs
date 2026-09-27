@@ -4,6 +4,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use std::env;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
@@ -24,7 +25,7 @@ use crate::token_data::parse_jwt_expiration;
 use crate::config::resolve_code_path_for_read;
 use crate::util::backoff;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodexAuth {
     pub mode: AuthMode,
 
@@ -32,6 +33,18 @@ pub struct CodexAuth {
     pub(crate) auth_dot_json: Arc<Mutex<Option<AuthDotJson>>>,
     pub(crate) auth_file: PathBuf,
     pub(crate) client: reqwest::Client,
+}
+
+impl fmt::Debug for CodexAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodexAuth")
+            .field("mode", &self.mode)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("auth_dot_json", &self.auth_dot_json)
+            .field("auth_file", &self.auth_file)
+            .field("client", &self.client)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,7 +1020,7 @@ fn summarize_body(body: &str) -> String {
 }
 
 /// Expected structure for $CODEX_HOME/auth.json.
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, PartialEq)]
 pub struct AuthDotJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_mode: Option<AuthMode>,
@@ -1020,6 +1033,17 @@ pub struct AuthDotJson {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh: Option<DateTime<Utc>>,
+}
+
+impl fmt::Debug for AuthDotJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthDotJson")
+            .field("auth_mode", &self.auth_mode)
+            .field("openai_api_key", &self.openai_api_key.as_ref().map(|_| "<redacted>"))
+            .field("tokens", &self.tokens)
+            .field("last_refresh", &self.last_refresh)
+            .finish()
+    }
 }
 
 // Shared constant for token refresh (client id used for oauth token refresh flow)

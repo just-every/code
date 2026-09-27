@@ -668,6 +668,9 @@ impl Session {
                 .model_override
                 .as_deref()
                 .unwrap_or(configured_model.as_str());
+            // The legacy path may start from embedded OpenAI metadata and then
+            // apply a remote override. Normalize after both steps so custom
+            // providers match codex-rs fallback ModelInfo behavior.
             let base_family = if let Some(family) = find_family_for_model(model_slug) {
                 family
             } else {
@@ -690,7 +693,9 @@ impl Session {
             } else {
                 base_family
             };
-            prompt.model_family_override = Some(family);
+            prompt.model_family_override = Some(
+                self.client.normalize_model_family_for_provider(family),
+            );
         }
         used_fallback_model_metadata
     }

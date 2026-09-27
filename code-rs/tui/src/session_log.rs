@@ -343,7 +343,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "app_event",
-                "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
+                "variant": other.as_ref(),
             });
             LOGGER.write_json_line(value);
         }
@@ -446,4 +446,31 @@ pub(crate) fn log_history_snapshot(
         return;
     }
     LOGGER.write_json_line(make_history_snapshot_value(commit_id, summary, history));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_core::config_types::SubagentCommandConfig;
+
+    #[test]
+    fn fallback_app_event_logging_omits_opaque_payloads() {
+        let temp = tempfile::NamedTempFile::new().expect("create temp session log");
+        let path = temp.path().to_path_buf();
+        drop(temp);
+
+        LOGGER.open(path.clone()).expect("open session log");
+
+        let sensitive = "super-secret-agent-instructions";
+        log_inbound_app_event(&AppEvent::UpdateSubagentCommand(SubagentCommandConfig {
+            name: "audit".to_string(),
+            agent_instructions: Some(sensitive.to_string()),
+            ..Default::default()
+        }));
+
+        let log = std::fs::read_to_string(path).expect("read session log");
+        assert!(log.contains("\"variant\":\"UpdateSubagentCommand\""));
+        assert!(!log.contains(sensitive));
+        assert!(!log.contains("agent_instructions"));
+    }
 }

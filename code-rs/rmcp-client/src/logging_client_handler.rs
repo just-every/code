@@ -1,9 +1,11 @@
+#![allow(deprecated)]
+
 use rmcp::ClientHandler;
 use rmcp::RoleClient;
 use rmcp::model::CancelledNotificationParam;
 use rmcp::model::ClientInfo;
-use rmcp::model::CreateElicitationRequestParam;
-use rmcp::model::CreateElicitationResult;
+use rmcp::model::ElicitRequestParams;
+use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::LoggingLevel;
 use rmcp::model::LoggingMessageNotificationParam;
@@ -31,17 +33,19 @@ impl ClientHandler for LoggingClientHandler {
     // TODO (CODEX-3571): support elicitations.
     async fn create_elicitation(
         &self,
-        request: CreateElicitationRequestParam,
+        request: ElicitRequestParams,
         _context: RequestContext<RoleClient>,
-    ) -> Result<CreateElicitationResult, rmcp::ErrorData> {
+    ) -> Result<ElicitResult, rmcp::ErrorData> {
+        let message = match &request {
+            ElicitRequestParams::FormElicitationParams { message, .. }
+            | ElicitRequestParams::UrlElicitationParams { message, .. } => message.as_str(),
+            _ => "<unknown elicitation type>",
+        };
         info!(
             "MCP server requested elicitation ({}). Elicitations are not supported yet. Declining.",
-            request.message
+            message
         );
-        Ok(CreateElicitationResult {
-            action: ElicitationAction::Decline,
-            content: None,
-        })
+        Ok(ElicitResult::new(ElicitationAction::Decline))
     }
 
     async fn on_cancelled(
@@ -50,7 +54,7 @@ impl ClientHandler for LoggingClientHandler {
         _context: NotificationContext<RoleClient>,
     ) {
         info!(
-            "MCP server cancelled request (request_id: {}, reason: {:?})",
+            "MCP server cancelled request (request_id: {:?}, reason: {:?})",
             params.request_id, params.reason
         );
     }
@@ -99,6 +103,7 @@ impl ClientHandler for LoggingClientHandler {
             level,
             logger,
             data,
+            ..
         } = params;
         let logger = logger.as_deref();
         match level {

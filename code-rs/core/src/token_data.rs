@@ -4,11 +4,12 @@ use chrono::Utc;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
+use std::fmt;
 use thiserror::Error;
 use tracing::Level;
 
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct TokenData {
     /// Flat info parsed from the JWT in auth.json.
     #[serde(
@@ -34,8 +35,19 @@ impl TokenData {
     }
 }
 
+impl fmt::Debug for TokenData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenData")
+            .field("id_token", &self.id_token)
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("account_id", &self.account_id)
+            .finish()
+    }
+}
+
 /// Flat subset of useful claims in id_token from auth.json.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct IdTokenInfo {
     pub email: Option<String>,
     /// The ChatGPT subscription plan type
@@ -56,6 +68,17 @@ impl IdTokenInfo {
 
     pub fn is_fedramp_account(&self) -> bool {
         self.chatgpt_account_is_fedramp
+    }
+}
+
+impl fmt::Debug for IdTokenInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdTokenInfo")
+            .field("email", &self.email)
+            .field("chatgpt_plan_type", &self.chatgpt_plan_type)
+            .field("chatgpt_account_is_fedramp", &self.chatgpt_account_is_fedramp)
+            .field("raw_jwt", &"<redacted>")
+            .finish()
     }
 }
 

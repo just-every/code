@@ -174,12 +174,9 @@ mod tests {
     #[test]
     fn convert_call_tool_result_defaults_missing_content() -> Result<()> {
         let structured_content = json!({ "key": "value" });
-        let rmcp_result = RmcpCallToolResult {
-            content: vec![],
-            structured_content: Some(structured_content.clone()),
-            is_error: Some(true),
-            meta: None,
-        };
+        let mut rmcp_result = RmcpCallToolResult::success(vec![]);
+        rmcp_result.structured_content = Some(structured_content.clone());
+        rmcp_result.is_error = Some(true);
 
         let result = convert_call_tool_result(rmcp_result)?;
 
@@ -192,7 +189,8 @@ mod tests {
 
     #[test]
     fn convert_call_tool_result_preserves_existing_content() -> Result<()> {
-        let rmcp_result = RmcpCallToolResult::success(vec![rmcp::model::Content::text("hello")]);
+        let rmcp_result =
+            RmcpCallToolResult::success(vec![rmcp::model::ContentBlock::text("hello")]);
 
         let result = convert_call_tool_result(rmcp_result)?;
 
