@@ -464,6 +464,23 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )
+    } else if slug.starts_with("gpt-5.4") {
+        model_family!(
+            slug, "gpt-5.4",
+            supports_reasoning_summaries: true,
+            base_instructions: BASE_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            default_reasoning_effort: Some(ReasoningEffort::Medium),
+            supports_parallel_tool_calls: true,
+            supports_search_tool: true,
+            prefer_websockets: true,
+            uses_shell_command_tool: true,
+            supports_image_detail_original: true,
+            supports_image_generation: true,
+            context_window: Some(CONTEXT_WINDOW_272K),
+            max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
+            truncation_policy: TruncationPolicy::Tokens(10_000),
+        )
     } else if slug.starts_with("gpt-5.2") {
         model_family!(
             slug, "gpt-5.2",
