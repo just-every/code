@@ -302,6 +302,7 @@ impl ChatWidget {
         // or discard the already-known limits shown by /status.
         self.rate_limit_snapshots_by_limit_id =
             std::mem::take(&mut previous.rate_limit_snapshots_by_limit_id);
+        self.usage_notice_state = std::mem::take(&mut previous.usage_notice_state);
         self.codex_rate_limit_reached_type = previous.codex_rate_limit_reached_type;
         self.codex_spend_control_reached = previous.codex_spend_control_reached;
         self.backend_banner_state.presented = None;
@@ -415,7 +416,7 @@ impl ChatWidget {
         }
         let is_reserve = banner.is_some_and(|banner| banner.banner_type == LUNA_RESERVE_BANNER);
         let content = banner.map(|banner| {
-            let mut content = banner.actionable_banner();
+            let mut content = banner.actionable_banner(self.clock_format);
             if banner.banner_type == LUNA_RESERVE_BANNER
                 && self.current_model() != LUNA_RESERVE_MODEL
             {

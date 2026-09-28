@@ -230,6 +230,7 @@ impl RequestPluginInstallHandler {
                         session.thread_id.to_string(),
                         turn.sub_id.clone(),
                         turn.originator.clone(),
+                        /*turn_metadata*/ None,
                     ),
                     PluginInstallRequested {
                         suggestion_id: suggestion_id.clone(),
@@ -254,8 +255,7 @@ impl RequestPluginInstallHandler {
                 request_id,
                 request,
             )
-            .await
-            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            .await;
         let response = elicitation.response;
         if let Some(response) = response.as_ref() {
             maybe_persist_disabled_install_request(&session, &turn, &tool, response).await;

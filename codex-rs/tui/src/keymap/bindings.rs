@@ -103,6 +103,17 @@ pub(crate) struct KeymapActionId {
 }
 
 impl KeymapActionId {
+    /// Activity focus and Find remain active while transcript groups use list navigation.
+    pub(super) fn overlaps(self, other: Self) -> bool {
+        self.context.overlaps(other.context)
+            || (self.context == KeymapContext::Global
+                && matches!(self.action, "focus_activity" | "find_transcript")
+                && other.context == KeymapContext::List)
+            || (other.context == KeymapContext::Global
+                && matches!(other.action, "focus_activity" | "find_transcript")
+                && self.context == KeymapContext::List)
+    }
+
     pub(crate) fn config_path(self) -> String {
         format!("tui.keymap.{}.{}", self.context.config_name(), self.action)
     }
@@ -123,8 +134,17 @@ macro_rules! runtime_group_mut {
     };
 }
 
+macro_rules! configured_binding_slot {
+    ($keymap:ident, $group:ident, $action:ident, runtime_only) => {
+        None
+    };
+    ($keymap:ident, $group:ident, $action:ident) => {
+        Some(&$keymap.$group.$action)
+    };
+}
+
 macro_rules! define_runtime_action_bindings {
-    ($($context:literal => $context_id:ident, $group:ident, $config_group:ident [$($action:ident),+ $(,)?]),+ $(,)?) => {
+    ($($context:literal => $context_id:ident, $group:ident, $config_group:ident [$($action:ident $(=> $runtime_only:ident)?),+ $(,)?]),+ $(,)?) => {
         /// Resolve a config context/action pair to its runtime identity.
         pub(crate) fn keymap_action_id(
             context: &str,
@@ -161,7 +181,7 @@ macro_rules! define_runtime_action_bindings {
                 $(
                     $(
                         ($context, stringify!($action)) => {
-                            Some(&keymap.$config_group.$action)
+                            configured_binding_slot!(keymap, $config_group, $action $(, $runtime_only)?)
                         }
                     )+
                 )+
@@ -251,6 +271,9 @@ define_runtime_action_bindings! {
     "global" => Global, app, global [
         open_agents,
         open_transcript,
+        find_transcript,
+        focus_activity,
+        open_warnings => runtime_only,
         open_external_editor,
         copy,
         clear_terminal,
@@ -380,6 +403,7 @@ define_runtime_action_bindings! {
         jump_bottom,
         close,
         close_transcript,
+        find,
     ],
     "list" => List, list, list [
         move_up,

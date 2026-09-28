@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
-use codex_exec_server::ExecServerRuntimePaths;
+use codex_exec_server::ExecServerRuntimeOptions;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::UserInstructionsProvider;
 use codex_login::AuthManager;
@@ -37,7 +37,7 @@ pub async fn build_prompt_input(
             .await
             .map_err(|err| CodexErr::Fatal(err.to_string()))?;
 
-    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+    let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
         config.codex_self_exe.clone(),
         config.codex_linux_sandbox_exe.clone(),
     )?;

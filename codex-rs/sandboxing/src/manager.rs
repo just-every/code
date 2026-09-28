@@ -1,3 +1,4 @@
+use crate::LinuxSandboxPidNamespace;
 #[cfg(target_os = "linux")]
 use crate::bwrap::WSL1_BWRAP_WARNING;
 #[cfg(target_os = "linux")]
@@ -108,7 +109,6 @@ pub struct SandboxExecRequest {
     // TODO(anp): Reconcile these backend copies with the supplied sandbox context
     // (TurnEnvironment::sandbox_context for turns), preserving this launch snapshot.
     pub windows_sandbox_level: WindowsSandboxLevel,
-    pub windows_sandbox_private_desktop: bool,
     pub permission_profile: PermissionProfile,
     pub arg0: Option<String>,
 }
@@ -131,7 +131,6 @@ pub struct SandboxTransformRequest<'a> {
     // (TurnEnvironment::sandbox_context for turns) so selection shares its authority.
     pub use_legacy_landlock: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
-    pub windows_sandbox_private_desktop: bool,
 }
 
 /// Bundled arguments for a sandbox transformation whose result will be spawned
@@ -268,6 +267,7 @@ impl std::error::Error for SandboxTransformError {
 
 #[derive(Clone, Default)]
 pub struct SandboxManager {
+    linux_sandbox_pid_namespace: LinuxSandboxPidNamespace,
     #[cfg(target_os = "macos")]
     seatbelt_profile: MacosSeatbeltProfile,
     #[cfg(target_os = "macos")]
@@ -282,11 +282,18 @@ impl SandboxManager {
     /// Creates a manager that applies the narrower runtime profile required by filesystem helpers.
     pub fn for_file_system_helpers() -> Self {
         Self {
+            linux_sandbox_pid_namespace: LinuxSandboxPidNamespace::default(),
             #[cfg(target_os = "macos")]
             seatbelt_profile: MacosSeatbeltProfile::FileSystemHelper,
             #[cfg(target_os = "macos")]
             allowed_symlinked_codex_home: None,
         }
+    }
+
+    /// Applies a trusted executor startup policy, never a command or repository setting.
+    pub fn with_linux_sandbox_pid_namespace(mut self, mode: LinuxSandboxPidNamespace) -> Self {
+        self.linux_sandbox_pid_namespace = mode;
+        self
     }
 
     /// Allows otherwise-authorized writable roots beneath the opted-in user home
@@ -357,7 +364,6 @@ impl SandboxManager {
             sandbox_exe,
             use_legacy_landlock,
             windows_sandbox_level,
-            windows_sandbox_private_desktop,
         } = request;
         #[cfg(target_os = "macos")]
         let managed_network = command.managed_network.as_ref();
@@ -379,11 +385,6 @@ impl SandboxManager {
         let (argv, arg0_override, pending_sandboxed_request) = match sandbox {
             SandboxType::None => (argv, None, None),
             SandboxType::WindowsMxc => {
-                if windows_sandbox_private_desktop {
-                    return Err(SandboxTransformError::WindowsMxcPreparation(
-                        "private desktop isolation is not supported by MXC".to_string(),
-                    ));
-                }
                 if !codex_mxc_sandbox::is_available() {
                     return Err(SandboxTransformError::WindowsMxcPreparation(
                         "native MXC is unavailable on this executor".to_string(),
@@ -508,6 +509,11 @@ impl SandboxManager {
                     use_legacy_landlock,
                     managed_network.as_ref(),
                 );
+                // Keep default invocations compatible with older helpers. Only the
+                // startup opt-in requires a helper that understands PID inheritance.
+                if self.linux_sandbox_pid_namespace == LinuxSandboxPidNamespace::Inherit {
+                    args.insert(0, "--inherit-pid-namespace".to_string());
+                }
                 let mut full_command = Vec::with_capacity(1 + args.len());
                 full_command.push(os_string_to_command_component(exe.as_os_str().to_owned()));
                 full_command.append(&mut args);
@@ -527,20 +533,6 @@ impl SandboxManager {
                     ));
                 }
                 let pending = pending_sandboxed_request?;
-                if let Some(metrics) = codex_otel::global() {
-                    let _ = metrics.counter(
-                        "codex.windows_sandbox.private_desktop",
-                        /*inc*/ 1,
-                        &[(
-                            "enabled",
-                            if windows_sandbox_private_desktop {
-                                "true"
-                            } else {
-                                "false"
-                            },
-                        )],
-                    );
-                }
                 (argv, None, Some(pending))
             }
             #[cfg(not(target_os = "windows"))]
@@ -564,7 +556,6 @@ impl SandboxManager {
             network_environment_id: environment_id.map(str::to_string),
             sandbox,
             windows_sandbox_level,
-            windows_sandbox_private_desktop,
             permission_profile,
             arg0: arg0_override,
         })
@@ -688,10 +679,9 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
             inner_command,
             &native_cwd,
             workspace_roots,
-            &request.env,
+            &mut request.env,
             &request.permission_profile,
             request.windows_sandbox_level,
-            request.windows_sandbox_private_desktop,
             proxy_enforced,
             network_proxy_restricting_sid.as_deref(),
             proxy_settings_mode,

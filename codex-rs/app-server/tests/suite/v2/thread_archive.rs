@@ -14,6 +14,8 @@ use codex_app_server_protocol::ThreadArchivedNotification;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSource;
@@ -288,8 +290,10 @@ async fn thread_archive_shuts_down_resumed_archived_descendant() -> Result<()> {
     Ok(())
 }
 
+#[test_case::test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case::test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn thread_archive_requires_materialized_rollout() -> Result<()> {
+async fn thread_archive_without_turns(history_mode: ThreadHistoryMode) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
@@ -312,6 +316,7 @@ async fn thread_archive_requires_materialized_rollout() -> Result<()> {
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            history_mode: Some(history_mode),
             thread_source: Some(ThreadSource::User),
             service_name: Some("codex_work_desktop".to_string()),
             ..Default::default()
@@ -332,59 +337,7 @@ async fn thread_archive_requires_materialized_rollout() -> Result<()> {
         "thread id should not be discoverable before rollout materialization"
     );
 
-    // Archive should fail before the rollout is materialized.
-    let archive_id = mcp
-        .send_thread_archive_request(ThreadArchiveParams {
-            thread_id: thread.id.clone(),
-        })
-        .await?;
-    let archive_err: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(archive_id)),
-    )
-    .await??;
-    assert!(
-        archive_err
-            .error
-            .message
-            .contains("no rollout found for thread id"),
-        "unexpected archive error: {}",
-        archive_err.error.message
-    );
-
-    // Materialize rollout via a real user turn and confirm archive succeeds.
-    let _: TurnStartResponse = mcp
-        .request(|request_id| ClientRequest::TurnStart {
-            request_id,
-            params: TurnStartParams {
-                thread_id: thread.id.clone(),
-                client_user_message_id: None,
-                input: vec![UserInput::Text {
-                    text: "materialize".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                ..Default::default()
-            },
-        })
-        .await?;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
-
-    assert!(
-        rollout_path.exists(),
-        "expected rollout path {} to exist after first user message",
-        rollout_path.display()
-    );
-
-    let discovered_path =
-        find_thread_path_by_id_str(codex_home.path(), &thread.id, /*state_db_ctx*/ None)
-            .await?
-            .expect("expected rollout path for thread id to exist after materialization");
-    assert_paths_match_on_disk(&discovered_path, &rollout_path)?;
-
+    // Archiving materializes the empty rollout without creating a user turn.
     let _: ThreadArchiveResponse = mcp
         .request(|request_id| ClientRequest::ThreadArchive {
             request_id,
@@ -399,6 +352,18 @@ async fn thread_archive_requires_materialized_rollout() -> Result<()> {
     )
     .await??;
     assert_eq!(archived_notification.thread_id, thread.id);
+
+    let ThreadReadResponse { thread: archived } = mcp
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: thread.id.clone(),
+                include_turns: true,
+            },
+        })
+        .await?;
+    assert_eq!(archived.turns, Vec::new());
+    assert_eq!(archived.status, ThreadStatus::NotLoaded);
 
     let event = wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
         event["event_type"] == "codex_thread_archive_event"
@@ -449,6 +414,11 @@ async fn thread_archive_requires_materialized_rollout() -> Result<()> {
         "expected archived rollout path {} to exist",
         archived_rollout_path.display()
     );
+
+    assert_paths_match_on_disk(
+        archived.path.as_deref().expect("archived thread path"),
+        &archived_rollout_path,
+    )?;
 
     Ok(())
 }

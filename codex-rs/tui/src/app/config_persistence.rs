@@ -9,11 +9,19 @@ use codex_config::ConfigLayerSource;
 
 async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
+    application_network_policy: codex_http_client::NetworkPolicy,
     error_context: String,
 ) -> Result<Config> {
     // Tokio stores the task output inline even when it boxes the future. Keep the large
     // Config off the caller's stack while Tokio allocates the task during session switches.
-    match tokio::spawn(async move { builder.build().await.map(Box::new) }).await {
+    match tokio::spawn(async move {
+        builder.build().await.map(|mut config| {
+            config.application_network_policy = application_network_policy;
+            Box::new(config)
+        })
+    })
+    .await
+    {
         Ok(build_result) => build_result.map(|config| *config).wrap_err(error_context),
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
         Err(err) => Err(err).wrap_err_with(|| format!("{error_context} task failed")),
@@ -92,6 +100,7 @@ impl App {
             .cloud_config_bundle(self.cloud_config_bundle.clone());
         build_config_on_runtime_worker(
             builder,
+            self.config.application_network_policy.clone(),
             format!("Failed to rebuild config for cwd {cwd_display}"),
         )
         .await
@@ -114,6 +123,7 @@ impl App {
             .cloud_config_bundle(self.cloud_config_bundle.clone());
         build_config_on_runtime_worker(
             builder,
+            self.config.application_network_policy.clone(),
             format!("Failed to rebuild config for permission profile {profile_id}"),
         )
         .await
@@ -400,7 +410,7 @@ impl App {
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All);
-        self.local_settings = crate::local_settings::LocalSettings::from(&config);
+        self.local_settings = self.local_settings.reloaded(&config);
         self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         // Other preferences have runtime caches and are adopted when the widget is replaced.
         self.chat_widget
@@ -452,7 +462,7 @@ impl App {
     ) -> Result<(Config, crate::local_settings::LocalSettings)> {
         match self.rebuild_config_for_cwd(resume_cwd.clone()).await {
             Ok(config) => {
-                let local_settings = crate::local_settings::LocalSettings::from(&config);
+                let local_settings = self.local_settings.reloaded(&config);
                 Ok((config, local_settings))
             }
             Err(err) => {
@@ -851,6 +861,7 @@ impl App {
             Ok(response) => response,
             Err(err) => {
                 tracing::error!(error = %err, "failed to persist memory settings");
+                self.app_event_tx.send(AppEvent::FollowTranscript);
                 self.chat_widget
                     .add_error_message(format!("Failed to save memory settings: {err}"));
                 return false;
@@ -862,6 +873,7 @@ impl App {
                 message,
                 "memory settings config write was overridden by effective config"
             );
+            self.app_event_tx.send(AppEvent::FollowTranscript);
             self.chat_widget.add_error_message(format!(
                 "Memory setting changes were saved but not applied: {message}"
             ));
@@ -912,6 +924,7 @@ impl App {
 
         if let Err(err) = app_server.thread_memory_mode_set(thread_id, mode).await {
             tracing::error!(error = %err, %thread_id, "failed to update thread memory mode");
+            self.app_event_tx.send(AppEvent::FollowTranscript);
             self.chat_widget.add_error_message(format!(
                 "Saved memory settings, but failed to update the current thread: {err}"
             ));
@@ -922,6 +935,7 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
     ) {
+        self.app_event_tx.send(AppEvent::FollowTranscript);
         if let Err(err) = app_server.memory_reset().await {
             tracing::error!(error = %err, "failed to reset memories");
             self.chat_widget
@@ -1702,6 +1716,78 @@ enabled = false
     }
 
     #[tokio::test]
+    async fn new_session_and_config_rebuilds_keep_the_live_application_network_policy() -> Result<()>
+    {
+        use codex_http_client::ClientRouteClass;
+        use codex_http_client::DestinationPolicy;
+        use codex_http_client::HttpError;
+        use codex_http_client::NetworkPolicyController;
+        use codex_http_client::NetworkPolicyDenied;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        let controller = NetworkPolicyController::default();
+        let denied = DestinationPolicy::Restricted {
+            allowed_hosts: Default::default(),
+        };
+        assert!(controller.publish(controller.policy().revision(), denied.clone()));
+        app.config.application_network_policy = controller.policy();
+        let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        app.refresh_in_memory_config_from_disk().await?;
+        let new_config = app.load_new_session_config(&app_server).await?;
+        let permission_config = app
+            .rebuild_config_for_permission_profile(":workspace")
+            .await?;
+        let pet_url =
+            "https://persistent.oaistatic.com/codex/pets/v1/dewey-spritesheet-v4.webp".parse()?;
+        for config in [&app.config, &new_config, &permission_config] {
+            assert_eq!(config.application_network_policy, controller.policy());
+            assert_eq!(
+                config
+                    .http_client_factory()
+                    .network_policy()
+                    .acquire(&pet_url)
+                    .map(|_| ()),
+                Err(NetworkPolicyDenied::Destination),
+            );
+        }
+        let client = new_config
+            .http_client_factory()
+            .build_client(&server.uri(), ClientRouteClass::Other)?;
+        assert!(matches!(
+            client.get(server.uri()).send().await,
+            Err(HttpError::Policy(NetworkPolicyDenied::Destination))
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        assert!(controller.publish(
+            controller.policy().revision(),
+            DestinationPolicy::Unrestricted
+        ));
+        assert!(client.get(server.uri()).send().await?.status().is_success());
+        assert!(controller.publish(controller.policy().revision(), denied));
+        assert!(matches!(
+            client.get(server.uri()).send().await,
+            Err(HttpError::Policy(NetworkPolicyDenied::Destination))
+        ));
+        server.verify().await;
+        app_server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn refresh_in_memory_config_from_disk_best_effort_keeps_current_config_on_error()
     -> Result<()> {
         let mut app = make_test_app().await;
@@ -1881,6 +1967,8 @@ theme = "dracula"
         let mut tui = crate::tui::test_support::make_test_tui()?;
         app.sync_tui_theme_selection("dracula".to_string());
         app.chat_widget.requires_openai_auth = false;
+        crate::markdown_render::preferences::init(Default::default());
+        app.local_settings.tui.rendering.math = false;
         let mut legacy_config = app.config.clone();
         legacy_config.tui_theme = Some("nord".to_string());
         legacy_config.model_provider.requires_openai_auth = true;
@@ -1892,6 +1980,12 @@ theme = "dracula"
         let replacement = ChatWidget::new_with_app_event(init);
         assert_eq!(replacement.local_settings, app.local_settings);
         assert!(!replacement.requires_openai_auth);
+        app.replace_chat_widget(replacement);
+        let source = r"Math: \(x^2\)";
+        assert_eq!(
+            crate::markdown_render::render_markdown_text(source).to_string(),
+            source
+        );
         Ok(())
     }
 

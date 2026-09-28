@@ -76,14 +76,16 @@ use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}, "openai/ui": {"preferredModelDisplayMode": "fullscreen"}}), Some(McpAppDisplayMode::Fullscreen); "fullscreen")]
-#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}}), Some(McpAppDisplayMode::Inline); "missing preference")]
-#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}, "openai/ui": {"preferredModelDisplayMode": "unsupported"}}), Some(McpAppDisplayMode::Inline); "unsupported preference")]
-#[test_case(json!({"openai/outputTemplate": "ui://calendar/widget"}), Some(McpAppDisplayMode::Inline); "legacy uri")]
-#[test_case(json!({}), None; "result only ui")]
+#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}, "openai/ui": {"preferredModelDisplayMode": "fullscreen"}}), Some(McpAppDisplayMode::Fullscreen), Some("ui://calendar/widget"); "fullscreen")]
+#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}, "openai/ui": {"preferredModelDisplayMode": "inline"}}), Some(McpAppDisplayMode::Inline), Some("ui://calendar/widget"); "inline")]
+#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}}), None, Some("ui://calendar/widget"); "missing preference")]
+#[test_case(json!({"ui": {"resourceUri": "ui://calendar/widget"}, "openai/ui": {"preferredModelDisplayMode": "unsupported"}}), None, Some("ui://calendar/widget"); "unsupported preference")]
+#[test_case(json!({"openai/outputTemplate": "ui://calendar/widget"}), None, Some("ui://calendar/widget"); "legacy uri")]
+#[test_case(json!({}), None, None; "result only ui")]
 async fn mcp_app_ui_survives_tool_events_and_resume(
     mut metadata: Value,
     expected_mode: Option<McpAppDisplayMode>,
+    expected_uri: Option<&str>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -165,7 +167,7 @@ async fn mcp_app_ui_survives_tool_events_and_resume(
         resource_uri: "ui://calendar/widget".to_string(),
         preferred_model_display_mode,
     });
-    let expected_uri = expected_ui.as_ref().map(|ui| ui.resource_uri.clone());
+    let expected_uri = expected_uri.map(str::to_string);
     let mut observed = Vec::new();
     let mut completed = None;
     wait_for_event(&test.codex, |event| {
@@ -475,8 +477,8 @@ fn attribution_models(model_slugs: [&str; 2]) -> Vec<codex_protocol::openai_mode
         .expect("bundled models should parse")
         .models
         .into_iter()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("bundled gpt-5.4 model");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5 model");
     model_slugs
         .into_iter()
         .map(|slug| {
@@ -1492,6 +1494,28 @@ async fn apps_default_writes_prompts_for_writes_but_not_reads() -> Result<()> {
     assert_eq!(responses.requests().len(), 3);
     recorded_apps_tool_call_by_call_id(&server, read_call_id).await;
     recorded_apps_tool_call_by_call_id(&server, write_call_id).await;
+
+    let first_turn_id = responses.requests()[2].body_json()["client_metadata"]["turn_id"].clone();
+    assert!(first_turn_id.is_string());
+    assert_eq!(
+        serde_json::to_value(codex_core::test_support::mcp_attribution_snapshot(
+            &test.codex
+        ))?,
+        json!({
+            "status": "complete",
+            "sources": [{
+                "connector_id": "calendar",
+                "server_name": "codex_apps",
+                "tool_name": "calendar_list_events",
+                "first_turn_id": first_turn_id,
+            }, {
+                "connector_id": "calendar",
+                "server_name": "codex_apps",
+                "tool_name": "calendar_create_event",
+                "first_turn_id": first_turn_id,
+            }],
+        })
+    );
 
     test.codex.ensure_rollout_materialized().await;
     test.codex.flush_rollout().await?;

@@ -18,6 +18,18 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Selects local binding policy from the sandbox and executor OS.
+pub fn local_binding_policy_for_sandbox(
+    sandbox_type: SandboxType,
+    platform_os: Option<&str>,
+) -> codex_network_proxy::LocalBindingPolicy {
+    if sandbox_type == SandboxType::WindowsMxc && platform_os == Some("windows") {
+        codex_network_proxy::LocalBindingPolicy::RequireTrue
+    } else {
+        codex_network_proxy::LocalBindingPolicy::DefaultFalse
+    }
+}
+
 pub fn managed_proxy_routing_for_windows_sandbox(
     sandbox_type: SandboxType,
 ) -> codex_network_proxy::ManagedProxyRouting {
@@ -73,13 +85,6 @@ pub fn resolve_windows_sandbox_mode(cfg: &ConfigToml) -> Option<WindowsSandboxMo
         .as_ref()
         .and_then(|windows| windows.sandbox)
         .or_else(|| legacy_windows_sandbox_mode(cfg.features.as_ref()))
-}
-
-pub fn resolve_windows_sandbox_private_desktop(cfg: &ConfigToml) -> bool {
-    cfg.windows
-        .as_ref()
-        .and_then(|windows| windows.sandbox_private_desktop)
-        .unwrap_or_else(|| resolve_windows_sandbox_mode(cfg) != Some(WindowsSandboxModeToml::Mxc))
 }
 
 pub fn legacy_windows_sandbox_mode(

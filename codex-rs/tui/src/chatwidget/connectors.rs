@@ -213,37 +213,30 @@ impl ChatWidget {
     }
 
     fn connectors_loading_popup_params(&self) -> SelectionViewParams {
-        let mut header = ColumnRenderable::new();
-        header.push(Line::from("Apps".bold()));
-        header.push(Line::from("Loading installed and available apps...".dim()));
-
         SelectionViewParams {
             view_id: Some(CONNECTORS_SELECTION_VIEW_ID),
-            header: Box::new(header),
+            title: Some("Apps".to_string()),
+            subtitle: Some("Loading installed and available apps...".to_string()),
             items: vec![SelectionItem {
                 name: "Loading apps...".to_string(),
-                description: Some("This updates when the full list is ready.".to_string()),
+                description: Some("This updates when the full list is ready".to_string()),
                 is_disabled: true,
                 ..Default::default()
             }],
-            ..Default::default()
+            ..SelectionViewParams::picker()
         }
     }
 
     fn connectors_error_popup_params(&self) -> SelectionViewParams {
-        let mut header = ColumnRenderable::new();
-        header.push(Line::from("Apps".bold()));
-        header.push(Line::from("Failed to load apps.".dim()));
-
         SelectionViewParams {
             view_id: Some(CONNECTORS_SELECTION_VIEW_ID),
-            header: Box::new(header),
-            footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
+            title: Some("Apps".to_string()),
+            subtitle: Some("Failed to load apps.".to_string()),
             items: vec![
                 SelectionItem {
                     name: "App directory unavailable".to_string(),
                     description: Some(
-                        "The app directory request failed. Retry, or press Esc to continue."
+                        "Retry the failed app directory request, or press Esc to continue"
                             .to_string(),
                     ),
                     is_disabled: true,
@@ -251,7 +244,7 @@ impl ChatWidget {
                 },
                 SelectionItem {
                     name: "Retry".to_string(),
-                    description: Some("Reload installed and available apps.".to_string()),
+                    description: Some("Reload installed and available apps".to_string()),
                     actions: vec![Box::new(|tx| {
                         tx.send(AppEvent::RefreshConnectors {
                             force_refetch: true,
@@ -260,7 +253,7 @@ impl ChatWidget {
                     ..Default::default()
                 },
             ],
-            ..Default::default()
+            ..SelectionViewParams::picker()
         }
     }
 
@@ -274,14 +267,12 @@ impl ChatWidget {
             .iter()
             .filter(|connector| connector.is_accessible)
             .count();
-        let mut header = ColumnRenderable::new();
-        header.push(Line::from("Apps".bold()));
-        header.push(Line::from(
-            "Use $ to insert an installed app into your prompt.".dim(),
-        ));
-        header.push(Line::from(
-            format!("Installed {installed} of {total} available apps.").dim(),
-        ));
+        let header = Paragraph::new(vec![
+            Line::from("Apps".bold()),
+            Line::from("Use $ to insert an installed app into your prompt.".dim()),
+            Line::from(format!("Installed {installed} of {total} available apps.").dim()),
+        ])
+        .wrap(Wrap { trim: false });
         let initial_selected_idx = selected_connector_id.and_then(|selected_connector_id| {
             connectors
                 .iter()
@@ -304,12 +295,12 @@ impl ChatWidget {
             let is_installed = connector.is_accessible;
             let selected_label = if is_installed {
                 format!(
-                    "{status_label}. Press Enter to open the app page to install, manage, or enable/disable this app."
+                    "{status_label} · Press Enter to open the app page to install, manage, or enable/disable this app"
                 )
             } else {
-                format!("{status_label}. Press Enter to open the app page to install this app.")
+                format!("{status_label} · Press Enter to open the app page to install this app")
             };
-            let missing_label = format!("{status_label}. App link unavailable.");
+            let missing_label = format!("{status_label} · App link unavailable");
             let instructions = if connector.is_accessible {
                 "Manage this app in your browser."
             } else {
@@ -353,13 +344,12 @@ impl ChatWidget {
         SelectionViewParams {
             view_id: Some(CONNECTORS_SELECTION_VIEW_ID),
             header: Box::new(header),
-            footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,
             is_searchable: true,
             search_placeholder: Some("Type to search apps".to_string()),
             col_width_mode: ColumnWidthMode::AutoAllRows,
             initial_selected_idx,
-            ..Default::default()
+            ..SelectionViewParams::picker()
         }
     }
 

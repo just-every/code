@@ -7,6 +7,7 @@ use super::DecodedTextMerge;
 use super::Event;
 use super::FileCitations;
 use super::HyperlinkLine;
+use super::ListSpacing;
 use super::Options;
 use super::Parser;
 use super::Tag;
@@ -27,8 +28,8 @@ pub(crate) struct StreamingMarkdownRender {
     pub(crate) has_reference_link_definition: bool,
     /// Whether the first block is raw HTML, which joins a retained prefix without a separator.
     pub(crate) first_top_level_block_is_html: bool,
-    /// Mermaid in the final top-level block stays mutable, including within a list or quote.
-    pub(crate) mermaid_start: Option<usize>,
+    /// Transformable fences in the final block stay mutable, including within a list or quote.
+    pub(crate) mutable_fence_start: Option<usize>,
 }
 
 /// Render `input` while tracking the final mutable top-level block.
@@ -40,29 +41,40 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
     width: Option<usize>,
     cwd: Option<&Path>,
     is_hidden_link_destination: &dyn Fn(&str) -> bool,
+    list_spacing: ListSpacing,
 ) -> StreamingMarkdownRender {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
+    options.set(
+        Options::ENABLE_TASKLISTS,
+        super::preferences::current().lists,
+    );
     let citations = FileCitations::new(input, options);
     let math = MathMarkdown::new(&citations.markdown, options, width);
     let parser = Parser::new_ext(&math.markdown, options);
     let has_reference_link_definition = parser.reference_definitions().iter().next().is_some();
     let parser = TopLevelBlockTracker {
-        iter: DecodedTextMerge::new(citations.events(math.events(parser.into_offset_iter()), cwd)),
+        iter: DecodedTextMerge::new(super::source_tables::preserve(
+            input,
+            citations.events(math.events(parser.into_offset_iter()), cwd),
+        )),
         depth: 0,
         block_count: 0,
         last_start: 0,
         first_is_html: false,
-        mermaid_start: None,
+        mutable_fence_start: None,
     };
-    let mut writer = Writer::new(input, parser, width, cwd, is_hidden_link_destination);
-    writer.run();
+    let mut writer = Writer::new(input, width, cwd, is_hidden_link_destination);
+    // Drop the consumed parser before the rendering state, including on unwind.
+    let mut parser = parser;
+    writer.list_spacing = list_spacing;
+    writer.run(&mut parser);
     StreamingMarkdownRender {
         lines: writer.text,
         pending_math_start: math.pending_start,
-        last_top_level_block_start: (writer.iter.block_count > 1)
-            .then_some(writer.iter.last_start)
+        last_top_level_block_start: (parser.block_count > 1)
+            .then_some(parser.last_start)
             .filter(|start| math.pending_start.is_none_or(|pending| *start <= pending))
             .filter(|start| {
                 !math
@@ -71,8 +83,8 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
                     .any(|range| range.start < *start && *start < range.end)
             }),
         has_reference_link_definition,
-        first_top_level_block_is_html: writer.iter.first_is_html,
-        mermaid_start: writer.iter.mermaid_start,
+        first_top_level_block_is_html: parser.first_is_html,
+        mutable_fence_start: parser.mutable_fence_start,
     }
 }
 
@@ -83,7 +95,7 @@ struct TopLevelBlockTracker<I> {
     block_count: usize,
     last_start: usize,
     first_is_html: bool,
-    mermaid_start: Option<usize>,
+    mutable_fence_start: Option<usize>,
 }
 
 impl<'a, I> Iterator for TopLevelBlockTracker<I>
@@ -95,7 +107,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let (event, range) = self.iter.next()?;
         if self.depth == 0 && matches!(&event, Event::Start(_) | Event::Rule | Event::Html(_)) {
-            self.mermaid_start = None;
+            self.mutable_fence_start = None;
             self.block_count += 1;
             self.last_start = range.start;
             if self.block_count == 1 {
@@ -104,9 +116,12 @@ where
             }
         }
         if let Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(info))) = &event
-            && info.split([',', ' ', '\t']).next() == Some("mermaid")
+            && (super::preferences::current().mermaid
+                && info.split([',', ' ', '\t']).next() == Some("mermaid")
+                || !super::preferences::current().tables
+                    && crate::table_detect::is_markdown_fence_info(info, /*marker_len*/ 0))
         {
-            self.mermaid_start.get_or_insert(self.last_start);
+            self.mutable_fence_start.get_or_insert(self.last_start);
         }
         match event {
             Event::Start(_) => self.depth += 1,

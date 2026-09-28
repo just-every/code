@@ -11,6 +11,7 @@ mod parse;
 mod relations;
 mod sequence;
 mod state;
+mod syntax;
 
 pub use output::Role;
 pub use output::Span;
@@ -63,19 +64,7 @@ pub fn render_spans(source: &str, max_width: usize) -> Result<Vec<Vec<Span>>, Re
     if source.len() > MAX_SOURCE {
         return Err(RenderError::Limit);
     }
-    let statements = source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("%%"))
-        .flat_map(|line| line.split(';'))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if source
-        .lines()
-        .any(|line| line.trim_start().starts_with("%%{"))
-    {
-        return Err(RenderError::Unsupported);
-    }
+    let statements = syntax::statements(source)?;
     let (header, body) = statements.split_first().ok_or(RenderError::Unsupported)?;
     match *header {
         "sequenceDiagram" => sequence::render(body, max_width),
@@ -107,11 +96,22 @@ impl Direction {
     }
 }
 
+/// Node shapes supported by the terminal renderer.
+#[derive(Debug, PartialEq, Eq)]
+enum Shape {
+    /// A rectangular node, such as `A[Work]`.
+    Rectangle,
+    /// A decision node (`A{Done?}`), rendered with a `◇` marker inside a box.
+    Decision,
+    /// A stadium node (`A([Start])`), rendered as a box with rounded corners.
+    Stadium,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Node {
     id: String,
     label: String,
-    decision: bool,
+    shape: Shape,
     declared: bool,
     members: Vec<String>,
 }
@@ -159,7 +159,7 @@ impl Graph {
         self.nodes.push(Node {
             id: id.to_owned(),
             label: id.to_owned(),
-            decision: false,
+            shape: Shape::Rectangle,
             declared: false,
             members: Vec::new(),
         });

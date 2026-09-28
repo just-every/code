@@ -344,7 +344,10 @@ fn finalized_agent_cell_replays_visualization_link() {
         .flat_map(|line| &line.line.spans)
         .find(|span| span.content.starts_with("file://"))
         .expect("visualization URL span");
-    assert_eq!(url_span.style, Style::new().cyan().underlined());
+    assert_eq!(
+        url_span.style,
+        Style::new().fg(crate::style::accent_color()).underlined()
+    );
     let destinations = lines
         .iter()
         .flat_map(|line| &line.hyperlinks)
@@ -355,6 +358,28 @@ fn finalized_agent_cell_replays_visualization_link() {
         destinations
             .iter()
             .all(|destination| destination.starts_with("file://"))
+    );
+    let source = lines
+        .iter()
+        .find(|line| !line.hyperlinks.is_empty())
+        .and_then(|line| line.source.clone())
+        .expect("linked line copy source");
+    let start = source.text.find("file://").expect("visible file URL");
+    let mut selected = Vec::new();
+    crate::markdown_copy::SelectedLine::append(
+        &mut selected,
+        source,
+        start..start + "file://".len(),
+        "",
+    );
+    let (copied, format) = crate::markdown_copy::selection(&selected, "file://");
+    assert_eq!(
+        (copied.as_str(), format),
+        ("file://", crate::clipboard_copy::CopyFormat::Markdown)
+    );
+    assert_eq!(
+        crate::clipboard_html::render_markdown(&copied),
+        "<p>file://</p>\n"
     );
 }
 

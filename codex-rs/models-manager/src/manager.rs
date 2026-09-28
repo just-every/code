@@ -54,6 +54,12 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
         false
     }
 
+    /// Returns whether explicit provider configuration supplies API-key authentication.
+    /// This takes precedence over any unrelated first-party login used by the picker.
+    fn has_provider_api_key(&self) -> bool {
+        false
+    }
+
     /// Fetches the latest remote model catalog and optional ETag.
     fn list_models<'a>(
         &'a self,
@@ -137,6 +143,15 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         refresh_strategy: RefreshStrategy,
         http_client_factory: HttpClientFactory,
     ) -> ModelsManagerFuture<'_, ModelsResponse>;
+
+    /// Best-effort refresh when the in-memory catalog belongs to different credentials.
+    /// Static catalogs need no refresh. Failures leave the existing cache/default fallback.
+    fn refresh_after_auth_change(
+        &self,
+        _http_client_factory: HttpClientFactory,
+    ) -> ModelsManagerFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
 
     /// Return the current in-memory remote model catalog without refreshing or loading cache state.
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>>;
@@ -345,6 +360,36 @@ impl ModelsManager for OpenAiModelsManager {
         ))
     }
 
+    fn refresh_after_auth_change(
+        &self,
+        http_client_factory: HttpClientFactory,
+    ) -> ModelsManagerFuture<'_, ()> {
+        Box::pin(async move {
+            let refresh = async {
+                // Resolve lazy command credentials before comparing catalog identities.
+                if !self.should_refresh_models().await {
+                    return Ok(());
+                }
+                let identity = self.endpoint_client.identity();
+                if identity.is_some() && self.remote_models.read().await.identity == identity {
+                    return Ok(());
+                }
+                self.refresh_available_models(
+                    RefreshStrategy::OnlineIfUncached,
+                    &http_client_factory,
+                )
+                .await
+            };
+            // Include auth resolution and cache access in the best-effort deadline.
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(/*secs*/ 5), refresh).await,
+                Ok(Ok(()))
+            ) {
+                tracing::warn!("model catalog refresh after auth change failed or timed out");
+            }
+        })
+    }
+
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move {
             let entry = self.remote_models.read().await;
@@ -437,9 +482,13 @@ impl OpenAiModelsManager {
         refresh_strategy: RefreshStrategy,
         http_client_factory: &HttpClientFactory,
     ) -> CoreResult<()> {
-        // Gate cache loading as well as requests; disabled sessions use bundled API-key models.
-        if self.supports_api_key_discovery()
-            && !self.api_key_model_discovery_enabled.load(Ordering::SeqCst)
+        // API-key discovery must be enabled and supported before reusing a remote catalog.
+        // Otherwise even a matching cache from an earlier run would bypass bundled-only behavior.
+        // Command-auth providers retain their existing discovery behavior.
+        if self.uses_api_key_auth()
+            && !self.endpoint_client.has_command_auth()
+            && (!self.endpoint_client.supports_api_key_models()
+                || !self.api_key_model_discovery_enabled.load(Ordering::SeqCst))
         {
             return Ok(());
         }
@@ -502,7 +551,12 @@ impl OpenAiModelsManager {
     fn supports_api_key_discovery(&self) -> bool {
         self.endpoint_client.supports_api_key_models()
             && !self.endpoint_client.has_command_auth()
-            && self
+            && self.uses_api_key_auth()
+    }
+
+    fn uses_api_key_auth(&self) -> bool {
+        self.endpoint_client.has_provider_api_key()
+            || self
                 .auth_manager
                 .as_ref()
                 .is_some_and(|auth_manager| auth_manager.auth_mode() == Some(AuthMode::ApiKey))

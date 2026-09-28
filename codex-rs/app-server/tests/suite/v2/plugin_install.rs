@@ -2466,6 +2466,7 @@ async fn plugin_install_makes_bundled_mcp_servers_available_to_followup_requests
 
     let request_id = mcp
         .send_list_mcp_server_status_request(ListMcpServerStatusParams {
+            server_name: None,
             cursor: None,
             limit: None,
             detail: None,

@@ -18,6 +18,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 pub use codex_protocol::error::CodexErrKind;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -43,6 +44,7 @@ pub struct TrackEventsContext {
     pub thread_id: String,
     pub turn_id: String,
     pub product_client_id: String,
+    pub turn_metadata: Option<Arc<dyn TurnAnalyticsMetadata>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -137,12 +139,14 @@ pub fn build_track_events_context(
     thread_id: String,
     turn_id: String,
     product_client_id: String,
+    turn_metadata: Option<Arc<dyn TurnAnalyticsMetadata>>,
 ) -> TrackEventsContext {
     TrackEventsContext {
         model_slug,
         thread_id,
         turn_id,
         product_client_id,
+        turn_metadata,
     }
 }
 
@@ -187,6 +191,8 @@ pub struct TurnResolvedConfigFact {
     pub turn_id: String,
     pub thread_id: String,
     pub turn_metadata: Arc<dyn TurnAnalyticsMetadata>,
+    /// Observed active plugin inventory. None is unknown; Some([]) is observed empty.
+    pub active_plugin_ids_at_turn_start: Option<Vec<String>>,
     pub num_input_images: usize,
     pub submission_type: Option<TurnSubmissionType>,
     pub ephemeral: bool,
@@ -275,6 +281,7 @@ impl TurnCodexErrorFact {
 pub(crate) struct TurnCodexError {
     pub(crate) kind: CodexErrKind,
     pub(crate) http_status_code: Option<u16>,
+    pub(crate) usage_limit_window_minutes: Option<u16>,
 }
 
 impl TurnCodexError {
@@ -282,6 +289,10 @@ impl TurnCodexError {
         Self {
             kind: error.into(),
             http_status_code: error.http_status_code_value(),
+            usage_limit_window_minutes: match error.details() {
+                CodexErrorDetails::UsageLimitReached(error) => error.limit_window_minutes,
+                _ => None,
+            },
         }
     }
 }
@@ -463,6 +474,7 @@ pub enum CompactionPhase {
     StandaloneTurn,
     PreTurn,
     MidTurn,
+    PostTurn,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -492,6 +504,7 @@ pub struct CodexCompactionEvent {
     pub status: CompactionStatus,
     pub codex_error_kind: Option<CodexErrKind>,
     pub codex_error_http_status_code: Option<u16>,
+    pub usage_limit_window_minutes: Option<u16>,
     pub active_context_tokens_before: i64,
     pub active_context_tokens_after: i64,
     pub retained_image_count: Option<usize>,

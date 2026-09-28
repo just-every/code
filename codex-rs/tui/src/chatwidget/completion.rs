@@ -28,8 +28,7 @@ impl ChatWidget {
                 } else {
                     None
                 }
-            })
-            .filter(|seconds| *seconds > 60);
+            });
         let completed_at = turn
             .completed_at
             .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, /*nsecs*/ 0))
@@ -46,7 +45,9 @@ impl ChatWidget {
             /*runtime_metrics*/ None,
         );
         Some(match completed_at {
-            Some(completed_at) => cell.with_completed_at(completed_at),
+            Some(completed_at) => {
+                cell.with_completed_at(completed_at, crate::clock_format::ClockFormat::system())
+            }
             None => cell,
         })
     }

@@ -1,5 +1,6 @@
 //! Inline editing for asynchronous questions. Legacy request_user_input keeps its own overlay.
-//! Only locally accepted submissions remove questions; arrival and expiry never steal focus.
+//! Local submissions and committed desktop replies remove questions; arrival never steals focus.
+//! Live turn completion recovers unsent typed drafts before removing pending questions.
 
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
@@ -36,6 +37,7 @@ pub(super) const DESIRED_SPACERS_BETWEEN_SECTIONS: u16 = 2;
 #[derive(Debug, Clone, PartialEq)]
 struct PendingQuestion {
     message_id: String,
+    question_id: String,
     question: AsyncUserInputQuestion,
     options_state: ScrollState,
     draft: ComposerDraft,
@@ -49,6 +51,7 @@ pub(crate) struct QuestionState {
     current_idx: usize,
     expanded: bool,
     seen_ids: HashSet<String>,
+    answered_ids: HashSet<String>,
 }
 
 pub(crate) enum QuestionSubmission {
@@ -64,7 +67,6 @@ pub(crate) struct AsyncQuestions {
     pub(crate) delivery_enabled: bool,
     pub(crate) submission: Option<QuestionSubmission>,
     visible_options: std::cell::Cell<(usize, usize)>,
-    pub(crate) next_hint: Option<crate::key_hint::ShortcutHint>,
     keymap: RuntimeKeymap,
     // Ignore autorepeat from the number key that opened Other.
     other_selector: Option<KeyCode>,
@@ -100,7 +102,6 @@ impl AsyncQuestions {
             delivery_enabled: true,
             submission: None,
             visible_options: std::cell::Cell::new((0, 0)),
-            next_hint: None,
             keymap,
             other_selector: None,
             composer,
@@ -182,6 +183,9 @@ impl AsyncQuestions {
                 let number = index + 1;
                 let prefix = format!("{prefix} {number}. ");
                 GenericDisplayRow {
+                    // Other stays an inline editor with foreground-only focus.
+                    selection_style: (index < self.options().len())
+                        .then(super::picker_style::selection_style),
                     name: format!("{prefix}{label}"),
                     wrap_indent: Some(prefix.width()),
                     ..Default::default()
@@ -194,7 +198,6 @@ impl AsyncQuestions {
         if !self.has_options() {
             return 0;
         }
-        let row_width = width.saturating_add(1);
         let rows = self.option_rows();
         if self.other_selected() {
             let prefix = self.other_prefix_width(width);
@@ -202,13 +205,13 @@ impl AsyncQuestions {
                 &rows[..rows.len() - 1],
                 &ScrollState::default(),
                 rows.len(),
-                row_width,
+                width,
             ) + self
                 .composer
                 .inline_input_height(width.saturating_sub(prefix).max(1))
                 .clamp(1, 8)
         } else {
-            measure_rows_height(&rows, &ScrollState::default(), rows.len(), row_width)
+            measure_rows_height(&rows, &ScrollState::default(), rows.len(), width)
         }
     }
 

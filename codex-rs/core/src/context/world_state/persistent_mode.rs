@@ -6,7 +6,6 @@ use super::WorldStateHash;
 use super::WorldStateSection;
 use crate::context::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
-use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -49,11 +48,11 @@ pub(crate) struct PersistentModeSnapshot {
 
 impl PersistentModeState {
     pub(crate) fn new(
-        reasoning_effort: Option<&ReasoningEffort>,
+        enabled: bool,
         instructions_template: &str,
         send_user_message_async_available: bool,
     ) -> Self {
-        let instructions = if reasoning_effort == Some(&ReasoningEffort::Persistent) {
+        let instructions = if enabled {
             instructions_template.trim().replace(
                 "{{ approval_request_channel }}",
                 if send_user_message_async_available {

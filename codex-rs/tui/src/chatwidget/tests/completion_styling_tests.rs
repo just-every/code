@@ -1,6 +1,7 @@
 //! Exercises completion metadata through live notifications and restored turn history.
 
 use super::*;
+use crate::clock_format::ClockFormat;
 use chrono::Local;
 use chrono::TimeZone;
 use pretty_assertions::assert_eq;
@@ -56,7 +57,10 @@ fn saved_completion_label() -> String {
     Local
         .timestamp_opt(COMPLETED_AT, /*nsecs*/ 0)
         .unwrap()
-        .format("%b %-d, %Y at %-I:%M %p")
+        .format(&format!(
+            "%b %-d, %Y at {}",
+            ClockFormat::system().time_format()
+        ))
         .to_string()
 }
 
@@ -89,15 +93,15 @@ async fn completion_follows_plain_and_streamed_tool_answers() {
 }
 
 #[tokio::test]
-async fn completion_live_applies_duration_threshold_and_preserves_timestamp_fallback() {
+async fn completion_live_shows_known_durations_and_preserves_timestamp_fallback() {
     for (duration_ms, completed_at, prefix) in [
-        (598, Some(COMPLETED_AT), ""),
-        (1_000, Some(COMPLETED_AT), ""),
-        (60_000, Some(COMPLETED_AT), ""),
-        (60_999, Some(COMPLETED_AT), ""),
-        (61_000, Some(COMPLETED_AT), "Worked for 1m 1s · "),
-        (125_000, Some(COMPLETED_AT), "Worked for 2m 5s · "),
-        (1_000, None, ""),
+        (598, Some(COMPLETED_AT), "Worked for <1s • "),
+        (1_000, Some(COMPLETED_AT), "Worked for 1s • "),
+        (60_000, Some(COMPLETED_AT), "Worked for 1m 0s • "),
+        (60_999, Some(COMPLETED_AT), "Worked for 1m 0s • "),
+        (61_000, Some(COMPLETED_AT), "Worked for 1m 1s • "),
+        (125_000, Some(COMPLETED_AT), "Worked for 2m 5s • "),
+        (1_000, None, "Worked for 1s • "),
     ] {
         let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
         handle_turn_started(&mut chat, "turn-1");
@@ -109,7 +113,7 @@ async fn completion_live_applies_duration_threshold_and_preserves_timestamp_fall
             let time = if completed_at.is_some() {
                 saved_completion_label()
             } else {
-                time.format("%-I:%M %p").to_string()
+                time.format(ClockFormat::system().time_format()).to_string()
             };
             format!("{prefix}{time}")
         });
@@ -127,17 +131,26 @@ async fn completion_replay_preserves_metadata_and_input_without_live_side_effect
         (
             Some(125_000),
             Some(COMPLETED_AT),
-            format!("Worked for 2m 5s · {done}"),
+            format!("Worked for 2m 5s • {done}"),
         ),
         (None, None, String::new()),
-        (Some(598), Some(COMPLETED_AT), done.clone()),
-        (Some(60_000), Some(COMPLETED_AT), done.clone()),
+        (None, Some(COMPLETED_AT), done.clone()),
+        (
+            Some(598),
+            Some(COMPLETED_AT),
+            format!("Worked for <1s • {done}"),
+        ),
+        (
+            Some(60_000),
+            Some(COMPLETED_AT),
+            format!("Worked for 1m 0s • {done}"),
+        ),
         (
             Some(61_000),
             Some(COMPLETED_AT),
-            format!("Worked for 1m 1s · {done}"),
+            format!("Worked for 1m 1s • {done}"),
         ),
-        (Some(60_000), None, String::new()),
+        (Some(60_000), None, "Worked for 1m 0s".to_string()),
         (Some(125_000), None, "Worked for 2m 5s".to_string()),
     ] {
         for replay_kind in [
@@ -186,16 +199,23 @@ async fn completion_replay_waits_for_older_turn_items_to_load() {
     let newer = completed_turn(Some(1_000), Some(COMPLETED_AT));
 
     chat.replay_thread_turns(vec![unloaded, newer], ReplayKind::ResumeInitialMessages);
-    assert_eq!(completion_labels(&mut rx), saved_completion_label());
+    assert_eq!(
+        completion_labels(&mut rx),
+        format!("Worked for 1s • {}", saved_completion_label())
+    );
 
     chat.replay_thread_turns(vec![older], ReplayKind::ThreadSnapshot);
     let older_time = Local
         .timestamp_opt(older_completed_at, /*nsecs*/ 0)
         .unwrap()
-        .format("%b %-d, %Y at %-I:%M %p");
+        .format(&format!(
+            "%b %-d, %Y at {}",
+            ClockFormat::system().time_format()
+        ))
+        .to_string();
     assert_eq!(
         completion_labels(&mut rx),
-        format!("Worked for 2m 5s · {older_time}"),
+        format!("Worked for 2m 5s • {older_time}"),
     );
 }
 
@@ -245,14 +265,19 @@ fn completion_snapshot_normalization_preserves_clock_only_message_lines() {
         transcript
     );
 
-    let footer =
-        history_cell::FinalMessageSeparator::new(Some(3_723), /*runtime_metrics*/ None)
-            .with_completed_at(Local.timestamp_opt(COMPLETED_AT, /*nsecs*/ 0).unwrap());
-    assert_eq!(
-        normalize_completion_timestamps(
-            &footer,
-            lines_to_single_string(&footer.display_lines(/*width*/ 80))
-        ),
-        "  Worked for [duration] · [completion time]\n"
-    );
+    for clock_format in [ClockFormat::TwelveHour, ClockFormat::TwentyFourHour] {
+        let footer =
+            history_cell::FinalMessageSeparator::new(Some(3_723), /*runtime_metrics*/ None)
+                .with_completed_at(
+                    Local.timestamp_opt(COMPLETED_AT, /*nsecs*/ 0).unwrap(),
+                    clock_format,
+                );
+        assert_eq!(
+            normalize_completion_timestamps(
+                &footer,
+                lines_to_single_string(&footer.display_lines(/*width*/ 80))
+            ),
+            "  Worked for [duration] • [completion time]\n"
+        );
+    }
 }

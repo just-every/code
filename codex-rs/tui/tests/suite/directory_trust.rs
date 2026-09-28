@@ -71,6 +71,11 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
                         methods.lock().unwrap().push(request.method.clone());
                         let result = match request.method.as_str() {
                             "initialize" => json!({"userAgent": "trust-pty"}),
+                            "experimentalFeature/list" => json!({"data": (["code_mode_host", "auth_elicitation"].map(|name| json!({
+                                "name": name, "stage": "stable", "displayName": null,
+                                "description": null, "announcement": null,
+                                "enabled": true, "defaultEnabled": true,
+                            }))), "nextCursor": null}),
                             "account/read" => {
                                 json!({"account": {"type": "apiKey"}, "requiresOpenaiAuth": false})
                             }
@@ -144,7 +149,7 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
         let mut terminal = PtyCodex::start(
             &repo_root,
             codex_home,
-            &["do not submit this launch prompt"],
+            &["--no-alt-screen", "do not submit this launch prompt"],
         )?;
         let prompt = if trust_level.is_some() {
             "Open restricted"
@@ -153,32 +158,34 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
         };
         for (expected, input) in [
             (prompt, b"\x1b".as_slice()),
-            ("n new", b"\x1b"),
             ("Launch-folder task", b"\x1b[Bn"),
             (prompt, b"\x1b"),
             ("n new", b"n"),
-            ("You are in", b"\x1b"),
-            ("o resume", b"o"),
+            ("Folder access", b"\x1b"),
+            ("Agent command center", b"o"),
             ("Resume a previous session", b"\x1b[C"),
             ("Untrusted saved task", b"\r"),
             ("Open existing task", b"\r"),
             ("moved-folder", b"\x1b"),
-            ("o resume", b"n"),
+            ("Agent command center", b"n"),
             (prompt, b"\r"),
         ] {
             let is_consent = expected == prompt
                 || matches!(
                     expected,
-                    "Open existing task" | "moved-folder" | "You are in"
+                    "Open existing task" | "moved-folder" | "Folder access"
                 );
             terminal.wait_for_screen(expected)?;
-            if expected == "You are in" {
+            if expected == "Folder access" {
                 assert_eq!(
                     terminal
                         .screen_contents()
                         .lines()
-                        .find(|line| line.contains("You are in")),
-                    Some(format!("> You are in {}", repo_root.display()).as_str())
+                        .map(str::trim)
+                        .skip_while(|line| *line != "Folder access")
+                        .skip(/*n*/ 1)
+                        .find(|line| !line.is_empty()),
+                    Some(repo_root.to_string_lossy().as_ref())
                 );
             }
             if is_consent {

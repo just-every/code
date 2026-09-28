@@ -15,10 +15,8 @@ use codex_features::FeatureToml;
 use codex_features::FeaturesToml;
 use codex_network_proxy::EnvironmentNetworkPolicy;
 use codex_network_proxy::NetworkProxyConfig;
-use codex_network_proxy::NetworkProxyConstraints;
-use codex_network_proxy::NetworkProxyExecutorOs;
-use codex_network_proxy::build_config_state;
 use codex_protocol::models::PermissionProfile;
+use codex_utils_path_uri::Platform;
 
 use super::NetworkProxySpec;
 use super::permissions::apply_network_proxy_feature_config;
@@ -27,16 +25,14 @@ use super::permissions::apply_network_proxy_feature_config;
 #[error("invalid portable environment network policy")]
 pub struct EnvironmentNetworkConfigError;
 
-/// Drops listener addresses, which the executor chooses for each command, before
-/// validating an environment's selected network configuration. Use the returned
-/// value when deciding whether a policy is present and when preparing it.
+/// Drops listener addresses and rejects unsupported controller fields in an
+/// environment's selected network configuration. Use the returned value when
+/// deciding whether a policy is present and when preparing it.
 ///
-/// Socket policy validation uses the supplied executor OS: Allow keys must be
-/// NUL-free and absolute for that OS; Deny keys are preserved unchanged.
-/// Path normalization and socket support are determined by the executor.
+/// Domain and socket values may be replaced by feature settings or requirements.
+/// Validate the composed policy with [`validate_environment_network_policy`].
 pub fn project_environment_profile_network(
     network: Option<NetworkToml>,
-    executor_os: NetworkProxyExecutorOs,
 ) -> Result<Option<NetworkToml>, EnvironmentNetworkConfigError> {
     let Some(mut network) = network else {
         return Ok(None);
@@ -55,15 +51,6 @@ pub fn project_environment_profile_network(
     if network != supported {
         return Err(EnvironmentNetworkConfigError);
     }
-    // Reuse shared, host-independent policy validation.
-    // With MITM and credentials excluded, this checks patterns and allowed
-    // socket paths without discovering executor files.
-    build_config_state(
-        network.to_network_proxy_config(),
-        NetworkProxyConstraints::default(),
-        executor_os,
-    )
-    .map_err(|_| EnvironmentNetworkConfigError)?;
     Ok(Some(network))
 }
 
@@ -73,13 +60,14 @@ pub fn project_environment_profile_network(
 pub fn validate_environment_network_policy(
     policy: &EnvironmentNetworkPolicy,
     permission_profile: &PermissionProfile,
-    executor_os: NetworkProxyExecutorOs,
+    executor_os: Platform,
 ) -> Result<(), EnvironmentNetworkConfigError> {
     NetworkProxySpec::for_environment(
         /*controller*/ None,
         policy,
         permission_profile,
         &Policy::empty(),
+        codex_network_proxy::LocalBindingPolicy::DefaultFalse,
     )
     .and_then(|spec| spec.build_config_state_for_spec(executor_os).map(|_| ()))
     .map_err(|_| EnvironmentNetworkConfigError)

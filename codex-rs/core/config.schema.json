@@ -390,8 +390,30 @@
     },
     "AutoReviewToml": {
       "properties": {
+        "circuit_break_action": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CircuitBreakAction"
+            }
+          ],
+          "description": "Controls whether circuit-breaker interruptions include a structured error. Strict mode writes structured errors that older clients may not recognize when reading shared history. Defaults to `default`."
+        },
+        "conversation_history_max_output_tokens": {
+          "description": "Maximum estimated tokens per Guardian history-tool response, before the standard serialization allowance. Defaults to 4,000; stricter parent tool limits still apply.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "experimental_conversation_history_prompt": {
+          "description": "Experimental replacement for the history-retrieval instructions when history tools and Apps are enabled. Omitted or blank values use the built-in prompt.",
+          "type": "string"
+        },
         "experimental_policy_template": {
           "description": "Experimental full Guardian prompt template containing the tenant policy placeholder.",
+          "type": "string"
+        },
+        "extra_policy": {
+          "description": "Additional policy text inserted into the Guardian template's `{{ extra_policy }}` slot.",
           "type": "string"
         },
         "policy": {
@@ -505,6 +527,39 @@
       },
       "type": "object"
     },
+    "CircuitBreakAction": {
+      "oneOf": [
+        {
+          "description": "Emit the warning and interrupt without structured error details.",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Emit the same warning and interruption, with structured error details.",
+          "enum": [
+            "strict"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "CloudToml": {
+      "additionalProperties": false,
+      "description": "Cloud-owned feature settings.",
+      "properties": {
+        "skills": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FeatureToggleToml"
+            }
+          ],
+          "description": "Cloud skills are permitted by default; the host must supply a cloud provider."
+        }
+      },
+      "type": "object"
+    },
     "CodeModeConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -534,6 +589,12 @@
         "experimental_show_cell_overhead": {
           "description": "Show handler duration, code-mode host duration, and harness overhead in each code-mode cell response. Experimental: this option and the response format may change or be removed.",
           "type": "boolean"
+        },
+        "tool_input_schema_max_bytes": {
+          "description": "Maximum UTF-8 bytes per rendered tool input type, with a 16,000-byte minimum and default. For ordinary MCP tools, this is also at least their server's explicitly configured input limit.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -646,6 +707,9 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "agent_message_board": {
+              "type": "boolean"
+            },
             "analytics_plan_history": {
               "type": "boolean"
             },
@@ -767,6 +831,9 @@
             "default_mode_request_user_input": {
               "type": "boolean"
             },
+            "defer_mailbox_preemption": {
+              "type": "boolean"
+            },
             "deferred_executor": {
               "type": "boolean"
             },
@@ -818,6 +885,9 @@
             "guardian_approval": {
               "type": "boolean"
             },
+            "guardian_conversation_history_tools": {
+              "type": "boolean"
+            },
             "guardian_enhanced_node_repl_transcripts": {
               "type": "boolean"
             },
@@ -828,6 +898,9 @@
               "type": "boolean"
             },
             "guardian_reuse_parent_compaction": {
+              "type": "boolean"
+            },
+            "guardian_root_handoff_context": {
               "type": "boolean"
             },
             "guardianv2": {
@@ -861,6 +934,9 @@
               "type": "boolean"
             },
             "in_app_updates": {
+              "type": "boolean"
+            },
+            "instant_interrupt": {
               "type": "boolean"
             },
             "item_ids": {
@@ -927,6 +1003,9 @@
               "type": "boolean"
             },
             "powershell_shell_version": {
+              "type": "boolean"
+            },
+            "prefer_mxc": {
               "type": "boolean"
             },
             "prevent_idle_sleep": {
@@ -1035,6 +1114,9 @@
               "type": "boolean"
             },
             "step_model_switching": {
+              "type": "boolean"
+            },
+            "system_proxy_fallback": {
               "type": "boolean"
             },
             "telepathy": {
@@ -1234,6 +1316,32 @@
       },
       "type": "object"
     },
+    "CopyOnSelect": {
+      "description": "When transcript mouse selections are copied on release.",
+      "oneOf": [
+        {
+          "description": "Use the terminal-specific default.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy every nonempty transcript mouse selection on release.",
+          "enum": [
+            "always"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Require an explicit copy action.",
+          "enum": [
+            "never"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "CredentialAuthMethod": {
       "description": "Authentication formats supported by declarative credential providers.",
       "enum": [
@@ -1379,6 +1487,16 @@
           "default": {},
           "description": "Tracks which project paths have opted out of external config migration prompts.",
           "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "FeatureToggleToml": {
+      "additionalProperties": false,
+      "description": "Optional enablement of a configured feature.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1567,6 +1685,91 @@
       ],
       "type": "string"
     },
+    "GatewayOAuthConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/definitions/GatewayOAuthDelivery"
+        },
+        "redirect_port": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "token_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorization_url",
+        "client_id",
+        "delivery",
+        "token_url"
+      ],
+      "type": "object"
+    },
+    "GatewayOAuthDelivery": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "header"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "scheme": {
+              "default": "Bearer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "cookie"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "GhostSnapshotToml": {
       "additionalProperties": false,
       "properties": {
@@ -1688,7 +1891,7 @@
           "type": "number"
         },
         "thread_context": {
-          "description": "Use thread-owned context for sync and async Guardian. Defaults to false. Independent of the Guardian v2 `enabled` toggle.",
+          "description": "Deprecated and ignored; thread-owned Guardian context is always enabled.",
           "type": "boolean"
         },
         "transcript": {
@@ -2212,6 +2415,10 @@
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
           "type": "string"
+        },
+        "client_secret": {
+          "description": "OAuth client secret used for token exchange with a pre-registered client.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2236,6 +2443,25 @@
         }
       },
       "type": "object"
+    },
+    "McpStartupReadiness": {
+      "description": "Readiness needed before startup can expose this server's tools to the model.",
+      "oneOf": [
+        {
+          "description": "Use the live connection to determine startup readiness.",
+          "enum": [
+            "connection"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Allow a valid cached tool catalog while the live connection starts. Tool execution still requires the current connection.",
+          "enum": [
+            "catalog"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "MemoriesToml": {
       "additionalProperties": false,
@@ -2449,12 +2675,24 @@
           "description": "Value to use with `Authorization: Bearer <token>` header. Use of this config is discouraged in favor of `env_key` for security reasons, but this may be necessary when using this programmatically.",
           "type": "string"
         },
+        "gateway_oauth": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GatewayOAuthConfig"
+            }
+          ],
+          "description": "Secondary OAuth credentials required by the provider's gateway."
+        },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Additional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and value.",
           "type": "object"
+        },
+        "model_catalog_url": {
+          "description": "Optional full URL for a Codex-native model catalog. When unset, OpenAI discovery uses the Codex backend unless `base_url` overrides the inference endpoint.",
+          "type": "string"
         },
         "name": {
           "default": "",
@@ -2528,6 +2766,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "disable_direct_message": {
+          "description": "Disable the model's direct-message tools; spawning and automatic child results remain available.",
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -2548,6 +2790,10 @@
           "maximum": 3600000.0,
           "minimum": 0.0,
           "type": "integer"
+        },
+        "message_board_in_memory": {
+          "description": "Keep the message board in memory for a training session, including ephemeral sessions.",
+          "type": "boolean"
         },
         "min_wait_timeout_ms": {
           "format": "int64",
@@ -2724,6 +2970,7 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
+          "description": "Permits local servers and direct host-loopback connections and skips the proxy's additional private-network destination checks. Proxy domain rules still apply. Defaults to true for MXC, which cannot enforce false; otherwise defaults to false.",
           "type": "boolean"
         },
         "allow_upstream_proxy": {
@@ -2802,6 +3049,7 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
+          "description": "Permits local servers and direct host-loopback connections and skips the proxy's additional private-network destination checks. Proxy domain rules still apply. Defaults to true for MXC, which cannot enforce false; otherwise defaults to false.",
           "type": "boolean"
         },
         "allow_upstream_proxy": {
@@ -2986,25 +3234,20 @@
         }
       ]
     },
-    "OrchestratorFeatureToml": {
-      "additionalProperties": false,
-      "description": "Settings for a feature owned by the orchestrator.",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
     "OrchestratorToml": {
       "additionalProperties": false,
       "description": "Orchestrator-owned feature settings.",
       "properties": {
         "mcp": {
-          "$ref": "#/definitions/OrchestratorFeatureToml"
+          "$ref": "#/definitions/FeatureToggleToml"
         },
         "skills": {
-          "$ref": "#/definitions/OrchestratorFeatureToml"
+          "allOf": [
+            {
+              "$ref": "#/definitions/FeatureToggleToml"
+            }
+          ],
+          "description": "Legacy no-op setting retained for compatibility. Use `cloud.skills` to configure cloud skills."
         }
       },
       "type": "object"
@@ -3024,6 +3267,14 @@
             }
           ],
           "description": "Optional log exporter"
+        },
+        "log_agent_responses": {
+          "description": "Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter. Defaults to false. Response text can be sensitive and is capped at 64 KiB.",
+          "type": "boolean"
+        },
+        "log_guardian_assessments": {
+          "description": "Opt in to logging completed Guardian assessments to an OTLP log exporter. Defaults to false. Rationales can be sensitive and are capped at 64 KiB.",
+          "type": "boolean"
         },
         "log_user_prompt": {
           "description": "Log user prompt in traces",
@@ -3482,6 +3733,15 @@
           },
           "type": "array"
         },
+        "startup_readiness": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpStartupReadiness"
+            }
+          ],
+          "default": null,
+          "description": "Whether startup requires a live connection or can use a valid cached tool catalog."
+        },
         "startup_timeout_ms": {
           "default": null,
           "format": "uint64",
@@ -3496,6 +3756,13 @@
         "supports_parallel_tool_calls": {
           "default": null,
           "type": "boolean"
+        },
+        "tool_input_schema_max_bytes": {
+          "default": null,
+          "description": "UTF-8 byte threshold for compacting each ordinary MCP tool input schema. Defaults to 5,000 bytes. Code Mode also uses an explicitly configured limit when rendering each tool's input type. Larger limits preserve more parameter descriptions.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
         },
         "tool_timeout_sec": {
           "default": null,
@@ -3630,6 +3897,32 @@
           "description": "Use the latest working directory recorded in the selected session.",
           "enum": [
             "session"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "RightClickPaste": {
+      "description": "Right-click text paste when the fullscreen TUI has no selection.",
+      "oneOf": [
+        {
+          "description": "Enable on Windows/WSL/Linux, except recognized terminal-owned paste paths.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Enable on supported local platforms; selection and terminal-owned paste still win.",
+          "enum": [
+            "on"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Leave right-click paste to the terminal.",
+          "enum": [
+            "off"
           ],
           "type": "string"
         }
@@ -4104,8 +4397,38 @@
           "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `true`. Disabling this leaves `/recap` available on demand.",
           "type": "boolean"
         },
+        "copy_on_select": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CopyOnSelect"
+            }
+          ],
+          "default": "auto",
+          "description": "Copy selected transcript text when the mouse button is released. Defaults to `auto`: enabled except in direct terminals known to forward their native copy shortcut (Ghostty 1.2+, Kitty on macOS, Windows Terminal, and VS Code on Windows). Unknown terminals, Ghostty without a recognized version, and tmux/Zellij default to copying."
+        },
         "disable_paste_burst": {
           "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts. Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.",
+          "type": "boolean"
+        },
+        "effects": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiEffects"
+            }
+          ],
+          "default": {
+            "effort": true,
+            "progress": true,
+            "shimmer": true,
+            "starfield": true,
+            "title": true,
+            "welcome": true
+          },
+          "description": "Individual visual effects. Each also requires animations to be enabled."
+        },
+        "fullscreen_transcript": {
+          "default": true,
+          "description": "Own the fullscreen transcript, including scrolling, selection, and search. Defaults to `true`; alternate-screen restrictions take precedence.",
           "type": "boolean"
         },
         "keymap": {
@@ -4178,6 +4501,8 @@
             "global": {
               "clear_terminal": null,
               "copy": null,
+              "find_transcript": null,
+              "focus_activity": null,
               "open_agents": null,
               "open_external_editor": null,
               "open_transcript": null,
@@ -4204,6 +4529,7 @@
             "pager": {
               "close": null,
               "close_transcript": null,
+              "find": null,
               "half_page_down": null,
               "half_page_up": null,
               "jump_bottom": null,
@@ -4353,6 +4679,20 @@
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
         },
+        "rendering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TuiRendering"
+            }
+          ],
+          "default": {
+            "lists": true,
+            "math": true,
+            "mermaid": true,
+            "tables": true
+          },
+          "description": "Rich content rendering. Independent of animations and visual effects."
+        },
         "resume_cwd": {
           "allOf": [
             {
@@ -4361,6 +4701,15 @@
           ],
           "default": null,
           "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
+        },
+        "right_click_paste": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RightClickPaste"
+            }
+          ],
+          "default": "auto",
+          "description": "Right-click text paste fallback. Defaults to `auto` (Windows/WSL/Linux). `on` also enables macOS; neither mode reads over SSH or in recognized VS Code terminals. This controls the fullscreen fallback, not the terminal's own paste binding."
         },
         "screen_reader_detection_done": {
           "description": "Records the one-time screen-reader detection attempt. Either value skips detection.",
@@ -4377,7 +4726,7 @@
         },
         "show_server_version_notice": {
           "default": true,
-          "description": "Show an informational notice when the connected app server is an older stable release. Defaults to `true`; this does not control compatibility errors or version status.",
+          "description": "Show informational notices about connected app server version differences. Defaults to `true`; this does not control compatibility errors or version status.",
           "type": "boolean"
         },
         "show_tooltips": {
@@ -4421,11 +4770,6 @@
         "vim_mode_default": {
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
-          "type": "boolean"
-        },
-        "whimsy": {
-          "default": true,
-          "description": "Enable decorative effects such as Astra composer stars. Also requires animations. Defaults to `true`.",
           "type": "boolean"
         }
       },
@@ -4866,6 +5210,43 @@
       },
       "type": "object"
     },
+    "TuiEffects": {
+      "additionalProperties": false,
+      "description": "Optional visual effects. Disabling an effect preserves its underlying activity.",
+      "properties": {
+        "effort": {
+          "default": true,
+          "description": "Animate reasoning-effort changes in the composer and footer.",
+          "type": "boolean"
+        },
+        "progress": {
+          "default": true,
+          "description": "Animate activity bullets and loading spinners.",
+          "type": "boolean"
+        },
+        "shimmer": {
+          "default": true,
+          "description": "Shimmer status and loading text.",
+          "type": "boolean"
+        },
+        "starfield": {
+          "default": true,
+          "description": "Animate the composer starfield.",
+          "type": "boolean"
+        },
+        "title": {
+          "default": true,
+          "description": "Blink the terminal-title indicator when user action is required.",
+          "type": "boolean"
+        },
+        "welcome": {
+          "default": true,
+          "description": "Animate the welcome artwork.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "TuiGlobalKeymap": {
       "additionalProperties": false,
       "description": "Global keybindings. These are used when a context does not define an override.",
@@ -4885,6 +5266,22 @@
             }
           ],
           "description": "Copy the last agent response to the clipboard."
+        },
+        "find_transcript": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find text in the full transcript."
+        },
+        "focus_activity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Focus activity groups in the owned transcript to inspect their details."
         },
         "open_agents": {
           "allOf": [
@@ -5077,6 +5474,8 @@
           "default": {
             "clear_terminal": null,
             "copy": null,
+            "find_transcript": null,
+            "focus_activity": null,
             "open_agents": null,
             "open_external_editor": null,
             "open_transcript": null,
@@ -5117,6 +5516,7 @@
           "default": {
             "close": null,
             "close_transcript": null,
+            "find": null,
             "half_page_down": null,
             "half_page_up": null,
             "jump_bottom": null,
@@ -5342,6 +5742,14 @@
           ],
           "description": "Close the transcript overlay via its dedicated toggle key."
         },
+        "find": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find text in a transcript pager."
+        },
         "half_page_down": {
           "allOf": [
             {
@@ -5426,6 +5834,33 @@
           "type": "string"
         }
       ]
+    },
+    "TuiRendering": {
+      "additionalProperties": false,
+      "description": "Optional rich renderers. Disabled renderers preserve the original source.",
+      "properties": {
+        "lists": {
+          "default": true,
+          "description": "Render Markdown bullets and task-list markers as Unicode symbols.",
+          "type": "boolean"
+        },
+        "math": {
+          "default": true,
+          "description": "Render math expressions using Unicode notation.",
+          "type": "boolean"
+        },
+        "mermaid": {
+          "default": true,
+          "description": "Render Mermaid code blocks as diagrams.",
+          "type": "boolean"
+        },
+        "tables": {
+          "default": true,
+          "description": "Render pipe tables, including tables inside Markdown fences.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     },
     "TuiVimNormalKeymap": {
       "additionalProperties": false,
@@ -6112,10 +6547,6 @@
       "properties": {
         "sandbox": {
           "$ref": "#/definitions/WindowsSandboxModeToml"
-        },
-        "sandbox_private_desktop": {
-          "description": "Defaults to `true` for legacy sandboxes and `false` for MXC. Set to `false` to launch the final sandboxed child process on `Winsta0\\\\Default`.",
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -6235,6 +6666,14 @@
       "default": null,
       "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
     },
+    "cloud": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/CloudToml"
+        }
+      ],
+      "description": "Cloud-owned feature settings."
+    },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
       "type": "string"
@@ -6304,6 +6743,9 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "agent_message_board": {
+          "type": "boolean"
+        },
         "analytics_plan_history": {
           "type": "boolean"
         },
@@ -6425,6 +6867,9 @@
         "default_mode_request_user_input": {
           "type": "boolean"
         },
+        "defer_mailbox_preemption": {
+          "type": "boolean"
+        },
         "deferred_executor": {
           "type": "boolean"
         },
@@ -6476,6 +6921,9 @@
         "guardian_approval": {
           "type": "boolean"
         },
+        "guardian_conversation_history_tools": {
+          "type": "boolean"
+        },
         "guardian_enhanced_node_repl_transcripts": {
           "type": "boolean"
         },
@@ -6486,6 +6934,9 @@
           "type": "boolean"
         },
         "guardian_reuse_parent_compaction": {
+          "type": "boolean"
+        },
+        "guardian_root_handoff_context": {
           "type": "boolean"
         },
         "guardianv2": {
@@ -6519,6 +6970,9 @@
           "type": "boolean"
         },
         "in_app_updates": {
+          "type": "boolean"
+        },
+        "instant_interrupt": {
           "type": "boolean"
         },
         "item_ids": {
@@ -6585,6 +7039,9 @@
           "type": "boolean"
         },
         "powershell_shell_version": {
+          "type": "boolean"
+        },
+        "prefer_mxc": {
           "type": "boolean"
         },
         "prevent_idle_sleep": {
@@ -6693,6 +7150,9 @@
           "type": "boolean"
         },
         "step_model_switching": {
+          "type": "boolean"
+        },
+        "system_proxy_fallback": {
           "type": "boolean"
         },
         "telepathy": {
@@ -6990,6 +7450,13 @@
         }
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
+    },
+    "model_post_turn_compact_threshold_percent": {
+      "description": "Percentage of the usable context window that triggers compaction after a final response. Existing auto-compaction limits still apply. Omitted or zero disables turn-end compaction; valid values are 0–100.",
+      "format": "uint8",
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "type": "integer"
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",

@@ -1,21 +1,21 @@
 ---
 source: tui/src/app/agents_overview_tests.rs
-expression: "render_bottom_popup(&app.chat_widget,\n100).replace(&test_path_display(\"/tmp/project\"),\n\"/tmp/project\").replace(\"del\", \"del\")"
+expression: "render_bottom_popup(&app.chat_widget,\n100).replace(&test_path_display(\"/tmp/project\"),\n\"/tmp/project\").replace(\"fwd del\", \"del\")"
 ---
-  Agent command center
-  0 need input   0 working   4 ready
+  Agent command center  Group: Model  g
+   All 4   Needs you 0   Working 0   Ready 4   Inactive 0                     tab/shift+tab filter
   ────────────────────────────────────────────────────────────────────────────────────────────────
-  Unknown  1                                              │ Task details
-  › ○ Legacy task  Ready                                  │
+      Tasks                                               │ Task details
+  Unknown  1                                              │
+  › ○ Legacy task                                         │ Legacy task
+                                                          │ ○ Ready
+  model-a  2                                              │
+    ○ Recent task                                         │ Project
+    ○ Older task                                          │ /tmp/project
+                                                          │ Model: Unknown
+  model-b  1                                              │
+    ○ Other model                                         │ Prompt
                                                           │ Legacy task
-  model-a  2                                              │ ○ Ready
-    ○ Recent task  Ready                                  │
-    ○ Older task  Ready                                   │ Project
-                                                          │ /tmp/project
-  model-b  1                                              │ Model: Unknown
-    ○ Other model  Ready                                  │
-                                                          │ Prompt
-                                                          │ Legacy task
                                                           │
                                                           │
                                                           │
@@ -24,5 +24,5 @@ expression: "render_bottom_popup(&app.chat_widget,\n100).replace(&test_path_disp
                                                           │
                                                           │
                                                           │
-  ↑↓ navigate o resume enter open n new w new worktree f search g group: model r rename x stop
-  h hide a archive del delete ctrl+c quit
+                                                          │
+  ? help  esc back  ↑/↓ move  enter open  n new

@@ -2,9 +2,14 @@
 
 mod backend;
 #[cfg(windows)]
+pub use backend::windows::DetachedLaunchRestricted;
+#[cfg(windows)]
 use backend::windows::try_lock_file;
 mod client;
 mod install_lock;
+mod launch;
+pub use launch::restart_with_features;
+pub use launch::start_with_features;
 mod managed_install;
 mod prepare_install;
 pub use prepare_install::InstallRequest;
@@ -15,6 +20,7 @@ pub mod telemetry;
 mod thread_recovery;
 mod update_loop;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -300,6 +306,9 @@ fn ensure_supported_platform() -> Result<()> {
 
 #[derive(Clone)]
 struct Daemon {
+    // Feature-aware TUI startup owns a live terminal. Direct lifecycle commands
+    // must still report their diagnostics to stderr.
+    log_diagnostics: bool,
     socket_path: PathBuf,
     pid_file: PathBuf,
     update_pid_file: PathBuf,
@@ -324,6 +333,7 @@ impl Daemon {
                 (DAEMON_PID_FILE_NAME, DAEMON_UPDATE_PID_FILE_NAME)
             };
         Ok(Self {
+            log_diagnostics: false,
             socket_path,
             pid_file: state_dir.join(pid_file),
             update_pid_file: state_dir.join(update_pid_file),
@@ -331,6 +341,14 @@ impl Daemon {
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
             managed_codex_bin,
         })
+    }
+
+    fn diagnostic(&self, message: std::fmt::Arguments<'_>) {
+        if self.log_diagnostics {
+            tracing::info!("{message}");
+        } else {
+            eprintln!("{message}");
+        }
     }
 
     fn recovery_file(&self) -> Result<PathBuf> {
@@ -371,7 +389,7 @@ impl Daemon {
         let _operation_lock = self.acquire_operation_lock().await?;
         let selected = self.current_installation()?;
         match command {
-            LifecycleCommand::Start => selected.start().await,
+            LifecycleCommand::Start => selected.start(&BTreeMap::new()).await,
             LifecycleCommand::Restart => selected.restart().await,
             LifecycleCommand::Stop => {
                 let output = selected.stop().await?;
@@ -384,9 +402,9 @@ impl Daemon {
         }
     }
 
-    async fn start(&self) -> Result<LifecycleOutput> {
+    async fn start(&self, feature_overrides: &BTreeMap<String, bool>) -> Result<LifecycleOutput> {
         let mut managed = self.clone();
-        let settings = self.load_settings().await?;
+        let mut settings = self.load_settings().await?;
         let (status, backend, pid, info) = if let Ok(info) = client::probe(&self.socket_path).await
         {
             (
@@ -405,11 +423,19 @@ impl Daemon {
         } else {
             // A fresh start must ignore snapshots left by older stop clients.
             if let Err(err) = thread_recovery::discard_pending(self) {
-                eprintln!("warning: failed to clear stale daemon recovery before start: {err}");
+                self.diagnostic(format_args!(
+                    "warning: failed to clear stale daemon recovery before start: {err}"
+                ));
             }
             prepare_install::prepare(self, &settings).await?;
             managed.managed_codex_bin = self.current_managed_codex_bin()?;
             managed.ensure_managed_codex_bin()?;
+            // Only a fresh launch may replace these settings. Keep them for restarts
+            // and updates, without changing the user's config or a running daemon.
+            if settings.feature_overrides != *feature_overrides {
+                settings.feature_overrides = feature_overrides.clone();
+                settings.save(&self.settings_file).await?;
+            }
             let pid = managed.start_managed_backend(&settings).await?;
             (
                 LifecycleStatus::Started,
@@ -421,15 +447,16 @@ impl Daemon {
         if backend.is_some()
             && let Err(err) = managed.ensure_managed_updater(&settings).await
         {
-            eprintln!("warning: failed to ensure managed updater after app-server start: {err:#}");
+            self.diagnostic(format_args!(
+                "warning: failed to ensure managed updater after app-server start: {err:#}"
+            ));
         }
         Ok(managed
             .output(status, backend, pid, Some(info.app_server_version))
             .await)
     }
 
-    async fn restart(&self) -> Result<LifecycleOutput> {
-        let settings = self.load_settings().await?;
+    async fn restart_with_settings(&self, settings: DaemonSettings) -> Result<LifecycleOutput> {
         if client::probe(&self.socket_path).await.is_ok()
             && self.running_backend(&settings).await?.is_none()
         {
@@ -456,6 +483,11 @@ impl Daemon {
                 .await?;
         }
 
+        // Persist changed launch settings only after the old process has stopped.
+        // A failed or interrupted drain must not make an unapplied change look current.
+        if self.load_settings().await? != settings {
+            settings.save(&self.settings_file).await?;
+        }
         let pid = managed.start_managed_backend(&settings).await?;
         let info = self.wait_until_ready().await?;
         if let Err(err) = managed.ensure_managed_updater(&settings).await {
@@ -652,7 +684,7 @@ impl Daemon {
             let _ = selected
                 .set_remote_control_locked(RemoteControlMode::Enabled)
                 .await?;
-            let output = selected.start().await?;
+            let output = selected.start(&BTreeMap::new()).await?;
             return Ok(RemoteControlStartOutput::Start(output));
         }
 
@@ -954,6 +986,7 @@ impl Daemon {
             pid_file: self.pid_file.clone(),
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
+            feature_overrides: settings.feature_overrides.clone(),
         }
     }
 
@@ -1235,6 +1268,7 @@ mod tests {
         let legacy = home.path().join("packages/standalone/current");
         std::fs::create_dir_all(&legacy).expect("legacy selection");
         let daemon = Daemon {
+            log_diagnostics: false,
             socket_path: home.path().join("server.sock"),
             pid_file: state.join(super::LEGACY_PID_FILE_NAME),
             update_pid_file: state.join(super::LEGACY_UPDATE_PID_FILE_NAME),
@@ -1268,6 +1302,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let state = temp.path().join("missing-home").join("daemon-state");
         let daemon = Daemon {
+            log_diagnostics: false,
             socket_path: state.join("server.sock"),
             pid_file: state.join("server.pid"),
             update_pid_file: state.join("updater.pid"),
@@ -1293,6 +1328,7 @@ mod tests {
             .await
             .expect("private state directory");
         let daemon = Daemon {
+            log_diagnostics: false,
             socket_path: home.path().join("server.sock"),
             pid_file: state.join("server.pid"),
             update_pid_file: state.join("updater.pid"),
@@ -1347,6 +1383,7 @@ mod tests {
             .expect("current local build");
         let state = home.path().join("app-server-daemon");
         let daemon = Daemon {
+            log_diagnostics: false,
             socket_path: home
                 .path()
                 .join("app-server-control/app-server-control.sock"),
@@ -1374,6 +1411,7 @@ mod tests {
     async fn not_ready_context_reports_daemon_app_server_before_stderr() {
         let temp_dir = TempDir::new().expect("temp dir");
         let daemon = Daemon {
+            log_diagnostics: false,
             socket_path: temp_dir.path().join("app-server-control.sock"),
             pid_file: temp_dir.path().join("app-server.pid"),
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),

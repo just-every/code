@@ -86,13 +86,16 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         tools: Some(ToolMessages {
             send_user_message_async: Some(ToolMessage {
                 description: Some(async_message_description.to_string()),
+                ..Default::default()
             }),
             multi_agent: Some(MultiAgentToolMessages {
                 spawn_agent: Some(ToolMessage {
                     description: Some("Catalog spawn description.".to_string()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
         }),
         instructions_template: Some("template".to_string()),
         instructions_variables: Some(ModelInstructionsVariables {
@@ -157,13 +160,16 @@ fn personality_none_strips_catalog_instruction_sources_through_the_next_h1() {
             tools: Some(ToolMessages {
                 send_user_message_async: Some(ToolMessage {
                     description: Some(String::new()),
+                    ..Default::default()
                 }),
                 multi_agent: Some(MultiAgentToolMessages {
                     spawn_agent: Some(ToolMessage {
                         description: Some(String::new()),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             approvals: Some(ApprovalMessages {
                 on_request: Some("user approvals".to_string()),

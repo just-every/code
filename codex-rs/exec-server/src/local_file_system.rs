@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::ExecutorFileSystem;
 use crate::ExecutorFileSystemFuture;
 use crate::FILE_READ_CHUNK_SIZE;
@@ -76,7 +76,7 @@ impl LocalFileSystem {
         }
     }
 
-    pub fn with_runtime_paths(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub fn with_runtime_paths(runtime_paths: ExecServerRuntimeOptions) -> Self {
         Self {
             unsandboxed: UnsandboxedFileSystem::default(),
             sandboxed: Some(SandboxedFileSystem::new(runtime_paths)),

@@ -5,7 +5,7 @@ use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::EnvironmentAccess;
 use codex_exec_server::EnvironmentAccessExt;
 #[cfg(unix)]
-use codex_exec_server::ExecServerRuntimePaths;
+use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FILE_READ_CHUNK_SIZE;
 use codex_exec_server::FileMetadata;
@@ -1155,7 +1155,7 @@ async fn sandboxed_file_operations_cannot_read_helper_siblings() -> Result<()> {
         None
     };
     let file_system =
-        LocalFileSystem::with_runtime_paths(ExecServerRuntimePaths::new(helper, linux_sandbox)?);
+        LocalFileSystem::with_runtime_paths(ExecServerRuntimeOptions::new(helper, linux_sandbox)?);
 
     let sibling = runtime_dir.join("credentials.json");
     std::fs::write(&sibling, "secret")?;

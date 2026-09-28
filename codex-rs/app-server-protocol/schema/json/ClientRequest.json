@@ -1634,6 +1634,10 @@
           "description": "Opt into receiving experimental API methods and fields.",
           "type": "boolean"
         },
+        "explicitGatewayOauth": {
+          "description": "Use explicit gateway OAuth login instead of automatic browser authorization. Applies to this app-server's gateway runtime; later connections cannot undo it.",
+          "type": "boolean"
+        },
         "extensions": {
           "additionalProperties": true,
           "description": "MCP extension settings declared by the app-server client.",
@@ -1726,6 +1730,13 @@
           "minimum": 0.0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "serverName": {
+          "description": "Limit discovery to one server. With a thread ID, reuse that thread's MCP connection.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -2042,6 +2053,17 @@
         "server": {
           "type": "string"
         },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpResourceReadTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit hosted app/account. Omit to retain legacy resource discovery."
+        },
         "threadId": {
           "type": [
             "string",
@@ -2055,6 +2077,25 @@
       "required": [
         "server",
         "uri"
+      ],
+      "type": "object"
+    },
+    "McpResourceReadTarget": {
+      "properties": {
+        "connectorId": {
+          "type": "string"
+        },
+        "linkId": {
+          "description": "Null explicitly requests no-auth access, subject to the app's resource policy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectorId",
+        "linkId"
       ],
       "type": "object"
     },
@@ -4457,14 +4498,54 @@
       ],
       "type": "object"
     },
+    "ThreadItemsListAnchor": {
+      "description": "An exclusive item position within the requested visible turn.",
+      "oneOf": [
+        {
+          "properties": {
+            "itemId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "item"
+              ],
+              "title": "ItemThreadItemsListAnchorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "itemId",
+            "type"
+          ],
+          "title": "ItemThreadItemsListAnchor",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadItemsListCursor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/ThreadItemsListAnchor"
+        }
+      ],
+      "description": "Starting position for an item-history page."
+    },
     "ThreadItemsListParams": {
       "properties": {
         "cursor": {
-          "description": "Opaque cursor to pass to the next call to continue after the last item.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadItemsListCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Opaque continuation cursor or an exclusive item anchor in the requested visible turn. An item anchor requires a non-empty `turnId`; ascending (the default) returns items after it, and descending returns items before it. Continue with the returned string cursor."
         },
         "limit": {
           "description": "Optional item page size.",
@@ -7502,6 +7583,75 @@
         "params"
       ],
       "title": "Model/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/gatewayOAuth/read"
+          ],
+          "title": "Account/gatewayOAuth/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/gatewayOAuth/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/gatewayOAuth/login"
+          ],
+          "title": "Account/gatewayOAuth/loginRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/gatewayOAuth/loginRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/gatewayOAuth/cancel"
+          ],
+          "title": "Account/gatewayOAuth/cancelRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/gatewayOAuth/cancelRequest",
       "type": "object"
     },
     {

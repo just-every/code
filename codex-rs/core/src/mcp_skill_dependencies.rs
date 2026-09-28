@@ -189,7 +189,7 @@ async fn maybe_install_mcp_dependencies(
             server_config.scopes.clone(),
             oauth_config.discovered_scopes.clone(),
         );
-        let oauth_client_id = server_config.oauth_client_id();
+        let oauth_client_config = server_config.oauth.as_ref();
         let oauth_credential_name = server_config.oauth_credential_name(&name);
         let callback_port = server_config.oauth_callback_port(config.mcp_oauth_callback_port);
         let first_attempt = perform_oauth_login(
@@ -200,7 +200,7 @@ async fn maybe_install_mcp_dependencies(
             oauth_config.http_headers.clone(),
             oauth_config.env_http_headers.clone(),
             &resolved_scopes.scopes,
-            oauth_client_id,
+            oauth_client_config,
             McpOAuthClientRegistration::Auto,
             server_config.oauth_resource.as_deref(),
             callback_port,
@@ -220,7 +220,7 @@ async fn maybe_install_mcp_dependencies(
                     oauth_config.http_headers,
                     oauth_config.env_http_headers,
                     &[],
-                    oauth_client_id,
+                    oauth_client_config,
                     McpOAuthClientRegistration::Auto,
                     server_config.oauth_resource.as_deref(),
                     callback_port,
@@ -416,7 +416,9 @@ fn mcp_dependency_to_server_config(
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
+            startup_readiness: Default::default(),
             supports_parallel_tool_calls: false,
+            tool_input_schema_max_bytes: None,
             omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: None,
@@ -455,7 +457,9 @@ fn mcp_dependency_to_server_config(
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
+            startup_readiness: Default::default(),
             supports_parallel_tool_calls: false,
+            tool_input_schema_max_bytes: None,
             omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: None,

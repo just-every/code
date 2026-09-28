@@ -1,8 +1,9 @@
-//! Smooth, whole-grapheme status shimmer with a two-second sweep.
+//! Smooth, whole-grapheme status shimmer with the desktop's cadenced sweep.
 //!
 //! Only brightness changes: the moving band uses the terminal foreground, while
 //! the remaining text blends halfway into the background. The wave spans at
 //! least six terminal columns so short labels do not flash one letter at a time.
+//! New headers wait 600 ms, then sweep for one second every four seconds.
 //! Unknown palettes use static dim text instead of a stepped animation.
 
 use std::time::Duration;
@@ -20,6 +21,11 @@ use crate::terminal_palette::default_fg;
 use crate::terminal_palette::effective_stdout_color_level;
 use crate::terminal_palette::rgb_color;
 
+// Match the desktop app's thinking and reasoning header timings.
+const START_DELAY: Duration = Duration::from_millis(/*millis*/ 600);
+const SWEEP_SECONDS: f64 = 1.0;
+const INTERVAL_SECONDS: f64 = 4.0;
+
 pub(crate) fn summary_shimmer(
     text: &str,
     elapsed: Duration,
@@ -35,7 +41,9 @@ pub(crate) fn summary_shimmer(
     };
     let width = text.width() as f64;
     let half_width = (width * 0.1).max(/*other*/ 3.0);
-    let position = (elapsed.as_secs_f64() % 2.0) / 2.0 * (width + 2.0 * half_width) - half_width;
+    let sweep =
+        (elapsed.saturating_sub(START_DELAY).as_secs_f64() % INTERVAL_SECONDS).min(SWEEP_SECONDS);
+    let position = sweep / SWEEP_SECONDS * (width + 2.0 * half_width) - half_width;
     let mut column = 0.0;
     text.graphemes(/*is_extended*/ true)
         .map(|grapheme| {

@@ -13,6 +13,7 @@ pub use crate::mcp_types::McpServerEnvVar;
 pub use crate::mcp_types::McpServerOAuthConfig;
 pub use crate::mcp_types::McpServerToolConfig;
 pub use crate::mcp_types::McpServerTransportConfig;
+pub use crate::mcp_types::McpStartupReadiness;
 pub use crate::mcp_types::RawMcpServerConfig;
 pub use crate::shell_environment_policy::ShellEnvironmentPolicyToml;
 pub use codex_protocol::config_types::AltScreenMode;
@@ -31,6 +32,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub use crate::tui_effects::TuiEffects;
 pub use crate::tui_keymap::KeybindingSpec;
 pub use crate::tui_keymap::KeybindingsSpec;
 pub use crate::tui_keymap::MAX_FUNCTION_KEY;
@@ -46,6 +48,7 @@ pub use crate::tui_keymap::TuiPagerKeymap;
 pub use crate::tui_keymap::TuiVimNormalKeymap;
 pub use crate::tui_keymap::TuiVimOperatorKeymap;
 pub use crate::tui_keymap::TuiVimSearchKeymap;
+pub use crate::tui_rendering::TuiRendering;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 2;
@@ -170,9 +173,6 @@ pub enum WindowsSandboxModeToml {
 #[schemars(deny_unknown_fields)]
 pub struct WindowsToml {
     pub sandbox: Option<WindowsSandboxModeToml>,
-    /// Defaults to `true` for legacy sandboxes and `false` for MXC. Set to `false`
-    /// to launch the final sandboxed child process on `Winsta0\\Default`.
-    pub sandbox_private_desktop: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, JsonSchema)]
@@ -602,6 +602,12 @@ pub struct OtelConfigToml {
     pub tool_result: codex_protocol::config_types::ToolResultLogConfig,
     /// Log user prompt in traces
     pub log_user_prompt: Option<bool>,
+    /// Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter.
+    /// Defaults to false. Response text can be sensitive and is capped at 64 KiB.
+    pub log_agent_responses: Option<bool>,
+    /// Opt in to logging completed Guardian assessments to an OTLP log exporter.
+    /// Defaults to false. Rationales can be sensitive and are capped at 64 KiB.
+    pub log_guardian_assessments: Option<bool>,
 
     /// Mark traces with environment (dev, staging, prod, test). Defaults to dev.
     pub environment: Option<String>,
@@ -627,6 +633,8 @@ pub struct OtelConfigToml {
 pub struct OtelConfig {
     pub tool_result: codex_protocol::config_types::ToolResultLogConfig,
     pub log_user_prompt: bool,
+    pub log_agent_responses: bool,
+    pub log_guardian_assessments: bool,
     pub environment: String,
     pub exporter: OtelExporterKind,
     pub trace_exporter: OtelExporterKind,
@@ -640,6 +648,8 @@ impl Default for OtelConfig {
         OtelConfig {
             tool_result: Default::default(),
             log_user_prompt: false,
+            log_agent_responses: false,
+            log_guardian_assessments: false,
             environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
             exporter: OtelExporterKind::None,
             trace_exporter: OtelExporterKind::None,
@@ -647,6 +657,26 @@ impl Default for OtelConfig {
             span_attributes: BTreeMap::new(),
             tracestate: BTreeMap::new(),
         }
+    }
+}
+
+impl OtelConfig {
+    /// Response text requires a separate opt-in and an explicit OTLP log destination.
+    pub fn agent_response_logging_enabled(&self) -> bool {
+        self.log_agent_responses
+            && matches!(
+                self.exporter,
+                OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. }
+            )
+    }
+
+    /// Assessment text requires an explicit opt-in and an OTLP log destination.
+    pub fn guardian_assessment_logging_enabled(&self) -> bool {
+        self.log_guardian_assessments
+            && matches!(
+                self.exporter,
+                OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. }
+            )
     }
 }
 
@@ -711,6 +741,32 @@ pub enum TuiPetAnchor {
     ScreenBottom,
 }
 
+/// Right-click text paste when the fullscreen TUI has no selection.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RightClickPaste {
+    /// Enable on Windows/WSL/Linux, except recognized terminal-owned paste paths.
+    #[default]
+    Auto,
+    /// Enable on supported local platforms; selection and terminal-owned paste still win.
+    On,
+    /// Leave right-click paste to the terminal.
+    Off,
+}
+
+/// When transcript mouse selections are copied on release.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyOnSelect {
+    /// Use the terminal-specific default.
+    #[default]
+    Auto,
+    /// Copy every nonempty transcript mouse selection on release.
+    Always,
+    /// Require an explicit copy action.
+    Never,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiNotificationSettings {
@@ -756,17 +812,20 @@ pub struct Tui {
     /// Records the one-time screen-reader detection attempt. Either value skips detection.
     pub screen_reader_detection_done: Option<bool>,
 
-    /// Enable decorative effects such as Astra composer stars. Also requires animations.
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub whimsy: bool,
+    /// Individual visual effects. Each also requires animations to be enabled.
+    #[serde(default)]
+    pub effects: TuiEffects,
+
+    /// Rich content rendering. Independent of animations and visual effects.
+    #[serde(default)]
+    pub rendering: TuiRendering,
 
     /// Show startup tooltips in the TUI welcome screen.
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
-    /// Show an informational notice when the connected app server is an older stable release.
+    /// Show informational notices about connected app server version differences.
     /// Defaults to `true`; this does not control compatibility errors or version status.
     #[serde(default = "default_true")]
     pub show_server_version_notice: bool,
@@ -795,6 +854,24 @@ pub struct Tui {
     /// Defaults to `false`.
     #[serde(default)]
     pub raw_output_mode: bool,
+
+    /// Own the fullscreen transcript, including scrolling, selection, and search.
+    /// Defaults to `true`; alternate-screen restrictions take precedence.
+    #[serde(default = "default_true")]
+    pub fullscreen_transcript: bool,
+
+    /// Copy selected transcript text when the mouse button is released.
+    /// Defaults to `auto`: enabled except in direct terminals known to forward their native
+    /// copy shortcut (Ghostty 1.2+, Kitty on macOS, Windows Terminal, and VS Code on Windows).
+    /// Unknown terminals, Ghostty without a recognized version, and tmux/Zellij default to copying.
+    #[serde(default)]
+    pub copy_on_select: CopyOnSelect,
+
+    /// Right-click text paste fallback. Defaults to `auto` (Windows/WSL/Linux).
+    /// `on` also enables macOS; neither mode reads over SSH or in recognized VS Code terminals.
+    /// This controls the fullscreen fallback, not the terminal's own paste binding.
+    #[serde(default)]
+    pub right_click_paste: RightClickPaste,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///

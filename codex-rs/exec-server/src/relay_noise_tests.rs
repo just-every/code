@@ -28,7 +28,7 @@ use super::NOISE_HANDSHAKE_FAILURE_COOLDOWN;
 use super::RendezvousDisconnectReason;
 use super::run_multiplexed_environment;
 use crate::ExecServerError;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::noise_channel::InitiatorHandshake;
 use crate::noise_channel::NoiseChannelIdentity;
@@ -140,7 +140,7 @@ async fn missing_pong_disconnects_physical_relay() -> Result<()> {
 
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),
@@ -171,7 +171,7 @@ async fn pong_keeps_physical_relay_connected() -> Result<()> {
 
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),
@@ -245,7 +245,7 @@ async fn processor_exit_resets_noise_harness_stream() -> Result<()> {
     let environment_task = AbortOnDropHandle::new(tokio::spawn(run_multiplexed_environment(
         environment_websocket,
         ObservedRegistration(
-            ConnectionProcessor::new(ExecServerRuntimePaths::new(
+            ConnectionProcessor::new(ExecServerRuntimeOptions::new(
                 std::env::current_exe()?,
                 /*codex_linux_sandbox_exe*/ None,
             )?),
@@ -315,7 +315,7 @@ async fn pending_harness_key_validation_does_not_block_new_handshakes() -> Resul
     let calls = Arc::new(AtomicUsize::new(0));
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),
@@ -369,7 +369,7 @@ async fn duplicate_handshakes_pause_admission_without_disconnecting() -> Result<
     let release = Arc::new(Notify::new());
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),
@@ -478,7 +478,7 @@ async fn oversized_harness_authorization_is_rejected_before_validation() -> Resu
     let calls = Arc::new(AtomicUsize::new(0));
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),
@@ -697,7 +697,7 @@ async fn early_data_during_validation_pauses_admission_without_disconnecting() -
     let harness_identity = NoiseChannelIdentity::generate()?;
     let environment_task = tokio::spawn(run_multiplexed_environment(
         environment_websocket,
-        ConnectionProcessor::new(ExecServerRuntimePaths::new(
+        ConnectionProcessor::new(ExecServerRuntimeOptions::new(
             std::env::current_exe()?,
             /*codex_linux_sandbox_exe*/ None,
         )?),

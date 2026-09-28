@@ -1,7 +1,8 @@
 //! Terminal history, desktop handoff, and clear-screen UI helpers for the TUI app.
 //!
 //! This module owns rendering the fresh session header, clearing inline or alternate-screen UI
-//! state, and resetting transcript-related app state after `/clear` or Ctrl-L.
+//! state, and resetting transcript-related app state after `/clear` or Ctrl-L. Owned-screen sessions
+//! keep committed cells as the render source and never enqueue terminal-scrollback rows here.
 
 use super::*;
 use crate::terminal_hyperlinks::HyperlinkLine;
@@ -22,6 +23,26 @@ pub(super) struct ThreadUsageStatusHistory {
 
 impl App {
     pub(super) fn insert_history_cell(&mut self, tui: &mut tui::Tui, cell: Box<dyn HistoryCell>) {
+        // Global deprecations can be delivered again by hidden threads. Scope deduplication to
+        // retained history so clearing or rebuilding a transcript can show the notice again.
+        if let Some(notice) = cell
+            .as_any()
+            .downcast_ref::<history_cell::DeprecationNoticeCell>()
+            && self.transcript_cells.iter().any(|existing| {
+                existing
+                    .as_any()
+                    .downcast_ref::<history_cell::DeprecationNoticeCell>()
+                    == Some(notice)
+            })
+        {
+            return;
+        }
+        if !crate::empty_state_animation::is_startup_cell(cell.as_ref()) {
+            self.chat_widget
+                .empty_state_animation
+                .borrow_mut()
+                .dismiss();
+        }
         if let Some(warnings) = cell
             .as_any()
             .downcast_ref::<history_cell::StartupWarningsCell>()
@@ -36,11 +57,33 @@ impl App {
             tui.frame_requester().schedule_frame();
         }
         self.transcript_cells.push(cell.clone());
+        let deferred = tui.is_owned_screen() || self.native_history.insert(&cell);
+        self.render_inserted_history_cell(tui, &cell, deferred);
+        // A committed cell can unblock a settled /usage card that was waiting
+        // behind a transient active cell or a provisional stream tail.
+        self.chat_widget.request_pending_usage_output_insertion();
+        if is_session_header {
+            self.merge_startup_warnings(tui, &history_cell::StartupWarningsCell::default());
+        }
+    }
+
+    /// Track mutable status cards before choosing retained or terminal-owned rendering.
+    pub(super) fn render_inserted_history_cell(
+        &mut self,
+        tui: &mut tui::Tui,
+        cell: &Arc<dyn HistoryCell>,
+        deferred: bool,
+    ) {
         let width = self
             .chat_widget
             .history_wrap_width(tui.terminal.last_known_screen_size.width);
-        let lines =
-            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+        // Owned replay must not eagerly format every historical entry. Composite status cards are
+        // the only committed cells whose mutable usage data needs insertion-time bookkeeping.
+        let lines = if !deferred || cell.as_any().is::<history_cell::CompositeHistoryCell>() {
+            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode())
+        } else {
+            Vec::new()
+        };
         if cell.as_any().is::<history_cell::CompositeHistoryCell>()
             && lines.first().is_some_and(|line| {
                 line.line.spans.len() == 1 && line.line.spans[0].content.as_ref() == "/status"
@@ -49,29 +92,28 @@ impl App {
         {
             self.last_thread_usage_status_cell = Some(ThreadUsageStatusHistory {
                 thread_id,
-                cell: Arc::downgrade(&cell),
+                cell: Arc::downgrade(cell),
                 lines: lines.clone(),
             });
+        }
+        // Invisible diagnostics still update the badge without replacing the rendered tail.
+        if deferred || lines.is_empty() {
+            tui.frame_requester().schedule_frame();
+            return;
         }
         if self.initial_history_replay_buffer.as_ref().is_some() {
             self.insert_history_cell_lines_with_initial_replay_buffer(tui, cell.as_ref(), width);
             self.last_rendered_history_tail = None;
         } else {
             self.insert_history_cell_lines(tui, cell.as_ref(), width);
-            self.last_rendered_history_tail = if self.overlay.is_none() && !lines.is_empty() {
+            self.last_rendered_history_tail = if self.overlay.is_none() {
                 Some(RenderedHistoryTail {
-                    cell: Arc::downgrade(&cell),
+                    cell: Arc::downgrade(cell),
                     lines,
                 })
             } else {
                 None
             };
-        }
-        // A committed cell can unblock a settled /usage card that was waiting
-        // behind a transient active cell or a provisional stream tail.
-        self.chat_widget.request_pending_usage_output_insertion();
-        if is_session_header {
-            self.merge_startup_warnings(tui, &history_cell::StartupWarningsCell::default());
         }
     }
 
@@ -97,7 +139,9 @@ impl App {
             return Ok(());
         }
 
-        if self.overlay.is_some() || self.initial_history_replay_buffer.is_some() {
+        if !tui.is_owned_screen()
+            && (self.overlay.is_some() || self.initial_history_replay_buffer.is_some())
+        {
             self.pending_thread_usage_history_refresh = true;
             return Ok(());
         }
@@ -120,6 +164,12 @@ impl App {
             return Ok(());
         };
 
+        // A queued card reads the latest usage when it is first emitted.
+        if self.native_history.contains(&status_cell) {
+            self.pending_thread_usage_history_refresh = false;
+            return Ok(());
+        }
+
         let width = self
             .chat_widget
             .history_wrap_width(tui.terminal.last_known_screen_size.width);
@@ -127,6 +177,17 @@ impl App {
             .display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
         if updated_lines == status_history.lines {
             self.pending_thread_usage_history_refresh = false;
+            return Ok(());
+        }
+        if tui.is_owned_screen() {
+            // Composite cells are backed by mutable usage state, so the retained view remeasures
+            // them on its next frame without replacing native terminal history.
+            if let Some(status_history) = self.last_thread_usage_status_cell.as_mut() {
+                status_history.lines = updated_lines;
+            }
+            self.last_rendered_history_tail = None;
+            self.pending_thread_usage_history_refresh = false;
+            tui.frame_requester().schedule_frame();
             return Ok(());
         }
         let Some(rendered_tail) = self.last_rendered_history_tail.as_ref() else {
@@ -198,7 +259,7 @@ impl App {
 
     fn insert_pending_usage_output(&mut self, tui: &mut tui::Tui) {
         if let Some(cell) = self.chat_widget.take_pending_rate_limit_reset_hint() {
-            self.insert_history_cell(tui, Box::new(cell));
+            self.insert_history_cell(tui, Box::new(history_cell::SessionNoticeCell(cell)));
         }
     }
 
@@ -246,18 +307,27 @@ impl App {
         width: u16,
         version: &'static str,
     ) -> Vec<Line<'static>> {
-        history_cell::SessionHeaderHistoryCell::new(
-            self.chat_widget.current_model().to_string(),
+        self.clear_ui_header_cell(version)
+            .display_lines_for_mode(width, self.chat_widget.history_render_mode())
+    }
+
+    /// Share the source-backed header between retained drawing and legacy terminal insertion.
+    fn clear_ui_header_cell(
+        &self,
+        version: &'static str,
+    ) -> history_cell::SessionHeaderHistoryCell {
+        let mut header = history_cell::SessionHeaderHistoryCell::new(
+            self.chat_widget.model_display_name().to_string(),
             self.chat_widget.current_reasoning_effort(),
-            self.chat_widget.should_show_fast_status(
-                self.chat_widget.current_model(),
-                self.chat_widget.current_service_tier(),
-            ),
             self.config.cwd.to_path_buf(),
             version,
         )
-        .with_yolo_mode(history_cell::is_yolo_mode(&self.config))
-        .display_lines(width)
+        .with_yolo_mode(history_cell::is_yolo_mode(&self.config));
+        history_cell::set_session_greeting(
+            &mut header,
+            &self.chat_widget.empty_state_animation.borrow().greeting,
+        );
+        header
     }
 
     pub(super) fn clear_ui_header_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -265,12 +335,27 @@ impl App {
     }
 
     pub(super) fn queue_clear_ui_header(&mut self, tui: &mut tui::Tui) {
+        if tui.is_owned_screen() {
+            if !self.transcript_cells.iter().any(|cell| {
+                cell.as_any().is::<history_cell::SessionInfoCell>()
+                    || cell.as_any().is::<history_cell::SessionHeaderHistoryCell>()
+            }) {
+                let header: Arc<dyn HistoryCell> =
+                    Arc::new(self.clear_ui_header_cell(CODEX_CLI_VERSION));
+                self.transcript_cells.insert(/*index*/ 0, header);
+            }
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         let width = self
             .chat_widget
             .history_wrap_width(tui.terminal.last_known_screen_size.width);
         let header_lines = self.clear_ui_header_lines(width);
         if !header_lines.is_empty() {
-            tui.insert_history_lines(header_lines);
+            tui.insert_history_lines_with_wrap_policy(
+                header_lines,
+                self.history_line_wrap_policy(),
+            );
             self.has_emitted_history_lines = true;
         }
     }
@@ -285,7 +370,7 @@ impl App {
         // Drop queued history insertions so stale transcript lines cannot be flushed after /clear.
         tui.clear_pending_history_lines();
 
-        if is_alt_screen_active {
+        if tui.is_owned_screen() || is_alt_screen_active {
             tui.terminal.clear_visible_screen()?;
         } else {
             // Some terminals (Terminal.app, Warp) do not reliably drop scrollback when purge and
@@ -315,6 +400,13 @@ impl App {
     pub(super) fn reset_transcript_state_after_clear(&mut self) {
         self.overlay = None;
         self.transcript_cells.clear();
+        self.turn_tips.dismiss();
+        self.chat_widget.warning_display_state.dismissed.clear();
+        self.chat_widget.warning_display_state.transcript = Arc::default();
+        self.chat_widget.warning_display_state.synced_cells = None;
+        self.native_history = Default::default();
+        self.cancel_pending_key_chord();
+        self.transcript_view = Default::default();
         self.last_rendered_history_tail = None;
         self.last_thread_usage_status_cell = None;
         self.pending_thread_usage_history_refresh = false;

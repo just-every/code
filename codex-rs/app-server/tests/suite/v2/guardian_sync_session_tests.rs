@@ -2,6 +2,8 @@
 
 use super::*;
 use app_test_support::create_final_assistant_message_sse_response as assistant_response;
+use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::GuardianWarningNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
@@ -13,9 +15,12 @@ use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadSetNameParams;
+use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
 use codex_protocol::protocol::SubAgentSource;
@@ -55,6 +60,116 @@ fn tool_response(server: &str, tool: &str, calls: &[&str]) -> String {
 enum ReviewEnding {
     Complete,
     Interrupt,
+}
+
+#[tokio::test]
+async fn circuit_break_action_preserves_warning_and_reports_error_in_live_and_saved_turns()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    for action in [None, Some("default"), Some("strict")] {
+        let mut replies = Vec::new();
+        for call in ["first", "second", "third"] {
+            for body in [
+                tool_response(TEST_SERVER_NAME, TEST_TOOL_NAME, &[call]),
+                assistant_response(
+                    r#"{"outcome":"deny","rationale":"Action is not authorized."}"#,
+                )?,
+            ] {
+                replies.push(vec![StreamingSseChunk { gate: None, body }]);
+            }
+        }
+        // Keep a racing parent request from completing before the interruption.
+        let (_continue_parent, parent_gate) = oneshot::channel();
+        replies.push(vec![StreamingSseChunk {
+            gate: Some(parent_gate),
+            body: assistant_response("Done.")?,
+        }]);
+        let (server, _completions) = start_streaming_sse_server(replies).await;
+        let (mcp_url, mcp_server) = start_mcp_server(/*sensitive_action*/ None).await?;
+        let codex_home = TempDir::new()?;
+        let mut config = sync_config(server.uri()).with_extra_config(&format!(
+            "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\""
+        ));
+        if let Some(action) = action {
+            config = config.with_extra_config(&format!(
+                "[auto_review]\ncircuit_break_action = \"{action}\""
+            ));
+        }
+        config.write(codex_home.path())?;
+        let mut app = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .build_initialized_with_timeout(TIMEOUT)
+            .await?;
+        let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
+        let started: TurnStartResponse = app
+            .request(|request_id| ClientRequest::TurnStart {
+                request_id,
+                params: TurnStartParams {
+                    thread_id: thread.id.clone(),
+                    input: vec![UserInput::Text {
+                        text: "Run the checks.".to_owned(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..Default::default()
+                },
+            })
+            .await?;
+        // Individual denials also emit Guardian warnings before the circuit breaker.
+        let warning = timeout(TIMEOUT, async {
+            loop {
+                let warning: GuardianWarningNotification =
+                    app.read_notification("guardianWarning").await?;
+                assert_eq!(warning.thread_id, thread.id);
+                if warning.message.contains("3 consecutive") {
+                    break Ok::<_, anyhow::Error>(warning);
+                }
+            }
+        })
+        .await??;
+        let completed: TurnCompletedNotification =
+            timeout(TIMEOUT, app.read_notification("turn/completed")).await??;
+        let expected_error = (action == Some("strict")).then_some(TurnError {
+            message: warning.message,
+            codex_error_info: Some(CodexErrorInfo::TooManyDenials),
+            additional_details: None,
+            misalignment: None,
+        });
+        assert_eq!(completed.thread_id, thread.id);
+        assert_eq!(completed.turn.id, started.turn.id);
+        assert_eq!(completed.turn.status, TurnStatus::Interrupted);
+        assert_eq!(completed.turn.error, expected_error);
+        assert!(
+            !app.pending_notification_methods()
+                .iter()
+                .any(|method| method == "error"),
+            "the error must be carried by the interrupted turn, not a separate notification"
+        );
+        app.shutdown_gracefully().await?;
+
+        // Restart to read persisted history rather than the in-memory turn summary.
+        let mut app = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .build_initialized_with_timeout(TIMEOUT)
+            .await?;
+        let read: ThreadReadResponse = app
+            .request(|request_id| ClientRequest::ThreadRead {
+                request_id,
+                params: ThreadReadParams {
+                    thread_id: thread.id.clone(),
+                    include_turns: true,
+                },
+            })
+            .await?;
+        let saved = read.thread.turns.last().expect("saved interrupted turn");
+        assert_eq!(saved.id, completed.turn.id);
+        assert_eq!(saved.status, completed.turn.status);
+        assert_eq!(saved.error, expected_error);
+        app.shutdown_gracefully().await?;
+        mcp_server.abort();
+        server.shutdown().await;
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -330,14 +445,54 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
     let closed: ThreadClosedNotification =
         timeout(TIMEOUT, app.read_notification("thread/closed")).await??;
     assert_eq!(closed.thread_id, parent.id);
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
+    let metadata = state_db
+        .get_thread(codex_protocol::ThreadId::from_string(&reviewer_id)?)
+        .await?
+        .expect("reviewer metadata should be persisted");
+    assert_eq!(
+        (
+            metadata.title.as_str(),
+            metadata.name.as_deref(),
+            metadata.preview.as_deref(),
+            metadata.first_user_message.as_deref(),
+        ),
+        (
+            "Guardian review",
+            Some("Guardian review"),
+            Some("Approval review"),
+            None
+        ),
+    );
     // Saved reviewers remain discoverable through the existing subagent filters.
     for kind in [ThreadSourceKind::SubAgent, ThreadSourceKind::SubAgentOther] {
         let params = serde_json::from_value(json!({"sourceKinds": [kind]}))?;
         let listed: ThreadListResponse = app
             .request(|request_id| ClientRequest::ThreadList { request_id, params })
             .await?;
-        assert!(listed.data.iter().any(|thread| thread.id == reviewer_id));
+        let reviewer = listed
+            .data
+            .iter()
+            .find(|thread| thread.id == reviewer_id)
+            .expect("reviewer should be listed");
+        assert_eq!(
+            (reviewer.name.as_deref(), reviewer.preview.as_str()),
+            (Some("Guardian review"), "Approval review"),
+        );
     }
+    let _: ThreadSetNameResponse = app
+        .request(|request_id| ClientRequest::ThreadSetName {
+            request_id,
+            params: ThreadSetNameParams {
+                thread_id: reviewer_id.clone(),
+                name: "Named Guardian review".to_string(),
+            },
+        })
+        .await?;
     let resumed: ThreadResumeResponse = app
         .request(|request_id| ClientRequest::ThreadResume {
             request_id,
@@ -349,6 +504,11 @@ async fn managed_reviewers_reuse_fork_and_resume_after_parent_shutdown(
         .await?;
     assert_eq!(resumed.thread.id, reviewer_id);
     assert_eq!(resumed.thread.source, read.thread.source);
+    assert_eq!(
+        resumed.thread.name.as_deref(),
+        Some("Named Guardian review")
+    );
+    assert_eq!(resumed.thread.preview, "Approval review");
     let completed = timeout(
         TIMEOUT,
         app.start_turn_and_wait_for_completion(TurnStartParams {

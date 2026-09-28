@@ -21,7 +21,7 @@ use crate::UpdateStatus;
 #[cfg(unix)]
 use crate::managed_install::executable_identity;
 #[cfg(unix)]
-use crate::managed_install::executable_identity_from_bytes;
+use crate::managed_install::executable_identity_from_reader;
 
 #[tokio::test]
 async fn installer_fetch_uses_exact_url_and_preserves_bytes() {
@@ -301,6 +301,7 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     std::fs::write(state.join("app-server.stderr.log"), b"").unwrap();
     (
         Daemon {
+            log_diagnostics: false,
             socket_path: home.path().join("app-server-control/server.sock"),
             pid_file: state.join("app-server.pid"),
             update_pid_file: state.join("app-server-updater.pid"),
@@ -543,6 +544,150 @@ async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled()
 
 #[cfg(unix)]
 #[tokio::test]
+async fn daemon_start_and_restart_preserve_launch_features() {
+    for features in [
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::from([
+            ("api_key_model_discovery".to_string(), true),
+            ("code_mode_host".to_string(), false),
+        ]),
+    ] {
+        let home = TempDir::new().unwrap();
+        let (daemon, _) = manual_update_daemon(&home);
+        let args_path = home.path().join("launch-args");
+        std::fs::write(
+        &daemon.settings_file,
+        r#"{"featureOverrides":{"auth_elicitation":true},"updater":{"autoUpdateEnabled":false}}"#,
+    )
+    .unwrap();
+        std::fs::write(&daemon.managed_codex_bin, format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex 1.0.0; exit; fi\nif [ \"$3\" = --help ]; then exit; fi\nprintf '%s\\n' \"$@\" > '{}'\nexec sleep 30\n",
+        args_path.display(),
+    )).unwrap();
+        let control = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
+            while !args_path.exists() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "daemon did not launch"
+                );
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 20)).await;
+            }
+            test_control_server(&daemon, home.path())
+                .await
+                .abort_handle()
+        };
+        let (started, server) = tokio::join!(daemon.start(&features), control);
+        assert_eq!(started.unwrap().status, crate::LifecycleStatus::Started);
+        assert_eq!(
+            daemon.load_settings().await.unwrap().feature_overrides,
+            features
+        );
+        let expected = if features.is_empty() {
+            "app-server\n--listen\nunix://\n--managed-daemon\n"
+        } else {
+            "app-server\n--listen\nunix://\n-c\nfeatures.api_key_model_discovery=true\n-c\nfeatures.code_mode_host=false\n--managed-daemon\n"
+        };
+        assert_eq!(std::fs::read_to_string(&args_path).unwrap(), expected);
+        let reused = daemon
+            .start(&std::collections::BTreeMap::from([(
+                "api_key_model_discovery".to_string(),
+                false,
+            )]))
+            .await
+            .unwrap();
+        assert_eq!(reused.status, crate::LifecycleStatus::AlreadyRunning);
+        assert_eq!(
+            daemon.load_settings().await.unwrap().feature_overrides,
+            features
+        );
+        assert_eq!(std::fs::read_to_string(&args_path).unwrap(), expected);
+        std::fs::remove_file(&args_path).unwrap();
+        let restarted = daemon.restart().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
+        while std::fs::read_to_string(&args_path).ok().as_deref() != Some(expected)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 20)).await;
+        }
+        let args = std::fs::read_to_string(args_path);
+        daemon.stop().await.unwrap();
+        server.abort();
+        assert_eq!(restarted.unwrap().status, crate::LifecycleStatus::Restarted);
+        assert_eq!(args.unwrap(), expected);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settings() {
+    use crate::LifecycleStatus;
+    use std::collections::BTreeMap;
+
+    for managed in [true, false] {
+        let home = TempDir::new().unwrap();
+        let (daemon, _) = manual_update_daemon(&home);
+        std::fs::write(&daemon.settings_file,
+            r#"{"featureOverrides":{"auth_elicitation":true,"api_key_model_discovery":true},"updater":{"autoUpdateEnabled":false},"shutdownGraceSeconds":0}"#
+        ).unwrap();
+        let original = daemon.load_settings().await.unwrap();
+        if managed {
+            daemon.start_managed_backend(&original).await.unwrap();
+        }
+        let server = test_control_server(&daemon, home.path()).await;
+        let _lock = daemon.acquire_operation_lock().await.unwrap();
+        let requested = BTreeMap::from([
+            ("api_key_model_discovery".to_string(), false),
+            ("mcp_oauth_refresh_coordination".to_string(), true),
+        ]);
+        if managed {
+            // Hide the selection without removing the script the spawned shell still needs.
+            let selected_package = daemon.managed_codex_bin.parent().unwrap();
+            let saved_package = selected_package.with_extension("saved");
+            std::fs::rename(selected_package, &saved_package).unwrap();
+            let error = daemon
+                .restart_with_features_locked(&requested)
+                .await
+                .unwrap_err();
+            std::fs::rename(saved_package, selected_package).unwrap();
+            assert!(
+                error.to_string().contains("daemon executable not found"),
+                "{error:#}"
+            );
+            assert_eq!(daemon.load_settings().await.unwrap(), original);
+        }
+        let result = daemon.restart_with_features_locked(&requested).await;
+        if managed {
+            assert_eq!(result.unwrap().status, LifecycleStatus::Restarted);
+            let pid = std::fs::read(&daemon.pid_file).unwrap();
+            let mut expected = original;
+            expected.feature_overrides.extend(requested.clone());
+            assert_eq!(daemon.load_settings().await.unwrap(), expected);
+            assert_eq!(
+                daemon
+                    .restart_with_features_locked(&requested)
+                    .await
+                    .unwrap()
+                    .status,
+                LifecycleStatus::AlreadyRunning
+            );
+            assert_eq!(std::fs::read(&daemon.pid_file).unwrap(), pid);
+            daemon.stop().await.unwrap();
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no running managed daemon")
+            );
+            assert_eq!(daemon.load_settings().await.unwrap(), original);
+        }
+        server.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
     check_manual_update_restart("app-server-daemon").await;
 }
@@ -628,7 +773,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         super::run_with_http(
             &http,
             &updater_daemon,
-            &executable_identity_from_bytes(b"updater"),
+            &executable_identity_from_reader(&b"updater"[..]).expect("updater identity"),
             restore_release,
         )
         .await
@@ -705,7 +850,7 @@ async fn check_manual_update_restart(package_directory: &str) {
     let output = manual_update_once(
         &no_op,
         &daemon,
-        &executable_identity_from_bytes(b"updater"),
+        &executable_identity_from_reader(&b"updater"[..]).expect("updater identity"),
         &mut test_terminate(),
         super::UpdateTrigger::Manual,
     )

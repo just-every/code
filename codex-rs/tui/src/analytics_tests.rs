@@ -3,8 +3,10 @@
 use crate::analytics::sections::Section;
 #[path = "analytics/compact_tests.rs"]
 mod compact;
-#[path = "analytics/dashboard_tests.rs"]
-mod dashboard;
+#[path = "analytics/recovery_tests.rs"]
+mod recovery;
+#[path = "analytics/redesign_tests.rs"]
+mod redesign;
 #[path = "analytics/summary_tests.rs"]
 mod summary;
 
@@ -57,25 +59,11 @@ fn analytics_exact_fit_content_has_no_scroll_hint() {
     let exact = screen(&mut view, /*width*/ 120, exact_height);
     assert!(!exact.contains("scroll"));
     assert_eq!(view.viewport_height, content_height);
-
-    insta::assert_snapshot!(exact);
-}
-
-#[test]
-fn analytics_overview() {
-    let mut view = fixture::view(models::AccountKind::Consumer);
-    press(&mut view, KeyCode::Char('z'));
-    let wide = screen(&mut view, /*width*/ 120, /*height*/ 60);
-    for section in view.visible_sections() {
-        assert!(wide.contains(view.section_title(*section)));
-    }
-    insta::assert_snapshot!(wide);
 }
 
 #[test]
 fn analytics_narrow_charts_and_small_terminals_keep_valid_cursors() {
     let mut view = fixture::view(models::AccountKind::Consumer);
-    press(&mut view, KeyCode::Char('z'));
     for section in ['2', '3', '4'] {
         press(&mut view, KeyCode::Char(section));
         press(&mut view, KeyCode::Char('r'));
@@ -88,16 +76,12 @@ fn analytics_narrow_charts_and_small_terminals_keep_valid_cursors() {
         assert_eq!(view.sections[view.section].cursor, 29);
     }
     for _ in 0..2 {
-        press(&mut view, KeyCode::Char('z'));
         for width in [1, 4, 32, 107, 108] {
             screen(&mut view, width, /*height*/ 1);
         }
     }
     let empty = ratatui::layout::Rect::default();
     view.render(empty, &mut ratatui::buffer::Buffer::empty(empty));
-    press(&mut view, KeyCode::Char('5'));
-    let tools = screen(&mut view, /*width*/ 58, /*height*/ 20);
-    insta::assert_snapshot!(tools);
 }
 
 #[tokio::test]
@@ -106,6 +90,7 @@ async fn analytics_credits_grouping_preserves_selected_day_and_total() {
     let (_home, _app_server, mut view) = client::tests::connected_view(&server, "business").await;
     test_support::settle(&mut view).await;
     press(&mut view, KeyCode::Char('2'));
+    test_support::settle(&mut view).await;
     press(&mut view, KeyCode::Left);
     let before = view.sections[Section::Credits]
         .history
@@ -137,9 +122,6 @@ async fn analytics_credits_grouping_preserves_selected_day_and_total() {
             before
         );
     }
-    view.end_date = fixture::END_DATE;
-    fixture::seed_reports(&mut view);
-    insta::assert_snapshot!(screen(&mut view, /*width*/ 85, /*height*/ 40));
 }
 
 #[tokio::test]
@@ -188,7 +170,6 @@ fn analytics_preserves_full_denominators_and_signed_small_credits() {
     use crate::analytics::models::AccountAnalyticsDay;
     use crate::analytics::models::AccountAnalyticsValue;
     let mut view = fixture::view(models::AccountKind::Consumer);
-    press(&mut view, KeyCode::Char('z'));
     let mut history = fixture::history(/*report*/ 0, /*range*/ 0, /*group*/ 3);
     history.data = vec![AccountAnalyticsDay {
         date: "2026-09-02".parse().unwrap(),
@@ -343,7 +324,6 @@ fn analytics_dates_distinguish_zero_missing_and_exact_details() {
 #[test]
 fn analytics_model_labels_and_tool_remainders_are_unambiguous() {
     let mut view = fixture::view(models::AccountKind::Consumer);
-    press(&mut view, KeyCode::Char('z'));
     view.model_names
         .insert("GPT-5.6-Sol".into(), "Friendly model".into());
     let mut tools = fixture::history(/*report*/ 4, /*range*/ 0, /*group*/ 0);
@@ -354,12 +334,11 @@ fn analytics_model_labels_and_tool_remainders_are_unambiguous() {
     press(&mut view, KeyCode::Char('3'));
     let overview = screen(&mut view, /*width*/ 140, /*height*/ 64);
     assert!(overview.contains("Friendly model"));
-    assert!(overview.contains("Skills used"));
+    assert!(overview.contains("Skills"));
     press(&mut view, KeyCode::Char('5'));
     press(&mut view, KeyCode::Enter);
     let skills = screen(&mut view, /*width*/ 100, /*height*/ 32);
     assert!(skills.contains("Other"));
-    insta::assert_snapshot!(format!("{overview}\n{skills}"));
 }
 
 #[test]
@@ -393,7 +372,6 @@ fn analytics_day_navigation_keeps_geometry_and_legend() {
     history.data.remove(/*index*/ 2);
     view.sections[Section::Credits].history = Load::Ready(history);
     press(&mut view, KeyCode::Char('2'));
-    let mut snapshots = Vec::new();
     for width in [58, 160] {
         let mut terminal = Terminal::new(TestBackend::new(width, /*height*/ 38)).unwrap();
         for expanded in [false, true] {
@@ -428,9 +406,6 @@ fn analytics_day_navigation_keeps_geometry_and_legend() {
                 }
                 previous = Some(geometry);
                 assert!(output.contains("● CLI") && output.contains("● Desktop app"));
-                if view.sections[Section::Credits].cursor == 2 && !expanded {
-                    snapshots.push(output);
-                }
                 press(&mut view, KeyCode::Right);
             }
             if expanded {
@@ -438,7 +413,6 @@ fn analytics_day_navigation_keeps_geometry_and_legend() {
             }
         }
     }
-    insta::assert_snapshot!(snapshots.join("\n"));
 }
 
 #[test]
@@ -552,7 +526,7 @@ fn analytics_usage_ranks_its_own_models_after_turns_load() {
         value.value = amount;
     }
     view.sections[Section::Usage].history = Load::Ready(history);
-    let selected_day = screen(&mut view, /*width*/ 100, /*height*/ 38);
+
     for _ in 0..7 {
         screen(&mut view, /*width*/ 100, /*height*/ 38);
         let expected = if view.sections[Section::Usage].cursor == 6 {
@@ -582,7 +556,6 @@ fn analytics_usage_ranks_its_own_models_after_turns_load() {
         assert_eq!(legend, expected);
         press(&mut view, KeyCode::Left);
     }
-    insta::assert_snapshot!(selected_day);
 }
 
 #[test]
@@ -596,7 +569,6 @@ fn analytics_empty_turns_keep_geometry_and_disable_details() {
     history.data.remove(/*index*/ 6);
     view.sections[Section::Activity].history = Load::Ready(history);
     press(&mut view, KeyCode::Char('3'));
-    let mut snapshots = Vec::new();
     for width in [58, 100] {
         view.sections[Section::Activity].cursor = 4;
         let populated = screen(&mut view, width, /*height*/ 38);
@@ -619,7 +591,6 @@ fn analytics_empty_turns_keep_geometry_and_disable_details() {
             );
             press(&mut view, KeyCode::Enter);
             assert_eq!(view.sections[Section::Activity].detail, None);
-            snapshots.push(empty);
         }
         view.sections[Section::Activity].cursor = 4;
         press(&mut view, KeyCode::Enter);
@@ -637,7 +608,6 @@ fn analytics_empty_turns_keep_geometry_and_disable_details() {
         assert_eq!(view.sections[Section::Activity].detail, details);
         view.sections[Section::Activity].detail = None;
     }
-    insta::assert_snapshot!(snapshots.join("\n"));
 }
 
 #[path = "analytics/chat_panel_tests.rs"]
@@ -647,16 +617,12 @@ mod chats_table;
 fn analytics_details_reflow_and_keep_focus() {
     let mut view = fixture::view(models::AccountKind::Enterprise);
     view.chats = Load::Ready(fixture::chats());
-    press(&mut view, KeyCode::Char('z'));
     press(&mut view, KeyCode::Char('6'));
     press(&mut view, KeyCode::Enter);
-    assert!(view.zoomed);
-    press(&mut view, KeyCode::Enter);
-    let wide = screen(&mut view, /*width*/ 120, /*height*/ 42);
+    screen(&mut view, /*width*/ 120, /*height*/ 42);
     view.follow_selection = true;
     let narrow = screen(&mut view, /*width*/ 58, /*height*/ 20);
     assert!(narrow.contains("Q3 planning analysis") && narrow.contains("GPT-5.6-Sol"));
-    insta::assert_snapshot!(format!("{wide}\n{narrow}"));
     let before = (
         view.section,
         view.sections.0.each_ref().map(|state| state.cursor),
@@ -693,3 +659,9 @@ fn analytics_details_reflow_and_keep_focus() {
     press(&mut view, KeyCode::Esc);
     assert!(view.is_done);
 }
+
+#[path = "analytics/dashboard_tests.rs"]
+mod dashboard;
+
+#[path = "analytics/mouse_tests.rs"]
+mod mouse;

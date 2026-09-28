@@ -43,6 +43,7 @@ fn override_builder() -> TestCodexBuilder {
     test_codex()
         .with_model_info_override("gpt-5.4", |model| {
             model.use_responses_lite = true;
+            model.supports_reasoning_effort_updates = true;
         })
         .with_config(|config| {
             config
@@ -76,21 +77,36 @@ fn message(role: &str, text: &str) -> Value {
     })
 }
 
-#[test_case(SessionSource::Internal(InternalSessionSource::Guardian); "internal guardian")]
-#[test_case(SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())); "legacy guardian")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkerOverrides {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkerHistory {
+    Persisted,
+    Ephemeral,
+}
+
+#[test_case(SessionSource::Internal(InternalSessionSource::Guardian), ThreadSource::GuardianReview, WorkerHistory::Persisted, WorkerOverrides::Disabled; "internal guardian")]
+#[test_case(SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())), ThreadSource::GuardianReview, WorkerHistory::Persisted, WorkerOverrides::Disabled; "legacy guardian")]
+#[test_case(SessionSource::Internal(InternalSessionSource::MemoryConsolidation), ThreadSource::MemoryConsolidation, WorkerHistory::Persisted, WorkerOverrides::Disabled; "memory consolidation")]
+#[test_case(SessionSource::SubAgent(SubAgentSource::MemoryConsolidation), ThreadSource::MemoryConsolidation, WorkerHistory::Persisted, WorkerOverrides::Disabled; "legacy memory consolidation")]
+#[test_case(SessionSource::Cli, ThreadSource::Feature("thread_title".to_string()), WorkerHistory::Ephemeral, WorkerOverrides::Disabled; "ephemeral thread title")]
+#[test_case(SessionSource::Cli, ThreadSource::Feature("thread_title".to_string()), WorkerHistory::Persisted, WorkerOverrides::Enabled; "persisted thread title")]
+#[test_case(SessionSource::Cli, ThreadSource::Feature("system".to_string()), WorkerHistory::Ephemeral, WorkerOverrides::Enabled; "other ephemeral thread")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sync_guardian_ignores_managed_reasoning_override(
+async fn worker_reasoning_overrides_follow_effective_client_policy(
     session_source: SessionSource,
+    thread_source: ThreadSource,
+    history: WorkerHistory,
+    overrides: WorkerOverrides,
 ) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let mut mocks = Vec::new();
-    for id in [
-        "parent-medium",
-        "parent-high",
-        "reviewer-low",
-        "reviewer-high",
-    ] {
+    for id in ["parent-medium", "parent-high", "worker-low", "worker-high"] {
         mocks.push(
             responses::mount_sse_once(&server, responses::sse(vec![responses::ev_completed(id)]))
                 .await,
@@ -118,15 +134,16 @@ async fn sync_guardian_ignores_managed_reasoning_override(
     let parent = Arc::clone(&test.codex);
     parent.shutdown_and_wait().await?;
 
-    // Fork real parent history, including its trusted effort updates, into a reviewer.
-    let config = test.config.clone();
+    // Fork real parent history while managed requirements keep the feature enabled.
+    let mut config = test.config.clone();
+    config.ephemeral = history == WorkerHistory::Ephemeral;
     assert!(config.features.enabled(Feature::ReasoningEffortOverride));
     let mut options = StartThreadOptions::new(config);
     options.session_source = Some(session_source);
-    options.thread_source = Some(ThreadSource::GuardianReview);
+    options.thread_source = Some(thread_source);
     let forked = test
         .thread_manager
-        .fork_thread(
+        .fork_legacy_thread(
             ForkSnapshot::Interrupted,
             options,
             parent.rollout_path().expect("parent rollout path"),
@@ -143,7 +160,7 @@ async fn sync_guardian_ignores_managed_reasoning_override(
             },
         )
         .await?;
-        test.submit_text_turn("review an action").await?;
+        test.submit_text_turn("perform the worker task").await?;
     }
     test.codex.shutdown_and_wait().await?;
 
@@ -160,24 +177,50 @@ async fn sync_guardian_ignores_managed_reasoning_override(
             Value::from("medium"),
             Value::from("medium"),
             Value::from("low"),
-            Value::from("high"),
+            Value::from(if overrides == WorkerOverrides::Enabled {
+                "low"
+            } else {
+                "high"
+            }),
         ],
     );
     let inherited_updates = vec![
         effort_update(ReasoningEffort::Medium),
         effort_update(ReasoningEffort::High),
     ];
+    let mut worker_updates = inherited_updates.clone();
+    let expected_worker_requests = if overrides == WorkerOverrides::Enabled {
+        worker_updates.push(effort_update(ReasoningEffort::Low));
+        let first = worker_updates.clone();
+        worker_updates.push(effort_update(ReasoningEffort::High));
+        vec![first, worker_updates.clone()]
+    } else {
+        vec![vec![], vec![]]
+    };
     assert_eq!(
         requests.iter().map(effort_updates).collect::<Vec<_>>(),
-        vec![
-            vec![effort_update(ReasoningEffort::Medium)],
-            inherited_updates.clone(),
-            vec![],
-            vec![],
-        ],
+        [
+            vec![
+                vec![effort_update(ReasoningEffort::Medium)],
+                inherited_updates.clone(),
+            ],
+            expected_worker_requests
+        ]
+        .concat(),
     );
-    // Reviewers neither append new updates nor erase inherited durable history.
-    for thread in [&parent, &test.codex] {
+    // Fixed-effort workers neither append updates nor erase inherited live or durable history.
+    for (thread, expected) in [(&parent, inherited_updates), (&test.codex, worker_updates)] {
+        let context_updates = thread
+            .conversation_history_snapshot()
+            .await
+            .items()
+            .filter(|item| matches!(item, ResponseItem::ConfigurationUpdate { .. }))
+            .map(|item| serde_json::to_value(item).expect("serialize context update"))
+            .collect::<Vec<_>>();
+        assert_eq!(context_updates, expected);
+        if thread.config_snapshot().await.ephemeral {
+            continue;
+        }
         let saved_updates = thread
             .load_history(/*include_archived*/ false)
             .await?
@@ -191,7 +234,7 @@ async fn sync_guardian_ignores_managed_reasoning_override(
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(saved_updates, inherited_updates);
+        assert_eq!(saved_updates, expected);
     }
     Ok(())
 }
@@ -354,9 +397,12 @@ async fn reasoning_effort_override_persistent_transitions(
     Ok(())
 }
 
+#[test_case(true; "responses lite")]
+#[test_case(false; "ordinary responses")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_preserves_prefix_and_only_appends_on_change()
--> anyhow::Result<()> {
+async fn reasoning_effort_override_preserves_prefix_and_only_appends_on_change(
+    use_responses_lite: bool,
+) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let mut mocks = Vec::new();
@@ -366,7 +412,12 @@ async fn reasoning_effort_override_preserves_prefix_and_only_appends_on_change()
                 .await,
         );
     }
-    let test = override_builder().build_with_auto_env(&server).await?;
+    let test = override_builder()
+        .with_model_info_override("gpt-5.4", move |model| {
+            model.use_responses_lite = use_responses_lite;
+        })
+        .build_with_auto_env(&server)
+        .await?;
     test.submit_text_turn("first message").await?;
     submit_thread_settings(
         &test.codex,
@@ -568,7 +619,7 @@ async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
             configure_prewarm(&mut config);
             let forked = previous
                 .thread_manager
-                .fork_thread(
+                .fork_legacy_thread(
                     ForkSnapshot::Interrupted,
                     codex_core::StartThreadOptions::new(config.clone()),
                     previous.codex.rollout_path().expect("rollout path"),
@@ -718,8 +769,12 @@ async fn reasoning_effort_override_websocket_appends_then_replays_after_reconnec
     Ok(())
 }
 
+#[test_case(OverrideUnavailable::FeatureDisabled; "feature disabled")]
+#[test_case(OverrideUnavailable::ModelUnsupported; "unsupported model")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_disabled_filters_websocket_history() -> anyhow::Result<()> {
+async fn reasoning_effort_override_unavailable_filters_websocket_history(
+    unavailable: OverrideUnavailable,
+) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let initial_mock = responses::mount_sse_once(
@@ -747,11 +802,7 @@ async fn reasoning_effort_override_disabled_filters_websocket_history() -> anyho
     ]])
     .await;
     let base_url = format!("{}/v1", websocket.uri());
-    let mut builder = override_builder().with_config(move |config| {
-        config
-            .features
-            .disable(Feature::ReasoningEffortOverride)
-            .expect("disable overrides");
+    let mut builder = unavailable.builder().with_config(move |config| {
         config.model_reasoning_effort = Some(ReasoningEffort::High);
         config.model_provider.base_url = Some(base_url);
         config.model_provider.supports_websockets = true;
@@ -788,12 +839,33 @@ async fn reasoning_effort_override_disabled_filters_websocket_history() -> anyho
 enum OverrideUnavailable {
     FeatureDisabled,
     NonOpenAiProvider,
-    ResponsesLiteDisabled,
+    ModelUnsupported,
+}
+
+impl OverrideUnavailable {
+    fn builder(self) -> TestCodexBuilder {
+        match self {
+            Self::FeatureDisabled => override_builder().with_config(|config| {
+                config
+                    .features
+                    .disable(Feature::ReasoningEffortOverride)
+                    .expect("disable overrides");
+            }),
+            Self::NonOpenAiProvider => override_builder().with_config(|config| {
+                config.model_provider.name = "unsupported provider".into();
+            }),
+            Self::ModelUnsupported => {
+                override_builder().with_model_info_override("gpt-5.4", |model| {
+                    model.supports_reasoning_effort_updates = false;
+                })
+            }
+        }
+    }
 }
 
 #[test_case(OverrideUnavailable::FeatureDisabled; "feature disabled")]
 #[test_case(OverrideUnavailable::NonOpenAiProvider; "unsupported provider")]
-#[test_case(OverrideUnavailable::ResponsesLiteDisabled; "responses lite disabled")]
+#[test_case(OverrideUnavailable::ModelUnsupported; "unsupported model")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reasoning_effort_override_unavailable_uses_request_effort(
     unavailable: OverrideUnavailable,
@@ -810,20 +882,7 @@ async fn reasoning_effort_override_unavailable_uses_request_effort(
         responses::sse(vec![responses::ev_completed("second")]),
     )
     .await;
-    let mut builder = match unavailable {
-        OverrideUnavailable::FeatureDisabled => override_builder().with_config(|config| {
-            config
-                .features
-                .disable(Feature::ReasoningEffortOverride)
-                .expect("disable overrides");
-        }),
-        OverrideUnavailable::NonOpenAiProvider => override_builder().with_config(|config| {
-            config.model_provider.name = "unsupported provider".into();
-        }),
-        OverrideUnavailable::ResponsesLiteDisabled => override_builder()
-            .with_model_info_override("gpt-5.4", |model| model.use_responses_lite = false),
-    };
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = unavailable.builder().build_with_auto_env(&server).await?;
     test.submit_text_turn("first").await?;
     submit_thread_settings(
         &test.codex,
@@ -846,8 +905,12 @@ async fn reasoning_effort_override_unavailable_uses_request_effort(
     Ok(())
 }
 
+#[test_case(OverrideUnavailable::FeatureDisabled; "feature disabled")]
+#[test_case(OverrideUnavailable::ModelUnsupported; "unsupported model")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_disabled_recovers_saved_history() -> anyhow::Result<()> {
+async fn reasoning_effort_override_unavailable_recovers_saved_history(
+    unavailable: OverrideUnavailable,
+) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let reply = |id, text| {
@@ -891,13 +954,10 @@ async fn reasoning_effort_override_disabled_recovers_saved_history() -> anyhow::
     })
     .await;
     let chatgpt_base_url = format!("{}/backend-api", server.uri());
-    let mut builder = override_builder()
+    let mut builder = unavailable
+        .builder()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config
-                .features
-                .disable(Feature::ReasoningEffortOverride)
-                .expect("disable overrides");
             config.model_reasoning_effort = Some(ReasoningEffort::High);
             config.chatgpt_base_url = chatgpt_base_url;
         });
@@ -984,6 +1044,7 @@ async fn reasoning_effort_override_model_switch_reestablishes_selected_effort(
         .with_model_info_override("gpt-5.5", |model| {
             model.comp_hash = None;
             model.use_responses_lite = true;
+            model.supports_reasoning_effort_updates = true;
         })
         .with_model("gpt-5.4")
         .build_with_auto_env(&server)
@@ -1018,6 +1079,145 @@ async fn reasoning_effort_override_model_switch_reestablishes_selected_effort(
         ]),
         serde_json::json!(["gpt-5.5", effort])
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_unsupported_model_round_trip() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let test = override_builder()
+        .with_model_info_override("gpt-6-astra", |model| {
+            model.comp_hash = None;
+            model.use_responses_lite = true;
+            model.supports_reasoning_effort_updates = true;
+        })
+        .with_model_info_override("gpt-5.5", |model| {
+            model.comp_hash = None;
+            // Lite alone is not sufficient: unsupported models must still filter updates.
+            model.use_responses_lite = true;
+            model.supports_reasoning_effort_updates = false;
+        })
+        .with_model("gpt-6-astra")
+        .build_with_auto_env(&server)
+        .await?;
+    let turns = [
+        ("gpt-6-astra", ReasoningEffort::Medium, "Start at medium."),
+        (
+            "gpt-6-astra",
+            ReasoningEffort::High,
+            "Raise effort to high.",
+        ),
+        (
+            "gpt-5.5",
+            ReasoningEffort::High,
+            "Switch to the unsupported model.",
+        ),
+        ("gpt-5.5", ReasoningEffort::Low, "Lower effort to low."),
+        (
+            "gpt-6-astra",
+            ReasoningEffort::Low,
+            "Return to the supported model.",
+        ),
+        ("gpt-6-astra", ReasoningEffort::High, "Raise effort again."),
+    ];
+    let mut requests = Vec::new();
+    for (index, (model, effort, prompt)) in turns.iter().enumerate() {
+        let id = format!("turn-{index}");
+        let mock = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_assistant_message(&id, "Acknowledged."),
+                responses::ev_completed(&id),
+            ]),
+        )
+        .await;
+        submit_thread_settings(
+            &test.codex,
+            ThreadSettingsOverrides {
+                model: Some((*model).to_string()),
+                effort: Some(Some(effort.clone())),
+                ..Default::default()
+            },
+        )
+        .await?;
+        test.submit_text_turn(prompt).await?;
+        requests.push(mock.single_request());
+    }
+    let initial_updates = vec![
+        effort_update(ReasoningEffort::Medium),
+        effort_update(ReasoningEffort::High),
+    ];
+    let mut returned_updates = initial_updates.clone();
+    returned_updates.push(effort_update(ReasoningEffort::Low));
+    let mut final_updates = returned_updates.clone();
+    final_updates.push(effort_update(ReasoningEffort::High));
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| {
+                let body = request.body_json();
+                (
+                    body["model"].clone(),
+                    body["reasoning"]["effort"].clone(),
+                    effort_updates(request),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Value::from("gpt-6-astra"),
+                Value::from("medium"),
+                vec![effort_update(ReasoningEffort::Medium)]
+            ),
+            (
+                Value::from("gpt-6-astra"),
+                Value::from("medium"),
+                initial_updates
+            ),
+            (Value::from("gpt-5.5"), Value::from("high"), vec![]),
+            (Value::from("gpt-5.5"), Value::from("low"), vec![]),
+            (
+                Value::from("gpt-6-astra"),
+                Value::from("low"),
+                returned_updates
+            ),
+            (
+                Value::from("gpt-6-astra"),
+                Value::from("low"),
+                final_updates.clone()
+            ),
+        ],
+    );
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(
+            request
+                .message_input_texts("user")
+                .into_iter()
+                .filter(|text| { turns.iter().any(|(_, _, prompt)| text.as_str() == *prompt) })
+                .collect::<Vec<_>>(),
+            turns[..=index]
+                .iter()
+                .map(|(_, _, prompt)| prompt.to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
+    test.codex.shutdown_and_wait().await?;
+    let saved_updates = test
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(ResponseItemEnvelope {
+                item: item @ ResponseItem::ConfigurationUpdate { .. },
+                ..
+            }) => Some(serde_json::to_value(item).expect("serialize saved update")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(saved_updates, final_updates);
     Ok(())
 }
 
@@ -1129,6 +1329,7 @@ async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort()
         .with_model_info_override("gpt-5.2", |model| {
             model.comp_hash = Some("fallback".to_string());
             model.use_responses_lite = true;
+            model.supports_reasoning_effort_updates = true;
         })
         .with_model("gpt-5.4")
         .with_config(move |config| {

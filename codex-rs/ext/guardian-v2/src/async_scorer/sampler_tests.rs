@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_api::ApiError;
 use codex_context_fragments::RenderedFragment;
 use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::ExtensionMetrics;
@@ -47,6 +48,9 @@ use super::LunaSamplerConfig;
 use super::LunaSamplerError;
 use super::LunaSamplingRequest;
 use super::MAX_CONCURRENT_REQUESTS;
+
+#[path = "sampler_routing_tests.rs"]
+mod routing;
 
 impl LunaSampler {
     /// Waits for warm sockets to enter the client pool, beyond the server handshake.
@@ -196,6 +200,9 @@ pub(in crate::async_scorer) async fn proxy_websocket_servers_with_http(
 
 pub(super) fn sampler_config(base_url: String) -> LunaSamplerConfig {
     LunaSamplerConfig {
+        workspace_routing: codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
         provider: create_model_provider(
             ModelProviderInfo::create_openai_provider(Some(base_url)),
             Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
@@ -506,6 +513,9 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
     );
 
     let sampler = connect_sampler(LunaSamplerConfig {
+        workspace_routing: codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
         provider,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
@@ -751,6 +761,9 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         ))),
     );
     let sampler = connect_sampler(LunaSamplerConfig {
+        workspace_routing: codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
         provider,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
@@ -1082,7 +1095,11 @@ async fn sampler_reconnects_after_transient_service_failures() -> Result<()> {
         })]]]
     };
     let first = responses::start_websocket_server(unavailable()).await;
-    let second = responses::start_websocket_server(unavailable()).await;
+    let second = responses::start_websocket_server(vec![vec![vec![json!({
+        "type": "response.failed",
+        "response": {"error": {"code": "flex_unavailable", "message": "capacity unavailable"}}
+    })]]])
+    .await;
     let http = responses::start_mock_server().await;
     let recovered = responses::mount_sse_once(
         &http,
@@ -1133,13 +1150,17 @@ async fn sampler_limits_transient_recovery_attempts() -> Result<()> {
         })]]]
     };
     let first = responses::start_websocket_server(unavailable()).await;
-    let second = responses::start_websocket_server(unavailable()).await;
+    let second = responses::start_websocket_server(vec![vec![vec![json!({
+        "type": "response.failed",
+        "response": {"error": {"code": "flex_unavailable", "message": "capacity unavailable"}}
+    })]]])
+    .await;
     let http = responses::start_mock_server().await;
     let third = responses::mount_sse_once(
         &http,
         responses::sse(vec![json!({
             "type": "response.failed", "response": {
-                "error": {"code": "internal_server_error", "message": "HTTP sampling failed"}
+                "error": {"code": "flex_unavailable", "message": "HTTP sampling failed"}
             }
         })]),
     )
@@ -1159,7 +1180,10 @@ async fn sampler_limits_transient_recovery_attempts() -> Result<()> {
         .await
         .expect_err("sampling should stop after the bounded retries");
 
-    assert!(error.to_string().contains("HTTP sampling failed"));
+    assert!(matches!(
+        error,
+        LunaSamplerError::Api(ApiError::FlexUnavailable)
+    ));
     assert_eq!(first.single_connection().len(), 1);
     assert_eq!(second.single_connection().len(), 1);
     assert_eq!(third.requests().len(), 1);

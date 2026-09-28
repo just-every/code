@@ -1,4 +1,8 @@
+//! Composes Code Mode descriptions, retaining runtime-owned tool declarations.
+//! Exec templates substitute only the documented literal placeholders.
+
 use codex_protocol::ToolName;
+use codex_protocol::openai_models::CodeModeToolMessages;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -6,6 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::PUBLIC_TOOL_NAME;
 use crate::json_schema_types::render_json_schema_to_typescript;
+use crate::json_schema_types::render_json_schema_to_typescript_with_budget;
 
 const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r#"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
@@ -20,14 +25,14 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - Runs raw JavaScript -- no Node, no file system, no network access, no console.
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
-- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.
+- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to {{ default_exec_yield_time_ms }} ms.
 - `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
 - When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
 - `text(value: string | number | boolean | undefined | null)`: Appends a text item. Non-string values are stringified with `JSON.stringify(...)` when possible.
-- `image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null } | ImageContent, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item. `image_url` should be a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`. MCP image blocks may request detail with `_meta: { "codex/imageDetail": "original" }`. When provided, the second `detail` argument overrides any detail embedded in the first argument.
+- {{ image_helper }}
 - `audio(audioUrlOrItem: string | { audio_url: string } | AudioContent)`: Appends an audio item. `audio_url` should be a base64-encoded `data:` URL. To forward an MCP tool audio block, pass an individual `AudioContent` block from `result.content`, for example `audio(result.content[0])`.
 - `generatedImage(result: { image_url: string; output_hint?: string })`: Appends an image-generation result and its optional output hint. HTTP(S) URLs are not supported.
 - `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
@@ -139,6 +144,9 @@ pub struct ToolDefinition {
     pub description: String,
     pub kind: CodeModeToolKind,
     pub input_schema: Option<JsonValue>,
+    /// Internal budget used while rendering the input declaration, before sending it to the host.
+    #[serde(skip)]
+    pub input_schema_max_bytes: Option<usize>,
     pub output_schema: Option<JsonValue>,
 }
 
@@ -265,20 +273,32 @@ pub fn build_exec_tool_description(
     default_exec_yield_time_ms: u64,
     code_mode_only: bool,
     image_detail_visibility: ImageDetailVisibility,
+    messages: Option<&CodeModeToolMessages>,
 ) -> String {
     let mut sections = Vec::new();
-    sections.push(EXEC_DESCRIPTION_TEMPLATE.replace(
-        "Defaults to 10000 ms.",
-        &format!("Defaults to {default_exec_yield_time_ms} ms."),
-    ));
-    if image_detail_visibility == ImageDetailVisibility::Hidden {
-        sections[0] = sections[0].replace(
-            LEGACY_IMAGE_HELPER_DESCRIPTION,
-            UNIFIED_IMAGE_HELPER_DESCRIPTION,
-        );
+    let image_helper = match image_detail_visibility {
+        ImageDetailVisibility::Visible => LEGACY_IMAGE_HELPER_DESCRIPTION,
+        ImageDetailVisibility::Hidden => UNIFIED_IMAGE_HELPER_DESCRIPTION,
+    };
+    let description = messages
+        .and_then(|messages| messages.exec.as_ref())
+        .and_then(|exec| exec.description.as_deref())
+        .unwrap_or(EXEC_DESCRIPTION_TEMPLATE)
+        .replace(
+            "{{ default_exec_yield_time_ms }}",
+            &default_exec_yield_time_ms.to_string(),
+        )
+        .replace("{{ image_helper }}", image_helper);
+    if !description.is_empty() {
+        sections.push(description);
     }
     if !deferred_tools.is_empty() {
-        sections.push(DEFERRED_NESTED_TOOLS_GUIDANCE.to_string());
+        let guidance = messages
+            .and_then(|messages| messages.deferred_nested_tools_guidance.as_deref())
+            .unwrap_or(DEFERRED_NESTED_TOOLS_GUIDANCE);
+        if !guidance.is_empty() {
+            sections.push(guidance.to_string());
+        }
     }
     if !code_mode_only {
         return sections.join("\n\n");
@@ -289,9 +309,12 @@ pub fn build_exec_tool_description(
         .chain(deferred_tools)
         .any(|tool| mcp_structured_content_schema(tool.output_schema.as_ref()).is_some());
     if has_mcp_tools {
-        sections.push(format!(
-            "Shared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
-        ));
+        let preamble = messages
+            .and_then(|messages| messages.mcp_typescript_preamble.as_deref())
+            .unwrap_or(MCP_TYPESCRIPT_PREAMBLE);
+        if !preamble.is_empty() {
+            sections.push(format!("Shared MCP Types:\n```ts\n{preamble}\n```"));
+        }
     }
 
     if !enabled_tools.is_empty() {
@@ -414,7 +437,10 @@ fn render_code_mode_sample_for_definition(definition: &ToolDefinition) -> String
         CodeModeToolKind::Function => definition
             .input_schema
             .as_ref()
-            .map(render_json_schema_to_typescript)
+            .map(|schema| match definition.input_schema_max_bytes {
+                Some(max_bytes) => render_json_schema_to_typescript_with_budget(schema, max_bytes),
+                None => render_json_schema_to_typescript(schema),
+            })
             .unwrap_or_else(|| "unknown".to_string()),
         CodeModeToolKind::Freeform => "string".to_string(),
     };
@@ -503,6 +529,10 @@ fn mcp_structured_content_schema(output_schema: Option<&JsonValue>) -> Option<&J
 }
 
 #[cfg(test)]
+#[path = "description_override_tests.rs"]
+mod description_override_tests;
+
+#[cfg(test)]
 mod tests {
     use super::CodeModeToolKind;
     use super::ImageDetailVisibility;
@@ -587,6 +617,7 @@ mod tests {
                 "required": ["city"],
                 "additionalProperties": false
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
                 "properties": { "ok": { "type": "boolean" } },
@@ -627,6 +658,7 @@ mod tests {
                 },
                 "required": ["weather"]
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
                 "properties": {
@@ -663,6 +695,7 @@ mod tests {
                 "properties": {},
                 "additionalProperties": false
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(mcp_call_tool_result_schema(json!({
                 "type": "object",
                 "properties": {
@@ -702,6 +735,7 @@ mod tests {
                 description: "bar".to_string(),
                 kind: CodeModeToolKind::Function,
                 input_schema: None,
+                input_schema_max_bytes: None,
                 output_schema: None,
             }],
             &[],
@@ -709,6 +743,7 @@ mod tests {
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
         assert!(description.contains(
             "### `foo`
@@ -726,6 +761,7 @@ bar"
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ false,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
         assert!(description.contains("`audio(audioUrlOrItem:"));
         assert!(description.contains("`setTimeout(callback: () => void, delayMs?: number)`"));
@@ -753,6 +789,7 @@ bar"
                         "properties": {},
                         "additionalProperties": false
                     })),
+                    input_schema_max_bytes: None,
                     output_schema: Some(mcp_call_tool_result_schema(json!({
                         "type": "object",
                         "properties": {},
@@ -769,6 +806,7 @@ bar"
                         "properties": {},
                         "additionalProperties": false
                     })),
+                    input_schema_max_bytes: None,
                     output_schema: Some(mcp_call_tool_result_schema(json!({
                         "type": "object",
                         "properties": {},
@@ -781,6 +819,7 @@ bar"
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
         assert_eq!(description.matches("## mcp__sample").count(), 1);
         assert!(description.contains("## mcp__sample\nShared namespace guidance."));
@@ -812,6 +851,7 @@ bar"
                     "properties": {},
                     "additionalProperties": false
                 })),
+                input_schema_max_bytes: None,
                 output_schema: Some(mcp_call_tool_result_schema(json!({
                     "type": "object",
                     "properties": {},
@@ -823,6 +863,7 @@ bar"
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
 
         assert!(!description.contains("## mcp__sample"));
@@ -841,6 +882,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
                 "properties": {
@@ -875,6 +917,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
                 "properties": {
@@ -908,6 +951,7 @@ bar"
                     description: "First tool".to_string(),
                     kind: first_tool.kind,
                     input_schema: first_tool.input_schema,
+                    input_schema_max_bytes: None,
                     output_schema: first_tool.output_schema,
                 },
                 ToolDefinition {
@@ -916,6 +960,7 @@ bar"
                     description: "Second tool".to_string(),
                     kind: second_tool.kind,
                     input_schema: second_tool.input_schema,
+                    input_schema_max_bytes: None,
                     output_schema: second_tool.output_schema,
                 },
             ],
@@ -924,6 +969,7 @@ bar"
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
 
         assert_eq!(
@@ -947,6 +993,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            input_schema_max_bytes: None,
             output_schema: Some(mcp_call_tool_result_schema(json!({
                 "type": "object",
                 "properties": {},
@@ -961,6 +1008,7 @@ bar"
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
 
         assert!(description.contains("Some deferred nested tools may be omitted"));
@@ -978,12 +1026,14 @@ bar"
                 description: "Deferred tool".to_string(),
                 kind: CodeModeToolKind::Function,
                 input_schema: None,
+                input_schema_max_bytes: None,
                 output_schema: None,
             }],
             &BTreeMap::new(),
             crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ false,
             ImageDetailVisibility::Visible,
+            /*messages*/ None,
         );
 
         assert!(description.contains("Some deferred nested tools may be omitted"));

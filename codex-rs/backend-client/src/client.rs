@@ -12,8 +12,10 @@ use anyhow::Result;
 use codex_api::SharedAuthProvider;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
+use codex_http_client::RequestBuilder;
 use codex_http_client::RouteAwareClientPool;
-use codex_http_client::RouteAwareRequestBuilder;
+use codex_http_client::RouteAwareRequestError;
 use codex_login::CodexAuth;
 use codex_login::default_client::get_codex_user_agent;
 use codex_protocol::account::PlanType as AccountPlanType;
@@ -33,6 +35,7 @@ use http::header::USER_AGENT;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
+use std::time::Duration;
 
 pub(crate) mod analytics;
 mod chatgpt_turn_cost;
@@ -50,6 +53,7 @@ pub use thread_usage::ThreadUsageBreakdownGroup;
 
 #[derive(Debug)]
 pub enum RequestError {
+    Policy(codex_http_client::NetworkPolicyDenied),
     UnexpectedStatus {
         method: String,
         url: String,
@@ -64,7 +68,7 @@ impl RequestError {
     pub fn status(&self) -> Option<StatusCode> {
         match self {
             Self::UnexpectedStatus { status, .. } => Some(*status),
-            Self::Other(_) => None,
+            Self::Policy(_) | Self::Other(_) => None,
         }
     }
 
@@ -76,6 +80,7 @@ impl RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Policy(denied) => denied.fmt(f),
             Self::UnexpectedStatus {
                 method,
                 url,
@@ -94,6 +99,7 @@ impl fmt::Display for RequestError {
 impl std::error::Error for RequestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Policy(denied) => Some(denied),
             Self::UnexpectedStatus { .. } => None,
             Self::Other(err) => Some(err.as_ref()),
         }
@@ -103,6 +109,20 @@ impl std::error::Error for RequestError {
 impl From<anyhow::Error> for RequestError {
     fn from(err: anyhow::Error) -> Self {
         Self::Other(err)
+    }
+}
+
+impl From<codex_http_client::HttpError> for RequestError {
+    fn from(error: codex_http_client::HttpError) -> Self {
+        match error {
+            codex_http_client::HttpError::Policy(denied) => Self::Policy(denied),
+            error @ (codex_http_client::HttpError::Request(_)
+            | codex_http_client::HttpError::Route(_)
+            | codex_http_client::HttpError::Build(_)
+            | codex_http_client::HttpError::UnsupportedRedirectScheme(_)
+            | codex_http_client::HttpError::TooManyRedirects
+            | codex_http_client::HttpError::Timeout) => Self::Other(error.into()),
+        }
     }
 }
 
@@ -268,13 +288,13 @@ impl Client {
         h
     }
 
-    fn request(&self, method: Method, url: &str) -> RouteAwareRequestBuilder {
+    fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.http.request(method, url)
     }
 
     async fn exec_request(
         &self,
-        req: RouteAwareRequestBuilder,
+        req: RequestBuilder,
         method: &str,
         url: &str,
     ) -> Result<(String, String)> {
@@ -286,7 +306,7 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = res.text().await.unwrap_or_default();
+        let body = res.text().await.map_err(anyhow::Error::from)?;
         if !status.is_success() {
             anyhow::bail!("{method} {url} failed: {status}; content-type={ct}; body={body}");
         }
@@ -295,11 +315,11 @@ impl Client {
 
     async fn exec_request_detailed(
         &self,
-        req: RouteAwareRequestBuilder,
+        req: RequestBuilder,
         method: &str,
         url: &str,
     ) -> std::result::Result<(String, String), RequestError> {
-        let res = req.send().await.map_err(anyhow::Error::from)?;
+        let res = req.send().await?;
         let status = res.status();
         let content_type = res
             .headers()
@@ -307,7 +327,7 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = res.text().await.unwrap_or_default();
+        let body = res.text().await?;
         if !status.is_success() {
             return Err(RequestError::UnexpectedStatus {
                 method: method.to_string(),
@@ -318,6 +338,39 @@ impl Client {
             });
         }
         Ok((body, content_type))
+    }
+
+    async fn exec_bootstrap_get(
+        &self,
+        url: &str,
+    ) -> std::result::Result<(String, String), RequestError> {
+        let request = self.request(Method::GET, url).headers(self.headers());
+        if !self.http.allows_system_proxy_fallback() {
+            return self.exec_request_detailed(request, "GET", url).await;
+        }
+
+        // Bound the complete GET, including its body, to leave time for proxy discovery and retry
+        // within the cloud loader's startup budget. GETs are safe to retry after a response timeout.
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.exec_request_detailed(request, "GET", url),
+        )
+        .await
+        {
+            Ok(Err(RequestError::Other(error)))
+                if error
+                    .downcast_ref::<RouteAwareRequestError>()
+                    .is_some_and(|error| error.is_connect() || error.is_timeout()) => {}
+            Err(_) => {}
+            Ok(response) => return response,
+        }
+
+        let http = self
+            .http
+            .clone()
+            .with_outbound_proxy_policy(OutboundProxyPolicy::RespectSystemProxy);
+        let request = http.get(url).headers(self.headers());
+        self.exec_request_detailed(request, "GET", url).await
     }
 
     fn decode_json<T: DeserializeOwned>(&self, url: &str, ct: &str, body: &str) -> Result<T> {
@@ -349,8 +402,7 @@ impl Client {
             PathStyle::CodexApi => format!("{}/api/codex/accounts/check", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/accounts/check", self.base_url),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, _) = self.exec_request_detailed(req, "GET", &url).await?;
+        let (body, _) = self.exec_bootstrap_get(&url).await?;
         serde_json::from_str(&body)
             .map_err(|_| RequestError::Other(anyhow::anyhow!("Invalid accounts response.")))
     }
@@ -476,14 +528,18 @@ impl Client {
     pub async fn get_config_bundle(
         &self,
     ) -> std::result::Result<ConfigBundleResponse, RequestError> {
-        let url = match self.path_style {
-            PathStyle::CodexApi => format!("{}/api/codex/config/bundle", self.base_url),
-            PathStyle::ChatGptApi => format!("{}/wham/config/bundle", self.base_url),
-        };
-        let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request_detailed(req, "GET", &url).await?;
+        let url = self.config_bundle_url();
+        let (body, ct) = self.exec_bootstrap_get(&url).await?;
         self.decode_json::<ConfigBundleResponse>(&url, &ct, &body)
             .map_err(RequestError::from)
+    }
+
+    /// Returns the normalized discovery endpoint used by this client.
+    pub fn config_bundle_url(&self) -> String {
+        match self.path_style {
+            PathStyle::CodexApi => format!("{}/api/codex/config/bundle", self.base_url),
+            PathStyle::ChatGptApi => format!("{}/wham/config/bundle", self.base_url),
+        }
     }
 
     /// Fetch authenticated Codex user settings from the active backend route.
@@ -725,6 +781,7 @@ impl Client {
             crate::types::PlanType::Plus => AccountPlanType::Plus,
             crate::types::PlanType::Pro => AccountPlanType::Pro,
             crate::types::PlanType::ProLite => AccountPlanType::ProLite,
+            crate::types::PlanType::ProMax => AccountPlanType::ProMax,
             crate::types::PlanType::Team => AccountPlanType::Team,
             crate::types::PlanType::SelfServeBusinessProLite => {
                 AccountPlanType::SelfServeBusinessProLite

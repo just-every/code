@@ -206,14 +206,6 @@ fn render_debug_config_lines(
         ));
     }
 
-    if let Some(sandbox_private_desktop) = requirements.windows_sandbox_private_desktop.as_ref() {
-        requirement_lines.push(requirement_line(
-            "windows.sandbox_private_desktop",
-            sandbox_private_desktop.value.to_string(),
-            Some(&sandbox_private_desktop.source),
-        ));
-    }
-
     if let Some(policies) = requirements_toml.allowed_approval_policies.as_ref() {
         let value = join_or_empty(policies.iter().map(ToString::to_string).collect::<Vec<_>>());
         requirement_lines.push(requirement_line(
@@ -865,10 +857,6 @@ interrupt_message = false
                 },
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
             )),
-            windows_sandbox_private_desktop: Some(Sourced::new(
-                /*value*/ false,
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-            )),
             approval_policy: ConstrainedWithSource::new(
                 Constrained::allow_any(AskForApproval::OnRequest.to_core()),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
@@ -986,10 +974,10 @@ interrupt_message = false
             in_app_browser: None,
             windows: Some(WindowsRequirementsToml {
                 allowed_sandbox_implementations: None,
-                sandbox_private_desktop: Some(false),
             }),
             additional_developer_instructions: None,
             guardian_policy_config: Some("Use the managed guardian policy.".to_string()),
+            guardian_extra_policy: None,
             feature_requirements: Some(FeatureRequirementsToml {
                 entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
             }),
@@ -1360,6 +1348,7 @@ approval_policy = "never"
             computer_use: None,
             windows: None,
             guardian_policy_config: None,
+            guardian_extra_policy: None,
             feature_requirements: None,
             hooks: None,
             mcp_servers: None,

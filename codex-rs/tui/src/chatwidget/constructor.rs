@@ -33,6 +33,8 @@ impl ChatWidget {
             terminal_title_invalid_items_warned,
             session_telemetry,
         } = common;
+        // Keep asynchronous widget callbacks scoped separately from the app and other widgets.
+        let app_event_tx = AppEventSender::new(app_event_tx.app_event_tx);
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
         config.model = model.clone();
@@ -61,7 +63,10 @@ impl ChatWidget {
             settings: fallback_default,
         };
 
-        let active_cell = Some(Self::placeholder_session_header_cell(&config));
+        let empty_state_animation = crate::empty_state_animation::EmptyStateAnimation::default();
+        let mut header = Self::placeholder_session_header_cell(&config);
+        history_cell::set_session_greeting(header.as_mut(), &empty_state_animation.greeting);
+        let active_cell = Some(header);
 
         let current_cwd = Some(config.cwd.to_path_buf());
         let effective_service_tier = crate::service_tier_resolution::effective_service_tier(
@@ -70,7 +75,6 @@ impl ChatWidget {
             &header_model,
             &model_catalog.try_list_models().unwrap_or_default(),
         );
-        let current_terminal_info = terminal_info();
         let runtime_keymap = RuntimeKeymap::from_config(&local_settings.tui.keymap).ok();
         let default_keymap = RuntimeKeymap::defaults();
         let copy_last_response_binding = runtime_keymap
@@ -81,10 +85,6 @@ impl ChatWidget {
             .as_ref()
             .map(|keymap| keymap.chat.clone())
             .unwrap_or_else(|| default_keymap.chat.clone());
-        let queued_message_edit_hint_binding = queued_message_edit_hint_binding(
-            runtime_keymap.as_ref().unwrap_or(&default_keymap),
-            current_terminal_info,
-        );
         let pet_http_client = codex_http_client::RouteAwareClientPool::new(
             config.http_client_factory(),
             codex_http_client::ClientRouteClass::Other,
@@ -97,6 +97,7 @@ impl ChatWidget {
             pet_http_client.clone(),
         );
         let mut widget = Self {
+            empty_state_animation: std::cell::RefCell::new(empty_state_animation),
             cyber_policy_notice: Default::default(),
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
@@ -109,6 +110,7 @@ impl ChatWidget {
                 placeholder_text: placeholder.clone(),
                 disable_paste_burst: local_settings.tui.disable_paste_burst.unwrap_or(false),
                 animations_enabled: local_settings.tui.animations,
+                effects: local_settings.tui.effects,
                 skills: None,
             }),
             transcript: TranscriptState::new(active_cell),
@@ -159,6 +161,8 @@ impl ChatWidget {
             codex_rate_limit_reached_type: None,
             codex_spend_control_reached: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            clock_format: crate::clock_format::ClockFormat::system(),
+            usage_notice_state: usage_notice::UsageNoticeState::default(),
             backend_banner_state: backend_banners::BackendBannerState::default(),
             automatic_model_switch_state: backend_banners::AutomaticModelSwitchState::default(),
             backend_banner_notice_model: None,
@@ -170,7 +174,7 @@ impl ChatWidget {
             stream_controller: None,
             plan_stream_controller: None,
             pending_stream_consolidations: 0,
-            clipboard_lease: None,
+            pending_clipboard: None,
             copy_last_response_binding,
             running_commands: HashMap::new(),
             collab_agent_metadata: HashMap::new(),
@@ -223,6 +227,7 @@ impl ChatWidget {
             active_side_conversation: false,
             blocks_direct_input: false,
             external_writer_view: false,
+            fork_in_progress: false,
             misalignment_policy_violation: None,
             normal_placeholder_text: placeholder,
             side_placeholder_text: side_placeholder,
@@ -233,7 +238,6 @@ impl ChatWidget {
             safety_buffering_source: UserMessageSource::Prompt,
             chat_keymap,
             permission_shortcut_pending: false,
-            queued_message_edit_hint_binding,
             show_welcome_banner: is_first_run,
             startup_tooltip_override,
             suppress_session_configured_redraw: false,
@@ -277,6 +281,8 @@ impl ChatWidget {
             last_rendered_user_message_display: None,
             last_rendered_user_message_client_id: None,
             last_non_retry_error: None,
+            #[cfg(test)]
+            test_codex_home: None,
         };
 
         widget.prefetch_rate_limits();
@@ -302,9 +308,6 @@ impl ChatWidget {
             .bottom_pane
             .set_voice_command_enabled(/*enabled*/ false);
         widget.sync_mentions_v2_enabled();
-        widget
-            .bottom_pane
-            .set_queued_message_edit_binding(widget.queued_message_edit_hint_binding);
         widget.update_collaboration_mode_indicator();
 
         widget

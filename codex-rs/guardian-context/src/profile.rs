@@ -13,8 +13,10 @@ use crate::ConversationTranscriptConfig;
 use crate::ConversationTranscriptEntry;
 use crate::ConversationTranscriptEntryKind;
 use crate::ConversationTranscriptOptions;
+use crate::GuardianRootMessage;
 use crate::RenderedTranscript;
 use crate::Retention;
+use crate::TranscriptContent;
 use crate::TranscriptEntryLimits;
 use crate::TranscriptRetentionConfig;
 use crate::TruncationObservation;
@@ -45,10 +47,11 @@ enum TranscriptEntryKind {
 
 struct TranscriptEntry {
     kind: TranscriptEntryKind,
-    text: String,
+    content: TranscriptContent,
     tokens: usize,
     original_bytes: usize,
     retained_bytes: usize,
+    source: Option<codex_history::RetainedSource>,
 }
 
 impl ContextProfile {
@@ -136,13 +139,38 @@ impl ContextProfile {
                     ContextTarget::Sync => "",
                     ContextTarget::Async => "\n",
                 };
-                let text = format!("[{number}] {role}: {}{suffix}", entry.text);
+                let retained_source = entry
+                    .retained_source
+                    .as_ref()
+                    .filter(|_| entry.kind == ConversationTranscriptEntryKind::User);
+                let (content, tokens, retained_bytes) = match &entry.content {
+                    TranscriptContent::Text(text) => {
+                        let rendered = if let Some(retained) = retained_source {
+                            let order = &retained.order;
+                            let message = GuardianRootMessage::User(text.clone());
+                            format!(
+                                "[{number}] Retained source order: {order}\n{}{suffix}",
+                                message.render()
+                            )
+                        } else {
+                            format!("[{number}] {role}: {text}{suffix}")
+                        };
+                        let tokens = TruncationPolicy::Bytes(rendered.len()).token_budget();
+                        (TranscriptContent::Text(rendered), tokens, text.len())
+                    }
+                    TranscriptContent::AgentMessage(message) => (
+                        entry.content.clone(),
+                        crate::estimate_input_tokens(message),
+                        entry.original_bytes,
+                    ),
+                };
                 TranscriptEntry {
                     kind,
-                    tokens: TruncationPolicy::Bytes(text.len()).token_budget(),
-                    text,
+                    tokens,
+                    content,
                     original_bytes: entry.original_bytes,
-                    retained_bytes: entry.text.len(),
+                    retained_bytes,
+                    source: retained_source.map(|retained| retained.source.clone()),
                 }
             })
             .collect::<Vec<_>>();
@@ -201,7 +229,7 @@ impl ContextProfile {
         }
         let omission_note = (self.target == ContextTarget::Sync
             && included.iter().any(|included| !included))
-        .then(|| "Some conversation entries were omitted.".to_owned());
+        .then(|| crate::transcript::TRANSCRIPT_OMISSION_NOTICE.to_owned());
         let mut truncations = Vec::new();
         let mut items: Vec<_> = entries
             .into_iter()
@@ -229,14 +257,20 @@ impl ContextProfile {
                 if included[index] {
                     Some(match entry.kind {
                         TranscriptEntryKind::User | TranscriptEntryKind::ManualApproval => {
-                            Budgeted::historical(entry.text)
+                            if let Some(source) = entry.source {
+                                let mut item = Budgeted::required(entry.content);
+                                item.source = Some(source);
+                                item
+                            } else {
+                                Budgeted::historical(entry.content)
+                            }
                         }
-                        TranscriptEntryKind::ProtectedMessage => Budgeted::required(entry.text),
+                        TranscriptEntryKind::ProtectedMessage => Budgeted::required(entry.content),
                         TranscriptEntryKind::Message => {
-                            Budgeted::optional(entry.text, BudgetPriority::Commentary)
+                            Budgeted::optional(entry.content, BudgetPriority::Commentary)
                         }
                         TranscriptEntryKind::Tool => {
-                            Budgeted::optional(entry.text, BudgetPriority::Tool)
+                            Budgeted::optional(entry.content, BudgetPriority::Tool)
                         }
                     })
                 } else {

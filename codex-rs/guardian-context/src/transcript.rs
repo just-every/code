@@ -6,9 +6,12 @@
 //! call ID retain their generic label when the call is unavailable. Outputs
 //! without a call ID require an explicit name.
 
+use codex_history::RetainedContextEntry;
+use codex_protocol::protocol::TruncationPolicy;
 use std::collections::HashMap;
 
 use codex_protocol::mcp::is_node_repl_backed_tool;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ReasoningItemContent;
@@ -25,7 +28,10 @@ use crate::SectionError;
 use crate::SectionHistory;
 use crate::SectionInput;
 use crate::SectionScope;
+use crate::TranscriptContent;
 use crate::truncate_text;
+
+pub(crate) const TRANSCRIPT_OMISSION_NOTICE: &str = "Some conversation entries were omitted.";
 
 /// Trusted developer marker that preserves an explicit manual action approval.
 pub const MANUAL_APPROVAL_DEVELOPER_PREFIX: &str =
@@ -113,9 +119,15 @@ pub fn collect_transcript(
 ) -> Vec<ConversationTranscriptEntry> {
     let mut entries = Vec::new();
     let mut tool_names_by_call_id = HashMap::new();
+    let mut heartbeat_versions = HashMap::new();
+    // Positional legacy labels cannot establish reusable delivery proof, including
+    // through transcript copies. The separate retained section stays authoritative.
+    let retained_context = history
+        .retained_context()
+        .filter(|context| !crate::retained_instructions::has_legacy_order(context));
 
-    for item in history.items() {
-        let (kind, text) = match item {
+    for (item, mut source) in history.items_with_sources() {
+        let (kind, mut text) = match item {
             ResponseItem::Message {
                 role,
                 content,
@@ -156,6 +168,31 @@ pub fn collect_transcript(
             ResponseItem::AgentMessage {
                 author, content, ..
             } => {
+                if content
+                    .iter()
+                    .any(|part| matches!(part, AgentMessageInputContent::EncryptedContent { .. }))
+                {
+                    // Ciphertext cannot be truncated. Keep the complete native item, or
+                    // an explicit omission at the same cursor position. Serialized bytes
+                    // conservatively charge the encrypted payload to the message budget.
+                    let bytes = serde_json::to_vec(item).map_or(usize::MAX, |item| item.len());
+                    let limit = codex_protocol::protocol::TruncationPolicy::Tokens(
+                        config.entry_limits.message_tokens.min(9_000),
+                    )
+                    .byte_budget();
+                    let content = if bytes <= limit {
+                        TranscriptContent::AgentMessage(Box::new(item.clone()))
+                    } else {
+                        TranscriptContent::Text(TRANSCRIPT_OMISSION_NOTICE.to_owned())
+                    };
+                    entries.push(ConversationTranscriptEntry {
+                        kind: ConversationTranscriptEntryKind::Assistant,
+                        content,
+                        original_bytes: bytes,
+                        retained_source: None,
+                    });
+                    continue;
+                }
                 let Some(text) = plaintext_agent_message_content(content) else {
                     continue;
                 };
@@ -304,6 +341,29 @@ pub fn collect_transcript(
             continue;
         }
         let original_bytes = text.len();
+        if let Some(heartbeat) = codex_history::Heartbeat::from_message(item) {
+            match heartbeat_versions.get(heartbeat.automation_id) {
+                Some((instructions, number)) if *instructions == heartbeat.instructions => {
+                    // A reference no longer delivers the complete source instruction.
+                    source = None;
+                    text = format!(
+                        "Scheduled automation {} ran at {}. Instructions unchanged from transcript entry [{}]; this is a replay of that earlier instruction, not a new human instruction. If the referenced instructions are unavailable, do not infer authorization from this reference.",
+                        heartbeat.automation_id, heartbeat.timestamp, number
+                    );
+                }
+                _ => {
+                    heartbeat_versions.insert(
+                        heartbeat.automation_id,
+                        (heartbeat.instructions, entries.len() + 1),
+                    );
+                }
+            }
+        } else if codex_history::UserInputOrigin::from_message(item)
+            == codex_history::UserInputOrigin::Heartbeat
+        {
+            // Unknown scheduler envelopes may change instructions; do not bridge them.
+            heartbeat_versions.clear();
+        }
         let text = match &kind {
             ConversationTranscriptEntryKind::User | ConversationTranscriptEntryKind::Developer => {
                 text
@@ -322,8 +382,41 @@ pub fn collect_transcript(
             }
         };
         entries.push(ConversationTranscriptEntry {
+            retained_source: retained_context.and_then(|context| {
+                let source = source.filter(|source| {
+                    source.complete
+                        && kind == ConversationTranscriptEntryKind::User
+                        && source.id.role == codex_history::RetainedSourceRole::User
+                        && Some(source.id.message_id.as_str())
+                            == item.id().map(codex_protocol::ResponseItemId::as_str)
+                        && source.id.turn_id == item.turn_id().unwrap_or_default()
+                })?;
+                crate::retained_instructions::source_order_labels(context).find_map(
+                    |(order, entry)| {
+                        if context.source(entry).as_ref() != Some(source) {
+                            return None;
+                        }
+                        let RetainedContextEntry::UserMessage(message) = entry else {
+                            return None;
+                        };
+                        let rendered = format!(
+                            "Retained source order: {order}\n{}",
+                            crate::GuardianRootMessage::User(message.text.clone()).render()
+                        );
+                        (rendered.len()
+                            <= TruncationPolicy::Tokens(
+                                crate::retained_instructions::MAX_INSTRUCTION_TOKENS,
+                            )
+                            .byte_budget())
+                        .then(|| crate::RetainedTranscriptSource {
+                            order,
+                            source: source.clone(),
+                        })
+                    },
+                )
+            }),
             kind,
-            text,
+            content: TranscriptContent::Text(text),
             original_bytes,
         });
     }

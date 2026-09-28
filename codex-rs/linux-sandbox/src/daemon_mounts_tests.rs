@@ -8,21 +8,106 @@ fn check_mounts(
     device: &str,
     mount_id: Option<&str>,
     mountinfo: &[u8],
-) -> io::Result<()> {
+) -> io::Result<BTreeSet<PathBuf>> {
     super::check_mounts(
-        directory, device, mount_id, mountinfo, /*masked_root*/ None,
+        directory,
+        device,
+        SocketFilesystem::Other,
+        mount_id,
+        mountinfo,
+        /*masked_root*/ None,
     )
 }
 
-#[test_case("/tmp", "/host-tmp", false; "ancestor alias")]
+fn check_btrfs_mounts(mount_id: &str, mountinfo: &[u8]) -> io::Result<BTreeSet<PathBuf>> {
+    super::check_mounts(
+        Path::new("/tmp/codex-daemon-1000"),
+        "0:2",
+        SocketFilesystem::Btrfs,
+        Some(mount_id),
+        mountinfo,
+        /*masked_root*/ None,
+    )
+}
+
+#[test]
+fn btrfs_bind_mount_masks_aliases_for_both_device_numbers() {
+    let mounts = b"1 0 0:1 / / rw - btrfs disk rw\n\
+                   2 1 0:1 /var/lib/system-tmp /tmp rw shared:1 - btrfs disk rw\n\
+                   3 1 0:1 /var/lib/system-tmp /mount-device-alias rw - btrfs disk rw\n\
+                   4 1 0:2 /var/lib/system-tmp /stat-device-alias rw - btrfs disk rw\n\
+                   5 1 0:3 mnt:[1234] /run/example.mnt rw - nsfs nsfs rw\n";
+    assert_eq!(
+        check_btrfs_mounts("2", mounts).unwrap(),
+        BTreeSet::from([
+            PathBuf::from("/tmp/codex-daemon-1000"),
+            PathBuf::from("/var/lib/system-tmp/codex-daemon-1000"),
+            PathBuf::from("/mount-device-alias/codex-daemon-1000"),
+            PathBuf::from("/stat-device-alias/codex-daemon-1000"),
+        ]),
+    );
+}
+
+#[test_case(SocketFilesystem::Other, "btrfs", Some("1"); "unverified descriptor filesystem")]
+#[test_case(SocketFilesystem::Btrfs, "ext4", Some("1"); "inconsistent mount filesystem")]
+#[test_case(SocketFilesystem::Btrfs, "btrfs", None; "unavailable mount id")]
+#[test_case(SocketFilesystem::Btrfs, "btrfs", Some("missing"); "missing mount id")]
+fn device_mismatch_requires_verified_btrfs_mount(
+    filesystem: SocketFilesystem,
+    mount_filesystem: &str,
+    mount_id: Option<&str>,
+) {
+    let mounts = format!("1 0 0:1 / / rw - {mount_filesystem} disk rw\n");
+    assert_eq!(
+        super::check_mounts(
+            Path::new("/tmp/codex-daemon-1000"),
+            "0:2",
+            filesystem,
+            mount_id,
+            mounts.as_bytes(),
+            /*masked_root*/ None,
+        )
+        .map_err(|error| error.kind()),
+        Err(io::ErrorKind::Other),
+    );
+}
+
+#[test_case("0:1", "/@/tmp/codex-daemon-1000", "/alias"; "mount device directory alias")]
+#[test_case("0:2", "/@/tmp/codex-daemon-1000/rpc.sock", "/alias.sock"; "stat device socket alias")]
+fn btrfs_device_mismatch_still_rejects_unsafe_mounts(device: &str, root: &str, destination: &str) {
+    let mounts = format!(
+        "1 0 0:1 /@ / rw - btrfs disk rw\n\
+         2 1 {device} {root} {destination} rw - btrfs disk rw\n"
+    );
+    assert_eq!(
+        check_btrfs_mounts("1", mounts.as_bytes()).map_err(|error| error.kind()),
+        Err(io::ErrorKind::PermissionDenied),
+    );
+}
+
+#[test]
+fn btrfs_device_mismatch_rejects_duplicate_mount_id() {
+    let mounts = b"1 0 0:1 /@ / rw - btrfs disk rw\n\
+                   1 0 0:1 /@ / rw - btrfs disk rw\n";
+    assert_eq!(
+        check_btrfs_mounts("1", mounts).map_err(|error| error.kind()),
+        Err(io::ErrorKind::Other),
+    );
+}
+
+#[test_case("/tmp", "/host-tmp", true; "ancestor alias")]
 #[test_case("/tmp/codex-daemon-1000", "/alias", false; "directory alias")]
 #[test_case("/tmp/codex-daemon-1000/rpc.sock", "/alias.sock", false; "socket alias")]
-#[test_case("/", "/host", false; "root alias")]
+#[test_case("/", "/host", true; "root alias")]
 #[test_case("/workspace", "/project", true; "unrelated project bind")]
 #[test_case("/tmp", "/tmp", true; "same location")]
-#[test_case("/tmp", "/host\\040tmp", false; "escaped alias")]
+#[test_case("/tmp", "/host\\040tmp", true; "escaped alias")]
 #[test_case("/other", "/tmp/codex-daemon-1000/nested", false; "nested mount")]
-fn rejects_only_mounts_that_compromise_the_directory(root: &str, destination: &str, allowed: bool) {
+fn accepts_only_mounts_that_can_keep_the_directory_masked(
+    root: &str,
+    destination: &str,
+    allowed: bool,
+) {
     let mounts =
         format!("1 0 0:1 / / rw - ext4 disk rw\n2 1 0:1 {root} {destination} rw - ext4 disk rw\n");
     let visible_mount = if destination == "/tmp" { "2" } else { "1" };
@@ -41,17 +126,68 @@ fn rejects_only_mounts_that_compromise_the_directory(root: &str, destination: &s
     }
 }
 
+#[test_case("0:2", "mnt:[4026532835]", "/run/snapd/ns/example.mnt", Ok(()); "unrelated mount namespace")]
+#[test_case("0:2", "net:[4026531840]", "/run/netns/example", Ok(()); "unrelated network namespace")]
+#[test_case("0:2", "mnt:[4026532835]", "/tmp/codex-daemon-1000/ns", Err(io::ErrorKind::PermissionDenied); "nested namespace mount")]
+#[test_case("0:1", "mnt:[4026532835]", "/run/snapd/ns/example.mnt", Err(io::ErrorKind::Other); "non-path root on socket filesystem")]
+#[test_case("0:2", "mnt:[4026532835]", "relative/ns", Err(io::ErrorKind::Other); "relative destination")]
+#[test_case("0:2", "mnt:[4026532835]", "/run/snapd/ns/\\invalid", Err(io::ErrorKind::Other); "invalid destination escape")]
+fn validates_namespace_mounts_by_device_and_destination(
+    device: &str,
+    root: &str,
+    destination: &str,
+    expected: Result<(), io::ErrorKind>,
+) {
+    let mounts = format!(
+        "1 0 0:1 / / rw - ext4 disk rw\n2 1 {device} {root} {destination} rw - nsfs nsfs rw\n"
+    );
+    for mount_id in [Some("1"), None] {
+        assert_eq!(
+            check_mounts(
+                Path::new("/tmp/codex-daemon-1000"),
+                "0:1",
+                mount_id,
+                mounts.as_bytes()
+            )
+            .map(|_| ())
+            .map_err(|error| error.kind()),
+            expected,
+            "mount_id: {mount_id:?}"
+        );
+    }
+}
+
 #[test]
-fn rejects_alias_when_tmp_is_itself_a_bind_mount() {
+fn unrelated_namespace_mount_does_not_hide_a_socket_alias() {
+    let mounts = b"1 0 0:1 / / rw - ext4 disk rw\n\
+                   2 1 0:2 net:[4026531840] /run/netns/example rw - nsfs nsfs rw\n\
+                   3 1 0:1 /tmp/codex-daemon-1000 /alias rw - ext4 disk rw\n";
+    for mount_id in [Some("1"), None] {
+        assert_eq!(
+            check_mounts(Path::new("/tmp/codex-daemon-1000"), "0:1", mount_id, mounts)
+                .map_err(|error| error.kind()),
+            Err(io::ErrorKind::PermissionDenied),
+            "mount_id: {mount_id:?}"
+        );
+    }
+}
+
+#[test]
+fn masks_alias_when_tmp_is_itself_a_bind_mount() {
     let mounts = b"1 0 0:1 / / rw - ext4 disk rw\n2 1 0:1 /backing/tmp /tmp rw - ext4 disk rw\n";
-    assert!(
+    let expected = BTreeSet::from([
+        PathBuf::from("/tmp/codex-daemon-1000"),
+        PathBuf::from("/backing/tmp/codex-daemon-1000"),
+    ]);
+    assert_eq!(
         check_mounts(
             Path::new("/tmp/codex-daemon-1000"),
             "0:1",
             Some("2"),
             mounts
         )
-        .is_err()
+        .unwrap(),
+        expected
     );
     // A hidden deeper mount must not override the actual /tmp backing location.
     let hidden = [
@@ -59,14 +195,15 @@ fn rejects_alias_when_tmp_is_itself_a_bind_mount() {
         b"3 1 0:1 /tmp/codex-daemon-1000 /tmp/codex-daemon-1000 rw - ext4 disk rw\n",
     ]
     .concat();
-    assert!(
+    assert_eq!(
         check_mounts(
             Path::new("/tmp/codex-daemon-1000"),
             "0:1",
             Some("2"),
             &hidden
         )
-        .is_err()
+        .unwrap(),
+        expected
     );
 }
 
@@ -116,7 +253,7 @@ fn rejects_mount_hidden_by_an_ancestor_overmount() {
 
 #[test_case("/tmp/systemd-private-service/tmp", "/"; "tmp on root filesystem")]
 #[test_case("/systemd-private-service/tmp", "/tmp"; "tmp on separate filesystem")]
-fn accepts_private_tmp_bind_but_rejects_exposed_aliases(root: &str, parent: &str) {
+fn accepts_private_tmp_bind_and_maskable_aliases(root: &str, parent: &str) {
     let directory = Path::new("/tmp/codex-daemon-1000");
     let mounts =
         format!("1 0 0:1 / {parent} rw - ext4 disk rw\n2 1 0:1 {root} /tmp rw - ext4 disk rw\n");
@@ -124,29 +261,64 @@ fn accepts_private_tmp_bind_but_rejects_exposed_aliases(root: &str, parent: &str
     // PrivateTmp remains ambiguous when neither fdinfo nor statx supplies an ID.
     assert!(check_mounts(directory, "0:1", /*mount_id*/ None, mounts.as_bytes()).is_err());
 
-    // A real alias beneath /tmp is not hidden by the private /tmp mount.
-    for (alias_root, destination) in [
-        (root.to_owned(), "/tmp/exposed"),
+    // A real alias beneath /tmp needs a mask; a direct socket alias remains unsupported.
+    for (alias_root, destination, can_mask) in [
+        (root.to_owned(), "/tmp/exposed", true),
         (
             format!("{root}/codex-daemon-1000/rpc.sock"),
             "/tmp/alias.sock",
+            false,
         ),
-        ("/".to_owned(), "/host"),
+        ("/".to_owned(), "/host", true),
     ] {
         let exposed = format!("{mounts}3 2 0:1 {alias_root} {destination} rw - ext4 disk rw\n");
-        assert!(check_mounts(directory, "0:1", Some("2"), exposed.as_bytes()).is_err());
+        assert_eq!(
+            check_mounts(directory, "0:1", Some("2"), exposed.as_bytes()).is_ok(),
+            can_mask
+        );
     }
 }
 
 #[test]
-fn masked_wslg_alias_does_not_allow_other_exposed_aliases() {
+fn masked_wslg_alias_does_not_skip_other_socket_masks() {
     let mounts = "1 0 0:1 / / rw - ext4 disk rw\n2 1 0:1 / /mnt/wslg/distro rw - ext4 disk rw\n";
     let directory = Path::new("/tmp/codex-daemon-1000");
     let mask = Some(Path::new(crate::bwrap::WSLG_DISTRO_ROOT));
     let exposed = format!("{mounts}3 1 0:1 /tmp /host-tmp rw - ext4 disk rw\n");
     for mount_id in [Some("1"), None] {
-        assert!(check_mounts(directory, "0:1", mount_id, mounts.as_bytes()).is_err());
-        assert!(super::check_mounts(directory, "0:1", mount_id, mounts.as_bytes(), mask).is_ok());
-        assert!(super::check_mounts(directory, "0:1", mount_id, exposed.as_bytes(), mask).is_err());
+        assert_eq!(
+            check_mounts(directory, "0:1", mount_id, mounts.as_bytes()).unwrap(),
+            BTreeSet::from([
+                directory.to_path_buf(),
+                PathBuf::from("/mnt/wslg/distro/tmp/codex-daemon-1000"),
+            ])
+        );
+        assert_eq!(
+            super::check_mounts(
+                directory,
+                "0:1",
+                SocketFilesystem::Other,
+                mount_id,
+                mounts.as_bytes(),
+                mask
+            )
+            .unwrap(),
+            BTreeSet::from([directory.to_path_buf()])
+        );
+        assert_eq!(
+            super::check_mounts(
+                directory,
+                "0:1",
+                SocketFilesystem::Other,
+                mount_id,
+                exposed.as_bytes(),
+                mask
+            )
+            .unwrap(),
+            BTreeSet::from([
+                directory.to_path_buf(),
+                PathBuf::from("/host-tmp/codex-daemon-1000"),
+            ])
+        );
     }
 }

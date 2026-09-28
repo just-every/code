@@ -46,7 +46,51 @@ pub(super) fn amount(amounts: Option<&TaskUsageAmounts>, metric: usize) -> Strin
         amounts
             .balance_usage_credits
             .as_ref()
-            .map(|amount| amount.as_str().to_string())
+            .map(|amount| {
+                let value = amount.as_str();
+                let (mantissa, exponent) = value.split_once(['e', 'E']).unwrap_or((value, "0"));
+                let fraction = mantissa
+                    .split_once('.')
+                    .map_or("", |(_, fraction)| fraction);
+                let digits = mantissa.trim_start_matches(['+', '-']).replace('.', "");
+                let digits = digits.trim_start_matches('0');
+                if digits.is_empty() {
+                    return "0.00".to_string();
+                }
+                let cent_digits = digits.len() as i64
+                    + exponent.parse::<i32>().unwrap_or_default() as i64
+                    - fraction.len() as i64
+                    + 2;
+                // Retain tiny adjustments and bound the integer conversion before padding.
+                if !(1..=18).contains(&cent_digits) {
+                    return value.to_string();
+                }
+                let mut cents = digits
+                    .bytes()
+                    .chain(std::iter::repeat(b'0'))
+                    .take(cent_digits as usize)
+                    .fold(
+                        /*init*/ 0_i64,
+                        |cents, digit| cents * 10 + i64::from(digit - b'0'),
+                    );
+                if digits
+                    .as_bytes()
+                    .get(cent_digits as usize)
+                    .is_some_and(|digit| *digit >= b'5')
+                {
+                    cents += 1;
+                }
+                cents
+                    .checked_mul(/*rhs*/ 10_000)
+                    .map(|micros| {
+                        super::data::credits(if mantissa.starts_with('-') {
+                            -micros
+                        } else {
+                            micros
+                        })
+                    })
+                    .unwrap_or_else(|| value.to_string())
+            })
             .unwrap_or_else(|| "—".into())
     } else {
         (if metric == 0 {
@@ -106,7 +150,8 @@ impl AnalyticsView {
     }
 
     pub(super) fn task_lines(&self, width: usize) -> (Vec<Line<'static>>, Range<usize>) {
-        let width = width.clamp(/*min*/ 1, /*max*/ 110);
+        let row_width = width.clamp(/*min*/ 1, /*max*/ 111);
+        let width = row_width.saturating_sub(/*rhs*/ 1).max(/*other*/ 1);
         let wrap = |lines| word_wrap_lines(lines, RtOptions::new(width));
         let Some(chats) = self.tasks.ready() else {
             return (
@@ -239,6 +284,7 @@ impl AnalyticsView {
                     },
                     width,
                 )];
+                let header_len = row.len();
                 if self.zoomed && self.sections[Section::Chats].detail == Some(index) {
                     row.push("─".repeat(width).dim().into());
                     row.extend(word_wrap_lines(
@@ -305,7 +351,16 @@ impl AnalyticsView {
                     }
                     row.push(Line::default());
                 }
-                wrap(row)
+                let details = row.split_off(header_len);
+                let mut row = wrap(row);
+                // Wrap first: wrapping trims the highlighted trailing blank otherwise.
+                if selected {
+                    for line in &mut row {
+                        super::styles::select_row(line, row_width);
+                    }
+                }
+                row.extend(wrap(details));
+                row
             })
             .collect::<Vec<_>>();
         let mut coverage = vec![
@@ -324,7 +379,7 @@ impl AnalyticsView {
             coverage.push(
                 format!(
                     "Updated {} UTC · recent activity may be delayed",
-                    time.format("%b %-d %H:%M")
+                    time.format(self.clock_format.date_time_format())
                 )
                 .set_style(secondary_style())
                 .into(),

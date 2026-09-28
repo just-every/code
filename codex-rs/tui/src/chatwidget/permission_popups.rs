@@ -1,10 +1,12 @@
 //! Permission and approval popup flows for `ChatWidget`.
 //!
-//! This module owns the generic permission pickers and confirmation surfaces;
+//! This module presents permission choices and confirmations in the shared picker;
 //! Windows-specific sandbox prompting lives beside it in
 //! `windows_sandbox_prompts`.
 
+use super::permissions_menu::permission_preset_description;
 use super::*;
+use crate::style::accent_color;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 
 impl ChatWidget {
@@ -77,8 +79,7 @@ impl ChatWidget {
             } else {
                 preset.label.to_string()
             };
-            let base_description =
-                Some(preset.description.replace(" (Identical to Agent mode)", ""));
+            let base_description = Some(permission_preset_description(&preset).to_string());
             let approval_disabled_reason = match self
                 .config
                 .permissions
@@ -165,19 +166,17 @@ impl ChatWidget {
         let footer_note = show_elevate_sandbox_hint.then(|| {
             vec![
                 "The non-admin sandbox protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected. To upgrade to the default sandbox, run ".dim(),
-                "/setup-default-sandbox".cyan(),
+                "/setup-default-sandbox".fg(accent_color()),
                 ".".dim(),
             ]
             .into()
         });
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Update Model Permissions".to_string()),
             footer_note,
-            footer_hint: Some(standard_popup_hint_line()),
             items,
-            header: Box::new(()),
-            ..Default::default()
+            title: Some("Update Model Permissions".into()),
+            ..SelectionViewParams::picker()
         });
     }
 
@@ -211,7 +210,7 @@ impl ChatWidget {
                     let rationale = event
                         .rationale
                         .as_deref()
-                        .unwrap_or("Auto-review did not include a rationale.");
+                        .unwrap_or("Auto-review did not include a rationale");
                     SelectionItem {
                         name: summary.clone(),
                         description: Some(rationale.to_string()),
@@ -230,13 +229,18 @@ impl ChatWidget {
         );
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some("Auto-review Denials".to_string()),
-            subtitle: Some("Select a denied action to approve.".to_string()),
-            footer_hint: Some(standard_popup_hint_line()),
+            header: Box::new(
+                Paragraph::new(vec![
+                    Line::from("Auto-review Denials".bold()),
+                    Line::from("Select a denied action to approve.".dim()),
+                ])
+                .wrap(Wrap { trim: false }),
+            ),
             items,
             is_searchable: true,
-            col_width_mode: ColumnWidthMode::AutoAllRows,
-            ..Default::default()
+            // Denial rationales remain visible before authorizing a retry.
+            description_layout: crate::bottom_pane::SelectionDescriptionLayout::Columns,
+            ..SelectionViewParams::picker()
         });
         self.request_redraw();
     }
@@ -506,10 +510,9 @@ impl ChatWidget {
         ];
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            footer_hint: Some(standard_popup_hint_line()),
             items,
             header: Box::new(header),
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 }

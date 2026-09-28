@@ -102,7 +102,7 @@ async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
         other => panic!("expected status output, got {other:?}"),
     };
     assert!(
-        rendered.contains("gpt-5.5 (reasoning medium, summaries auto)"),
+        rendered.contains("GPT-5.5 (reasoning medium, summaries auto)"),
         "expected /status to render the catalog default reasoning effort, got: {rendered}"
     );
 }
@@ -532,6 +532,7 @@ async fn status_command_requests_thread_usage_for_remote_connection_metadata() {
     chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
         address: "wss://remote.example.com".to_string(),
         version: "v1.0.0".to_string(),
+        is_local_daemon: false,
     });
 
     chat.dispatch_command(SlashCommand::Status);

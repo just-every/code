@@ -41,7 +41,8 @@ const SECRETS_VERSION: u8 = 1;
 const LOCAL_SECRETS_FILENAME: &str = "local.age";
 const CODEX_AUTH_SECRETS_FILENAME: &str = "codex_auth.age";
 const MCP_OAUTH_SECRETS_FILENAME: &str = "mcp_oauth.age";
-static MCP_OAUTH_CACHE: Mutex<Option<CachedMcpSecrets>> = Mutex::new(None);
+const GATEWAY_OAUTH_SECRETS_FILENAME: &str = "gateway_oauth.age";
+static MCP_OAUTH_CACHE: Mutex<Option<CachedSecrets>> = Mutex::new(None);
 
 /// Selects the local encrypted file used by a `LocalSecretsBackend`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,6 +54,8 @@ pub enum LocalSecretsNamespace {
     CodexAuth,
     /// OAuth credentials for external MCP servers.
     McpOAuth,
+    /// Gateway OAuth credentials, isolated from primary auth in file and encryption key.
+    GatewayOAuth,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,7 +64,7 @@ struct SecretsFile {
     secrets: BTreeMap<String, String>,
 }
 
-struct CachedMcpSecrets {
+struct CachedSecrets {
     path: PathBuf,
     ciphertext_hash: [u8; 32],
     passphrase_hash: [u8; 32],
@@ -77,11 +80,22 @@ impl SecretsFile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LocalSecretsBackend {
     codex_home: PathBuf,
     keyring_store: Arc<dyn KeyringStore>,
     namespace: LocalSecretsNamespace,
+    gateway_cache: Arc<Mutex<Option<CachedSecrets>>>,
+}
+
+impl std::fmt::Debug for LocalSecretsBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSecretsBackend")
+            .field("codex_home", &self.codex_home)
+            .field("keyring_store", &self.keyring_store)
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LocalSecretsBackend {
@@ -102,6 +116,7 @@ impl LocalSecretsBackend {
             codex_home,
             keyring_store,
             namespace,
+            gateway_cache: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -156,8 +171,19 @@ impl LocalSecretsBackend {
             LocalSecretsNamespace::ManagedSecrets => LOCAL_SECRETS_FILENAME,
             LocalSecretsNamespace::CodexAuth => CODEX_AUTH_SECRETS_FILENAME,
             LocalSecretsNamespace::McpOAuth => MCP_OAUTH_SECRETS_FILENAME,
+            LocalSecretsNamespace::GatewayOAuth => GATEWAY_OAUTH_SECRETS_FILENAME,
         };
         self.secrets_dir().join(filename)
+    }
+
+    /// Gateway readers share one bounded cache per backend; independent managers
+    /// still reread the ciphertext and keyring before reusing decrypted credentials.
+    fn decrypted_cache(&self) -> Option<&Mutex<Option<CachedSecrets>>> {
+        match self.namespace {
+            LocalSecretsNamespace::McpOAuth => Some(&MCP_OAUTH_CACHE),
+            LocalSecretsNamespace::GatewayOAuth => Some(&self.gateway_cache),
+            LocalSecretsNamespace::ManagedSecrets | LocalSecretsNamespace::CodexAuth => None,
+        }
     }
 
     fn load_file(&self) -> Result<SecretsFile> {
@@ -169,13 +195,11 @@ impl LocalSecretsBackend {
         let ciphertext = fs::read(&path)
             .with_context(|| format!("failed to read secrets file at {}", path.display()))?;
         let passphrase = self.load_or_create_passphrase()?;
-        let cache = (self.namespace == LocalSecretsNamespace::McpOAuth).then(|| {
+        let cache = self.decrypted_cache().map(|cache| {
             let ciphertext_hash: [u8; 32] = Sha256::digest(&ciphertext).into();
             let passphrase_hash: [u8; 32] =
                 Sha256::digest(passphrase.expose_secret().as_bytes()).into();
-            let cache = MCP_OAUTH_CACHE
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
             (cache, ciphertext_hash, passphrase_hash)
         });
         if let Some((cache, ciphertext_hash, passphrase_hash)) = cache.as_ref()
@@ -203,7 +227,7 @@ impl LocalSecretsBackend {
             SECRETS_VERSION
         );
         if let Some((mut cache, ciphertext_hash, passphrase_hash)) = cache {
-            *cache = Some(CachedMcpSecrets {
+            *cache = Some(CachedSecrets {
                 path,
                 ciphertext_hash,
                 passphrase_hash,
@@ -223,10 +247,8 @@ impl LocalSecretsBackend {
         let ciphertext = encrypt_with_passphrase(&plaintext, &passphrase)?;
         let path = self.secrets_path();
         write_file_atomically(&path, &ciphertext)?;
-        if self.namespace == LocalSecretsNamespace::McpOAuth {
-            let mut cache = MCP_OAUTH_CACHE
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+        if let Some(cache) = self.decrypted_cache() {
+            let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
             if cache.as_ref().is_some_and(|cached| cached.path == path) {
                 *cache = None;
             }
@@ -235,11 +257,11 @@ impl LocalSecretsBackend {
     }
 
     fn load_or_create_passphrase(&self) -> Result<SecretString> {
-        let account = compute_keyring_account(&self.codex_home);
+        let account = compute_keyring_account(&self.codex_home, self.namespace);
         let loaded = self
             .keyring_store
             .load(keyring_service(), &account)
-            .map_err(|err| anyhow::anyhow!(err.message()))
+            .map_err(std::io::Error::from)
             .with_context(|| format!("failed to load secrets key from keyring for {account}"))?;
         match loaded {
             Some(existing) => Ok(SecretString::from(existing)),
@@ -250,7 +272,7 @@ impl LocalSecretsBackend {
                 let generated = generate_passphrase()?;
                 self.keyring_store
                     .save(keyring_service(), &account, generated.expose_secret())
-                    .map_err(|err| anyhow::anyhow!(err.message()))
+                    .map_err(std::io::Error::from)
                     .context("failed to persist secrets key in keyring")?;
                 Ok(generated)
             }
@@ -449,7 +471,8 @@ mod tests {
     fn set_fails_when_keyring_is_unavailable() -> Result<()> {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let keyring = Arc::new(MockKeyringStore::default());
-        let account = compute_keyring_account(codex_home.path());
+        let account =
+            compute_keyring_account(codex_home.path(), LocalSecretsNamespace::ManagedSecrets);
         keyring.set_error(
             &account,
             KeyringError::Invalid("error".into(), "load".into()),
@@ -517,14 +540,20 @@ mod tests {
         );
         let mcp_backend = LocalSecretsBackend::new_with_namespace(
             codex_home.path().to_path_buf(),
-            keyring,
+            keyring.clone(),
             LocalSecretsNamespace::McpOAuth,
+        );
+        let gateway_backend = LocalSecretsBackend::new_with_namespace(
+            codex_home.path().to_path_buf(),
+            keyring.clone(),
+            LocalSecretsNamespace::GatewayOAuth,
         );
         let scope = SecretScope::Global;
         let name = SecretName::new("TEST_SECRET")?;
 
         codex_auth_backend.set(&scope, &name, "codex-auth-value")?;
         mcp_backend.set(&scope, &name, "mcp-value")?;
+        gateway_backend.set(&scope, &name, "gateway-value")?;
 
         assert_eq!(
             codex_auth_backend.get(&scope, &name)?,
@@ -556,6 +585,23 @@ mod tests {
                 .exists()
         );
         assert!(!codex_home.path().join("secrets").join("local.age").exists());
+        assert!(
+            codex_home
+                .path()
+                .join("secrets/gateway_oauth.age")
+                .is_file()
+        );
+        // Primary-auth key removal must not make the independent gateway file unreadable.
+        keyring
+            .delete(
+                keyring_service(),
+                &compute_keyring_account(codex_home.path(), LocalSecretsNamespace::CodexAuth),
+            )
+            .expect("remove primary secrets key");
+        assert_eq!(
+            gateway_backend.get(&scope, &name)?,
+            Some("gateway-value".to_string())
+        );
         Ok(())
     }
 

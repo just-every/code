@@ -3,6 +3,7 @@ members = [
     "aws-auth",
     "analytics",
     "agent-graph-store",
+    "agent-message-board-client",
     "agent-identity",
     "agent-roles",
     "backend-client",
@@ -44,6 +45,7 @@ members = [
     "skills",
     "core",
     "core-api",
+    "core-plugin-common",
     "core-plugins",
     "diagnostics",
     "guardian-context",
@@ -58,6 +60,7 @@ members = [
     "exec-server/tests/support",
     "execpolicy",
     "ext/agent",
+    "ext/agent-message-board",
     "ext/connectors",
     "ext/extension-api",
     "ext/goal",
@@ -107,6 +110,7 @@ members = [
     "user-verification",
     "tools",
     "v8-poc",
+    "websocket-auth",
     "websocket-client",
     "windows-sandbox-service",
     "worktree",
@@ -196,14 +200,17 @@ codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-code-mode-runtime = { path = "code-mode-runtime" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
+codex-websocket-auth = { path = "websocket-auth" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-agent-extension = { path = "ext/agent" }
+codex-agent-message-board-extension = { path = "ext/agent-message-board" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
+codex-core-plugin-common = { path = "core-plugin-common" }
 codex-core-plugins = { path = "core-plugins" }
 codex-diagnostics = { path = "diagnostics" }
 codex-exec = { path = "exec" }
@@ -325,6 +332,8 @@ async-stream = "0.3.6"
 aws-config = "1"
 aws-credential-types = "1"
 aws-sigv4 = "1"
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
+aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 aws-types = "1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22.1"
@@ -332,6 +341,7 @@ bitflags = "2.13.1"
 blake3 = "1.8.2"
 bm25 = "2.3.2"
 bytes = "1.10.1"
+caseless = "0.2.2"
 chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
@@ -465,11 +475,10 @@ symphonia = { version = "0.6.0", default-features = false, features = [
     "wav",
 ] }
 socket2 = "0.6.1"
-# When bumping sqlx, audit the SQLite constructor deny list in clippy.toml.
-sqlx = { version = "0.9.0", default-features = false, features = [
+# Keep SQLx versions in sync; when bumping, audit the SQLite constructor deny list in clippy.toml.
+sqlx = { version = "=0.9.0", default-features = false, features = [
     "chrono",
     "json",
-    "macros",
     "migrate",
     "runtime-tokio",
     "tls-rustls",
@@ -477,6 +486,10 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "time",
     "uuid",
 ] }
+# Derives and migration embedding do not need query macros or a host SQLite driver.
+sqlx-macros = { version = "=0.9.0", default-features = false, features = ["derive", "migrate"] }
+# Preserve the target driver's query-description support without building it on the host.
+sqlx-sqlite = { version = "=0.9.0", default-features = false, features = ["offline"] }
 starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
 strum_macros = "0.28.0"
@@ -586,9 +599,9 @@ ignored = [
 ]
 
 [profile.dev]
-# Keep line tables/backtraces while avoiding expensive full variable debug info
-# across local dev builds.
-debug = "limited"
+# The test profile inherits dev. Keep source locations in ordinary builds;
+# use CARGO_PROFILE_DEV_DEBUG=full (or CARGO_PROFILE_TEST_DEBUG=full) for locals.
+debug = "line-tables-only"
 
 [profile.dev-small]
 inherits = "dev"
@@ -615,14 +628,13 @@ strip = false
 
 [profile.ci-test]
 # Reduce binary size to reduce disk pressure.
-debug = "limited"
 inherits = "test"
 opt-level = 0
 
 [patch.crates-io]
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
-crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
+crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "efa177859fd9623d57b9fe7ae9bf491ae1ac6ec4" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
 

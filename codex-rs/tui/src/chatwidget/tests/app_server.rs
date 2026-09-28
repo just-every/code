@@ -1,3 +1,4 @@
+use super::helpers::drain_insert_history_transcript;
 use super::*;
 use codex_app_server_protocol::AuthRecoveryNotification;
 use codex_protocol::error::CodexErr;
@@ -65,6 +66,39 @@ fn configured_thread_session(thread_id: ThreadId) -> crate::session_state::Threa
         message_history: None,
         network_proxy: None,
         rollout_path: None,
+    }
+}
+
+#[tokio::test]
+async fn session_header_uses_catalog_display_name_without_changing_model() {
+    let slug = "us.openai.gpt-5.6-luna";
+    for (name, first_event, display_name) in [
+        ("startup", true, Some("GPT-5.6 Luna")),
+        ("resume", false, Some("GPT-5.6 Luna")),
+        ("unknown_model", false, None),
+    ] {
+        let (mut chat, mut events, _ops) = make_chatwidget_manual(Some(slug)).await;
+        let mut preset = get_available_model(&chat, "gpt-5.5");
+        preset.model = slug.to_string();
+        preset.display_name = display_name.unwrap_or_default().to_string();
+        chat.model_catalog = Arc::new(ModelCatalog::new(
+            display_name.map(|_| preset).into_iter().collect(),
+        ));
+        chat.show_welcome_banner = first_event;
+        chat.local_settings.tui.show_tooltips = false;
+        let mut session = configured_thread_session(ThreadId::new());
+        session.model = slug.to_string();
+        session.reasoning_effort = Some(ReasoningEffortConfig::High);
+        chat.handle_thread_session(session);
+
+        let rendered = drain_insert_history_with(&mut events, HistoryCell::raw_lines)
+            .iter()
+            .map(|lines| lines_to_single_string(lines))
+            .collect::<String>()
+            .replace(CODEX_CLI_VERSION, "<VERSION>")
+            .replace("C:\\tmp\\thread-settings", "/tmp/thread-settings");
+        assert_chatwidget_snapshot!(format!("catalog_model_session_header_{name}"), rendered);
+        assert_eq!(chat.current_model(), slug);
     }
 }
 
@@ -473,6 +507,78 @@ async fn safety_buffering_ignores_hidden_stale_and_historical_updates() {
 }
 
 #[tokio::test]
+async fn tool_suggestion_install_url_is_validated_before_opening() {
+    for install_url in [
+        "file:///tmp/connector",
+        "http://example.test/install",
+        "custom://example.test/install",
+        "not a URL",
+        "https://user:password@example.test/install",
+        "https://example.test/install",
+    ] {
+        let (mut chat, _app_event_tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+        let request_thread_id = ThreadId::new();
+        chat.thread_id = Some(ThreadId::new());
+        let initial_popup = render_bottom_popup(&chat, /*width*/ 80);
+
+        chat.handle_elicitation_request_now(
+            codex_app_server_protocol::RequestId::Integer(9),
+            codex_app_server_protocol::McpServerElicitationRequestParams {
+                thread_id: request_thread_id.to_string(),
+                turn_id: Some("turn-install".to_string()),
+                server_name: "connector-server".to_string(),
+                request: codex_app_server_protocol::McpServerElicitationRequest::Form {
+                    meta: Some(serde_json::json!({
+                        "codex_approval_kind": "tool_suggestion",
+                        "tool_type": "connector",
+                        "suggest_type": "install",
+                        "suggest_reason": "Install the connector to continue",
+                        "tool_id": "connector_test",
+                        "tool_name": "Test Connector",
+                        "install_url": install_url,
+                    })),
+                    message: "Install Test Connector".to_string(),
+                    requested_schema: serde_json::from_value(serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                    }))
+                    .expect("valid schema"),
+                },
+            },
+        );
+
+        if install_url == "https://example.test/install" {
+            chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_matches!(
+                rx.try_recv(),
+                Ok(AppEvent::OpenUrlInBrowser { url }) if url == install_url
+            );
+        } else {
+            assert_matches!(
+                rx.try_recv(),
+                Ok(AppEvent::SubmitThreadOp {
+                    thread_id,
+                    op: Op::ResolveElicitation {
+                        server_name,
+                        request_id: codex_app_server_protocol::RequestId::Integer(9),
+                        decision: codex_app_server_protocol::McpServerElicitationAction::Decline,
+                        content: None,
+                        meta: None,
+                    },
+                }) if thread_id == request_thread_id && server_name == "connector-server"
+            );
+            let popup = render_bottom_popup(&chat, /*width*/ 80);
+            assert_eq!(popup, initial_popup);
+            assert_chatwidget_snapshot!(
+                "declined_tool_suggestion",
+                normalize_snapshot_paths(popup)
+            );
+        }
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn invalid_url_elicitation_is_declined() {
     let (mut chat, _app_event_tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
     let visible_thread_id = ThreadId::new();
@@ -830,7 +936,10 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
         .iter()
         .map(|lines| lines_to_single_string(lines).trim().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(completion_cells, vec!["[completion time]"]);
+    assert_eq!(
+        completion_cells,
+        vec!["Worked for [duration] • [completion time]"]
+    );
     assert!(!chat.bottom_pane.is_task_running());
     assert!(chat.bottom_pane.status_widget().is_none());
     assert_eq!(
@@ -890,7 +999,7 @@ async fn live_app_server_warning_notification_renders_message() {
         /*replay_kind*/ None,
     );
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     assert_eq!(cells.len(), 1, "expected one warning history cell");
     let rendered = lines_to_single_string(&cells[0]);
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -921,7 +1030,7 @@ async fn live_app_server_warning_notification_renders_message() {
     ] {
         chat.handle_server_notification(notification, /*replay_kind*/ None);
 
-        let [cell] = drain_insert_history(&mut rx)
+        let [cell] = drain_insert_history_transcript(&mut rx)
             .try_into()
             .expect("expected one authentication recovery history cell");
         recovery_messages.push_str(&lines_to_single_string(&cell));
@@ -944,7 +1053,7 @@ async fn live_app_server_guardian_warning_notification_renders_message() {
         /*replay_kind*/ None,
     );
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     assert_eq!(cells.len(), 1, "expected one warning history cell");
     let rendered = lines_to_single_string(&cells[0]);
     assert!(
@@ -971,7 +1080,7 @@ async fn live_app_server_strict_review_required_notification_renders_message() {
         /*replay_kind*/ None,
     );
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     assert_eq!(cells.len(), 1, "expected one warning history cell");
     assert_chatwidget_snapshot!("strict_review_required", lines_to_single_string(&cells[0]));
     chat.on_exec_command_output_delta("cmd-1", "streamed output\n");
@@ -987,7 +1096,7 @@ async fn live_app_server_strict_review_required_notification_renders_message() {
 }
 
 #[tokio::test]
-async fn config_warning_during_turn_remains_inline() {
+async fn config_warning_during_turn_retains_transcript_details() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     handle_turn_started(&mut chat, "turn-1");
     chat.handle_server_notification(
@@ -999,7 +1108,7 @@ async fn config_warning_during_turn_remains_inline() {
         }),
         /*replay_kind*/ None,
     );
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     insta::assert_snapshot!(
         "runtime_config_warning",
         cells
@@ -1041,20 +1150,21 @@ async fn startup_config_warning_is_not_repeated_by_thread() {
 async fn live_app_server_file_change_item_started_preserves_changes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
+    let item = AppServerThreadItem::FileChange {
+        id: "patch-1".to_string(),
+        changes: vec![FileUpdateChange {
+            path: "foo.txt".to_string(),
+            kind: PatchChangeKind::Add,
+            diff: "hello\n".to_string(),
+        }],
+        status: AppServerPatchApplyStatus::InProgress,
+    };
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
-            item: AppServerThreadItem::FileChange {
-                id: "patch-1".to_string(),
-                changes: vec![FileUpdateChange {
-                    path: "foo.txt".to_string(),
-                    kind: PatchChangeKind::Add,
-                    diff: "hello\n".to_string(),
-                }],
-                status: AppServerPatchApplyStatus::InProgress,
-            },
+            item: item.clone(),
         }),
         /*replay_kind*/ None,
     );
@@ -1062,10 +1172,25 @@ async fn live_app_server_file_change_item_started_preserves_changes() {
     let cells = drain_insert_history(&mut rx);
     assert!(!cells.is_empty(), "expected patch history to be rendered");
     let transcript = lines_to_single_string(cells.last().expect("patch cell"));
-    assert!(
-        transcript.contains("Added foo.txt") || transcript.contains("Edited foo.txt"),
-        "expected patch summary to include foo.txt, got: {transcript}"
+    let AppServerThreadItem::FileChange { id, changes, .. } = item else {
+        unreachable!()
+    };
+    chat.replay_thread_item(
+        AppServerThreadItem::FileChange {
+            id,
+            changes,
+            status: AppServerPatchApplyStatus::Completed,
+        },
+        "turn-1".to_string(),
+        ReplayKind::ResumeInitialMessages,
     );
+    let replayed = drain_insert_history(&mut rx);
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(lines_to_single_string(&replayed[0]), transcript);
+    insta::assert_snapshot!(transcript, @"
+    • Added foo.txt (+1 -0)
+        1 +hello
+    ");
 }
 
 #[tokio::test]
@@ -1082,6 +1207,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             started_at_ms: 0,
             item: AppServerThreadItem::CommandExecution {
                 model_context: None,
+                sandbox_type: None,
                 id: "cmd-1".to_string(),
                 command: command.clone(),
                 cwd: test_path_buf("/tmp").abs().into(),
@@ -1107,6 +1233,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
             completed_at_ms: 0,
             item: AppServerThreadItem::CommandExecution {
                 model_context: None,
+                sandbox_type: None,
                 id: "cmd-1".to_string(),
                 command,
                 cwd: test_path_buf("/tmp").abs().into(),
@@ -1505,7 +1632,10 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
         phase: Some(MessagePhase::FinalAnswer),
         memory_citation: None,
         delivery: None,
-        questions: None,
+        questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+            title: "Which way?".into(),
+            options: None,
+        }]),
     }];
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
@@ -1536,6 +1666,11 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
         })
         .collect::<Vec<_>>();
     assert_eq!(consolidations.len(), 1);
+    assert_eq!(chat.bottom_pane.question_editor().unanswered_count(), 0);
+    assert!(matches!(
+        chat.pending_notification,
+        Some(Notification::AgentTurnComplete { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1616,7 +1751,7 @@ async fn live_app_server_rate_limit_error_renders_upstream_message() {
 }
 
 #[tokio::test]
-async fn live_app_server_server_overloaded_error_renders_warning() {
+async fn live_app_server_server_overloaded_error_renders_error() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.handle_server_notification(
@@ -1654,7 +1789,7 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
-    assert_eq!(lines_to_single_string(&cells[0]), "⚠ server overloaded\n");
+    assert_eq!(lines_to_single_string(&cells[0]), "■ server overloaded\n");
     assert!(!chat.bottom_pane.is_task_running());
 }
 
@@ -1760,7 +1895,7 @@ async fn live_app_server_model_verification_renders_warning() {
         /*replay_kind*/ None,
     );
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]);
     assert!(rendered.contains("multiple flags for possible cybersecurity risk"));
@@ -1952,4 +2087,29 @@ async fn permission_discovery_invalidates_on_thread_settings_and_uses_updated_cw
         panic!("expected discovery")
     };
     assert_eq!(thread_cwd, Some(test_path_buf("/tmp/thread-settings")));
+}
+
+#[tokio::test]
+async fn sqlite_log_write_warning_is_visible_in_warnings() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.warning_display_state.startup_complete = true;
+    chat.handle_server_notification(
+        ServerNotification::Warning(WarningNotification {
+            thread_id: None,
+            message: "Codex couldn't save diagnostic logs to its local database. Use /feedback with logs included before closing Codex, or run `codex doctor` for diagnostics.".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+    let cells: Vec<Arc<dyn HistoryCell>> = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(Arc::from(cell)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cells.len(), 1);
+    chat.open_warnings(&cells);
+    insta::assert_snapshot!(
+        "sqlite_log_write_warning",
+        super::helpers::render_bottom_popup(&chat, /*width*/ 80)
+    );
 }

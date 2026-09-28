@@ -1,0 +1,5 @@
+---
+source: tui/src/transcript_view/prompt_header_tests.rs
+expression: line.to_string()
+---
+› 界 café next q…

@@ -5,6 +5,11 @@ use std::path::PathBuf;
 
 pub use runfiles;
 
+mod executable;
+pub use executable::copy_executable;
+#[cfg(unix)]
+pub use executable::write_executable;
+
 /// Bazel sets this when runfiles directories are disabled, which we do on all platforms for consistency.
 const RUNFILES_MANIFEST_ONLY_ENV: &str = "RUNFILES_MANIFEST_ONLY";
 

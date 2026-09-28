@@ -1,4 +1,4 @@
-//! Black-box coverage for diagnostics under a repository-controlled PATH.
+//! Black-box coverage for safe diagnostic execution and config error reporting.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -9,6 +9,10 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use codex_app_server_protocol::RequestId;
+use codex_config::loader::project_trust_key;
+use codex_state::SqliteConfig;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cargo_bin::copy_executable;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -31,22 +35,38 @@ struct Fixture {
 impl Fixture {
     fn new() -> Result<Self> {
         let root = TempDir::new()?;
+        let home = root.path().join("home");
+        std::fs::create_dir(&home)?;
         // Cargo-built paths deliberately ignore npm provenance. Launch outside
         // target/ so this fixture also exercises the packaged-install checks.
         let program = root
             .path()
             .join(format!("codex{}", std::env::consts::EXE_SUFFIX));
         let source = codex_utils_cargo_bin::cargo_bin("codex")?;
+        // Hard-link setup and teardown invalidate other tests' Rosetta translations.
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            copy_executable(&source, &program)?;
+            // Translate the fixture before the timed diagnostic command.
+            anyhow::ensure!(
+                std::process::Command::new(&program)
+                    .env("CODEX_HOME", &home)
+                    .arg("--version")
+                    .output()?
+                    .status
+                    .success(),
+                "failed to prepare diagnostic test executable"
+            );
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
         if std::fs::hard_link(&source, &program).is_err() {
-            std::fs::copy(&source, &program)?;
+            copy_executable(&source, &program)?;
         }
         let workspace = root.path().join("workspace");
         let bin = workspace.join("node_modules/.bin");
-        let home = root.path().join("home");
         let marker = root.path().join("helper-ran");
         std::fs::create_dir_all(&bin)?;
         std::fs::create_dir_all(workspace.join(".git"))?;
-        std::fs::create_dir(&home)?;
         std::fs::write(
             home.join("config.toml"),
             r#"
@@ -197,6 +217,282 @@ fn non_interactive_dumb_terminal_preserves_other_doctor_failures() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn doctor_reports_failed_database_paths() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let sqlite_home = fixture.root.path().join("sqlite");
+    std::fs::create_dir(&sqlite_home)?;
+    let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home.clone())?);
+    let config_file = fixture.home.join("config.toml");
+    let config = std::fs::read_to_string(&config_file)?;
+    let sqlite_home = toml::Value::String(sqlite_home.display().to_string());
+    std::fs::write(
+        &config_file,
+        format!("sqlite_home = {sqlite_home}\n{config}"),
+    )?;
+
+    for (snapshot_name, failed_paths) in [
+        ("doctor_failed_log_database", vec![sqlite.logs_db_path()]),
+        (
+            "doctor_failed_multiple_databases",
+            vec![sqlite.logs_db_path(), sqlite.goals_db_path()],
+        ),
+    ] {
+        for path in &failed_paths {
+            std::fs::write(path, "not a SQLite database")?;
+        }
+        let paths = failed_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let noun = if failed_paths.len() == 1 {
+            "database"
+        } else {
+            "databases"
+        };
+        let expected_cause = format!("{paths} {noun} failed integrity check");
+        for args in [
+            vec!["doctor", "--json"],
+            vec!["doctor", "--json", "--feedback"],
+        ] {
+            let output = fixture.command()?.args(args).output()?;
+            assert_eq!(output.status.code(), Some(1));
+            let report: Value = serde_json::from_slice(&output.stdout)?;
+            assert_eq!(report["checks"]["state.paths"]["status"], "fail");
+            assert_eq!(
+                report["checks"]["state.paths"]["summary"],
+                "state database integrity check failed"
+            );
+            assert_eq!(
+                report["checks"]["state.paths"]["issues"][0]["cause"],
+                expected_cause
+            );
+        }
+
+        for summary_only in [false, true] {
+            let mut command = fixture.command()?;
+            command.args(["doctor", "--ascii", "--no-color"]);
+            if summary_only {
+                command.arg("--summary");
+            }
+            let output = command.output()?;
+            assert_eq!(output.status.code(), Some(1));
+            let stdout = String::from_utf8(output.stdout)?;
+            let state_row = stdout
+                .lines()
+                .filter(|line| {
+                    line.starts_with("  [XX] state ")
+                        || (!summary_only
+                            && line.starts_with("    -> Move the damaged SQLite database aside"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .replace(&fixture.root.path().display().to_string(), "FIXTURE")
+                .replace('\\', "/");
+            if summary_only {
+                assert_eq!(
+                    state_row,
+                    format!(
+                        "  [XX] state        {}",
+                        expected_cause
+                            .replace(&fixture.root.path().display().to_string(), "FIXTURE")
+                    )
+                    .replace('\\', "/")
+                );
+            } else {
+                insta::assert_snapshot!(snapshot_name, state_row);
+            }
+        }
+        for path in &failed_paths {
+            assert_eq!(std::fs::read_to_string(path)?, "not a SQLite database");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn doctor_redacts_failed_database_paths_in_json() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let sqlite_home = fixture.root.path().join("doctor-secret-sqlite");
+    std::fs::create_dir(&sqlite_home)?;
+    let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home.clone())?);
+    let config_file = fixture.home.join("config.toml");
+    let config = std::fs::read_to_string(&config_file)?;
+    let sqlite_home = toml::Value::String(sqlite_home.display().to_string());
+    std::fs::write(
+        &config_file,
+        format!("sqlite_home = {sqlite_home}\n{config}"),
+    )?;
+    std::fs::write(sqlite.logs_db_path(), "not a SQLite database")?;
+
+    let output = fixture
+        .command()?
+        .args(["doctor", "--json", "--feedback"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(!stdout.contains("doctor-secret-sqlite"));
+    let report: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        report["checks"]["state.paths"]["summary"],
+        "state database integrity check failed"
+    );
+    assert_eq!(
+        report["checks"]["state.paths"]["issues"][0]["cause"],
+        "<redacted>"
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_only_safe_config_error_metadata() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let user_config_file = fixture.home.join("config.toml");
+    let original = std::fs::read_to_string(&user_config_file)?;
+    // macOS temp directories can use a symlinked path; trust the canonical workspace.
+    let project_key = toml::Value::String(project_trust_key(&fixture.workspace));
+    let original = format!("{original}\n[projects.{project_key}]\ntrust_level = \"trusted\"\n");
+    let project_config_dir = fixture.workspace.join(".codex");
+    std::fs::create_dir(&project_config_dir)?;
+    for (snapshot_name, config_file, config) in [
+        (
+            "doctor_config_error_location",
+            user_config_file.clone(),
+            "custom_header = \"doctor-test-credential\" trailing\n".to_string(),
+        ),
+        (
+            "doctor_config_invalid_data",
+            project_config_dir.join("config.toml"),
+            "custom_header = \"doctor-test-credential\" trailing\n".to_string(),
+        ),
+        (
+            "doctor_config_not_found",
+            user_config_file.clone(),
+            original.replace(
+                "model_provider = \"local\"",
+                "model_provider = \"doctor-test-credential\"",
+            ),
+        ),
+        (
+            "doctor_config_invalid_data",
+            user_config_file.clone(),
+            original.replace(
+                "wire_api = \"responses\"",
+                "wire_api = \"responses\"\nhttp_headers = \"sk-proj-ABC123example\"",
+            ),
+        ),
+    ] {
+        std::fs::write(&user_config_file, &original)?;
+        std::fs::write(&config_file, config)?;
+        for args in [
+            vec!["doctor", "--json"],
+            vec!["doctor", "--json", "--feedback"],
+        ] {
+            let output = fixture.command()?.args(args).output()?;
+            assert_eq!(output.status.code(), Some(1));
+            let report: Value = serde_json::from_slice(&output.stdout)?;
+            let mut check = report["checks"]["config.load"].clone();
+            check
+                .as_object_mut()
+                .expect("config check")
+                .remove("durationMs");
+            if let Some(file) = check["details"]["file"].as_str() {
+                check["details"]["file"] = Value::String(
+                    file.replace(
+                        &fixture.root.path().canonicalize()?.display().to_string(),
+                        "FIXTURE",
+                    )
+                    .replace(&fixture.root.path().display().to_string(), "FIXTURE")
+                    .replace('\\', "/"),
+                );
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(!stdout.contains("doctor-test-credential"));
+            assert!(!stdout.contains("sk-proj-ABC123example"));
+            // Keep snapshots stable across serde_json feature sets in Cargo and Bazel.
+            check.sort_all_objects();
+            insta::assert_snapshot!(snapshot_name, serde_json::to_string_pretty(&check)?);
+        }
+        std::fs::remove_file(config_file)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_configured_filesystem_paths() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let config_file = fixture.home.join("config.toml");
+    let original = std::fs::read_to_string(&config_file)?;
+    let existing = fixture.workspace.join("probe-existing");
+    let missing = fixture.workspace.join("probe-missing");
+    std::fs::create_dir(&existing)?;
+    let existing_key = toml::Value::String(existing.display().to_string());
+    let missing_key = toml::Value::String(missing.display().to_string());
+    std::fs::write(
+        &config_file,
+        format!(
+            r#"default_permissions = "diagnostic"
+{original}
+[permissions.diagnostic]
+extends = ":read-only"
+[permissions.diagnostic.filesystem]
+{existing_key} = "read"
+{missing_key} = "write"
+"#
+        ),
+    )?;
+    let output = fixture.command()?.args(["doctor", "--json"]).output()?;
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    #[cfg(windows)]
+    assert_eq!(report["checks"]["sandbox.filesystem_paths"]["status"], "ok");
+    let mut details = report["checks"]["sandbox.filesystem_paths"]["details"].clone();
+    // Snapshot outcomes and provenance independently of helper startup speed.
+    details
+        .as_object_mut()
+        .expect("path details")
+        .retain(|key, _| !key.ends_with(" latency"));
+    let canonical_root = fixture.root.path().canonicalize()?;
+    for value in details.as_object_mut().expect("path details").values_mut() {
+        let detail = value
+            .as_str()
+            .expect("scalar path detail")
+            .replace(&canonical_root.display().to_string(), "FIXTURE")
+            .replace(&fixture.root.path().display().to_string(), "FIXTURE")
+            .replace('\\', "/");
+        *value = Value::String(detail);
+    }
+    let snapshot_name = if cfg!(windows) {
+        "doctor_configured_filesystem_paths_windows"
+    } else {
+        "doctor_configured_filesystem_paths"
+    };
+    insta::assert_snapshot!(snapshot_name, serde_json::to_string_pretty(&details)?);
+    Ok(())
+}
+
+#[test]
+fn filesystem_probe_does_not_load_configuration() -> Result<()> {
+    let fixture = Fixture::new()?;
+    std::fs::write(fixture.home.join("config.toml"), "invalid TOML = [")?;
+    for (path, expected) in [
+        (&fixture.workspace, 0),
+        (&fixture.workspace.join("missing"), 2),
+    ] {
+        let output = fixture
+            .command()?
+            .args(["doctor", "--probe-filesystem-path"])
+            .arg(path)
+            .output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(if cfg!(windows) { 5 } else { expected })
+        );
+        assert!(output.stdout.is_empty());
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result<()> {
@@ -224,7 +520,7 @@ async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result
     );
     let spawned = codex_utils_pty::spawn_pty_process(
         fixture.program.to_str().unwrap(),
-        &[],
+        &["--no-daemon".to_string()],
         &fixture.workspace,
         &env,
         /*arg0*/ &None,
@@ -232,7 +528,7 @@ async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result
             rows: 40,
             cols: 120,
         },
-        &[],
+        codex_utils_pty::ChildFds::Inherited(&[]),
     )
     .await?;
     let session = spawned.session;

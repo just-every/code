@@ -5,25 +5,31 @@ use crate::NetworkUnixSocketPermissions;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// Traffic restrictions supplied by the owner of one execution environment.
+/// Managed proxy requirements supplied by the owner of one execution environment.
 ///
-/// Proxy enablement, listeners, network mode, MITM, and credentials remain outside
-/// attachment-owned traffic policy.
+/// The owner can require proxy routing without granting direct network access.
+/// Listeners, network mode, MITM, and credentials remain controller-owned.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentNetworkPolicy {
+    /// Requires managed proxy routing even when direct network access is restricted.
+    /// False or omission leaves activation to the controller and command permissions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requires_proxy: bool,
     pub domains: Option<NetworkDomainPermissions>,
     pub unix_sockets: Option<NetworkUnixSocketPermissions>,
     pub allow_upstream_proxy: bool,
     pub dangerously_allow_all_unix_sockets: bool,
-    pub allow_local_binding: bool,
+    /// Omission inherits local-binding policy; an explicit false remains a restriction.
+    pub allow_local_binding: Option<bool>,
     pub managed_allowed_domains_only: bool,
 }
 
 impl EnvironmentNetworkPolicy {
-    /// Captures portable traffic restrictions without exposing controller runtime settings.
+    /// Captures proxy activation and traffic restrictions without controller runtime settings.
     pub fn from_config(config: &NetworkProxyConfig, managed_allowed_domains_only: bool) -> Self {
         Self {
+            requires_proxy: config.enabled,
             domains: config.domains.clone(),
             unix_sockets: config.unix_sockets.clone(),
             allow_upstream_proxy: config.allow_upstream_proxy,
@@ -82,11 +88,15 @@ impl EnvironmentNetworkPolicy {
             }
         }
 
-        // Enable permissions only when both controller and owner allow them.
+        // Socket and upstream-proxy permissions require both controller and owner grants.
         config.unix_sockets = (!effective_sockets.entries.is_empty()).then_some(effective_sockets);
         config.dangerously_allow_all_unix_sockets =
             Some(inherited_permits_all && owner_permits_all);
         config.allow_upstream_proxy &= self.allow_upstream_proxy;
-        config.allow_local_binding &= self.allow_local_binding;
+        // Either explicit denial wins; defer unresolved defaults to the executor.
+        config.allow_local_binding = match (config.allow_local_binding, self.allow_local_binding) {
+            (Some(controller), Some(owner)) => Some(controller && owner),
+            (controller, owner) => controller.or(owner),
+        };
     }
 }

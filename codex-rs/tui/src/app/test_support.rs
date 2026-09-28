@@ -9,8 +9,9 @@ use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 
-pub(super) async fn make_test_app() -> App {
-    let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+pub(crate) async fn make_test_app() -> App {
+    let (mut chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+    let test_codex_home = chat_widget.test_codex_home.take();
     let config = chat_widget.config_ref().clone();
     let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
     let model = get_model_offline_for_tests(config.model.as_deref());
@@ -37,6 +38,9 @@ pub(super) async fn make_test_app() -> App {
         pending_server_profiles: HashMap::new(),
         file_search,
         transcript_cells: Vec::new(),
+        native_history: Default::default(),
+        turn_tips: Default::default(),
+        transcript_view: Default::default(),
         last_rendered_history_tail: None,
         last_thread_usage_status_cell: None,
         pending_thread_usage_history_refresh: false,
@@ -61,6 +65,13 @@ pub(super) async fn make_test_app() -> App {
         feedback_audience: FeedbackAudience::External,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
+        pending_right_click_paste: None,
+        right_click_paste_environment: super::right_click_paste::PasteEnvironment {
+            platform_default: true,
+            ssh: false,
+            wsl: false,
+            vscode: crate::tui::VscodeDetection::Other,
+        },
         reconnect: Default::default(),
         daemon_cli_executable: None,
         pending_update_action: None,
@@ -70,6 +81,8 @@ pub(super) async fn make_test_app() -> App {
         pending_realtime_speech_replay: HashMap::new(),
         pending_realtime_transcript_replay: HashMap::new(),
         realtime_replay_order: VecDeque::new(),
+        background_voice: None,
+        background_voice_error: None,
         temporary_structured_requests: HashMap::new(),
         pending_thread_titles: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
@@ -102,6 +115,7 @@ pub(super) async fn make_test_app() -> App {
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
         recap: recap::RecapState::default(),
+        _test_codex_home: test_codex_home,
     }
 }
 

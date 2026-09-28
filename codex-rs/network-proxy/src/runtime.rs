@@ -169,7 +169,7 @@ fn blocked_request_violation_log_line(entry: &BlockedRequest) -> String {
 #[derive(Clone)]
 pub struct ConfigState {
     /// Preserve the target when policy edits rebuild state on a controller.
-    pub(crate) executor_os: crate::NetworkProxyExecutorOs,
+    pub(crate) executor_os: crate::Platform,
     pub config: NetworkProxyConfig,
     pub(crate) brokerage_created_default_allowlist: bool,
     pub allow_set: GlobSet,
@@ -232,8 +232,37 @@ where
     }
 }
 
+/// How the executor resolves and validates local binding when managed networking is enabled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LocalBindingPolicy {
+    /// Omission defaults to false; either explicit value is accepted.
+    #[default]
+    DefaultFalse,
+    /// Omission defaults to true; explicit false is rejected.
+    RequireTrue,
+}
+
+impl LocalBindingPolicy {
+    /// Resolves omission without changing the configured value.
+    pub fn resolve(self, config: &NetworkProxyConfig) -> bool {
+        config
+            .allow_local_binding
+            .unwrap_or(config.enabled && self == Self::RequireTrue)
+    }
+
+    pub(crate) fn resolved_config(self, config: &NetworkProxyConfig) -> NetworkProxyConfig {
+        NetworkProxyConfig {
+            allow_local_binding: Some(self.resolve(config)),
+            ..config.clone()
+        }
+    }
+}
+
 pub struct NetworkProxyState {
     state: Arc<RwLock<ConfigState>>,
+    /// Belongs to this proxy; config retains omission for launches on other executors.
+    pub(crate) local_binding_policy: LocalBindingPolicy,
+    pub(crate) proxy_private_ips_via_upstream: bool,
     reloader: Arc<dyn ConfigReloader>,
     blocked_request_observer: Arc<RwLock<Option<Arc<dyn BlockedRequestObserver>>>>,
     pub(crate) policy_audit_observer: Option<NetworkPolicyAuditObserver>,
@@ -271,6 +300,8 @@ impl Clone for NetworkProxyState {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
+            local_binding_policy: self.local_binding_policy,
+            proxy_private_ips_via_upstream: self.proxy_private_ips_via_upstream,
             reloader: self.reloader.clone(),
             blocked_request_observer: self.blocked_request_observer.clone(),
             policy_audit_observer: self.policy_audit_observer.clone(),
@@ -286,11 +317,17 @@ impl Clone for NetworkProxyState {
 }
 
 impl NetworkProxyState {
+    /// Selects routing for permitted private IPs without changing destination policy.
+    /// Set by the execution host, independently of reloadable or remote policy.
+    pub fn set_proxy_private_ips_via_upstream(&mut self, enabled: bool) {
+        self.proxy_private_ips_via_upstream = enabled;
+    }
+
     /// Builds runtime state for one executor-local proxy launch.
     /// The launching executor supplies its own OS; the wire policy cannot override it.
     pub fn from_remote_launch_config(
         launch: crate::RemoteNetworkProxyLaunchConfig,
-        executor_os: crate::NetworkProxyExecutorOs,
+        executor_os: crate::Platform,
     ) -> Result<Self> {
         let crate::RemoteNetworkProxyLaunchConfig {
             proxy,
@@ -312,6 +349,7 @@ impl NetworkProxyState {
                 state,
                 Arc::new(StaticConfigReloader),
                 audit_metadata,
+                LocalBindingPolicy::DefaultFalse,
             )
         })
     }
@@ -321,6 +359,7 @@ impl NetworkProxyState {
             state,
             reloader,
             NetworkProxyAuditMetadata::default(),
+            LocalBindingPolicy::DefaultFalse,
         )
     }
 
@@ -333,6 +372,7 @@ impl NetworkProxyState {
             state,
             reloader,
             NetworkProxyAuditMetadata::default(),
+            LocalBindingPolicy::DefaultFalse,
             blocked_request_observer,
         )
     }
@@ -341,11 +381,13 @@ impl NetworkProxyState {
         state: ConfigState,
         reloader: Arc<dyn ConfigReloader>,
         audit_metadata: NetworkProxyAuditMetadata,
+        local_binding_policy: LocalBindingPolicy,
     ) -> Self {
         Self::with_reloader_and_audit_metadata_and_blocked_observer(
             state,
             reloader,
             audit_metadata,
+            local_binding_policy,
             /*blocked_request_observer*/ None,
         )
     }
@@ -354,13 +396,16 @@ impl NetworkProxyState {
         state: ConfigState,
         reloader: Arc<dyn ConfigReloader>,
         audit_metadata: NetworkProxyAuditMetadata,
+        local_binding_policy: LocalBindingPolicy,
         blocked_request_observer: Option<Arc<dyn BlockedRequestObserver>>,
     ) -> Self {
         let credential_broker = CredentialBroker::new(state.config.credential_broker);
-        credential_broker.configure(&state.config);
+        credential_broker.configure(&local_binding_policy.resolved_config(&state.config));
         Self {
             credential_broker,
             state: Arc::new(RwLock::new(state)),
+            local_binding_policy,
+            proxy_private_ips_via_upstream: false,
             reloader,
             blocked_request_observer: Arc::new(RwLock::new(blocked_request_observer)),
             policy_audit_observer: None,
@@ -584,7 +629,7 @@ impl NetworkProxyState {
 
     pub(crate) async fn current_cfg_with_brokerage_provenance(
         &self,
-    ) -> Result<(NetworkProxyConfig, bool, crate::NetworkProxyExecutorOs)> {
+    ) -> Result<(NetworkProxyConfig, bool, crate::Platform)> {
         // Callers treat `NetworkProxyState` as a live view of policy. We reload-on-demand so edits to
         // `config.toml` (including Codex-managed writes) take effect without a restart.
         self.reload_if_needed().await?;
@@ -616,7 +661,8 @@ impl NetworkProxyState {
             Ok(mut new_state) => {
                 {
                     let mut guard = self.state.write().await;
-                    self.credential_broker.configure(&new_state.config);
+                    self.credential_broker
+                        .configure(&self.local_binding_policy.resolved_config(&new_state.config));
                     // Log policy diffs without dumping potentially sensitive config values.
                     log_policy_changes(&guard.config, &new_state.config);
                     new_state.blocked = guard.blocked.clone();
@@ -637,7 +683,8 @@ impl NetworkProxyState {
     pub async fn replace_config_state(&self, mut new_state: ConfigState) -> Result<()> {
         self.reload_if_needed().await?;
         let mut guard = self.state.write().await;
-        self.credential_broker.configure(&new_state.config);
+        self.credential_broker
+            .configure(&self.local_binding_policy.resolved_config(&new_state.config));
         log_policy_changes(&guard.config, &new_state.config);
         new_state.blocked = guard.blocked.clone();
         new_state.blocked_total = guard.blocked_total;
@@ -647,6 +694,16 @@ impl NetworkProxyState {
     }
 
     pub async fn host_blocked(&self, host: &str, port: u16) -> Result<HostBlockDecision> {
+        self.host_blocked_with_local_binding(host, port, /*allow_local_binding*/ None)
+            .await
+    }
+
+    pub(crate) async fn host_blocked_with_local_binding(
+        &self,
+        host: &str,
+        port: u16,
+        allow_local_binding: Option<bool>,
+    ) -> Result<HostBlockDecision> {
         self.reload_if_needed().await?;
         let host = match Host::parse(host) {
             Ok(host) => host,
@@ -658,7 +715,10 @@ impl NetworkProxyState {
             (
                 guard.deny_set.clone(),
                 guard.allow_set.clone(),
-                guard.config.allow_local_binding,
+                // Keep explicit controller restrictions even if the executor launched with true.
+                allow_local_binding
+                    .unwrap_or_else(|| self.local_binding_policy.resolve(&guard.config))
+                    && guard.config.allow_local_binding != Some(false),
                 allowed_domains,
             )
         };
@@ -848,7 +908,7 @@ impl NetworkProxyState {
     pub async fn allow_local_binding(&self) -> Result<bool> {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
-        Ok(guard.config.allow_local_binding)
+        Ok(self.local_binding_policy.resolve(&guard.config))
     }
 
     pub async fn network_mode(&self) -> Result<NetworkMode> {
@@ -867,7 +927,8 @@ impl NetworkProxyState {
                 (candidate, guard.constraints.clone())
             };
 
-            validate_policy_against_constraints(&candidate, &constraints)
+            let resolved = self.local_binding_policy.resolved_config(&candidate);
+            validate_policy_against_constraints(&resolved, &constraints)
                 .map_err(NetworkProxyConstraintError::into_anyhow)
                 .context("network.mode constrained by managed config")?;
 
@@ -969,7 +1030,8 @@ impl NetworkProxyState {
                 normalize_host,
             );
 
-            validate_policy_against_constraints(&candidate, &constraints)
+            let resolved = self.local_binding_policy.resolved_config(&candidate);
+            validate_policy_against_constraints(&resolved, &constraints)
                 .map_err(NetworkProxyConstraintError::into_anyhow)
                 .with_context(|| format!("{constraint_field} constrained by managed config"))?;
 
@@ -1001,7 +1063,8 @@ impl NetworkProxyState {
             Some(mut new_state) => {
                 {
                     let mut guard = self.state.write().await;
-                    self.credential_broker.configure(&new_state.config);
+                    self.credential_broker
+                        .configure(&self.local_binding_policy.resolved_config(&new_state.config));
                     log_policy_changes(&guard.config, &new_state.config);
                     new_state.blocked = guard.blocked.clone();
                     new_state.blocked_total = guard.blocked_total;
@@ -1188,7 +1251,7 @@ pub(crate) fn network_proxy_state_for_policy(
         config.set_allowed_domains(vec!["*".to_string()]);
     }
     let state = ConfigState {
-        executor_os: crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+        executor_os: crate::Platform::native(),
         allow_set: crate::policy::compile_allowlist_globset(
             &config.allowed_domains().unwrap_or_default(),
         )
@@ -1296,7 +1359,7 @@ mod tests {
         let initial_state = build_config_state(
             config.clone(),
             NetworkProxyConstraints::default(),
-            crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+            crate::Platform::native(),
         )
         .unwrap();
         let mut reloaded_config = config;
@@ -1304,7 +1367,7 @@ mod tests {
         let reloaded_state = build_config_state(
             reloaded_config,
             NetworkProxyConstraints::default(),
-            crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+            crate::Platform::native(),
         )
         .unwrap();
         let state = NetworkProxyState::with_reloader(
@@ -1333,7 +1396,7 @@ mod tests {
                 enabled: Some(false),
                 ..NetworkProxyConstraints::default()
             },
-            crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+            crate::Platform::native(),
         )
         .expect("managed-disabled credential broker should fail open");
         let state = NetworkProxyState::with_reloader(config_state, Arc::new(NoopReloader));
@@ -1384,7 +1447,7 @@ mod tests {
             let config_state = build_config_state(
                 config,
                 NetworkProxyConstraints::default(),
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
+                crate::Platform::native(),
             )
             .expect("valid credential-broker configuration");
             assert_eq!(config_state.brokerage_created_default_allowlist, !enabled);
@@ -1472,12 +1535,7 @@ mod tests {
             ..NetworkProxyConstraints::default()
         };
         let state = NetworkProxyState::with_reloader(
-            build_config_state(
-                config,
-                constraints,
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
-            )
-            .unwrap(),
+            build_config_state(config, constraints, crate::Platform::native()).unwrap(),
             Arc::new(NoopReloader),
         );
 
@@ -1504,12 +1562,7 @@ mod tests {
             ..NetworkProxyConstraints::default()
         };
         let state = NetworkProxyState::with_reloader(
-            build_config_state(
-                config,
-                constraints,
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
-            )
-            .unwrap(),
+            build_config_state(config, constraints, crate::Platform::native()).unwrap(),
             Arc::new(NoopReloader),
         );
 
@@ -1534,12 +1587,7 @@ mod tests {
             ..NetworkProxyConstraints::default()
         };
         let state = NetworkProxyState::with_reloader(
-            build_config_state(
-                config,
-                constraints,
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
-            )
-            .unwrap(),
+            build_config_state(config, constraints, crate::Platform::native()).unwrap(),
             Arc::new(NoopReloader),
         );
 
@@ -1748,7 +1796,7 @@ mod tests {
     #[tokio::test]
     async fn host_blocked_requires_exact_scoped_ipv6_allowlist_match() {
         let state = network_proxy_state_for_policy(NetworkProxyConfig {
-            allow_local_binding: true,
+            allow_local_binding: Some(true),
             ..network_settings(&["fe80::1%eth0"], &[])
         });
 
@@ -1771,7 +1819,7 @@ mod tests {
     #[tokio::test]
     async fn host_blocked_denies_scoped_ipv6_literal_before_local_binding() {
         let state = network_proxy_state_for_policy(NetworkProxyConfig {
-            allow_local_binding: true,
+            allow_local_binding: Some(true),
             ..network_settings(&["*"], &["fd00::1"])
         });
 
@@ -1787,7 +1835,7 @@ mod tests {
     #[tokio::test]
     async fn host_blocked_requires_exact_scoped_ipv6_denylist_match() {
         let state = network_proxy_state_for_policy(NetworkProxyConfig {
-            allow_local_binding: true,
+            allow_local_binding: Some(true),
             ..network_settings(&["*"], &["fd00::1%eth0"])
         });
 
@@ -2064,7 +2112,7 @@ mod tests {
 
         let config = NetworkProxyConfig {
             enabled: true,
-            allow_local_binding: true,
+            allow_local_binding: Some(true),
             ..NetworkProxyConfig::default()
         };
 
@@ -2211,7 +2259,7 @@ mod tests {
             build_config_state(
                 config,
                 NetworkProxyConstraints::default(),
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS))
+                crate::Platform::native()
             )
             .is_ok()
         );
@@ -2226,7 +2274,7 @@ mod tests {
             build_config_state(
                 config,
                 NetworkProxyConstraints::default(),
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS))
+                crate::Platform::native()
             )
             .is_ok()
         );
@@ -2241,7 +2289,7 @@ mod tests {
             build_config_state(
                 config,
                 NetworkProxyConstraints::default(),
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS))
+                crate::Platform::native()
             )
             .is_err()
         );
@@ -2256,7 +2304,7 @@ mod tests {
             build_config_state(
                 config,
                 NetworkProxyConstraints::default(),
-                crate::NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS))
+                crate::Platform::native()
             )
             .is_err()
         );

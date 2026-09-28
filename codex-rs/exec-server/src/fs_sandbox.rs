@@ -18,21 +18,26 @@ use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use codex_utils_absolute_path::canonicalize_preserving_symlinks;
 #[cfg(any(windows, test))]
 use codex_utils_path_uri::LegacyAppPathString;
 #[cfg(any(windows, test))]
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
+use codex_utils_pty::Child;
+use codex_utils_pty::ChildStdin;
+use codex_utils_pty::Command;
+#[cfg(target_os = "macos")]
+use codex_utils_pty::DescriptorPolicy;
+use codex_utils_pty::SpawnFallback;
 #[cfg(any(windows, test))]
 use tokio::io::AsyncBufReadExt;
 #[cfg(any(windows, test))]
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::FileSystemSandboxContext;
 use crate::fs_helper::CODEX_FS_HELPER_ARG1;
 use crate::fs_helper::FsHelperPayload;
@@ -64,12 +69,12 @@ struct SandboxCwd {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FileSystemSandboxRunner {
-    runtime_paths: ExecServerRuntimePaths,
+    runtime_paths: ExecServerRuntimeOptions,
     helper_env: HashMap<String, String>,
 }
 
 impl FileSystemSandboxRunner {
-    pub(crate) fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
         Self {
             runtime_paths,
             helper_env: helper_env(),
@@ -125,7 +130,7 @@ impl FileSystemSandboxRunner {
         // Linux resolves aliases in the sandbox helper. Doing it here also probes
         // unrelated permission roots synchronously on the executor's runtime thread.
         #[cfg(not(target_os = "linux"))]
-        normalize_file_system_policy_root_aliases(&mut file_system_policy);
+        normalize_file_system_policy_root_aliases(&mut file_system_policy)?;
         #[cfg(windows)]
         bind_windows_cwd_relative_deny_read_globs(&mut file_system_policy, &cwd.uri)?;
         let network_policy = NetworkSandboxPolicy::Restricted;
@@ -145,7 +150,8 @@ impl FileSystemSandboxRunner {
         sandbox_context: &FileSystemSandboxContext,
     ) -> Result<SandboxExecRequest, JSONRPCErrorError> {
         let helper = &self.runtime_paths.codex_self_exe;
-        let sandbox_manager = SandboxManager::for_file_system_helpers();
+        let sandbox_manager = SandboxManager::for_file_system_helpers()
+            .with_linux_sandbox_pid_namespace(self.runtime_paths.linux_sandbox_pid_namespace);
         #[cfg(target_os = "macos")]
         let sandbox_manager = sandbox_manager.with_allowed_symlinked_codex_home(
             self.runtime_paths.allowed_symlinked_codex_home.clone(),
@@ -197,8 +203,6 @@ impl FileSystemSandboxRunner {
                     use_legacy_landlock: sandbox_context.use_legacy_landlock,
                     windows_sandbox_level: windows_sandbox_level
                         .unwrap_or(WindowsSandboxLevel::Disabled),
-                    windows_sandbox_private_desktop: sandbox_context
-                        .windows_sandbox_private_desktop,
                 },
             })
             .map_err(|err| invalid_request(format!("failed to prepare fs sandbox: {err}")))
@@ -225,7 +229,7 @@ fn native_workspace_root(root: &PathUri) -> Result<AbsolutePathBuf, JSONRPCError
     })
 }
 
-fn helper_read_roots(runtime_paths: &ExecServerRuntimePaths) -> Vec<AbsolutePathBuf> {
+fn helper_read_roots(runtime_paths: &ExecServerRuntimeOptions) -> Vec<AbsolutePathBuf> {
     let mut roots = vec![runtime_paths.codex_self_exe.clone()];
     if let Some(path) = &runtime_paths.codex_linux_sandbox_exe
         && !roots.contains(path)
@@ -293,19 +297,34 @@ fn bind_windows_cwd_relative_deny_read_globs(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn normalize_file_system_policy_root_aliases(file_system_policy: &mut FileSystemSandboxPolicy) {
+fn normalize_file_system_policy_root_aliases(
+    file_system_policy: &mut FileSystemSandboxPolicy,
+) -> Result<(), JSONRPCErrorError> {
     for entry in &mut file_system_policy.entries {
         // Alias normalization uses this executor's filesystem; leave foreign
         // or opaque PathUris unchanged.
         if let FileSystemPath::Path { path } = &mut entry.path
             && let Ok(native_path) = path.to_abs_path()
         {
-            *path = normalize_top_level_alias(native_path).into();
+            #[cfg(target_os = "macos")]
+            {
+                *path = native_path
+                    .normalize_system_aliases()
+                    .map_err(|error| {
+                        invalid_request(format!("failed to normalize {path}: {error}"))
+                    })?
+                    .into();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                *path = normalize_top_level_alias(native_path).into();
+            }
         }
     }
+    Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn normalize_top_level_alias(path: AbsolutePathBuf) -> AbsolutePathBuf {
     let raw_path = path.to_path_buf();
     for ancestor in raw_path.ancestors() {
@@ -351,7 +370,12 @@ fn helper_env_key_is_allowed(key: &str) -> bool {
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
-        || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+        // MXC needs SystemDrive to resolve platform directories and LOCALAPPDATA
+        // to create the sandboxed helper process.
+        || (cfg!(windows)
+            && ["PATH", "SystemDrive", "LOCALAPPDATA"]
+                .iter()
+                .any(|allowed| key.eq_ignore_ascii_case(allowed)))
 }
 
 #[cfg(debug_assertions)]
@@ -369,7 +393,7 @@ async fn run_command(
     command: SandboxExecRequest,
     request_json: Vec<u8>,
 ) -> Result<FsHelperPayload, JSONRPCErrorError> {
-    let mut child = spawn_command(command, std::process::Stdio::piped())?;
+    let mut child = spawn_command(command, ChildStdin::Piped)?;
     let mut stdin = child
         .stdin
         .take()
@@ -428,7 +452,7 @@ pub(crate) async fn read_helper_response(
 
 #[cfg(any(windows, test))]
 pub(crate) fn drain_helper_stderr(
-    child: &mut tokio::process::Child,
+    child: &mut Child,
 ) -> tokio::task::JoinHandle<Result<Vec<u8>, std::io::Error>> {
     let stderr_pipe = child.stderr.take();
     tokio::spawn(async move {
@@ -446,7 +470,7 @@ pub(crate) fn drain_helper_stderr(
 
 #[cfg(any(windows, test))]
 pub(crate) async fn reap_helper_after_response(
-    mut child: tokio::process::Child,
+    mut child: Child,
     stderr: tokio::task::JoinHandle<Result<Vec<u8>, std::io::Error>>,
 ) -> Result<(), JSONRPCErrorError> {
     let (status, stderr) = match tokio::time::timeout(FS_HELPER_EXIT_TIMEOUT, async {
@@ -479,7 +503,7 @@ pub(crate) async fn reap_helper_after_response(
 
 #[cfg(not(windows))]
 pub(crate) async fn wait_for_helper_output(
-    child: tokio::process::Child,
+    child: Child,
 ) -> Result<std::process::Output, JSONRPCErrorError> {
     let output = child.wait_with_output().await.map_err(io_error)?;
     if !output.status.success() {
@@ -500,8 +524,8 @@ pub(crate) fn spawn_command(
         arg0,
         ..
     }: SandboxExecRequest,
-    stdin: std::process::Stdio,
-) -> Result<tokio::process::Child, JSONRPCErrorError> {
+    stdin: ChildStdin,
+) -> Result<Child, JSONRPCErrorError> {
     let Some((program, args)) = argv.split_first() else {
         return Err(invalid_request("fs sandbox command was empty".to_string()));
     };
@@ -517,21 +541,13 @@ pub(crate) fn spawn_command(
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     command.current_dir(cwd.as_path());
     env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_env_var(name));
-    command.env_clear();
     command.envs(env);
     command.stdin(stdin);
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    command.kill_on_drop(true);
+    // A helper is a known executable: native launch errors must not retry through fork.
+    command.fallback(SpawnFallback::ReturnError);
     // macOS cannot receive passed fds with close-on-exec set atomically.
     #[cfg(target_os = "macos")]
-    // SAFETY: Descriptor cleanup only uses fork-safe system calls.
-    unsafe {
-        command.pre_exec(|| {
-            codex_utils_pty::pty::close_inherited_fds_except(&[]);
-            Ok(())
-        });
-    }
+    command.descriptor_policy(DescriptorPolicy::Explicit);
     command.spawn().map_err(io_error)
 }
 
@@ -565,7 +581,7 @@ mod tests {
     use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
 
-    use crate::ExecServerRuntimePaths;
+    use crate::ExecServerRuntimeOptions;
 
     use super::FileSystemSandboxRunner;
     use super::SandboxCwd;
@@ -606,7 +622,7 @@ mod tests {
     fn helper_permissions_preserve_existing_writes() {
         let codex_self_exe = std::env::current_exe().expect("current exe");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
+            ExecServerRuntimeOptions::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
                 .expect("runtime paths");
         let cwd = AbsolutePathBuf::from_absolute_path(std::env::temp_dir().as_path())
             .expect("absolute cwd");
@@ -690,10 +706,12 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn helper_env_preserves_windows_path_key_for_system_bwrap_discovery() {
+    fn helper_env_preserves_windows_runtime_variables_without_leaking_secrets() {
         let env = helper_env_from_vars(
             [
                 ("Path", r"C:\Windows\System32"),
+                ("LocalAppData", r"C:\Users\test\AppData\Local"),
+                ("SystemDrive", "C:"),
                 ("PATH_INJECTION", "bad"),
                 ("OPENAI_API_KEY", "secret"),
             ]
@@ -702,7 +720,14 @@ mod tests {
 
         assert_eq!(
             env,
-            HashMap::from([("Path".to_string(), r"C:\Windows\System32".to_string())])
+            HashMap::from([
+                ("Path".to_string(), r"C:\Windows\System32".to_string()),
+                (
+                    "LocalAppData".to_string(),
+                    r"C:\Users\test\AppData\Local".to_string()
+                ),
+                ("SystemDrive".to_string(), "C:".to_string()),
+            ])
         );
     }
 
@@ -718,7 +743,7 @@ mod tests {
         let path = path.to_string_lossy().into_owned();
         let codex_self_exe = std::env::current_exe().expect("current exe");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe.clone(), Some(codex_self_exe))
+            ExecServerRuntimeOptions::new(codex_self_exe.clone(), Some(codex_self_exe))
                 .expect("runtime paths");
         let runner = FileSystemSandboxRunner::new(runtime_paths);
         let native_cwd = AbsolutePathBuf::current_dir().expect("cwd");
@@ -774,7 +799,7 @@ mod tests {
     fn sandbox_exec_request_uses_filesystem_root_and_preserves_policy_cwd() {
         let codex_self_exe = std::env::current_exe().expect("current exe");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe.clone(), Some(codex_self_exe))
+            ExecServerRuntimeOptions::new(codex_self_exe.clone(), Some(codex_self_exe))
                 .expect("runtime paths");
         let runner = FileSystemSandboxRunner::new(runtime_paths);
         let selected = tempfile::tempdir().expect("selected directory");
@@ -864,7 +889,7 @@ mod tests {
     fn sandbox_exec_request_binds_windows_relative_globs_to_policy_cwd() {
         let codex_self_exe = std::env::current_exe().expect("current exe");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
+            ExecServerRuntimeOptions::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
                 .expect("runtime paths");
         let runner = FileSystemSandboxRunner::new(runtime_paths);
         let selected = tempfile::tempdir().expect("selected directory");
@@ -885,7 +910,7 @@ mod tests {
             ),
         ]);
         let sandbox_context = crate::FileSystemSandboxContext {
-            windows_sandbox_selection: codex_file_system::WindowsSandboxSelection::Elevated,
+            windows_sandbox_selection: codex_file_system::WindowsSandboxSelection::RestrictedToken,
             ..sandbox_context_with_cwd(&policy, cwd_uri)
         };
         selected.close().expect("remove selected directory");
@@ -954,7 +979,7 @@ mod tests {
     fn helper_permissions_include_only_the_helper_executable() {
         let codex_self_exe = std::env::current_exe().expect("current exe");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
+            ExecServerRuntimeOptions::new(codex_self_exe, /*codex_linux_sandbox_exe*/ None)
                 .expect("runtime paths");
         let cwd = AbsolutePathBuf::from_absolute_path(std::env::temp_dir().as_path())
             .expect("absolute cwd");
@@ -987,7 +1012,7 @@ mod tests {
         let codex_self_exe = root.path().join("bin").join("codex");
         let codex_linux_sandbox_exe = root.path().join("aliases").join("codex-linux-sandbox");
         let runtime_paths =
-            ExecServerRuntimePaths::new(codex_self_exe, Some(codex_linux_sandbox_exe))
+            ExecServerRuntimeOptions::new(codex_self_exe, Some(codex_linux_sandbox_exe))
                 .expect("runtime paths");
         let cwd = AbsolutePathBuf::from_absolute_path(std::env::temp_dir().as_path())
             .expect("absolute cwd");

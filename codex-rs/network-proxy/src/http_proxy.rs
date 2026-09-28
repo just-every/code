@@ -478,7 +478,7 @@ where
         }
     };
     let proxy = if allow_upstream_proxy {
-        proxy_for_connect(&authority)
+        proxy_for_connect(&authority, &app_state)
     } else {
         None
     };
@@ -1264,7 +1264,7 @@ mod tests {
     async fn http_connect_accept_allows_allowlisted_host_in_full_mode() {
         let policy = {
             let mut policy = NetworkProxyConfig {
-                allow_local_binding: true,
+                allow_local_binding: Some(true),
                 ..NetworkProxyConfig::default()
             };
             policy.set_allowed_domains(vec!["example.com".to_string()]);
@@ -1562,7 +1562,7 @@ mod tests {
                 ..NetworkProxyConfig::default()
             };
             network.set_allowed_domains(vec!["127.0.0.1".to_string()]);
-            network.allow_local_binding = true;
+            network.allow_local_binding = Some(true);
             network
         }));
         let mut env = HashMap::from([
@@ -1639,7 +1639,7 @@ mod tests {
 
         let state = Arc::new(network_proxy_state_for_policy({
             let mut network = NetworkProxyConfig {
-                allow_local_binding: true,
+                allow_local_binding: Some(true),
                 mitm: true,
                 mitm_hooks: vec![crate::mitm_hook::MitmHookConfig {
                     host: "127.0.0.1".to_string(),
@@ -1817,6 +1817,55 @@ mod tests {
             response.headers().get("x-proxy-error").unwrap(),
             "blocked-by-denylist"
         );
+    }
+
+    #[tokio::test]
+    async fn private_ip_upstream_routing_preserves_destination_policy() {
+        for (allowlisted, denied, expected_error) in [
+            (true, true, "blocked-by-denylist"),
+            (false, false, "blocked-by-allowlist"),
+        ] {
+            let mut policy = NetworkProxyConfig {
+                allow_local_binding: Some(true),
+                ..NetworkProxyConfig::default()
+            };
+            if allowlisted {
+                policy.set_allowed_domains(vec!["100.68.58.50".to_string()]);
+            }
+            if denied {
+                policy.set_denied_domains(vec!["100.68.58.50".to_string()]);
+            }
+            let mut state = network_proxy_state_for_policy(policy);
+            state.set_proxy_private_ips_via_upstream(/*enabled*/ true);
+            let state = Arc::new(state);
+            for method in [Method::GET, Method::CONNECT] {
+                let mut req = Request::builder()
+                    .method(method.clone())
+                    .uri("http://100.68.58.50:80/api/items")
+                    .header("host", "100.68.58.50:80")
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions_mut().insert(state.clone());
+                let response = if method == Method::CONNECT {
+                    http_connect_accept(
+                        /*policy_decider*/ None, /*environment_id*/ None, req,
+                    )
+                    .await
+                    .unwrap_err()
+                } else {
+                    http_plain_proxy(
+                        /*policy_decider*/ None, /*environment_id*/ None, req,
+                    )
+                    .await
+                    .unwrap()
+                };
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                assert_eq!(
+                    response.headers().get("x-proxy-error").unwrap(),
+                    expected_error
+                );
+            }
+        }
     }
 
     #[tokio::test]

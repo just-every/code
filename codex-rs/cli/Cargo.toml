@@ -75,6 +75,8 @@ codex-tui = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
+codex-websocket-auth = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 futures = { workspace = true }
 http = { workspace = true }
@@ -124,8 +126,10 @@ codex-utils-cargo-bin = { workspace = true }
 codex-utils-pty = { workspace = true }
 flate2 = { workspace = true }
 insta = { workspace = true }
+jsonwebtoken = { workspace = true }
 predicates = { workspace = true }
 pretty_assertions = { workspace = true }
+sha2 = { workspace = true }
 sqlx = { workspace = true }
 tar = { workspace = true }
 tokio-tungstenite = { workspace = true }

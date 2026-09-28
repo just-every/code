@@ -1820,6 +1820,75 @@
             },
             "method": {
               "enum": [
+                "account/gatewayOAuth/read"
+              ],
+              "title": "Account/gatewayOAuth/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/gatewayOAuth/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/gatewayOAuth/login"
+              ],
+              "title": "Account/gatewayOAuth/loginRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/gatewayOAuth/loginRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/gatewayOAuth/cancel"
+              ],
+              "title": "Account/gatewayOAuth/cancelRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/gatewayOAuth/cancelRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "modelProvider/capabilities/read"
               ],
               "title": "ModelProvider/capabilities/readRequestMethod",
@@ -3288,6 +3357,10 @@
         "experimentalApi": {
           "default": false,
           "description": "Opt into receiving experimental API methods and fields.",
+          "type": "boolean"
+        },
+        "explicitGatewayOauth": {
+          "description": "Use explicit gateway OAuth login instead of automatic browser authorization. Applies to this app-server's gateway runtime; later connections cannot undo it.",
           "type": "boolean"
         },
         "extensions": {
@@ -5449,6 +5522,26 @@
             "params"
           ],
           "title": "Account/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "account/gatewayOAuth/changed"
+              ],
+              "title": "Account/gatewayOAuth/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/GatewayOAuthChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Account/gatewayOAuth/changedNotification",
           "type": "object"
         },
         {
@@ -8320,9 +8413,11 @@
               "sessionBudgetExceeded",
               "usageLimitExceeded",
               "rateLimitExceeded",
+              "flexUnavailable",
               "serverOverloaded",
               "cyberPolicy",
               "misalignmentPolicyViolation",
+              "tooManyDenials",
               "internalServerError",
               "unauthorized",
               "badRequest",
@@ -10030,12 +10125,6 @@
           "sqliteHome": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "windowsSandboxPrivateDesktop": {
-            "type": [
-              "boolean",
               "null"
             ]
           }
@@ -12458,6 +12547,95 @@
           }
         ]
       },
+      "GatewayOAuthCancelResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "GatewayOAuthCancelResponse",
+        "type": "object"
+      },
+      "GatewayOAuthChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "authUrl": {
+            "description": "Authorization handoff, sent only to the connection that started login.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/GatewayOAuthStatus"
+          }
+        },
+        "required": [
+          "providerId",
+          "status"
+        ],
+        "title": "GatewayOAuthChangedNotification",
+        "type": "object"
+      },
+      "GatewayOAuthLoginResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "GatewayOAuthLoginResponse",
+        "type": "object"
+      },
+      "GatewayOAuthReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Current effective gateway policy and credential readiness; never contains credentials.",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerId": {
+            "type": "string"
+          },
+          "providerName": {
+            "type": "string"
+          },
+          "required": {
+            "description": "Whether the selected provider uses gateway OAuth, even when already signed in.",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/GatewayOAuthStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the effective provider does not use gateway OAuth."
+          }
+        },
+        "required": [
+          "providerId",
+          "providerName",
+          "required"
+        ],
+        "title": "GatewayOAuthReadResponse",
+        "type": "object"
+      },
+      "GatewayOAuthStatus": {
+        "enum": [
+          "notReady",
+          "started",
+          "succeeded",
+          "failed"
+        ],
+        "type": "string"
+      },
       "GetAccountParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -13761,6 +13939,13 @@
               "null"
             ]
           },
+          "serverName": {
+            "description": "Limit discovery to one server. With a thread ID, reuse that thread's MCP connection.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "threadId": {
             "type": [
               "string",
@@ -14472,6 +14657,17 @@
           "server": {
             "type": "string"
           },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/McpResourceReadTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit hosted app/account. Omit to retain legacy resource discovery."
+          },
           "threadId": {
             "type": [
               "string",
@@ -14510,6 +14706,25 @@
           "contents"
         ],
         "title": "McpResourceReadResponse",
+        "type": "object"
+      },
+      "McpResourceReadTarget": {
+        "properties": {
+          "connectorId": {
+            "type": "string"
+          },
+          "linkId": {
+            "description": "Null explicitly requests no-auth access, subject to the app's resource policy.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connectorId",
+          "linkId"
+        ],
         "type": "object"
       },
       "McpServerConnectionStatus": {
@@ -14726,6 +14941,13 @@
         "properties": {
           "authStatus": {
             "$ref": "#/definitions/v2/McpAuthStatus"
+          },
+          "httpOrigin": {
+            "description": "HTTP origin of the effective configured endpoint, including plugin servers. Excludes credentials, path, query, and fragment; null for non-HTTP transports.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
@@ -16021,6 +16243,7 @@
           "plus",
           "pro",
           "prolite",
+          "promax",
           "team",
           "self_serve_business_prolite",
           "self_serve_business_usage_based",
@@ -16104,6 +16327,18 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "onboardingSkill": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/SkillSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The declared onboarding skill, when the plugin and visible skill are enabled."
           },
           "scheduledTasks": {
             "items": {
@@ -22332,8 +22567,24 @@
       },
       "ThreadItemEntry": {
         "properties": {
+          "completedAtMs": {
+            "description": "Unix timestamp (milliseconds) when the item completed, if recorded by the producer.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "item": {
             "$ref": "#/definitions/v2/ThreadItem"
+          },
+          "startedAtMs": {
+            "description": "Unix timestamp (milliseconds) when the item started, if recorded by the producer.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "turnId": {
             "description": "Turn containing this item.",
@@ -22346,15 +22597,55 @@
         ],
         "type": "object"
       },
+      "ThreadItemsListAnchor": {
+        "description": "An exclusive item position within the requested visible turn.",
+        "oneOf": [
+          {
+            "properties": {
+              "itemId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "item"
+                ],
+                "title": "ItemThreadItemsListAnchorType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "itemId",
+              "type"
+            ],
+            "title": "ItemThreadItemsListAnchor",
+            "type": "object"
+          }
+        ]
+      },
+      "ThreadItemsListCursor": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/definitions/v2/ThreadItemsListAnchor"
+          }
+        ],
+        "description": "Starting position for an item-history page."
+      },
       "ThreadItemsListParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
           "cursor": {
-            "description": "Opaque cursor to pass to the next call to continue after the last item.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadItemsListCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque continuation cursor or an exclusive item anchor in the requested visible turn. An item anchor requires a non-empty `turnId`; ascending (the default) returns items after it, and descending returns items before it. Continue with the returned string cursor."
           },
           "limit": {
             "description": "Optional item page size.",
@@ -24951,7 +25242,7 @@
                 "type": "null"
               }
             ],
-            "description": "Only populated when the Turn's status is failed."
+            "description": "Error associated with a failed or interrupted turn."
           },
           "id": {
             "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",

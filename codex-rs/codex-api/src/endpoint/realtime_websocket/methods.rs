@@ -22,11 +22,16 @@ use crate::endpoint::realtime_websocket::protocol::parse_realtime_event;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::backoff;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::NetworkPolicyDenied;
 use codex_http_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::RealtimeTranscriptDelta;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+use codex_websocket_client::WebSocketConnection;
+use codex_websocket_client::WebSocketConnector;
+use codex_websocket_client::WebSocketTlsMode;
 use futures::SinkExt;
 use futures::StreamExt;
 use http::HeaderMap;
@@ -37,13 +42,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
-use tokio_tungstenite::MaybeTlsStream;
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -64,6 +66,7 @@ const TRUNCATED_TRANSCRIPT_PREFIX: &str = "…";
 struct WsStream {
     tx_command: mpsc::Sender<WsCommand>,
     pump_task: tokio::task::JoinHandle<()>,
+    terminal_policy_error: tokio::sync::watch::Receiver<Option<NetworkPolicyDenied>>,
 }
 
 enum WsCommand {
@@ -78,13 +81,20 @@ enum WsCommand {
 
 impl WsStream {
     fn new(
-        inner: WebSocketStream<MaybeTlsStream<TcpStream>>,
+        inner: WebSocketConnection,
     ) -> (Self, async_channel::Receiver<Result<Message, WsError>>) {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = async_channel::unbounded::<Result<Message, WsError>>();
 
+        let (terminal_policy_tx, terminal_policy_error) = tokio::sync::watch::channel(None);
         let pump_task = tokio::spawn(async move {
             let mut inner = inner;
+            let report_write_policy_error = |error: &WsError| {
+                if let Some(denied) = codex_websocket_client::network_policy_denial(error) {
+                    terminal_policy_tx.send_replace(Some(denied));
+                    let _ = tx_message.try_send(Err(Self::policy_error(denied)));
+                }
+            };
             loop {
                 tokio::select! {
                     command = rx_command.recv() => {
@@ -98,6 +108,7 @@ impl WsStream {
                                 let should_break = result.is_err();
                                 if let Err(err) = &result {
                                     error!("realtime websocket send failed: {err}");
+                                    report_write_policy_error(err);
                                 }
                                 let _ = tx_result.send(result);
                                 if should_break {
@@ -106,9 +117,10 @@ impl WsStream {
                             }
                             WsCommand::Close { tx_result } => {
                                 info!("realtime websocket sending close");
-                                let result = inner.close(None).await;
+                                let result = inner.send(Message::Close(None)).await;
                                 if let Err(err) = &result {
                                     error!("realtime websocket close failed: {err}");
+                                    report_write_policy_error(err);
                                 }
                                 let _ = tx_result.send(result);
                                 break;
@@ -124,6 +136,7 @@ impl WsStream {
                                 trace!(payload_len = payload.len(), "realtime websocket received ping");
                                 if let Err(err) = inner.send(Message::Pong(payload)).await {
                                     error!("realtime websocket failed to send pong: {err}");
+                                    terminal_policy_tx.send_replace(codex_websocket_client::network_policy_denial(&err));
                                     let _ = tx_message.send(Err(err)).await;
                                     break;
                                 }
@@ -161,6 +174,7 @@ impl WsStream {
                             }
                             Err(err) => {
                                 error!("realtime websocket receive failed: {err}");
+                                    terminal_policy_tx.send_replace(codex_websocket_client::network_policy_denial(&err));
                                 let _ = tx_message.send(Err(err)).await;
                                 break;
                             }
@@ -175,6 +189,7 @@ impl WsStream {
             Self {
                 tx_command,
                 pump_task,
+                terminal_policy_error,
             },
             rx_message,
         )
@@ -186,9 +201,23 @@ impl WsStream {
     ) -> Result<(), WsError> {
         let (tx_result, rx_result) = oneshot::channel();
         if self.tx_command.send(make_command(tx_result)).await.is_err() {
-            return Err(WsError::ConnectionClosed);
+            return Err(self.closed_error());
         }
-        rx_result.await.unwrap_or(Err(WsError::ConnectionClosed))
+        rx_result.await.unwrap_or_else(|_| Err(self.closed_error()))
+    }
+
+    fn closed_error(&self) -> WsError {
+        match *self.terminal_policy_error.borrow() {
+            Some(denied) => Self::policy_error(denied),
+            None => WsError::ConnectionClosed,
+        }
+    }
+
+    fn policy_error(denied: NetworkPolicyDenied) -> WsError {
+        WsError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            denied,
+        ))
     }
 
     async fn send(&self, message: Message) -> Result<(), WsError> {
@@ -480,8 +509,8 @@ impl RealtimeWebsocketWriter {
 
     pub async fn send_payload(&self, payload: String) -> Result<(), ApiError> {
         if self.is_closed.load(Ordering::SeqCst) {
-            return Err(ApiError::Stream(
-                "realtime websocket connection is closed".to_string(),
+            return Err(map_realtime_websocket_connect_error(
+                self.stream.closed_error(),
             ));
         }
 
@@ -489,7 +518,7 @@ impl RealtimeWebsocketWriter {
         self.stream
             .send(Message::Text(payload.into()))
             .await
-            .map_err(|err| ApiError::Stream(format!("failed to send realtime request: {err}")))?;
+            .map_err(map_realtime_websocket_connect_error)?;
         Ok(())
     }
 }
@@ -518,9 +547,7 @@ impl RealtimeWebsocketEvents {
                 Ok(Err(err)) => {
                     self.is_closed.store(true, Ordering::SeqCst);
                     error!("realtime websocket read failed: {err}");
-                    return Err(ApiError::Stream(format!(
-                        "failed to read websocket message: {err}"
-                    )));
+                    return Err(map_realtime_websocket_connect_error(err));
                 }
                 Err(_) => {
                     self.is_closed.store(true, Ordering::SeqCst);
@@ -603,8 +630,16 @@ impl RealtimeWebsocketEvents {
             }
             RealtimeEvent::InputTranscriptDelta(RealtimeTranscriptDelta { delta, .. }) => {
                 let force_new = active_transcript.new_input_entry;
-                append_transcript_delta(&mut active_transcript.entries, "user", delta, force_new);
-                active_transcript.new_input_entry = false;
+                append_transcript_delta(
+                    &mut active_transcript.entries,
+                    "user",
+                    delta,
+                    force_new,
+                    self.event_parser,
+                );
+                if !delta.is_empty() || self.event_parser != RealtimeEventParser::FramelessBidi {
+                    active_transcript.new_input_entry = false;
+                }
             }
             RealtimeEvent::OutputTranscriptDelta(RealtimeTranscriptDelta { delta, .. }) => {
                 let force_new = active_transcript.new_output_entry;
@@ -613,8 +648,11 @@ impl RealtimeWebsocketEvents {
                     "assistant",
                     delta,
                     force_new,
+                    self.event_parser,
                 );
-                active_transcript.new_output_entry = false;
+                if !delta.is_empty() || self.event_parser != RealtimeEventParser::FramelessBidi {
+                    active_transcript.new_output_entry = false;
+                }
             }
             RealtimeEvent::InputTranscriptDone(done) => {
                 let force_new = active_transcript.new_input_entry;
@@ -623,8 +661,10 @@ impl RealtimeWebsocketEvents {
                     "user",
                     &done.text,
                     force_new,
+                    self.event_parser,
                 );
-                active_transcript.new_input_entry = false;
+                active_transcript.new_input_entry =
+                    self.event_parser == RealtimeEventParser::FramelessBidi;
             }
             RealtimeEvent::OutputTranscriptDone(done) => {
                 let force_new = active_transcript.new_output_entry;
@@ -633,8 +673,10 @@ impl RealtimeWebsocketEvents {
                     "assistant",
                     &done.text,
                     force_new,
+                    self.event_parser,
                 );
-                active_transcript.new_output_entry = false;
+                active_transcript.new_output_entry =
+                    self.event_parser == RealtimeEventParser::FramelessBidi;
             }
             RealtimeEvent::HandoffRequested(handoff) => {
                 append_handoff_input(&mut active_transcript.entries, &handoff.input_transcript);
@@ -704,15 +746,23 @@ fn append_transcript_delta(
     role: &str,
     delta: &str,
     force_new: bool,
+    event_parser: RealtimeEventParser,
 ) {
     if delta.is_empty() {
         return;
     }
 
-    if !force_new
-        && let Some(last_entry) = entries.last_mut()
-        && last_entry.role == role
-    {
+    // V3 interleaves the two speakers' transcripts. Legacy protocols retain
+    // adjacent speaker runs and their existing response lifecycle semantics.
+    let entry = match event_parser {
+        RealtimeEventParser::FramelessBidi => {
+            entries.iter_mut().rev().find(|entry| entry.role == role)
+        }
+        RealtimeEventParser::V1 | RealtimeEventParser::RealtimeV2 => {
+            entries.last_mut().filter(|entry| entry.role == role)
+        }
+    };
+    if !force_new && let Some(last_entry) = entry {
         last_entry.text.push_str(delta);
         return;
     }
@@ -728,16 +778,29 @@ fn apply_transcript_done(
     role: &str,
     text: &str,
     force_new: bool,
+    event_parser: RealtimeEventParser,
 ) {
     if text.is_empty() {
         return;
     }
 
-    if !force_new
-        && let Some(last_entry) = entries.last_mut()
-        && last_entry.role == role
-    {
-        last_entry.text = text.to_string();
+    // V3 interleaves the two speakers' transcripts. Legacy protocols retain
+    // adjacent speaker runs and their existing response lifecycle semantics.
+    let entry = match event_parser {
+        RealtimeEventParser::FramelessBidi => {
+            entries.iter_mut().rev().find(|entry| entry.role == role)
+        }
+        RealtimeEventParser::V1 | RealtimeEventParser::RealtimeV2 => {
+            entries.last_mut().filter(|entry| entry.role == role)
+        }
+    };
+    if !force_new && let Some(last_entry) = entry {
+        // A delayed V3 final can arrive after deltas from the next utterance.
+        // Preserve accumulated speech unless the final extends it.
+        if event_parser != RealtimeEventParser::FramelessBidi || text.starts_with(&last_entry.text)
+        {
+            last_entry.text = text.to_string();
+        }
         return;
     }
 
@@ -767,6 +830,7 @@ fn contains_transcript_entry(entries: &[RealtimeTranscriptEntry], role: &str, te
 
 pub struct RealtimeWebsocketClient {
     provider: Provider,
+    http_client_factory: HttpClientFactory,
     webrtc_sideband_base_url: String,
 }
 
@@ -778,9 +842,10 @@ enum RealtimeSessionInitialization {
 }
 
 impl RealtimeWebsocketClient {
-    pub fn new(provider: Provider) -> Self {
+    pub fn new(provider: Provider, http_client_factory: HttpClientFactory) -> Self {
         Self {
             provider,
+            http_client_factory,
             webrtc_sideband_base_url: OPENAI_REALTIME_API_BASE_URL.to_string(),
         }
     }
@@ -879,6 +944,9 @@ impl RealtimeWebsocketClient {
                 .await;
             match result {
                 Ok(connection) => return Ok(connection),
+                Err(err @ ApiError::Transport(codex_http_client::TransportError::Policy(_))) => {
+                    return Err(err);
+                }
                 Err(err) if webrtc_sideband_session_ended(&err) => return Err(err),
                 Err(err) if attempt < self.provider.retry.max_attempts => {
                     let delay = backoff(self.provider.retry.base_delay, attempt + 1);
@@ -962,28 +1030,29 @@ impl RealtimeWebsocketClient {
         info!("connecting realtime websocket: {ws_url}");
         // Realtime websocket TLS should honor the same custom-CA env vars as the rest of Codex's
         // outbound HTTPS and websocket traffic.
-        let connector = maybe_build_rustls_client_config_with_custom_ca()
-            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?
-            .map(tokio_tungstenite::Connector::Rustls);
+        let tls_config = maybe_build_rustls_client_config_with_custom_ca()
+            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
         // A fresh Windows install may not have downloaded the server's trusted root yet.
         // Use platform validation only for system trust, preserving custom CA semantics.
         #[cfg(windows)]
-        let connector = match connector {
-            Some(connector) => Some(connector),
-            None => Some(tokio_tungstenite::Connector::Rustls(
+        let tls_config = match tls_config {
+            Some(tls_config) => Some(tls_config),
+            None => Some(
                 codex_http_client::build_windows_platform_tls_config().map_err(|err| {
                     ApiError::Stream(format!("failed to configure websocket TLS: {err}"))
                 })?,
-            )),
+            ),
         };
-        let (stream, response) = tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            Some(websocket_config()),
-            false,
-            connector,
-        )
-        .await
-        .map_err(map_realtime_websocket_connect_error)?;
+        let tls_mode = match tls_config {
+            Some(tls_config) => WebSocketTlsMode::Rustls(tls_config),
+            None => WebSocketTlsMode::TungsteniteDefault,
+        };
+        let connector = WebSocketConnector::new_with_tls_mode(&self.http_client_factory, tls_mode)
+            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+        let (stream, response) = connector
+            .connect(request, websocket_config())
+            .await
+            .map_err(map_realtime_websocket_connect_error)?;
         info!(
             ws_url = %ws_url,
             status = %response.status(),
@@ -1041,6 +1110,9 @@ fn webrtc_sideband_session_ended(err: &ApiError) -> bool {
 }
 
 fn map_realtime_websocket_connect_error(err: WsError) -> ApiError {
+    if let Some(denied) = codex_websocket_client::network_policy_denial(&err) {
+        return ApiError::Transport(codex_http_client::TransportError::Policy(denied));
+    }
     match err {
         WsError::Http(response) => ApiError::Api {
             status: response.status(),
@@ -1213,10 +1285,15 @@ fn normalize_realtime_path(url: &mut Url, event_parser: RealtimeEventParser) {
 }
 
 #[cfg(test)]
+#[path = "transcript_tests.rs"]
+mod transcript_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::endpoint::realtime_websocket::protocol::RealtimeTranscriptEntry;
     use crate::provider::RetryConfig;
+    use codex_http_client::OutboundProxyPolicy::ReqwestDefault;
     use codex_protocol::protocol::RealtimeHandoffRequested;
     use codex_protocol::protocol::RealtimeInputAudioSpeechStarted;
     use codex_protocol::protocol::RealtimeNoopRequested;
@@ -1237,6 +1314,10 @@ mod tests {
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::tungstenite::Message;
     use tungstenite::protocol::CloseFrame;
+
+    fn test_client(provider: Provider) -> RealtimeWebsocketClient {
+        RealtimeWebsocketClient::new(provider, HttpClientFactory::new(ReqwestDefault))
+    }
 
     #[test]
     fn parse_session_updated_event() {
@@ -1484,6 +1565,59 @@ mod tests {
             TestRealtimeTermination::EventChannelEnd => drop(tx_message),
         }
         events.next_event().await.is_err()
+    }
+
+    #[tokio::test]
+    async fn writer_policy_failure_reaches_realtime_events() {
+        use codex_http_client::DestinationPolicy::Unrestricted;
+        use codex_http_client::NetworkPolicyController;
+        use codex_http_client::NetworkPolicyDenied::Revoked;
+        use codex_http_client::TransportError::Policy;
+        use codex_websocket_client::network_policy_denial;
+        use tokio::time::timeout;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let (writing, started) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let socket = accept_async(socket).await.unwrap();
+            socket.get_ref().peek(&mut [0]).await.unwrap();
+            writing.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let controller = NetworkPolicyController::default();
+        let policy = controller.policy();
+        controller.publish(policy.revision(), Unrestricted);
+        let factory = HttpClientFactory::new(ReqwestDefault).with_network_policy(policy.clone());
+        let connector = WebSocketConnector::new(&factory).unwrap();
+        let request = url.into_client_request().unwrap();
+        let connected = connector.connect(request, websocket_config());
+        let (socket, _) = connected.await.unwrap();
+        let (stream, rx_message) = WsStream::new(socket);
+        let parser = RealtimeEventParser::V1;
+        let transcript = RealtimeTranscriptState::default();
+        let connection = RealtimeWebsocketConnection::new(stream, rx_message, parser, transcript);
+        let stream = Arc::clone(&connection.writer.stream);
+        let payload = Message::Binary(vec![0; 8 * 1024 * 1024].into());
+        let writer = tokio::spawn(async move {
+            loop {
+                if let Err(error) = stream.send(payload.clone()).await {
+                    return error;
+                }
+            }
+        });
+        let deadline = Duration::from_secs(/*secs*/ 5);
+        timeout(deadline, started).await.unwrap().unwrap();
+        policy.invalidate();
+        let writer = timeout(deadline, writer).await.unwrap();
+        let error = writer.unwrap();
+        assert_eq!(network_policy_denial(&error), Some(Revoked));
+        let next = timeout(deadline, connection.next_event());
+        let error = next.await.unwrap().unwrap_err();
+        assert!(matches!(error, ApiError::Transport(Policy(Revoked))));
+        assert!(connection.next_event().await.unwrap().is_none());
+        server.abort();
     }
 
     #[tokio::test]
@@ -2175,7 +2309,7 @@ mod tests {
 
     #[test]
     fn webrtc_frameless_sideband_ignores_provider_base_url() {
-        let client = RealtimeWebsocketClient::new(Provider {
+        let client = test_client(Provider {
             name: "chatgpt".to_string(),
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             query_params: None,
@@ -2385,7 +2519,7 @@ mod tests {
             },
             stream_idle_timeout: Duration::from_secs(5),
         };
-        let client = RealtimeWebsocketClient::new(provider);
+        let client = test_client(provider);
         let connection = client
             .connect(
                 RealtimeSessionConfig {
@@ -2711,7 +2845,7 @@ mod tests {
             },
             stream_idle_timeout: Duration::from_secs(5),
         };
-        let client = RealtimeWebsocketClient::new(provider);
+        let client = test_client(provider);
         let connection = client
             .connect(
                 RealtimeSessionConfig {
@@ -2838,7 +2972,7 @@ mod tests {
             },
             stream_idle_timeout: Duration::from_secs(5),
         };
-        let client = RealtimeWebsocketClient::new(provider);
+        let client = test_client(provider);
         let connection = client
             .connect(
                 RealtimeSessionConfig {
@@ -2944,7 +3078,7 @@ mod tests {
             },
             stream_idle_timeout: Duration::from_secs(5),
         };
-        let client = RealtimeWebsocketClient::new(provider);
+        let client = test_client(provider);
         let connection = client
             .connect(
                 RealtimeSessionConfig {
@@ -3036,7 +3170,7 @@ mod tests {
             },
             stream_idle_timeout: Duration::from_secs(5),
         };
-        let client = RealtimeWebsocketClient::new(provider);
+        let client = test_client(provider);
         let connection = client
             .connect(
                 RealtimeSessionConfig {

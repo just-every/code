@@ -18,7 +18,13 @@ const REALTIME_STOP_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 1);
 
 impl App {
     pub(super) async fn stop_realtime_conversation(&mut self, app_server: &mut AppServerSession) {
-        let Some(thread_id) = self.chat_widget.reset_realtime_conversation() else {
+        let thread_id = self
+            .background_voice
+            .as_mut()
+            .and_then(|owner| owner.reset_realtime_conversation())
+            .or_else(|| self.chat_widget.reset_realtime_conversation());
+        self.retire_background_voice();
+        let Some(thread_id) = thread_id else {
             return;
         };
         match tokio::time::timeout(
@@ -39,14 +45,8 @@ impl App {
 
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
         self.stop_realtime_conversation(app_server).await;
-        self.shutdown_side_threads(app_server).await;
-        if let Some(thread_id) = self.chat_widget.thread_id() {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
-                tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
-            }
-            self.abort_thread_event_listener(thread_id);
-            self.pending_server_profiles.remove(&thread_id);
-        }
+        self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
+            .await;
     }
 
     pub(super) async fn shutdown_side_threads(&mut self, app_server: &mut AppServerSession) {
@@ -397,7 +397,7 @@ impl App {
             ThreadInteractiveRequest::Approval(request) => {
                 self.render_inactive_patch_preview(&request);
                 self.chat_widget.push_approval_request(request);
-                if self.startup_protected_input_boundary && !self.chat_widget.has_active_view() {
+                if self.startup_protected_input_boundary && !self.chat_widget.has_active_modal() {
                     self.startup_pending_protected_request = true;
                 }
             }
@@ -762,7 +762,14 @@ impl App {
                             )
                             .await
                         {
-                            Ok(_) => return Ok(true),
+                            Ok(_) => {
+                                if self.active_thread_id == Some(thread_id)
+                                    && self.chat_widget.thread_id() == Some(thread_id)
+                                {
+                                    crate::startup_recovery::acknowledged(client_user_message_id);
+                                }
+                                return Ok(true);
+                            }
                             Err(error) => {
                                 if let Some(turn_error) =
                                     active_turn_not_steerable_turn_error(&error)
@@ -882,6 +889,7 @@ impl App {
                     if self.active_thread_id == Some(thread_id)
                         && self.chat_widget.thread_id() == Some(thread_id)
                     {
+                        crate::startup_recovery::acknowledged(client_user_message_id);
                         self.chat_widget
                             .record_safety_buffering_turn(response.turn.id, op);
                     }
@@ -939,7 +947,7 @@ impl App {
                     .config_ref()
                     .experimental_realtime_ws_model
                     .clone();
-                let voices = self.realtime_voices(app_server).await;
+                let voices = self.realtime_voices(app_server).await?;
                 let voice = self.effective_realtime_voice(app_server, &voices).await?;
                 app_server
                     .thread_realtime_start(
@@ -1136,6 +1144,7 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        self.deliver_background_voice_notification(thread_id, &notification);
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
         }
@@ -1253,7 +1262,13 @@ impl App {
                 guard.push_notification_ref(&notification);
                 Some(notification)
             } else {
-                self.retain_inactive_realtime_transcript(thread_id, &notification);
+                if self
+                    .background_voice
+                    .as_ref()
+                    .is_none_or(|owner| owner.thread_id() != Some(thread_id))
+                {
+                    self.retain_inactive_realtime_transcript(thread_id, &notification);
+                }
                 guard.push_notification(notification);
                 None
             };
@@ -1565,7 +1580,9 @@ impl App {
             self.chat_widget.set_token_info(/*info*/ None);
         }
         match presentation {
-            ThreadAttachPresentation::Fresh | ThreadAttachPresentation::SessionLineage => {
+            ThreadAttachPresentation::Fresh
+            | ThreadAttachPresentation::FreshWithDraft
+            | ThreadAttachPresentation::SessionLineage => {
                 self.chat_widget.handle_thread_session(session);
             }
         }
@@ -1593,6 +1610,7 @@ impl App {
             &replayed_final_items,
             retained_assistant_captions,
         );
+        self.restore_voice_owner_after_replay();
         let pending = std::mem::take(&mut self.pending_primary_events);
         for pending_event in pending {
             match pending_event {
@@ -1878,9 +1896,6 @@ impl App {
         }
         for (event, changes) in snapshot.events.into_iter().zip(request_changes) {
             reasoning_replay.before_event(&event, &mut self.chat_widget);
-            if suppress_replay_notices && replay_filter::event_is_notice(&event) {
-                continue;
-            }
             match (event, changes) {
                 (ThreadBufferedEvent::Request(request), Some(changes)) => {
                     self.handle_file_change_request(*request, changes)
@@ -1905,6 +1920,7 @@ impl App {
             &replayed_final_items,
             retained_assistant_captions,
         );
+        self.restore_voice_owner_after_replay();
         self.chat_widget
             .set_queue_autosend_suppressed(/*suppressed*/ false);
         self.chat_widget
@@ -2007,8 +2023,13 @@ impl App {
         match event {
             ThreadBufferedEvent::Notification(notification) => {
                 self.cache_collab_receiver_threads_for_notification(notification.as_ref());
+                let tip_ready = self.turn_tips.observe(&notification, Instant::now());
                 self.chat_widget
                     .handle_server_notification(*notification, /*replay_kind*/ None);
+                // History cells queued by completion must be applied before anchoring its tip.
+                if let Some(event) = tip_ready {
+                    self.app_event_tx.send(event);
+                }
             }
             ThreadBufferedEvent::Request(request) => {
                 if self
@@ -2021,7 +2042,7 @@ impl App {
                         .handle_server_request(*request, /*replay_kind*/ None);
                     if may_open_protected_view
                         && self.startup_protected_input_boundary
-                        && !self.chat_widget.has_active_view()
+                        && !self.chat_widget.has_active_modal()
                     {
                         self.startup_pending_protected_request = true;
                     }
@@ -2040,6 +2061,7 @@ impl App {
     }
 
     pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
+        self.turn_tips.dismiss();
         match event {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
@@ -2051,7 +2073,7 @@ impl App {
                     .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
                 if may_open_protected_view
                     && self.startup_protected_input_boundary
-                    && !self.chat_widget.has_active_view()
+                    && !self.chat_widget.has_active_modal()
                 {
                     self.startup_pending_protected_request = true;
                 }
@@ -2147,7 +2169,7 @@ impl App {
         } else {
             None
         };
-        let had_active_view = self.chat_widget.has_active_view();
+        let had_active_modal = self.chat_widget.has_active_modal();
         self.handle_thread_event_now_recovering_file_changes(event)
             .await;
         if let Some(user_message) = automatic_title_user_message
@@ -2161,8 +2183,8 @@ impl App {
                 super::thread_title::thread_title_prompt(&user_message),
             );
         }
-        if !had_active_view
-            && self.chat_widget.has_active_view()
+        if !had_active_modal
+            && self.chat_widget.has_active_modal()
             && self.startup_protected_input_boundary
         {
             self.chat_widget.pre_draw_tick();

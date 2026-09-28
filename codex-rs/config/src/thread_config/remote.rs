@@ -173,6 +173,7 @@ fn model_provider_from_proto(
     let info = ModelProviderInfo {
         name: provider.name,
         base_url: provider.base_url,
+        model_catalog_url: provider.model_catalog_url.map(Into::into),
         env_key: provider.env_key,
         env_key_instructions: provider.env_key_instructions,
         experimental_bearer_token: provider.experimental_bearer_token.map(Into::into),
@@ -180,6 +181,7 @@ fn model_provider_from_proto(
             .auth
             .map(model_provider_auth_from_proto)
             .transpose()?,
+        gateway_oauth: None,
         aws: None,
         wire_api,
         query_params: provider.query_params.map(redacted_string_map),
@@ -192,6 +194,7 @@ fn model_provider_from_proto(
         requires_openai_auth: provider.requires_openai_auth,
         supports_websockets: provider.supports_websockets,
         supports_standalone_web_search: provider.supports_standalone_web_search,
+        include_internal_metadata: false,
     };
     Ok((id, info))
 }
@@ -204,10 +207,12 @@ fn model_provider_to_proto(
     let ModelProviderInfo {
         name,
         base_url,
+        model_catalog_url,
         env_key,
         env_key_instructions,
         experimental_bearer_token,
         auth,
+        gateway_oauth: _,
         aws: _,
         wire_api,
         query_params,
@@ -220,12 +225,14 @@ fn model_provider_to_proto(
         requires_openai_auth,
         supports_websockets,
         supports_standalone_web_search,
+        include_internal_metadata: _,
     } = provider;
 
     proto::ModelProvider {
         id: id.into(),
         name,
         base_url,
+        model_catalog_url: model_catalog_url.map(RedactedString::into_inner),
         env_key,
         env_key_instructions,
         experimental_bearer_token: experimental_bearer_token.map(RedactedString::into_inner),
@@ -471,6 +478,9 @@ mod tests {
                             id: "local".to_string(),
                             name: "Local".to_string(),
                             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+                            model_catalog_url: Some(
+                                "http://127.0.0.1:8061/api/codex/models".to_string(),
+                            ),
                             env_key: None,
                             env_key_instructions: None,
                             experimental_bearer_token: None,
@@ -541,6 +551,7 @@ mod tests {
         ModelProviderInfo {
             name: "Local".to_string(),
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
+            model_catalog_url: Some("http://127.0.0.1:8061/api/codex/models".into()),
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -568,7 +579,9 @@ mod tests {
             requires_openai_auth: false,
             supports_websockets: true,
             supports_standalone_web_search: true,
+            gateway_oauth: None,
             aws: None,
+            include_internal_metadata: false,
         }
     }
 

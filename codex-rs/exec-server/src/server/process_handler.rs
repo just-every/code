@@ -1,7 +1,7 @@
 use crate::process_telemetry::ProcessTelemetry;
 use codex_exec_server_protocol::JSONRPCErrorError;
 
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::local_process::LocalProcess;
 use crate::protocol::ExecParams;
 use crate::protocol::ExecResponse;
@@ -25,7 +25,7 @@ impl ProcessHandler {
     pub(crate) fn new(
         notifications: RpcNotificationSender,
         telemetry: ExecServerTelemetry,
-        runtime_paths: ExecServerRuntimePaths,
+        runtime_paths: ExecServerRuntimeOptions,
     ) -> Self {
         Self {
             process: LocalProcess::new(notifications, telemetry, runtime_paths),

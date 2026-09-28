@@ -1,5 +1,6 @@
 use super::*;
 use codex_core::exec_env::inject_apply_patch_env;
+use codex_core::windows_sandbox::local_binding_policy_for_sandbox;
 use codex_core::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
 
@@ -264,7 +265,11 @@ impl CommandExecRequestProcessor {
                 .start_proxy(
                     &network_proxy_permission_profile,
                     managed_proxy_routing_for_windows_sandbox(
-                        self.config.permissions.windows_sandbox_type,
+                        self.config.effective_local_windows_sandbox_type(),
+                    ),
+                    local_binding_policy_for_sandbox(
+                        self.config.effective_local_windows_sandbox_type(),
+                        Some(std::env::consts::OS),
                     ),
                     /*policy_decider*/ None,
                     /*blocked_request_observer*/ None,
@@ -294,10 +299,6 @@ impl CommandExecRequestProcessor {
             network_environment_id: None,
             sandbox_permissions: SandboxPermissions::UseDefault,
             windows_sandbox_level,
-            windows_sandbox_private_desktop: self
-                .config
-                .permissions
-                .windows_sandbox_private_desktop,
             justification: None,
             arg0: None,
         };
@@ -320,7 +321,7 @@ impl CommandExecRequestProcessor {
             windows_sandbox_workspace_roots.as_slice(),
             &codex_linux_sandbox_exe,
             &self.arg0_paths.codex_self_exe,
-            self.config.permissions.windows_sandbox_type,
+            self.config.effective_local_windows_sandbox_type(),
             use_legacy_landlock,
         )
         .map_err(|err| internal_error(format!("exec failed: {err}")))?;

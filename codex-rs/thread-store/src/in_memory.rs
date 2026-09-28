@@ -131,7 +131,7 @@ mod tests {
                 thread_id,
                 turn_id: None,
                 include_archived: true,
-                cursor: None,
+                position: None,
                 page_size: 10,
                 sort_direction: SortDirection::Asc,
                 sort_key: ItemSortKey::CreatedAtOrdinal,
@@ -165,6 +165,8 @@ mod tests {
         ] {
             store
                 .create_thread(CreateThreadParams {
+                    creator_user_id: None,
+                    creator_account_id: None,
                     session_id: thread_id.into(),
                     thread_id,
                     extra_config: None,
@@ -325,9 +327,12 @@ mod tests {
         let rollout_path = PathBuf::from("/tmp/paginated-thread.jsonl");
 
         store
-            .create_thread(create_thread_params(thread_id, ThreadHistoryMode::Legacy))
+            .create_thread(create_thread_params(
+                thread_id,
+                ThreadHistoryMode::Paginated,
+            ))
             .await
-            .expect("create legacy thread");
+            .expect("create paginated thread");
         store
             .resume_thread(ResumeThreadParams {
                 thread_id,
@@ -338,22 +343,6 @@ mod tests {
             })
             .await
             .expect("register rollout path");
-        {
-            let mut state = store.state.lock().await;
-            state
-                .created_threads
-                .get_mut(&thread_id)
-                .expect("created thread")
-                .history_mode = ThreadHistoryMode::Paginated;
-            let Some(RolloutItem::SessionMeta(meta_line)) = state
-                .histories
-                .get_mut(&thread_id)
-                .and_then(|history| history.first_mut())
-            else {
-                panic!("canonical session meta");
-            };
-            meta_line.meta.history_mode = ThreadHistoryMode::Paginated;
-        }
 
         let thread = store
             .read_thread(ReadThreadParams {
@@ -416,15 +405,6 @@ mod tests {
             })
             .await
             .expect("resume should succeed");
-        assert_paginated_threads_unsupported(
-            store
-                .create_thread(create_thread_params(
-                    ThreadId::default(),
-                    ThreadHistoryMode::Paginated,
-                ))
-                .await
-                .expect_err("paginated create should fail"),
-        );
     }
 
     #[tokio::test]
@@ -459,6 +439,8 @@ mod tests {
         history_mode: ThreadHistoryMode,
     ) -> CreateThreadParams {
         CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,
@@ -589,7 +571,6 @@ impl InMemoryThreadStore {
     }
 
     async fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreResult<()> {
-        reject_paginated_history_mode(params.history_mode)?;
         let mut state = self.state.lock().await;
         state.calls.create_thread += 1;
         let session_meta = SessionMeta {
@@ -606,6 +587,8 @@ impl InMemoryThreadStore {
             agent_role: params.source.get_agent_role(),
             agent_path: params.source.get_agent_path().map(Into::into),
             originator: params.originator.clone(),
+            creator_user_id: params.creator_user_id.clone(),
+            creator_account_id: params.creator_account_id.clone(),
             source: params.source.clone(),
             thread_source: params.thread_source.clone(),
             model_provider: Some(params.metadata.model_provider.clone()),

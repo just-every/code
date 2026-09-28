@@ -16,6 +16,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::extensions::ExtensionsConfig;
@@ -102,6 +103,19 @@ fn assert_turn_id(body: &Value, key: &str, expected: Option<&str>) -> Result<()>
 
 #[derive(Debug, Clone)]
 pub struct ResponsesRequest(wiremock::Request);
+
+pub async fn received_responses_requests(server: &MockServer) -> Vec<ResponsesRequest> {
+    server
+        .received_requests()
+        .await
+        .expect("wiremock request recording is enabled")
+        .into_iter()
+        .filter(|request| {
+            request.method.as_str() == "POST" && request.url.path().ends_with("/responses")
+        })
+        .map(ResponsesRequest)
+        .collect()
+}
 
 fn is_zstd_encoding(value: &str) -> bool {
     value
@@ -577,6 +591,7 @@ pub struct WebSocketTestServer {
     connections: Arc<Mutex<Vec<Vec<WebSocketRequest>>>>,
     handshakes: Arc<Mutex<Vec<WebSocketHandshake>>>,
     request_log_updated: Arc<Notify>,
+    closed_connections: watch::Receiver<usize>,
     shutdown: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -598,6 +613,16 @@ impl WebSocketTestServer {
         connections.first().cloned().unwrap_or_default()
     }
 
+    pub async fn wait_for_connections(&self, expected: usize, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            while self.connections.lock().unwrap().len() < expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     pub async fn wait_for_request(
         &self,
         connection_index: usize,
@@ -617,6 +642,17 @@ impl WebSocketTestServer {
             }
             notified.await;
         }
+    }
+
+    /// Waits for the server to finish reading any frames preceding the socket close.
+    pub async fn wait_for_closed_connections(&self, expected: usize, timeout: Duration) -> bool {
+        let mut closed_connections = self.closed_connections.clone();
+        tokio::time::timeout(
+            timeout,
+            closed_connections.wait_for(|count| *count >= expected),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
     }
 
     pub fn handshakes(&self) -> Vec<WebSocketHandshake> {
@@ -1206,6 +1242,7 @@ pub async fn start_websocket_server_with_headers(
     let connections_log = Arc::new(Mutex::new(Vec::new()));
     let handshakes_log = Arc::new(Mutex::new(Vec::new()));
     let request_log_updated = Arc::new(Notify::new());
+    let (closed_tx, closed_connections) = watch::channel(0);
     let requests = Arc::clone(&connections_log);
     let handshakes = Arc::clone(&handshakes_log);
     let request_log = Arc::clone(&request_log_updated);
@@ -1287,7 +1324,11 @@ pub async fn start_websocket_server_with_headers(
             };
             let close_after_requests = connection.close_after_requests;
             for request_events in connection.requests {
-                let Some(Ok(message)) = ws_stream.next().await else {
+                let message = tokio::select! {
+                    _ = &mut shutdown_rx => return,
+                    message = ws_stream.next() => message,
+                };
+                let Some(Ok(message)) = message else {
                     break;
                 };
                 if let Some(body) = parse_ws_request_body(message) {
@@ -1351,6 +1392,7 @@ pub async fn start_websocket_server_with_headers(
 
             if close_after_requests {
                 let _ = ws_stream.close(None).await;
+                closed_tx.send_modify(|count| *count += 1);
             } else {
                 let _ = shutdown_rx.await;
                 return;
@@ -1367,6 +1409,7 @@ pub async fn start_websocket_server_with_headers(
         connections: connections_log,
         handshakes: handshakes_log,
         request_log_updated,
+        closed_connections,
         shutdown: shutdown_tx,
         task,
     }

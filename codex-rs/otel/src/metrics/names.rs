@@ -1,6 +1,11 @@
+use std::sync::LazyLock;
+
 pub const TOOL_CALL_COUNT_METRIC: &str = "codex.tool.call";
 pub const TOOL_CALL_DURATION_METRIC: &str = "codex.tool.call.duration_ms";
 pub const TOOL_CALL_UNIFIED_EXEC_METRIC: &str = "codex.tool.unified_exec";
+pub const MULTI_AGENT_SPAWN_FAILURE_METRIC: &str = "codex.multi_agent.spawn.failure";
+pub const MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC: &str =
+    "codex.multi_agent.spawn.phase.duration_ms";
 pub const ARTIFACT_OPERATION_STARTED_METRIC: &str = "codex.artifact.operation.started";
 pub const ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC: &str =
     "codex.artifact.operation.expected_output_count";
@@ -68,3 +73,29 @@ pub const THREAD_SKILLS_KEPT_TOTAL_METRIC: &str = "codex.thread.skills.kept_tota
 pub const THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC: &str =
     "codex.thread.skills.description_truncated_chars";
 pub const THREAD_SKILLS_TRUNCATED_METRIC: &str = "codex.thread.skills.truncated";
+// Tools measure the rendered block; kind=snapshot|delta distinguishes full catalogs from updates.
+pub const THREAD_TOOLS_NAMESPACES_TOTAL_METRIC: &str = "codex.thread.tools.namespaces_total";
+pub const THREAD_TOOLS_FRAGMENT_BYTES_METRIC: &str = "codex.thread.tools.fragment_bytes";
+
+/// Logarithmic boundaries up to 32,768 for tools bytes and namespace counts.
+pub static THREAD_TOOLS_METRIC_BUCKETS: LazyLock<[f64; 511]> =
+    LazyLock::new(|| context_log_buckets(/*max_exponent*/ 15.0));
+
+pub static THREAD_SKILLS_COUNT_METRIC_BUCKETS: LazyLock<[f64; 513]> =
+    LazyLock::new(|| std::array::from_fn(|index| index as f64));
+
+/// Logarithmic boundaries up to 131,072 removed description characters.
+pub static THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_BUCKETS: LazyLock<[f64; 511]> =
+    LazyLock::new(|| context_log_buckets(/*max_exponent*/ 17.0));
+
+pub const THREAD_SKILLS_TRUNCATED_BUCKETS: &[f64] = &[0.0, 1.0];
+
+fn context_log_buckets(max_exponent: f64) -> [f64; 511] {
+    std::array::from_fn(|index| {
+        if index == 0 {
+            0.0
+        } else {
+            2.0_f64.powf(max_exponent * (index - 1) as f64 / 509.0)
+        }
+    })
+}

@@ -2,7 +2,10 @@
 //! so PID reuse can never redirect forced termination to a different process.
 //! Managed servers must not elevate ordinary clients sharing the account's socket.
 //! Installer jobs contain extraction processes when an update is cancelled.
+//! Detached launches stop the launcher's original stdio handles from propagating.
+//! Launch probes distinguish job restrictions from other failures without running the binary.
 
+use std::fmt;
 use std::io;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
@@ -14,9 +17,14 @@ use std::process::Stdio;
 
 use anyhow::Context;
 use anyhow::Result;
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
 use windows_sys::Win32::Foundation::FILETIME;
+use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::SetHandleInformation;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::Security::GetTokenInformation;
@@ -28,7 +36,6 @@ use windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY;
 use windows_sys::Win32::Storage::FileSystem::LockFileEx;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
-use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
@@ -48,6 +55,38 @@ use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+pub(super) fn spawn_without_inheriting_stdio(
+    command: &mut tokio::process::Command,
+) -> Result<tokio::process::Child> {
+    // The daemon must not inherit the launcher's output pipes: callers wait for
+    // them to close after the launcher exits. Leave the flags cleared so concurrent
+    // launches cannot inherit them either; Rust duplicates the child's chosen stdio.
+    for (name, handle) in [
+        ("stdin", io::stdin().as_raw_handle()),
+        ("stdout", io::stdout().as_raw_handle()),
+        ("stderr", io::stderr().as_raw_handle()),
+    ] {
+        if handle.is_null() || handle as isize == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: these are borrowed standard handles; changing the inherit
+        // flag neither closes them nor changes their read/write access.
+        if unsafe {
+            SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, /*dwflags*/ 0)
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // An already-closed handle cannot be inherited.
+            if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) {
+                continue;
+            }
+            return Err(error)
+                .with_context(|| format!("failed to clear launcher {name} inheritance"));
+        }
+    }
+    Ok(command.spawn()?)
+}
 
 pub(crate) fn ensure_not_elevated() -> Result<()> {
     let mut token = 0;
@@ -77,32 +116,44 @@ pub(crate) fn ensure_not_elevated() -> Result<()> {
     Ok(())
 }
 
-// Probe the actual child association: escaping an inner job can leave an outer
-// job attached. Suspend the image so no application code runs before cleanup.
+/// A launch that only fails when asked to leave the launcher's Windows job.
+/// Automatic CLI startup may use its embedded server; lifecycle operations
+/// must still return this error before stopping an existing daemon.
+#[derive(Debug)]
+pub struct DetachedLaunchRestricted;
+
+impl fmt::Display for DetachedLaunchRestricted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "this Windows launcher prevents background processes from outliving it (for example, cargo run); build and run codex.exe directly to use the background server",
+        )
+    }
+}
+
+// Check that breakaway launch is permitted before stopping an existing daemon.
+// An outer system job may remain attached; membership alone does not establish
+// whether it will terminate the daemon. Suspend the probe before cleanup.
 pub(crate) fn ensure_detached_launch(executable: &Path) -> Result<()> {
-    let mut child = Command::new(executable)
-        .creation_flags(CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+    let mut command = Command::new(executable);
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .context("cannot launch detached daemon; existing daemon was not stopped")?;
-    let mut in_job = 0;
-    let result = if unsafe {
-        IsProcessInJob(
-            child.as_raw_handle() as _,
-            /*jobhandle*/ 0,
-            &mut in_job,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error()).context("failed to verify daemon launch capability")
-    } else if in_job != 0 {
-        Err(anyhow::anyhow!(
-            "host Job Object prevents daemon detachment; start from a host that allows breakaway"
-        ))
-    } else {
-        Ok(())
+        .creation_flags(CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+    let (mut child, launch_result) = match command.spawn() {
+        Ok(child) => (child, Ok(())),
+        Err(err) if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            // Access denied can also mean the file cannot be executed. Only
+            // classify a job restriction if removing breakaway makes it work.
+            // This diagnostic child stays suspended and is always reaped.
+            command.creation_flags(CREATE_SUSPENDED | DETACHED_PROCESS);
+            let child = match command.spawn() {
+                Ok(child) => child,
+                Err(_) => return Err(err).context("cannot launch detached daemon"),
+            };
+            (child, Err(err).context(DetachedLaunchRestricted))
+        }
+        Err(err) => return Err(err).context("cannot launch detached daemon"),
     };
     child
         .kill()
@@ -110,7 +161,7 @@ pub(crate) fn ensure_detached_launch(executable: &Path) -> Result<()> {
     child
         .wait()
         .context("failed to reap suspended launch probe")?;
-    result
+    launch_result
 }
 
 pub(super) struct Process(OwnedHandle);
@@ -168,29 +219,6 @@ impl Process {
             WAIT_OBJECT_0 => Ok(false),
             _ => Err(io::Error::last_os_error()).context("failed to wait for daemon process"),
         }
-    }
-
-    pub(super) fn ensure_detached(&self) -> Result<()> {
-        let mut in_job = 0;
-        if unsafe {
-            IsProcessInJob(
-                self.0.as_raw_handle() as _,
-                /*jobhandle*/ 0,
-                &mut in_job,
-            )
-        } == 0
-        {
-            let error = io::Error::last_os_error();
-            self.terminate()?;
-            return Err(error).context("failed to verify daemon detachment");
-        }
-        if in_job != 0 {
-            self.terminate()?;
-            anyhow::bail!(
-                "host Job Object prevents daemon detachment; start from a host that allows breakaway"
-            );
-        }
-        Ok(())
     }
 
     pub(super) fn terminate(&self) -> Result<()> {

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -14,6 +13,8 @@ use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -27,8 +28,8 @@ use crate::tools::router::tool_log_payload;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
 use codex_analytics::ControlToolCallStatus;
-use codex_extension_api::AllowedTools;
 use codex_extension_api::ToolCallOutcome;
+use codex_extension_api::ToolPolicy;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -65,7 +66,10 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     }
 
     /// Returns lazily cached Code Mode definitions owned by this runtime.
-    fn cached_code_mode_definitions(&self) -> Option<&[codex_code_mode::ToolDefinition]> {
+    fn cached_code_mode_definitions(
+        &self,
+        _code_mode_input_schema_max_bytes: Option<usize>,
+    ) -> Option<&[codex_code_mode::ToolDefinition]> {
         None
     }
 
@@ -199,14 +203,13 @@ impl AnyToolResult {
             result,
             ..
         } = self;
+        let history_truncation_token_limit = result.fallback_token_limit_override();
         ResponseItemEnvelope {
             item: result.to_response_item(&call_id, &payload).into(),
-            metadata: result
-                .fallback_token_limit_override()
-                .map(|limit| CodexHarnessMetadata {
-                    history_truncation_token_limit: Some(limit),
-                    ..Default::default()
-                }),
+            metadata: history_truncation_token_limit.map(|limit| CodexHarnessMetadata {
+                history_truncation_token_limit: Some(limit),
+                ..Default::default()
+            }),
         }
     }
 
@@ -292,13 +295,13 @@ pub(crate) struct RegisteredTool {
 pub struct ToolRegistry {
     tools: IndexMap<ToolName, RegisteredTool>,
     first_collision: Option<ToolName>,
-    pub(crate) allowed_tools: Option<Arc<AllowedTools>>,
+    pub(crate) tool_policy: Arc<ToolPolicy>,
 }
 
 impl ToolRegistry {
-    pub(crate) fn with_allowed_tools(allowed_tools: Option<Arc<AllowedTools>>) -> Self {
+    pub(crate) fn with_tool_policy(tool_policy: Arc<ToolPolicy>) -> Self {
         Self {
-            allowed_tools,
+            tool_policy,
             ..Self::default()
         }
     }
@@ -339,11 +342,7 @@ impl ToolRegistry {
         exposure: ToolExposure,
     ) {
         let tool_name = runtime.tool_name().with_default_namespace();
-        if self
-            .allowed_tools
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&tool_name))
-        {
+        if !self.tool_policy.allows(&tool_name) {
             return;
         }
         match self.tools.entry(tool_name) {
@@ -359,11 +358,7 @@ impl ToolRegistry {
 
     pub(crate) fn prepend_trusted(&mut self, runtime: Arc<dyn CoreToolRuntime>) {
         let tool_name = runtime.tool_name().with_default_namespace();
-        if self
-            .allowed_tools
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&tool_name))
-        {
+        if !self.tool_policy.allows(&tool_name) {
             return;
         }
         if self.tools.contains_key(&tool_name) {
@@ -387,11 +382,7 @@ impl ToolRegistry {
         exposure: ToolExposure,
     ) -> bool {
         let tool_name = runtime.tool_name().with_default_namespace();
-        if self
-            .allowed_tools
-            .as_ref()
-            .is_some_and(|allowed| !allowed.contains(&tool_name))
-        {
+        if !self.tool_policy.allows(&tool_name) {
             return false;
         }
         if tool_name.is_default_namespace()
@@ -441,6 +432,13 @@ impl ToolRegistry {
 
     pub(crate) fn entries_mut(&mut self) -> impl Iterator<Item = &mut RegisteredTool> {
         self.tools.values_mut()
+    }
+
+    /// Returns configured MCP server names and their registered callable namespaces.
+    pub(crate) fn mcp_namespaces(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.tools.iter().filter_map(|(name, tool)| {
+            Some((tool.runtime.mcp_server_name()?, name.namespace.as_deref()?))
+        })
     }
 
     pub(crate) fn deferred_tool_namespaces(&self) -> BTreeMap<String, String> {
@@ -526,14 +524,18 @@ impl ToolRegistry {
         clippy::await_holding_invalid_type,
         reason = "tool dispatch must keep active-turn accounting atomic"
     )]
-    pub(crate) async fn dispatch_any_with_terminal_outcome(
+    pub(crate) async fn dispatch_any_with_state(
         &self,
         mut invocation: ToolInvocation,
-        terminal_outcome_reached: Option<Arc<AtomicBool>>,
+        call_state: Option<Arc<ToolCallState>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
-        let otel = invocation.step_context.session_telemetry.clone();
+        let otel = invocation
+            .step_context
+            .session_telemetry
+            .clone()
+            .with_product_sku(invocation.turn.config.apps_mcp_product_sku.as_deref());
         // TODO(anp): Reconcile these tags with TurnEnvironment::sandbox_context
         // instead of reporting the thread-wide backend for environment-scoped tools.
         let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;
@@ -617,7 +619,7 @@ impl ToolRegistry {
                     dispatch_trace.record_failed(&err);
                     notify_tool_finish_if_unclaimed(
                         &invocation,
-                        terminal_outcome_reached.as_deref(),
+                        call_state.as_deref(),
                         ToolCallOutcome::Blocked,
                     )
                     .await;
@@ -637,7 +639,7 @@ impl ToolRegistry {
                         dispatch_trace.record_failed(&err);
                         notify_tool_finish_if_unclaimed(
                             &invocation,
-                            terminal_outcome_reached.as_deref(),
+                            call_state.as_deref(),
                             ToolCallOutcome::Failed {
                                 handler_executed: false,
                             },
@@ -684,7 +686,7 @@ impl ToolRegistry {
                 log_payload.as_ref(),
                 &tool_result_tags,
                 &extra_trace_fields,
-                || handle_any_tool(tool.as_ref(), invocation.clone()),
+                || handle_any_tool(tool.as_ref(), invocation.clone(), call_state.as_deref()),
                 |result| {
                     (
                         result.result.log_output(),
@@ -745,12 +747,8 @@ impl ToolRegistry {
                 handler_executed: true,
             },
         };
-        notify_tool_finish_if_unclaimed(
-            &invocation,
-            terminal_outcome_reached.as_deref(),
-            lifecycle_outcome,
-        )
-        .await;
+        notify_tool_finish_if_unclaimed(&invocation, call_state.as_deref(), lifecycle_outcome)
+            .await;
 
         match result {
             Ok(mut result) => {
@@ -792,10 +790,10 @@ impl ToolRegistry {
 
 async fn notify_tool_finish_if_unclaimed(
     invocation: &ToolInvocation,
-    terminal_outcome_reached: Option<&AtomicBool>,
+    call_state: Option<&ToolCallState>,
     outcome: ToolCallOutcome,
 ) -> bool {
-    if terminal_outcome_reached.is_some_and(|reached| reached.swap(true, Ordering::AcqRel)) {
+    if call_state.is_some_and(|state| state.terminal_outcome_reached.swap(true, Ordering::AcqRel)) {
         return false;
     }
 
@@ -806,11 +804,21 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
+    call_state: Option<&ToolCallState>,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
     let output = tool.handle(invocation.clone()).await?;
-    if output.contains_external_context()
+    let post_tool_use_payload =
+        CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
+    let result = AnyToolResult {
+        call_id,
+        payload,
+        result: output,
+        post_tool_use_payload,
+    };
+    super::user_messaging::capture_delivery(&result, call_state);
+    if result.result.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {
         state_db::mark_thread_memory_mode_polluted(
@@ -820,14 +828,7 @@ async fn handle_any_tool(
         )
         .await;
     }
-    let post_tool_use_payload =
-        CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
-    Ok(AnyToolResult {
-        call_id,
-        payload,
-        result: output,
-        post_tool_use_payload,
-    })
+    Ok(result)
 }
 
 fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {

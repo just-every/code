@@ -481,6 +481,10 @@ pub struct ModelInfo {
     pub supports_experimental_context: bool,
     #[serde(default)]
     pub use_responses_lite: bool,
+    /// Whether the model accepts reasoning-effort `configuration_update` items.
+    /// Missing metadata keeps effort changes on the ordinary request parameter.
+    #[serde(default)]
+    pub supports_reasoning_effort_updates: bool,
     #[serde(default)]
     pub node_repl_auto_review_required: bool,
     #[serde(default)]
@@ -571,13 +575,35 @@ pub struct ConfirmationPolicies {
     pub computer_use: Option<String>,
 }
 
-/// Model-owned messages for built-in tools.
+/// Model-owned tool messages and indirect namespace guidance.
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ToolMessages {
+    /// Optional guidance for indirectly presented tools; missing or empty adds no prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indirect_description_prefixes: Option<IndirectDescriptionPrefixes>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_user_message_async: Option<ToolMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent: Option<MultiAgentToolMessages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_mode: Option<CodeModeToolMessages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_resources: Option<McpResourceToolMessages>,
+}
+
+/// Plain-text prefixes for Code Mode documentation, ALL_TOOLS, and loaded tool-search namespaces.
+/// Values are trimmed, and selectors for the same final namespace must agree, including empty values.
+/// Empty values add no prefix; unregistered targets are ignored.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct IndirectDescriptionPrefixes {
+    /// Exact rendered namespaces, including `functions` for plain tools.
+    /// Overlap with an MCP server prefix is allowed only when the trimmed values match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespaces: Option<std::collections::BTreeMap<String, String>>,
+    /// Configured MCP server names, before callable namespace normalization.
+    /// Each prefix applies to all namespaces exposed by that server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Model-owned messages for a built-in tool.
@@ -587,9 +613,19 @@ pub struct ToolMessage {
     /// text without disabling the tool. Tool-owned runtime guidance is retained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Complete JSON Schema encoded as a string. Consumed by Multi-Agent V2 tools, Code Mode wait,
+    /// request_user_input_async (the send_user_message_async catalog key), and MCP resource helpers.
+    /// Uses the harness's supported schema subset; unrecognized keywords are ignored.
+    /// Missing, null, invalid or unsupported structures, or a root without `type: "object"`
+    /// retains the harness parameters. Schema semantics must remain API-compatible.
+    /// Overrides must declare harness-encrypted properties so their annotations can be retained.
+    /// Argument handling is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<String>,
 }
 
-/// Model-owned descriptions for Multi-Agent V2 tools, independent of their runtime namespace.
+/// Model-owned descriptions and parameters for Multi-Agent V2 tools, independent of their namespace.
+/// Channel tools consume only the description; their parameter schemas are fixed.
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct MultiAgentToolMessages {
     /// Replaces the static description. Missing or null uses the bundled text; an empty string
@@ -606,6 +642,82 @@ pub struct MultiAgentToolMessages {
     pub interrupt_agent: Option<ToolMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_agents: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_channel: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub get_channels: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_threads: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_posts: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_thread: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_post: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscribe: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<ToolMessage>,
+}
+
+impl MultiAgentToolMessages {
+    /// Returns the catalog entry for a tool, independently of its runtime namespace.
+    pub fn by_name(&self, name: &str) -> Option<&ToolMessage> {
+        match name {
+            "spawn_agent" => &self.spawn_agent,
+            "send_message" => &self.send_message,
+            "followup_task" => &self.followup_task,
+            "wait_agent" => &self.wait_agent,
+            "interrupt_agent" => &self.interrupt_agent,
+            "list_agents" => &self.list_agents,
+            "create_channel" => &self.create_channel,
+            "get_channels" => &self.get_channels,
+            "list_threads" => &self.list_threads,
+            "search_posts" => &self.search_posts,
+            "read_thread" => &self.read_thread,
+            "read_post" => &self.read_post,
+            "subscribe" => &self.subscribe,
+            "unsubscribe" => &self.unsubscribe,
+            "post" => &self.post,
+            _ => return None,
+        }
+        .as_ref()
+    }
+}
+
+/// Model-owned descriptions and parameters for the built-in MCP resource helpers.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct McpResourceToolMessages {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_mcp_resources: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_mcp_resource_templates: Option<ToolMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_mcp_resource: Option<ToolMessage>,
+}
+
+/// Model-owned instructions for Code Mode's exec and wait tools.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct CodeModeToolMessages {
+    /// Instructional template supporting `{{ default_exec_yield_time_ms }}` and `{{ image_helper }}`.
+    /// Runtime tool declarations are appended. Unknown placeholders remain literal.
+    /// Exec accepts raw JavaScript; `parameters` is not consumed and its grammar is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ToolMessage>,
+    /// Complete description and JSON parameter schema, selected independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<ToolMessage>,
+    /// Literal guidance appended when deferred nested tools exist.
+    /// Missing or null uses bundled text; an empty string omits the section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_nested_tools_guidance: Option<String>,
+    /// Literal shared TypeScript definitions, emitted when Code Mode Only exposes MCP results.
+    /// Missing or null uses bundled definitions; an empty string omits the section.
+    /// Custom definitions must remain compatible with the generated tool declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_typescript_preamble: Option<String>,
 }
 
 /// Model-owned defaults for the context-window token-budget feature.
@@ -981,6 +1093,7 @@ mod tests {
             supports_search_tool: false,
             supports_experimental_context: false,
             use_responses_lite: false,
+            supports_reasoning_effort_updates: false,
             guardian: None,
             node_repl_auto_review_required: false,
             node_repl_disabled: false,
@@ -1023,12 +1136,14 @@ mod tests {
                 serde_json::json!({"tools": {"send_user_message_async": {"description": ""}}}),
                 Some(Some(ToolMessage {
                     description: Some(String::new()),
+                    ..Default::default()
                 })),
             ),
             (
                 serde_json::json!({"tools": {"send_user_message_async": {"description": "Catalog description"}}}),
                 Some(Some(ToolMessage {
                     description: Some("Catalog description".to_string()),
+                    ..Default::default()
                 })),
             ),
         ] {
@@ -1392,13 +1507,16 @@ mod tests {
             tools: Some(ToolMessages {
                 send_user_message_async: Some(ToolMessage {
                     description: Some("Catalog description".to_string()),
+                    ..Default::default()
                 }),
                 multi_agent: Some(MultiAgentToolMessages {
                     spawn_agent: Some(ToolMessage {
                         description: Some("Catalog spawn description".to_string()),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             instructions_template: None,
             instructions_variables: None,
@@ -1470,6 +1588,7 @@ mod tests {
             tools: Some(ToolMessages {
                 send_user_message_async: Some(ToolMessage {
                     description: Some(String::new()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
@@ -1530,6 +1649,7 @@ mod tests {
         assert!(!model.supports_search_tool);
         assert!(!model.supports_experimental_context);
         assert!(!model.use_responses_lite);
+        assert!(!model.supports_reasoning_effort_updates);
         assert!(!model.node_repl_auto_review_required);
         assert!(!model.node_repl_disabled);
         assert_eq!(model.comp_hash, None);

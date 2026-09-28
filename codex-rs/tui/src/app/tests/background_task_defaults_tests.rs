@@ -43,6 +43,92 @@ fn trust_launch_folder(app: &mut App) {
 }
 
 #[tokio::test]
+async fn command_center_new_keeps_startup_draft_visible_through_handoff() -> Result<()> {
+    use crate::custom_terminal::test_support::last_rendered_buffer;
+
+    let mut snapshots = Vec::new();
+    for owned in [false, true] {
+        let (mut app, mut events, _) = make_test_app_with_channels().await;
+        trust_launch_folder(&mut app);
+        app.cli_kv_overrides
+            .push(("tui.animations".into(), TomlValue::Boolean(false)));
+        let mut server = start_config_write_test_app_server(&app).await?;
+        let mut tui = make_test_tui()?;
+        tui.pause_events();
+        tui.set_owned_screen(owned)?;
+        app.agents_overview.rendered_full_screen = true;
+        app.agents_overview.new_session_draft = Some(Box::new(
+            crate::startup_draft::tests::startup_test_pump_with_input("draft during startup"),
+        ));
+
+        app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
+            .await?;
+        let frame = last_rendered_buffer(&tui.terminal).clone();
+        let screen_text: String = frame
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen_text.contains("draft during startup"));
+        assert!(!screen_text.contains("Loading task"));
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "draft during startup"
+        );
+        assert_eq!(
+            app.chat_widget
+                .empty_state_animation
+                .borrow()
+                .greeting
+                .get()
+                .unwrap()
+                .phrase,
+            "Pull up a prompt."
+        );
+
+        while let Ok(event) = events.try_recv() {
+            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+            assert_eq!(last_rendered_buffer(&tui.terminal), &frame);
+        }
+
+        let size = tui.terminal.last_known_screen_size;
+        app.render_chat_widget_frame(&mut tui, size)?;
+        let final_frame = last_rendered_buffer(&tui.terminal);
+        let footer = |buffer: &ratatui::buffer::Buffer| {
+            buffer
+                .content
+                .chunks(usize::from(buffer.area.width))
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|row| {
+                    row.iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        snapshots.push(format!(
+            "owned={owned}\nstartup:\n{}\nattached:\n{}",
+            footer(&frame),
+            footer(final_frame)
+        ));
+        tui.set_owned_screen(/*owned*/ false)?;
+        server.shutdown().await?;
+    }
+    insta::assert_snapshot!(
+        "command_center_new_draft_handoff",
+        crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join("\n\n"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn review_regression_agents_overview_creation_is_fresh_but_returning_is_not() -> Result<()> {
     let render = |chat: &ChatWidget| {
         crate::terminal_palette::with_test_default_colors(
@@ -59,7 +145,7 @@ async fn review_regression_agents_overview_creation_is_fresh_but_returning_is_no
         trust_launch_folder(&mut app);
         app.cli_kv_overrides.extend([
             ("tui.animations".into(), TomlValue::Boolean(true)),
-            ("tui.whimsy".into(), TomlValue::Boolean(true)),
+            ("tui.effects.starfield".into(), TomlValue::Boolean(true)),
         ]);
         app.harness_overrides.model = Some(model.into());
         let mut server = start_config_write_test_app_server(&app).await?;
@@ -93,7 +179,7 @@ async fn review_regression_agents_overview_creation_is_fresh_but_returning_is_no
             let before_footer = |output: &str| {
                 output
                     .lines()
-                    .take_while(|line| !line.contains("gpt-6-astra"))
+                    .take_while(|line| !line.contains("GPT-6-Astra"))
                     .collect::<Vec<_>>()
                     .join("\n")
             };
@@ -577,6 +663,9 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
     app.app_server_target = AppServerTarget::Remote {
         endpoint: crate::resolve_remote_addr("ws://127.0.0.1:8765")?,
     };
+    let state_db =
+        crate::init_state_db_for_app_server_target(&server_config, &AppServerTarget::Embedded)
+            .await?;
     let client = crate::start_embedded_app_server(
         codex_arg0::Arg0DispatchPaths::default(),
         server_config,
@@ -586,8 +675,9 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
         CloudConfigBundleLoader::default(),
         codex_feedback::CodexFeedback::new(),
         /*log_db*/ None,
-        /*state_db*/ None,
+        state_db,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Default::default(),
     )
     .await?;
     let mut server = AppServerSession::new(
@@ -719,16 +809,51 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
     .await?;
     let mut tui = make_test_tui()?;
     tui.pause_events();
+    let started = server.start_thread(&app.config).await?;
+    let startup = started.session.thread_id;
+    app.pending_startup_thread_start = true;
+    app.handle_startup_thread_started(&mut server, Ok(started))
+        .await?;
     app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
         .await?;
+    app.select_agents_overview_thread(&mut tui, &mut server, startup)
+        .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(startup));
+    app.chat_widget.set_model("gpt-local-choice");
+    app.start_fresh_session(
+        &mut tui,
+        &mut server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
     let first = app.chat_widget.thread_id().unwrap();
+    server
+        .thread_set_name(first, "Blank session".into())
+        .await?;
     app.chat_widget.insert_str("Keep this unsent draft");
     app.new_agents_overview_session(&mut tui, &mut server, /*cwd*/ None)
         .await?;
     let other = app.chat_widget.thread_id().unwrap();
+    app.select_agents_overview_thread(&mut tui, &mut server, startup)
+        .await?;
+    assert_eq!(app.chat_widget.current_model(), "gpt-local-choice");
     app.select_agents_overview_thread(&mut tui, &mut server, first)
         .await?;
     assert_eq!(app.chat_widget.thread_id(), Some(first));
+    assert_eq!(
+        app.chat_widget.thread_name().as_deref(),
+        Some("Blank session")
+    );
+    assert!(recorded_params(&requests, "thread/resume").is_empty());
+    assert!(
+        recorded_params(&requests, "thread/unsubscribe")
+            .iter()
+            .all(|params| {
+                params["threadId"] != startup.to_string() && params["threadId"] != first.to_string()
+            })
+    );
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
         "Keep this unsent draft"
@@ -807,6 +932,57 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
         "Keep this unsent draft"
     );
     assert!(recorded_params(&requests, "turn/start").is_empty());
+    app.select_agents_overview_thread(&mut tui, &mut server, startup)
+        .await?;
+    app.chat_widget.insert_str("Background draft");
+    app.select_agents_overview_thread(&mut tui, &mut server, first)
+        .await?;
+    assert!(
+        server
+            .thread_settings_update(codex_app_server_protocol::ThreadSettingsUpdateParams {
+                thread_id: startup.to_string(),
+                approval_policy: Some(AskForApproval::OnRequest),
+                approvals_reviewer: Some(codex_app_server_protocol::ApprovalsReviewer::User),
+                permissions: Some(":read-only".into()),
+                model: Some("gpt-5.5".into()),
+                ..Default::default()
+            })
+            .await?
+    );
+    let settings = next_thread_settings_updated(&mut server, startup).await;
+    app.handle_app_server_event(
+        &server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            ServerNotification::ThreadSettingsUpdated(settings),
+        )),
+    )
+    .await;
+    app.select_agents_overview_thread(&mut tui, &mut server, startup)
+        .await?;
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "Background draft"
+    );
+    assert_eq!(app.chat_widget.current_model(), "gpt-5.5");
+    let op = app
+        .chat_widget
+        .submit_user_message_as_plain_user_turn(crate::chatwidget::UserMessage::from("Hello"))
+        .expect("submit the first turn");
+    app.submit_thread_op(&mut server, startup, op).await?;
+    let turns = recorded_params(&requests, "turn/start");
+    let params = turns.last().expect("turn/start was sent");
+    assert_eq!(
+        (
+            &params["permissions"],
+            &params["approvalPolicy"],
+            &params["model"]
+        ),
+        (
+            &serde_json::json!(":read-only"),
+            &serde_json::json!("on-request"),
+            &serde_json::json!("gpt-5.5")
+        )
+    );
     server.shutdown().await?;
     proxy.await??;
     Ok(())

@@ -7,14 +7,16 @@ mod coverage;
 mod decision;
 mod feedback;
 mod input_budget;
+mod permissions;
 mod prompt;
 pub(crate) use input_budget::PendingReviewContext;
 pub(crate) use input_budget::check_pending as check_pending_guardian_input;
 pub(crate) use input_budget::finalize as finalize_guardian_input;
+pub(crate) use permissions::for_tool as tool_permission_context;
 mod request_budget;
 pub(crate) use request_budget::ExhaustedReviewBudget;
-pub(crate) use request_budget::check_prompt as check_guardian_prompt_budget;
 pub(crate) use request_budget::observe as observe_guardian_request;
+pub(crate) use request_budget::prepare_prompt as prepare_guardian_prompt;
 mod review;
 mod review_session;
 mod reviewer_config;
@@ -161,7 +163,7 @@ impl From<Arc<TurnContext>> for GuardianReviewContext {
                 .extension_data
                 .get::<codex_api::ResponseId>()
                 .map(|id| id.0.clone()),
-            environments: turn.environments.clone(),
+            environments: turn.initial_environments.clone(),
             model_info: Arc::clone(turn.model_info()),
             reasoning_effort: turn.reasoning_effort().cloned(),
             reasoning_summary: turn.reasoning_summary(),

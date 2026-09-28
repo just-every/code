@@ -14,7 +14,7 @@ use std::path::Path;
 use tracing::warn;
 use url::Url;
 
-use crate::NetworkProxyExecutorOs;
+use crate::Platform;
 use crate::mitm_hook::MitmHookConfig;
 use crate::policy::normalize_host;
 
@@ -116,8 +116,17 @@ pub struct NetworkUnixSocketPermissions {
     pub entries: BTreeMap<String, NetworkUnixSocketPermission>,
 }
 
+/// A caller-provided MITM CA for trusted proxy configuration, not sandbox `config.toml`.
+/// The private key file is readable only by the proxy process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkMitmCaConfig {
+    pub certificate_file: String,
+    pub private_key_file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
 pub struct NetworkProxyConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -139,9 +148,13 @@ pub struct NetworkProxyConfig {
     pub domains: Option<NetworkDomainPermissions>,
     #[serde(default)]
     pub unix_sockets: Option<NetworkUnixSocketPermissions>,
-    pub allow_local_binding: bool,
+    /// Omission is resolved for the selected sandbox; ordinary proxy execution defaults to false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_local_binding: Option<bool>,
     #[serde(default)]
     pub mitm: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mitm_ca: Option<NetworkMitmCaConfig>,
     #[serde(default)]
     pub credential_broker: bool,
     /// Whether brokerage enabled MITM rather than inheriting an explicit setting.
@@ -175,8 +188,9 @@ impl Default for NetworkProxyConfig {
             mode: NetworkMode::default(),
             domains: None,
             unix_sockets: None,
-            allow_local_binding: false,
+            allow_local_binding: None,
             mitm: false,
+            mitm_ca: None,
             credential_broker: false,
             credential_broker_enabled_mitm: false,
             credential_providers: BTreeMap::new(),
@@ -189,13 +203,17 @@ impl Default for NetworkProxyConfig {
 }
 
 impl NetworkProxyConfig {
+    pub fn allow_local_binding(&self) -> bool {
+        self.allow_local_binding.unwrap_or(false)
+    }
+
     pub fn set_credential_broker_enabled(&mut self, enabled: bool) {
         self.credential_broker = enabled;
         if enabled {
             self.credential_broker_enabled_mitm |= !self.mitm;
             self.mitm = true;
         } else if self.credential_broker_enabled_mitm {
-            self.mitm = !self.mitm_hooks.is_empty();
+            self.mitm = !self.mitm_hooks.is_empty() || self.mitm_ca.is_some();
             self.credential_broker_enabled_mitm = false;
         }
     }
@@ -497,21 +515,19 @@ impl ValidatedUnixSocketPath {
 
 pub(crate) fn validate_unix_socket_allowlist_paths(
     cfg: &NetworkProxyConfig,
-    executor_os: NetworkProxyExecutorOs,
+    executor_os: Platform,
 ) -> Result<()> {
     for (index, socket_path) in cfg.allow_unix_sockets().iter().enumerate() {
         anyhow::ensure!(
-            executor_os.socket_path_is_absolute(socket_path) && !socket_path.contains('\0'),
+            crate::socket_path::socket_path_is_absolute(executor_os, socket_path)
+                && !socket_path.contains('\0'),
             "invalid network.allow_unix_sockets[{index}]: expected a NUL-free absolute path for {executor_os:?}, got {socket_path:?}"
         );
     }
     Ok(())
 }
 
-pub fn resolve_runtime(
-    cfg: &NetworkProxyConfig,
-    executor_os: NetworkProxyExecutorOs,
-) -> Result<RuntimeConfig> {
+pub fn resolve_runtime(cfg: &NetworkProxyConfig, executor_os: Platform) -> Result<RuntimeConfig> {
     validate_unix_socket_allowlist_paths(cfg, executor_os)?;
 
     let http_addr = resolve_addr(&cfg.proxy_url, /*default_port*/ 3128)
@@ -528,10 +544,7 @@ pub fn resolve_runtime(
 
 /// Returns the sorted loopback ports used by the configured managed proxy listeners.
 pub fn managed_proxy_ports(cfg: &NetworkProxyConfig) -> Result<Vec<u16>> {
-    let runtime = resolve_runtime(
-        cfg,
-        NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS)),
-    )?;
+    let runtime = resolve_runtime(cfg, Platform::native())?;
     if runtime.http_addr.port() == 0 {
         bail!("network.proxy_url must use a fixed non-zero port for managed proxy provisioning");
     }
@@ -715,8 +728,9 @@ mod tests {
                 mode: NetworkMode::Full,
                 domains: None,
                 unix_sockets: None,
-                allow_local_binding: false,
+                allow_local_binding: None,
                 mitm: false,
+                mitm_ca: None,
                 credential_broker: false,
                 credential_broker_enabled_mitm: false,
                 credential_providers: BTreeMap::new(),
@@ -757,6 +771,32 @@ mod tests {
                 original.mitm
             );
         }
+    }
+
+    #[test]
+    fn disabling_credential_broker_preserves_external_ca_added_while_enabled() {
+        let mut config = NetworkProxyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        let ca = NetworkMitmCaConfig {
+            certificate_file: "/run/proxy/ca.pem".to_string(),
+            private_key_file: "/run/proxy/key.pem".to_string(),
+        };
+        config.mitm_ca = Some(ca.clone());
+
+        config.set_credential_broker_enabled(/*enabled*/ false);
+
+        assert_eq!(
+            config,
+            NetworkProxyConfig {
+                enabled: true,
+                mitm: true,
+                mitm_ca: Some(ca),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
@@ -873,6 +913,32 @@ mod tests {
     }
 
     #[test]
+    fn network_proxy_config_supports_external_mitm_ca() {
+        let config: NetworkProxyConfig = serde_json::from_str(
+            r#"{
+                "mitm": true,
+                "mitm_ca": {
+                    "certificate_file": "/run/proxy/ca.pem",
+                    "private_key_file": "/run/proxy/key.pem"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config,
+            NetworkProxyConfig {
+                mitm: true,
+                mitm_ca: Some(NetworkMitmCaConfig {
+                    certificate_file: "/run/proxy/ca.pem".to_string(),
+                    private_key_file: "/run/proxy/key.pem".to_string(),
+                }),
+                ..NetworkProxyConfig::default()
+            }
+        );
+    }
+
+    #[test]
     fn set_allowed_domains_preserves_existing_deny_for_same_pattern() {
         let mut settings = NetworkProxyConfig::default();
         settings.set_denied_domains(vec!["example.com".to_string()]);
@@ -910,7 +976,6 @@ mod tests {
                     "example.com": "deny",
                 },
                 "unix_sockets": null,
-                "allow_local_binding": false,
                 "mitm": false,
                 "credential_broker": false,
                 "dangerously_allow_plaintext_credential_injection": false,
@@ -1117,13 +1182,10 @@ mod tests {
         ] {
             let cfg = settings_with_unix_sockets(&[path]);
             for (executor_os, accepted) in [
-                (NetworkProxyExecutorOs::Linux, unix_absolute),
-                (NetworkProxyExecutorOs::Macos, unix_absolute),
-                (NetworkProxyExecutorOs::Windows, windows_absolute),
-                (
-                    NetworkProxyExecutorOs::Unknown,
-                    unix_absolute || windows_absolute,
-                ),
+                (Platform::Linux, unix_absolute),
+                (Platform::Macos, unix_absolute),
+                (Platform::Windows, windows_absolute),
+                (Platform::Unknown, unix_absolute || windows_absolute),
             ] {
                 assert_eq!(
                     resolve_runtime(&cfg, executor_os).is_ok(),
@@ -1134,11 +1196,7 @@ mod tests {
             // Each platform's CI compares the portable implementation to native
             // Core acceptance, with the deliberate shared NUL rejection.
             assert_eq!(
-                resolve_runtime(
-                    &cfg,
-                    NetworkProxyExecutorOs::from_platform_os(Some(std::env::consts::OS))
-                )
-                .is_ok(),
+                resolve_runtime(&cfg, Platform::native()).is_ok(),
                 (Path::new(path).is_absolute() || path.starts_with('/')) && !path.contains('\0'),
                 "native parity: {path:?}"
             );
@@ -1161,10 +1219,10 @@ mod tests {
         }
 
         for executor_os in [
-            NetworkProxyExecutorOs::Linux,
-            NetworkProxyExecutorOs::Macos,
-            NetworkProxyExecutorOs::Windows,
-            NetworkProxyExecutorOs::Unknown,
+            Platform::Linux,
+            Platform::Macos,
+            Platform::Windows,
+            Platform::Unknown,
         ] {
             assert!(
                 resolve_runtime(&cfg, executor_os).is_ok(),

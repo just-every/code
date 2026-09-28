@@ -116,12 +116,14 @@ pub(super) async fn spawn_review_thread(
     let review_turn_id = sub_id.to_string();
     #[allow(deprecated)]
     let windows_sandbox_selection = parent_turn_context
-        .environments
+        .initial_environments
         .primary()
         .map(TurnEnvironment::windows_sandbox_selection_for_turn_metadata)
         .unwrap_or_else(|| {
             crate::tools::sandboxing::configured_windows_sandbox_selection(
-                parent_turn_context.config.permissions.windows_sandbox_type,
+                parent_turn_context
+                    .config
+                    .effective_local_windows_sandbox_type(),
                 parent_turn_context.windows_sandbox_level,
                 &codex_utils_path_uri::PathUri::from_abs_path(&parent_turn_context.cwd),
             )
@@ -160,14 +162,15 @@ pub(super) async fn spawn_review_thread(
         auth_manager: auth_manager_for_context,
         initial_settings: Arc::clone(&step_settings),
         disabled_plugin_ids: parent_turn_context.disabled_plugin_ids.clone(),
-        current_settings: ArcSwap::from(step_settings),
+        active_host_plugin_identities: None,
+        next_step_settings: ArcSwap::from(step_settings),
         session_telemetry: session_telemetry_for_context,
         provider: provider_for_context,
         session_source,
         history_mode: parent_turn_context.history_mode,
         parent_thread_id: parent_turn_context.parent_thread_id,
         originator: parent_turn_context.originator.clone(),
-        environments: parent_turn_context.environments.clone(),
+        initial_environments: parent_turn_context.initial_environments.clone(),
         available_models,
         unified_exec_shell_mode,
         current_date: parent_turn_context.current_date.clone(),
@@ -192,7 +195,7 @@ pub(super) async fn spawn_review_thread(
 
     // Seed the child task with the review prompt as the initial user message.
     let input = vec![TurnInput::UserInput {
-        acceptance_order: None,
+        metadata: Default::default(),
         content: vec![UserInput::Text {
             text: review_prompt,
             // Review prompt is synthesized; no UI element ranges to preserve.
@@ -201,7 +204,11 @@ pub(super) async fn spawn_review_thread(
         client_id: None,
     }];
     let tc = Arc::new(review_turn_context);
-    if tc.environments.single_local_environment_cwd().is_some() {
+    if tc
+        .initial_environments
+        .single_local_environment_cwd()
+        .is_some()
+    {
         tc.turn_metadata_state
             .spawn_git_enrichment_task(Arc::clone(&sess.services.git_root_discovery));
     }

@@ -1,0 +1,17 @@
+---
+source: tui/src/transcript_view_tests.rs
+expression: "frames.join(\"\\n\\n\")"
+---
+row 15
+row 16
+row 17
+row 18
+row 19
+row 20
+
+row 29
+row 30
+row 31
+row 32
+row 33
+row 34

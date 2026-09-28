@@ -2,6 +2,10 @@ use crate::test_codex::TestCodexBuilder;
 use crate::test_codex::test_codex;
 use anyhow::Result;
 use codex_core::config::Config;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::McpServerContribution;
+use codex_extension_api::McpServerContributionContext;
+use codex_extension_api::McpServerContributor;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -58,6 +62,33 @@ pub const DOCUMENT_EXTRACT_TEXT_RESOURCE_URI: &str =
 
 type AppsStartupInitializeGate = Arc<Mutex<Option<mpsc::Receiver<()>>>>;
 
+pub struct HostedMessagingServer(pub String);
+
+impl McpServerContributor<Config> for HostedMessagingServer {
+    fn id(&self) -> &'static str {
+        "hosted_user_messaging_fixture"
+    }
+
+    fn contribute<'a>(
+        &'a self,
+        _context: McpServerContributionContext<'a, Config>,
+    ) -> ExtensionFuture<'a, Vec<McpServerContribution>> {
+        Box::pin(async move {
+            vec![McpServerContribution::HostedApps {
+                config: Box::new(
+                    serde_json::from_value(json!({
+                        "url": self.0,
+                        "default_tools_approval_mode": "approve",
+                        "supports_parallel_tool_calls": true
+                    }))
+                    .expect("host-owned messaging MCP config"),
+                ),
+                protocol_mode: None,
+            }]
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct AppsTestServer {
     pub chatgpt_base_url: String,
@@ -102,6 +133,7 @@ enum AppsTestToolsListBehavior {
     AlwaysAvailable,
     AvailableWhen(Arc<AtomicBool>),
     AlwaysUnavailable,
+    Custom(Arc<Mutex<Vec<Value>>>),
 }
 
 impl AppsTestServer {
@@ -224,6 +256,13 @@ impl AppsTestServer {
             AppsTestToolsListBehavior::AvailableWhen(tools_available),
         )
         .await
+    }
+
+    pub async fn mount_with_tools(
+        server: &MockServer,
+        tools: Arc<Mutex<Vec<Value>>>,
+    ) -> Result<Self> {
+        Self::mount_with_tools_list_behavior(server, AppsTestToolsListBehavior::Custom(tools)).await
     }
 
     pub async fn mount_without_tools(server: &MockServer) -> Result<Self> {
@@ -551,7 +590,8 @@ impl Respond for CodexAppsJsonRpcResponder {
             "notifications/initialized" => ResponseTemplate::new(202),
             "tools/list" => {
                 let tools_available = match &self.tools_list_behavior {
-                    AppsTestToolsListBehavior::AlwaysAvailable => true,
+                    AppsTestToolsListBehavior::AlwaysAvailable
+                    | AppsTestToolsListBehavior::Custom(_) => true,
                     AppsTestToolsListBehavior::AvailableWhen(tools_available) => {
                         tools_available.load(Ordering::SeqCst)
                     }
@@ -660,6 +700,14 @@ impl Respond for CodexAppsJsonRpcResponder {
                         "nextCursor": null
                     }
                 });
+                if let AppsTestToolsListBehavior::Custom(tools) = &self.tools_list_behavior {
+                    response["result"]["tools"] = json!(
+                        tools
+                            .lock()
+                            .expect("Apps test tools lock should not be poisoned")
+                            .clone()
+                    );
+                }
                 if !tools_available
                     && let Some(tools) = response
                         .pointer_mut("/result/tools")

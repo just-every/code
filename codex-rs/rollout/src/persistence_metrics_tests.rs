@@ -67,6 +67,7 @@ fn turn_aborted(turn_id: &str) -> RolloutItem {
         turn_id: Some(turn_id.to_string()),
         started_at: None,
         reason: TurnAbortReason::Interrupted,
+        error: None,
         completed_at: None,
         duration_ms: None,
     }))

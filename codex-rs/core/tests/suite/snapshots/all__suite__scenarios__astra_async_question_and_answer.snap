@@ -1,20 +1,21 @@
 ---
 source: core/tests/suite/scenarios.rs
-expression: "context_snapshot::format_context_snapshot(\"Astra asks who a launch update is for, keeps working, and receives the user's answer in the active turn.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+assertion_line: 375
+expression: "context_snapshot::format_context_snapshot(\"Astra uses the catalog question schema to ask who a launch update is for, keeps working, and receives the user's answer in the active turn.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
-Scenario: Astra asks who a launch update is for, keeps working, and receives the user's answer in the active turn.
+Scenario: Astra uses the catalog question schema to ask who a launch update is for, keeps working, and receives the user's answer in the active turn.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=9e8e744a3a55a2dd):
-        - namespace/functions; hash=e7db0a45c4ec3157
+00:additional_tools/developer (3; hash=9922060cb05f2122):
+        - namespace/functions; hash=f1de44f63c977f3d
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=91f6de0e2773854f
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -41,9 +42,9 @@ Scenario: Astra asks who a launch update is for, keeps working, and receives the
 09:message/assistant:
     I drafted a short launch update.
 10:message/user:
-    > Who should receive the launch update?
-
-    Customers
+    <send_user_message_question_reply>
+    [{"answer":"Customers","question":"Who should receive the launch update?","questionItemId":"[\\"request_user_input_async\\",\\"audience-question\\",0]"}]
+    </send_user_message_question_reply>
 -- request 4 (request) --
 11:message/assistant:
     Here is the launch update for customers.

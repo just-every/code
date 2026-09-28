@@ -42,22 +42,12 @@ fn analytics_sections_adapt_to_terminal_colors() {
         ),
     ] {
         with_test_default_colors(colors, || {
-            for business in [false, true] {
-                let mut view = fixture::view(models::AccountKind::Consumer);
-                if business {
-                    view = fixture::view(models::AccountKind::Enterprise);
-                }
+            for kind in [
+                models::AccountKind::Consumer,
+                models::AccountKind::Enterprise,
+            ] {
+                let mut view = fixture::view(kind);
                 view.sections[Section::Chats].detail = Some(0);
-                // Exercise the reported credit range and preserve exact amounts below the plot.
-                let mut credits =
-                    fixture::history(/*report*/ 1, /*range*/ 0, /*group*/ 0);
-                for day in &mut credits.data {
-                    day.total *= 40.0;
-                    for value in &mut day.values {
-                        value.value *= 40.0;
-                    }
-                }
-                view.sections[Section::Credits].history = Load::Ready(credits);
                 for section in view.visible_sections() {
                     let section = *section;
                     view.section = section;
@@ -66,12 +56,25 @@ fn analytics_sections_adapt_to_terminal_colors() {
                     );
                     let mut buffer = Buffer::empty(area);
                     view.render(area, &mut buffer);
-                    let heading = buffer
+                    let label = view.tab_label(section);
+                    let tab = buffer
                         .content
-                        .iter()
-                        .find(|cell| cell.symbol() == "▎")
-                        .unwrap();
-                    assert_eq!(heading.fg, accent_style().fg.unwrap());
+                        .chunks(usize::from(area.width))
+                        .nth(/*n*/ 1)
+                        .unwrap()
+                        .windows(label.len())
+                        .find(|cells| {
+                            cells
+                                .iter()
+                                .map(ratatui::buffer::Cell::symbol)
+                                .collect::<String>()
+                                == label
+                        })
+                        .expect("the report tab is visible");
+                    let heading = &tab[0];
+                    let active = crate::bottom_pane::active_tab_style();
+                    assert_eq!(heading.fg, active.fg.unwrap());
+                    assert_eq!(heading.bg, active.bg.unwrap());
                     assert!(heading.modifier.contains(Modifier::BOLD));
                     for marker in buffer.content.iter().filter(|cell| cell.symbol() == "▲") {
                         assert_eq!(marker.fg, accent_style().fg.unwrap());
@@ -79,11 +82,20 @@ fn analytics_sections_adapt_to_terminal_colors() {
                         assert!(marker.modifier.contains(Modifier::BOLD));
                     }
                     if theme == "light" {
-                        for cell in buffer
+                        for (index, cell) in buffer
                             .content
                             .iter()
-                            .filter(|cell| !cell.symbol().trim().is_empty())
+                            .enumerate()
+                            .filter(|(_, cell)| !cell.symbol().trim().is_empty())
                         {
+                            // Keyboard hints deliberately keep the requested white key style.
+                            // Report text and chart colors still adapt to light backgrounds.
+                            if cell.fg == Color::White {
+                                let y = area.y + (index / usize::from(area.width)) as u16;
+                                assert!(y >= area.bottom() - 2 || (3..5).contains(&y));
+                                assert_eq!(cell.modifier, Modifier::BOLD);
+                                continue;
+                            }
                             let foreground = match cell.fg {
                                 Color::Rgb(r, g, b) => (r, g, b),
                                 Color::White => (255, 255, 255),
@@ -91,8 +103,16 @@ fn analytics_sections_adapt_to_terminal_colors() {
                                 Color::Reset => colors.fg,
                                 _ => continue,
                             };
-                            let contrast =
-                                (luminance(colors.bg) + 0.05) / (luminance(foreground) + 0.05);
+                            let background = match cell.bg {
+                                Color::Rgb(r, g, b) => (r, g, b),
+                                Color::White => (255, 255, 255),
+                                Color::Black => (0, 0, 0),
+                                Color::Reset => colors.bg,
+                                _ => continue,
+                            };
+                            let fg = luminance(foreground);
+                            let bg = luminance(background);
+                            let contrast = (fg.max(bg) + 0.05) / (fg.min(bg) + 0.05);
                             assert!(
                                 contrast >= 4.5,
                                 "{}: {:?} has contrast {contrast}",
@@ -101,61 +121,65 @@ fn analytics_sections_adapt_to_terminal_colors() {
                             );
                         }
                     }
-                    // Preserve every symbol and style while sharing repeated styles in a palette.
-                    let mut palette = Vec::new();
-                    let mut text = Vec::new();
-                    let mut runs = Vec::new();
-                    for (y, row) in buffer.content.chunks(usize::from(area.width)).enumerate() {
-                        text.push(format!(
-                            "{:?}",
-                            row.iter()
-                                .map(ratatui::buffer::Cell::symbol)
-                                .collect::<String>()
-                        ));
-                        let mut previous = None;
-                        let mut changes = Vec::new();
-                        for (x, cell) in row.iter().enumerate() {
-                            let style = format!(
-                                "{:?}|{:?}|{:?}|{:?}",
-                                cell.fg, cell.bg, cell.underline_color, cell.modifier
-                            );
-                            let index = palette
-                                .iter()
-                                .position(|candidate| *candidate == style)
-                                .unwrap_or_else(|| {
-                                    palette.push(style);
-                                    palette.len() - 1
-                                });
-                            if previous != Some(index) {
-                                changes.push(format!("{x}:{index}"));
-                                previous = Some(index);
-                            }
-                        }
-                        runs.push(format!("{y}: {}", changes.join(" ")));
-                    }
-                    let palette = palette
-                        .iter()
-                        .enumerate()
-                        .map(|(index, style)| format!("{index}: {style}"))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let snapshot = format!(
-                        "{}x{}\nText:\n{}\nPalette (foreground|background|underline|modifiers):\n{palette}\nRows (column:palette):\n{}",
-                        area.width,
-                        area.height,
-                        text.join("\n"),
-                        runs.join("\n")
-                    );
-                    insta::assert_snapshot!(
-                        format!(
-                            "analytics_{theme}_{}_{}",
-                            if business { "business" } else { "consumer" },
-                            section as usize + 1
-                        ),
-                        snapshot
-                    );
                 }
             }
         });
     }
+}
+
+#[test]
+fn chat_selection_keeps_a_highlighted_trailing_blank_after_wrapping() {
+    with_test_default_colors(
+        DefaultColors {
+            fg: (30, 30, 30),
+            bg: (255, 255, 255),
+        },
+        || {
+            for kind in [models::AccountKind::Business, models::AccountKind::Consumer] {
+                let mut view = fixture::view(kind);
+                view.section = Section::Chats;
+                view.tasks = Load::Ready(tasks::Chats {
+                    rows: vec![tasks::Chat {
+                        title: "Building Analytics".into(),
+                        task: Some(
+                            serde_json::from_value(serde_json::json!({
+                                "thread_id": "padding-fixture",
+                                "data_status": "available",
+                                "usage_source": "credits",
+                                "weekly_limit_percent": 42.0,
+                                "five_hour_limit_percent": 15.0,
+                                "balance_usage_credits": "35.83",
+                                "groups": []
+                            }))
+                            .unwrap(),
+                        ),
+                    }],
+                    ..tasks::Chats::default()
+                });
+                for width in [40, 120] {
+                    let area = Rect::new(/*x*/ 0, /*y*/ 0, width, /*height*/ 30);
+                    let mut buffer = Buffer::empty(area);
+                    view.render(area, &mut buffer);
+                    let selection = crate::bottom_pane::selection_style().bg.unwrap();
+                    let selected_rows = buffer
+                        .content
+                        .chunks(usize::from(width))
+                        .skip(usize::from(view.body_area.y))
+                        .take(usize::from(view.body_area.height))
+                        .filter(|row| row.iter().any(|cell| cell.bg == selection))
+                        .collect::<Vec<_>>();
+                    assert!(!selected_rows.is_empty());
+                    for row in selected_rows {
+                        let end = row.iter().rposition(|cell| cell.bg == selection).unwrap();
+                        assert_eq!(row[end].symbol(), " ");
+                        assert!(
+                            row[..end]
+                                .iter()
+                                .any(|cell| !cell.symbol().trim().is_empty())
+                        );
+                    }
+                }
+            }
+        },
+    );
 }

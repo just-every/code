@@ -3,9 +3,12 @@ mod capability_discovery;
 mod capability_discovery_cache;
 mod client;
 mod client_api;
+mod client_error;
 mod client_telemetry;
 mod client_transport;
 mod connection;
+#[path = "discoverV2/mod.rs"]
+mod discover_v2;
 mod environment;
 mod environment_bootstrap;
 mod environment_config;
@@ -35,16 +38,22 @@ mod remote_process;
 mod resolved_capability;
 mod rpc;
 mod rpc_server_requests;
-mod runtime_paths;
+mod rpc_timing;
+mod runtime_options;
 mod sandbox_selection;
 mod sandboxed_file_open;
 mod sandboxed_file_system;
 mod server;
 #[cfg(unix)]
 mod shell_snapshot;
+#[cfg(unix)]
+mod shell_snapshot_file;
 mod telemetry;
 mod trace_context;
 mod websocket_pong_watchdog;
+
+// Shared limits for inbound executor messages across all transports.
+mod client_inbound_request_limit;
 
 use codex_exec_server_protocol as protocol;
 
@@ -132,12 +141,15 @@ pub use process::ExecProcessEventReceiver;
 pub use process::ExecProcessFuture;
 pub use process::StartedExecProcess;
 pub use protocol::ByteChunk;
+pub use protocol::CAPABILITIES_DISCOVER_V2_METHOD;
 pub use protocol::CAPABILITY_ROOTS_DISCOVER_METHOD;
 pub use protocol::CapabilityRootDiscoverRequest;
 pub use protocol::CapabilityRootDiscovery;
 pub use protocol::CapabilityRootsDiscoverParams;
 pub use protocol::CapabilityRootsDiscoverResponse;
 pub use protocol::CapabilityTextFile;
+pub use protocol::DiscoverV2CapabilitiesRequest;
+pub use protocol::DiscoverV2CapabilitiesResponse;
 pub use protocol::DiscoveredPluginFiles;
 pub use protocol::DiscoveredSkillFiles;
 pub use protocol::EnvironmentCapabilities;
@@ -159,6 +171,8 @@ pub use protocol::ExecResponse;
 pub use protocol::ExecServerNetworkPolicyDecision;
 pub use protocol::ExecServerNetworkPolicyRequest;
 pub use protocol::ExecServerNetworkProtocol;
+pub use protocol::ExecutorPlugin;
+pub use protocol::ExecutorSkill;
 pub use protocol::FsCanonicalizeParams;
 pub use protocol::FsCanonicalizeResponse;
 pub use protocol::FsCloseParams;
@@ -214,7 +228,7 @@ pub use remote::run_remote_environment_forward_until_shutdown;
 pub use remote::run_remote_environment_until_shutdown;
 pub use resolved_capability::ResolvedSelectedCapabilityRoot;
 pub use resolved_capability::SelectedCapabilityRootsStatus;
-pub use runtime_paths::ExecServerRuntimePaths;
+pub use runtime_options::ExecServerRuntimeOptions;
 pub use server::ConcurrentRequestLimit;
 pub use server::DEFAULT_LISTEN_URL;
 pub use server::ExecServerListenUrlParseError;

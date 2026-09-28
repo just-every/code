@@ -4,6 +4,85 @@ use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn user_prompt_urls_keep_destinations_across_widths() {
+    let url = "https://example.test/terminal-link-wrapping/solid-octants";
+    let placeholder = "[Image #1]";
+    let message = format!(
+        "from this site, write out the ascii for solid octants 18 columns {url}\n{placeholder} See (https://example.test/a)."
+    );
+    let image_start = message.find(placeholder).unwrap();
+    let cell = new_user_prompt(
+        message,
+        vec![TextElement::new(
+            (image_start..image_start + placeholder.len()).into(),
+            Some(placeholder.to_string()),
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut snapshots = Vec::new();
+    for width in [120, 60, 24] {
+        let lines = cell.display_hyperlink_lines(width);
+        assert_eq!(cell.transcript_hyperlink_lines(width), lines);
+        assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+        for destination in [url, "https://example.test/a"] {
+            let linked_text = lines
+                .iter()
+                .flat_map(|line| {
+                    line.hyperlinks
+                        .iter()
+                        .filter(|link| link.destination == destination)
+                        .flat_map(|link| {
+                            line.line
+                                .to_string()
+                                .chars()
+                                .skip(link.columns.start)
+                                .take(link.columns.len())
+                                .collect::<Vec<_>>()
+                        })
+                })
+                .collect::<String>();
+            assert_eq!(linked_text, destination, "width {width}");
+        }
+        snapshots.push(format!(
+            "width {width}\n{}",
+            ratatui::text::Text::from(visible_lines(lines))
+        ));
+    }
+    insta::assert_snapshot!(snapshots.join("\n\n"));
+}
+
+#[test]
+fn local_image_only_user_message_remains_visible() {
+    let cell = new_user_prompt(
+        String::new(),
+        Vec::new(),
+        vec![PathBuf::from("fixture.png")],
+        Vec::new(),
+    );
+    let display = cell.display_lines(/*width*/ 40);
+
+    assert_eq!(cell.transcript_lines(/*width*/ 40), display);
+    insta::assert_snapshot!(ratatui::text::Text::from(display));
+}
+
+#[test]
+fn mixed_image_labels_preserve_existing_placeholders_without_duplicates() {
+    let placeholder = "[Image #2]";
+    let cell = new_user_prompt(
+        format!("{placeholder} compare these"),
+        vec![TextElement::new(
+            (0..placeholder.len()).into(),
+            Some(placeholder.to_string()),
+        )],
+        vec![PathBuf::from("one.png"), PathBuf::from("two.png")],
+        vec!["https://example.test/remote.png".to_string()],
+    );
+
+    insta::assert_snapshot!(ratatui::text::Text::from(cell.display_lines(/*width*/ 40)));
+}
+
+#[test]
 fn sanitizer_borrows_clean_text_and_removes_control_sequences() {
     for (text, expected) in [
         ("clean\ttext\n", "clean\ttext\n"),
@@ -124,11 +203,14 @@ fn replace_cached_lines(
 }
 
 #[test]
-fn finalized_markdown_reuses_lines_primed_by_transcript_height() {
+fn finalized_markdown_reuses_rendered_transcript_lines() {
     let cell = AgentMarkdownCell::new("finalized **markdown**".to_string(), Path::new("/tmp"));
     let width = 48;
 
-    assert_eq!(cell.desired_transcript_height(width), 1);
+    assert_eq!(
+        visible_lines(cell.transcript_hyperlink_lines(width)),
+        cell.display_lines(width)
+    );
     replace_cached_lines(&cell, |_| {});
 
     assert_eq!(
@@ -234,6 +316,21 @@ fn spoken_artifacts_link_only_real_workspace_files_and_preserve_existing_urls() 
         span.content == "src/lib.rs:42" && span.style.add_modifier.contains(Modifier::UNDERLINED)
     }));
     assert_eq!(spoken.raw_lines(), vec![Line::from(markdown)]);
+    for width in [90, 24] {
+        for line in spoken.display_hyperlink_lines(width) {
+            let source = line.source.expect("spoken source");
+            assert!(
+                source
+                    .styled_range(0..source.text.len())
+                    .spans
+                    .iter()
+                    .any(|span| {
+                        span.content == "src/lib.rs:42"
+                            && span.style.add_modifier.contains(Modifier::UNDERLINED)
+                    })
+            );
+        }
+    }
     insta::assert_snapshot!(
         format!(
             "{}\n{:?} -> <workspace>/src/lib.rs\n{:?} -> https://example.com",

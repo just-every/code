@@ -31,6 +31,7 @@ use crate::thread_transcript::thread_items_to_transcript_cells;
 impl App {
     pub(super) async fn export_transcript(
         &mut self,
+        tui: &mut crate::tui::Tui,
         app_server: &mut AppServerSession,
         destination: TranscriptExportDestination,
     ) -> Result<(), String> {
@@ -54,7 +55,11 @@ impl App {
         let markdown = render_markdown_transcript(&cells)?;
         match destination {
             TranscriptExportDestination::Clipboard => {
-                self.chat_widget.copy_transcript_to_clipboard(&markdown);
+                let result = tui.copy_transcript_selection(
+                    &markdown,
+                    crate::clipboard_copy::CopyFormat::PlainText,
+                );
+                self.chat_widget.show_copy_result("conversation", result);
             }
             TranscriptExportDestination::File(path) => {
                 let cwd = if self.app_server_target.uses_remote_workspace() {
@@ -237,6 +242,8 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
             }
             lines.extend(image_labels.into_iter().map(Into::into));
             lines
+        } else if let Some(reasoning) = cell.as_any().downcast_ref::<ReasoningSummaryCell>() {
+            raw_lines_from_source(reasoning.markdown_source().trim())
         } else {
             cell.raw_lines()
         };
@@ -248,6 +255,7 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
                     [
                         "• Saved conversation to ",
                         "• Copied conversation to clipboard",
+                        "• Copy unconfirmed; /export saves chat",
                         "■ Export failed: ",
                         "■ Copy failed: ",
                     ]

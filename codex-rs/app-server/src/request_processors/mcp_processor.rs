@@ -1,6 +1,5 @@
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
-use codex_core::McpManager;
 use codex_mcp::McpServerSource;
 use codex_mcp::ReadResourceRequestParams;
 use codex_mcp::resolve_oauth_callback;
@@ -224,7 +223,7 @@ impl McpRequestProcessor {
             http_headers,
             env_http_headers,
             &resolved_scopes.scopes,
-            server.oauth_client_id(),
+            server.oauth.as_ref(),
             client_registration,
             server.oauth_resource.as_deref(),
             timeout_secs,
@@ -273,59 +272,23 @@ impl McpRequestProcessor {
         let request = request_id.clone();
 
         let outgoing = Arc::clone(&self.outgoing);
-        let (config, thread) = match params.thread_id.as_deref() {
-            Some(thread_id) => {
-                let (_, thread) = self.load_thread(thread_id).await?;
-                let thread_config = thread.config().await;
-                let config = self
-                    .config_manager
-                    .load_latest_config_with_session_layers(
-                        &thread_config.config_layer_stack,
-                        &thread_config.cwd,
-                    )
-                    .await
-                    .map_err(|err| internal_error(format!("failed to reload config: {err}")))?;
-                (config, Some(thread))
-            }
-            None => (self.load_latest_config(/*fallback_cwd*/ None).await?, None),
+        let thread = match params.thread_id.as_deref() {
+            Some(thread_id) => Some(self.load_thread(thread_id).await?.1),
+            None => None,
         };
-        let mcp_manager = self.thread_manager.mcp_manager();
-        let auth = self.auth_manager.auth().await;
-        let environment_manager = self.thread_manager.environment_manager();
-
+        let processor = self.clone();
         tokio::spawn(async move {
-            let (mcp_config, runtime_context) = match thread.as_ref() {
-                Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
-                None => {
-                    let mcp_config = mcp_manager.runtime_config(&config).await;
-                    let runtime_context =
-                        McpRuntimeContext::new(environment_manager, config.cwd.to_path_buf());
-                    (mcp_config, runtime_context)
-                }
-            };
-
-            let result = Self::list_mcp_server_status_response(
-                request.request_id.to_string(),
-                params,
-                mcp_config,
-                auth,
-                runtime_context,
-                mcp_manager,
-                thread,
-            )
-            .await;
+            let result = processor
+                .list_mcp_server_status_response(params, thread)
+                .await;
             outgoing.send_result(request, result).await;
         });
         Ok(())
     }
 
     async fn list_mcp_server_status_response(
-        request_id: String,
+        &self,
         params: ListMcpServerStatusParams,
-        mcp_config: codex_mcp::McpConfig,
-        auth: Option<CodexAuth>,
-        runtime_context: McpRuntimeContext,
-        mcp_manager: Arc<McpManager>,
         thread: Option<Arc<codex_core::CodexThread>>,
     ) -> Result<ListMcpServerStatusResponse, JSONRPCErrorError> {
         let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
@@ -333,16 +296,53 @@ impl McpRequestProcessor {
             McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
         };
 
-        let snapshot = collect_mcp_server_status_snapshot_with_detail(
-            &mcp_config,
-            auth.as_ref(),
-            request_id,
-            runtime_context,
-            mcp_manager.codex_apps_tools_cache(),
-            mcp_manager.tool_catalog_cache(),
-            detail,
-        )
-        .await;
+        let (mcp_config, snapshot) = if let (Some(thread), Some(server)) =
+            (thread.as_ref(), params.server_name.as_deref())
+        {
+            thread
+                .mcp_server_status_snapshot(server, detail)
+                .await
+                .map_err(|error| {
+                    internal_error(format!("failed to read MCP server status: {error:#}"))
+                })?
+        } else {
+            let config = match thread.as_ref() {
+                Some(thread) => {
+                    let thread_config = thread.config().await;
+                    self.config_manager
+                        .load_latest_config_with_session_layers(
+                            &thread_config.config_layer_stack,
+                            &thread_config.cwd,
+                        )
+                        .await
+                        .map_err(|err| internal_error(format!("failed to reload config: {err}")))?
+                }
+                None => self.load_latest_config(/*fallback_cwd*/ None).await?,
+            };
+            let mcp_manager = self.thread_manager.mcp_manager();
+            let auth = self.auth_manager.auth().await;
+            let (mcp_config, runtime_context) = match thread.as_ref() {
+                Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
+                None => (
+                    mcp_manager.runtime_config(&config).await,
+                    McpRuntimeContext::new(
+                        self.thread_manager.environment_manager(),
+                        config.cwd.to_path_buf(),
+                    ),
+                ),
+            };
+            let snapshot = collect_mcp_server_status_snapshot_with_detail(
+                &mcp_config,
+                auth.as_ref(),
+                runtime_context,
+                mcp_manager.codex_apps_tools_cache(),
+                mcp_manager.tool_catalog_cache(),
+                detail,
+                params.server_name.as_deref(),
+            )
+            .await;
+            (Arc::new(mcp_config), snapshot)
+        };
 
         let runtime_statuses = match thread {
             Some(thread) => thread.mcp_connection_statuses(&mcp_config).await,
@@ -368,6 +368,12 @@ impl McpRequestProcessor {
         );
         server_names.sort();
         server_names.dedup();
+        server_names.retain(|name| {
+            params
+                .server_name
+                .as_deref()
+                .is_none_or(|server| name == server)
+        });
 
         let total = server_names.len();
         let limit = params.limit.unwrap_or(total as u32).max(1) as usize;
@@ -404,6 +410,18 @@ impl McpRequestProcessor {
                         | McpServerSource::Extension { .. } => None,
                     },
                 ),
+                http_origin: mcp_config
+                    .mcp_server_catalog
+                    .server(name)
+                    .and_then(|server| match &server.config().transport {
+                        McpServerTransportConfig::StreamableHttp { url, .. } => {
+                            url::Url::parse(url).ok().and_then(|url| {
+                                matches!(url.scheme(), "http" | "https")
+                                    .then(|| url.origin().ascii_serialization())
+                            })
+                        }
+                        McpServerTransportConfig::Stdio { .. } => None,
+                    }),
                 server_info: server_infos.remove(name),
                 server_capabilities: server_capabilities.remove(name),
                 tools: tools_by_server.remove(name).unwrap_or_default(),
@@ -438,20 +456,40 @@ impl McpRequestProcessor {
             server,
             uri,
             connector_id,
+            target,
         } = params;
         let mut resource_params = ReadResourceRequestParams::new(uri);
+        let mut meta = serde_json::Map::new();
         if let Some(connector_id) = connector_id {
-            resource_params.meta = Some(
-                serde_json::Map::from_iter([(
-                    "x-codex-turn-metadata".to_string(),
-                    serde_json::json!({
-                        "mcp_request_meta": {
-                            "selected_connector_ids": [connector_id],
-                        },
-                    }),
-                )])
-                .into(),
+            meta.insert(
+                "x-codex-turn-metadata".to_string(),
+                serde_json::json!({
+                    "mcp_request_meta": {"selected_connector_ids": [connector_id]},
+                }),
             );
+        }
+        if origin_call_id.is_none()
+            && let Some(target) = target
+        {
+            if server != codex_mcp::CODEX_APPS_MCP_SERVER_NAME
+                || target.connector_id.trim().is_empty()
+                || target
+                    .link_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty() || id.starts_with("synthetic_link::"))
+            {
+                return Err(invalid_request(
+                    "target requires codex_apps, a connectorId, and a real linkId or null",
+                ));
+            }
+            meta.insert(
+                "connector_id".to_string(),
+                serde_json::json!(target.connector_id),
+            );
+            meta.insert("link_id".to_string(), serde_json::json!(target.link_id));
+        }
+        if !meta.is_empty() {
+            resource_params.meta = Some(meta.into());
         }
 
         if let Some(thread_id) = thread_id {

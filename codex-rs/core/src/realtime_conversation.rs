@@ -31,6 +31,7 @@ use codex_api::build_session_headers;
 use codex_api::map_api_error;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_http_client::HttpClientFactory;
 use codex_login::CodexAuth;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
@@ -99,6 +100,7 @@ const OUTPUT_EVENTS_QUEUE_CAPACITY: usize = 256;
 const REALTIME_THREAD_SOURCE_MAX_BYTES: usize = 256;
 const REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET: usize = 5_300;
 const REALTIME_ASSISTANT_OUTPUT_TOKEN_BUDGET: usize = 1_000;
+const REALTIME_REASONING_STATUS_MAX_BYTES: usize = 256;
 const REALTIME_INITIAL_ITEMS_MAX_COUNT: usize = 128;
 const REALTIME_INITIAL_ITEMS_MAX_TOKENS: usize = 8_192;
 const REALTIME_MODE_INSTRUCTIONS_MAX_TOKENS: usize = 8_192;
@@ -163,14 +165,24 @@ impl RealtimeHandoffAdmission {
 }
 
 pub(crate) struct RealtimeConversationManager {
-    state: Mutex<Option<ConversationState>>,
-    mode_instructions: Mutex<Option<RealtimeModeInstructions>>,
+    state: Mutex<RealtimeConversationManagerState>,
+}
+
+struct RealtimeConversationManagerState {
+    conversation: Option<ConversationState>,
+    mode_instructions: Option<RealtimeModeInstructions>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RealtimeModeInstructions {
     pub(crate) start: Option<String>,
     pub(crate) end: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RealtimeConversationSnapshot {
+    pub(crate) active: bool,
+    pub(crate) mode_instructions: Option<RealtimeModeInstructions>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +200,7 @@ struct RealtimeHandoffState {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Arc<BTreeMap<String, Vec<String>>>,
     session_kind: RealtimeSessionKind,
     event_parser: RealtimeEventParser,
@@ -360,6 +373,10 @@ fn take_last_bytes_at_char_boundary(text: &str, max_bytes: usize) -> &str {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RealtimeOutbound {
+    QuietReasoningStatus {
+        handoff_id: String,
+        text: String,
+    },
     StandaloneHandoff {
         text: String,
         phase: Option<MessagePhase>,
@@ -507,6 +524,7 @@ struct ConversationState {
 
 struct RealtimeStart {
     api_provider: ApiProvider,
+    http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
@@ -514,6 +532,7 @@ struct RealtimeStart {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
@@ -534,13 +553,22 @@ struct RealtimeStartOutput {
 impl RealtimeConversationManager {
     pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(None),
-            mode_instructions: Mutex::new(None),
+            state: Mutex::new(RealtimeConversationManagerState {
+                conversation: None,
+                mode_instructions: None,
+            }),
         }
     }
 
-    pub(crate) async fn mode_instructions(&self) -> Option<RealtimeModeInstructions> {
-        self.mode_instructions.lock().await.clone()
+    pub(crate) async fn snapshot(&self) -> RealtimeConversationSnapshot {
+        let state = self.state.lock().await;
+        RealtimeConversationSnapshot {
+            active: state
+                .conversation
+                .as_ref()
+                .is_some_and(|conversation| conversation.realtime_active.load(Ordering::Relaxed)),
+            mode_instructions: state.mode_instructions.clone(),
+        }
     }
 
     #[tracing::instrument(
@@ -551,6 +579,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn running_state(&self) -> Option<()> {
         let state = self.state.lock().await;
         state
+            .conversation
             .as_ref()
             .and_then(|state| state.realtime_active.load(Ordering::Relaxed).then_some(()))
     }
@@ -558,7 +587,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn is_running_v2(&self) -> bool {
         let state = self.state.lock().await;
         matches!(
-            state.as_ref(),
+            state.conversation.as_ref(),
             Some(state)
                 if state.realtime_active.load(Ordering::Relaxed)
                     && state.session_kind == RealtimeSessionKind::V2
@@ -572,6 +601,7 @@ impl RealtimeConversationManager {
             .state
             .lock()
             .await
+            .conversation
             .as_ref()
             .map(|state| Arc::clone(&state.route_handoffs));
         if let Some(route_handoffs) = route_handoffs {
@@ -586,20 +616,23 @@ impl RealtimeConversationManager {
     ) -> CodexResult<RealtimeStartOutput> {
         let previous_state = {
             let mut guard = self.state.lock().await;
-            guard.take()
+            guard.conversation.take()
         };
         if let Some(state) = previous_state {
             stop_conversation_state(state, RealtimeFanoutTaskStop::Await).await;
         }
 
-        let output = self.start_inner(start).await?;
-        *self.mode_instructions.lock().await = Some(mode_instructions);
-        Ok(output)
+        self.start_inner(start, mode_instructions).await
     }
 
-    async fn start_inner(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
+    async fn start_inner(
+        &self,
+        start: RealtimeStart,
+        mode_instructions: RealtimeModeInstructions,
+    ) -> CodexResult<RealtimeStartOutput> {
         let RealtimeStart {
             api_provider,
+            http_client_factory,
             realtime_sideband_base_url,
             extra_headers,
             client_managed_handoffs,
@@ -607,6 +640,7 @@ impl RealtimeConversationManager {
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
+            backend_reasoning_status,
             codex_response_handoff_channel_prefixes,
             realtime_call_api_provider,
             session_config,
@@ -641,6 +675,7 @@ impl RealtimeConversationManager {
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
+            backend_reasoning_status,
             codex_response_handoff_channel_prefixes: Arc::new(
                 codex_response_handoff_channel_prefixes.unwrap_or_default(),
             ),
@@ -653,7 +688,7 @@ impl RealtimeConversationManager {
             audio_rx,
         };
 
-        let client = RealtimeWebsocketClient::new(api_provider);
+        let client = RealtimeWebsocketClient::new(api_provider, http_client_factory);
         let client = match realtime_sideband_base_url {
             Some(base_url) => client.with_webrtc_sideband_base_url(base_url),
             None => client,
@@ -732,8 +767,8 @@ impl RealtimeConversationManager {
             (task, None)
         };
 
-        let mut guard = self.state.lock().await;
-        *guard = Some(ConversationState {
+        let mut state = self.state.lock().await;
+        state.conversation = Some(ConversationState {
             audio_tx,
             text_tx,
             session_kind,
@@ -744,6 +779,7 @@ impl RealtimeConversationManager {
             route_handoffs: Arc::clone(&route_handoffs),
             stop_token,
         });
+        state.mode_instructions = Some(mode_instructions);
         Ok(RealtimeStartOutput {
             realtime_active,
             route_handoffs,
@@ -761,7 +797,7 @@ impl RealtimeConversationManager {
         let mut fanout_task = Some(fanout_task);
         {
             let mut guard = self.state.lock().await;
-            if let Some(state) = guard.as_mut()
+            if let Some(state) = guard.conversation.as_mut()
                 && Arc::ptr_eq(&state.realtime_active, realtime_active)
             {
                 state.fanout_task = fanout_task.take();
@@ -777,8 +813,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn finish_if_active(&self, realtime_active: &Arc<AtomicBool>) {
         let state = {
             let mut guard = self.state.lock().await;
-            match guard.as_ref() {
-                Some(state) if Arc::ptr_eq(&state.realtime_active, realtime_active) => guard.take(),
+            match guard.conversation.as_ref() {
+                Some(state) if Arc::ptr_eq(&state.realtime_active, realtime_active) => {
+                    guard.conversation.take()
+                }
                 _ => None,
             }
         };
@@ -791,7 +829,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn audio_in(&self, frame: RealtimeAudioFrame) -> CodexResult<()> {
         let sender = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.audio_tx.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.audio_tx.clone())
         };
 
         let Some(sender) = sender else {
@@ -816,6 +857,7 @@ impl RealtimeConversationManager {
         let sender = {
             let guard = self.state.lock().await;
             guard
+                .conversation
                 .as_ref()
                 .map(|state| (state.text_tx.clone(), state.session_kind))
         };
@@ -837,6 +879,35 @@ impl RealtimeConversationManager {
         Ok(())
     }
 
+    pub(crate) async fn send_reasoning_status(&self, text: &str) -> CodexResult<()> {
+        let handoff = self
+            .state
+            .lock()
+            .await
+            .conversation
+            .as_ref()
+            .map(|state| state.handoff.clone());
+        let Some(handoff) = handoff.filter(|handoff| {
+            handoff.backend_reasoning_status
+                && !handoff.client_managed_handoffs
+                && handoff.event_parser == RealtimeEventParser::FramelessBidi
+        }) else {
+            return Ok(());
+        };
+        let Some(handoff_id) = handoff.stream.lock().await.active_handoff.clone() else {
+            return Ok(());
+        };
+        let text = take_bytes_at_char_boundary(text, REALTIME_REASONING_STATUS_MAX_BYTES);
+        handoff
+            .output_tx
+            .send(RealtimeOutbound::QuietReasoningStatus {
+                handoff_id,
+                text: format!("[STATUS] {text}"),
+            })
+            .await
+            .map_err(|_| CodexErr::InvalidRequest("conversation is not running".to_string()))
+    }
+
     pub(crate) async fn handoff_out(
         &self,
         output_text: String,
@@ -844,7 +915,7 @@ impl RealtimeConversationManager {
     ) -> CodexResult<()> {
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -939,7 +1010,10 @@ impl RealtimeConversationManager {
     ) {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return;
@@ -997,7 +1071,7 @@ impl RealtimeConversationManager {
         }
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -1029,7 +1103,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn finish_handoff_stream_item(&self, item_id: &str) -> bool {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return false;
@@ -1063,7 +1140,7 @@ impl RealtimeConversationManager {
 
         let handoff = {
             let guard = self.state.lock().await;
-            let Some(state) = guard.as_ref() else {
+            let Some(state) = guard.conversation.as_ref() else {
                 return Err(CodexErr::InvalidRequest(
                     "conversation is not running".to_string(),
                 ));
@@ -1084,7 +1161,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn handoff_complete(&self) -> CodexResult<()> {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         let Some(handoff) = handoff else {
             return Ok(());
@@ -1124,7 +1204,10 @@ impl RealtimeConversationManager {
     pub(crate) async fn clear_active_handoff(&self) {
         let handoff = {
             let guard = self.state.lock().await;
-            guard.as_ref().map(|state| state.handoff.clone())
+            guard
+                .conversation
+                .as_ref()
+                .map(|state| state.handoff.clone())
         };
         if let Some(handoff) = handoff {
             {
@@ -1139,7 +1222,7 @@ impl RealtimeConversationManager {
     pub(crate) async fn shutdown(&self) -> CodexResult<()> {
         let state = {
             let mut guard = self.state.lock().await;
-            guard.take()
+            guard.conversation.take()
         };
 
         if let Some(state) = state {
@@ -1204,6 +1287,7 @@ pub(crate) async fn handle_start(
 
 struct PreparedRealtimeConversationStart {
     api_provider: ApiProvider,
+    http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
@@ -1211,6 +1295,7 @@ struct PreparedRealtimeConversationStart {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    backend_reasoning_status: bool,
     codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_start_instructions: Option<String>,
     realtime_end_instructions: Option<String>,
@@ -1237,8 +1322,17 @@ async fn prepare_realtime_start(
         .model_client
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
-    let auth = auth_manager.auth().await;
     let config = sess.get_config().await;
+    let (auth, http_client_factory) = match auth_manager.auth_with_http_client_factory().await {
+        Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
+            Some(auth),
+            config
+                .http_client_factory()
+                .with_network_policy(captured_factory.network_policy().clone()),
+        ),
+        Some((auth, _)) => (Some(auth), config.http_client_factory()),
+        None => (None, config.http_client_factory()),
+    };
     let transport = params
         .transport
         .clone()
@@ -1345,6 +1439,7 @@ async fn prepare_realtime_start(
     }
     Ok(PreparedRealtimeConversationStart {
         api_provider,
+        http_client_factory,
         realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
         client_managed_handoffs: params.client_managed_handoffs,
@@ -1352,6 +1447,7 @@ async fn prepare_realtime_start(
         codex_responses_as_items: params.codex_responses_as_items,
         codex_response_item_prefix: params.codex_response_item_prefix,
         codex_response_handoff_mode: params.codex_response_handoff_mode,
+        backend_reasoning_status: params.backend_reasoning_status,
         codex_response_handoff_channel_prefixes: params.codex_response_handoff_channel_prefixes,
         realtime_start_instructions: params.realtime_start_instructions,
         realtime_end_instructions: params.realtime_end_instructions,
@@ -1567,6 +1663,7 @@ async fn handle_start_inner(
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
         api_provider,
+        http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
@@ -1574,6 +1671,7 @@ async fn handle_start_inner(
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
+        backend_reasoning_status,
         codex_response_handoff_channel_prefixes,
         realtime_start_instructions,
         realtime_end_instructions,
@@ -1595,6 +1693,7 @@ async fn handle_start_inner(
     };
     let start = RealtimeStart {
         api_provider,
+        http_client_factory,
         realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
@@ -1602,6 +1701,7 @@ async fn handle_start_inner(
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
+        backend_reasoning_status,
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
@@ -2183,6 +2283,7 @@ async fn handle_handoff_output(
     let handoff_output = handoff_output.context("handoff output channel closed")?;
     let result = match event_parser {
         RealtimeEventParser::V1 => match handoff_output {
+            RealtimeOutbound::QuietReasoningStatus { .. } => Ok(()),
             RealtimeOutbound::StandaloneHandoff { text, phase: _ } => {
                 writer
                     .send_standalone_handoff(STANDALONE_HANDOFF_ID.to_string(), text)
@@ -2224,6 +2325,18 @@ async fn handle_handoff_output(
             RealtimeOutbound::HandoffCompleteAck { .. } => Ok(()),
         },
         RealtimeEventParser::FramelessBidi => match handoff_output {
+            RealtimeOutbound::QuietReasoningStatus { handoff_id, text } => {
+                if handoff_state.stream.lock().await.active_handoff.as_deref() != Some(&handoff_id)
+                {
+                    return Ok(());
+                }
+                // An omitted channel defaults to speakable on this wire protocol.
+                writer
+                    .clone()
+                    .with_context_append_channel(RealtimeContextAppendChannel::Commentary)
+                    .send_conversation_handoff_append(handoff_id, text)
+                    .await
+            }
             RealtimeOutbound::StandaloneHandoff { text, phase } => {
                 v3_output_writer(
                     writer,
@@ -2291,6 +2404,7 @@ async fn handle_handoff_output(
             RealtimeOutbound::HandoffCompleteAck { .. } => Ok(()),
         },
         RealtimeEventParser::RealtimeV2 => match handoff_output {
+            RealtimeOutbound::QuietReasoningStatus { .. } => Ok(()),
             RealtimeOutbound::StandaloneHandoff { text, phase: _ } => {
                 if let Err(err) = writer
                     .send_conversation_item_create(text, ConversationTextRole::User)

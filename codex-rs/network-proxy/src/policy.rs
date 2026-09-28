@@ -90,6 +90,18 @@ fn ipv4_in_cidr(ip: Ipv4Addr, base: [u8; 4], prefix: u8) -> bool {
     (ip & mask) == (base & mask)
 }
 
+/// Private unicast ranges that may be reachable through an upstream VPN proxy.
+/// Loopback, link-local, and other special-use addresses retain their normal routing.
+pub(crate) fn is_private_network_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private() || ipv4_in_cidr(ip, [100, 64, 0, 0], /*prefix*/ 10),
+        IpAddr::V6(ip) => match ip.to_ipv4() {
+            Some(ip) => is_private_network_ip(IpAddr::V4(ip)),
+            None => ip.is_unique_local(),
+        },
+    }
+}
+
 fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4() {
         return is_non_public_ipv4(v4) || ip.is_loopback();

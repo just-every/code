@@ -189,11 +189,6 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
     }))?;
     append_rollout_item_to_path(
         &path,
-        &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings)),
-    )
-    .await?;
-    append_rollout_item_to_path(
-        &path,
         &RolloutItem::Compacted(CompactedItem {
             message: "compacted history".to_string(),
             replacement_history: Some(Vec::new()),
@@ -206,7 +201,13 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
+            resume_metadata: None,
         }),
+    )
+    .await?;
+    append_rollout_item_to_path(
+        &path,
+        &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings)),
     )
     .await?;
 
@@ -4315,6 +4316,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                 turn_id: Some(interrupted_turn_id.to_string()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
             }))?,
@@ -4433,6 +4435,8 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
     let rollout_dir = rollout_path.parent().expect("rollout parent directory");
     std::fs::create_dir_all(rollout_dir)?;
     let session_meta = SessionMeta {
+        creator_user_id: None,
+        creator_account_id: None,
         session_id: conversation_id.into(),
         id: conversation_id,
         forked_from_id: None,
@@ -5144,14 +5148,22 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
                 responses::ev_completed("resp-1"),
             ]),
         }],
-        vec![StreamingSseChunk {
-            gate: Some(running_turn_gate),
-            body: responses::sse(vec![
-                responses::ev_response_created("resp-2"),
-                responses::ev_assistant_message("msg-2", "Done"),
-                responses::ev_completed("resp-2"),
-            ]),
-        }],
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("resp-2"),
+                    responses::ev_message_item_added("msg-2", ""),
+                ]),
+            },
+            StreamingSseChunk {
+                gate: Some(running_turn_gate),
+                body: responses::sse(vec![
+                    responses::ev_assistant_message("msg-2", "Done"),
+                    responses::ev_completed("resp-2"),
+                ]),
+            },
+        ],
     ])
     .await;
     let codex_home = TempDir::new()?;
@@ -5215,6 +5227,20 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
         primary.read_stream_until_notification_message("turn/started"),
     )
     .await??;
+    // An assistant item starts after the user message has reached live history.
+    // The gated remainder of the response keeps the turn running during resume.
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let started: ItemStartedNotification =
+                primary.read_notification("item/started").await?;
+            if started.turn_id == running_turn.id
+                && matches!(started.item, ThreadItem::AgentMessage { .. })
+            {
+                return Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
 
     let resume_id = primary
         .send_thread_resume_request(ThreadResumeParams {
@@ -5267,6 +5293,13 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
         primary.read_response(metadata_resume_id),
     )
     .await??;
+    assert_eq!(metadata_resume.thread.id, thread.id);
+    assert_eq!(
+        metadata_resume.thread.status,
+        ThreadStatus::Active {
+            active_flags: Vec::new()
+        }
+    );
     assert!(metadata_resume.thread.turns.is_empty());
     assert!(metadata_resume.initial_turns_page.is_none());
     assert!(
@@ -5278,6 +5311,42 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
         .is_err(),
         "hot paginated resume should wait for a real token usage update"
     );
+
+    for (exclude_turns, items_view) in [
+        (true, None),
+        (true, Some(TurnItemsView::Full)),
+        (false, Some(TurnItemsView::Summary)),
+    ] {
+        let resume_id = primary
+            .send_thread_resume_request(ThreadResumeParams {
+                thread_id: thread.id.clone(),
+                exclude_turns,
+                initial_turns_page: Some(ThreadResumeInitialTurnsPageParams {
+                    limit: Some(1),
+                    sort_direction: Some(SortDirection::Desc),
+                    items_view,
+                }),
+                ..Default::default()
+            })
+            .await?;
+        let resumed: ThreadResumeResponse =
+            timeout(DEFAULT_READ_TIMEOUT, primary.read_response(resume_id)).await??;
+        let page = resumed.initial_turns_page.expect("initial turns page");
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, running_turn.id);
+        assert_eq!(page.data[0].status, TurnStatus::InProgress);
+        assert_eq!(
+            page.data[0].items_view,
+            items_view.unwrap_or(TurnItemsView::Summary)
+        );
+        assert!(!page.data[0].items.is_empty());
+        if !exclude_turns {
+            let full_turn = resumed.thread.turns.last().expect("full active turn");
+            assert_eq!(full_turn.id, running_turn.id);
+            assert_eq!(full_turn.items_view, TurnItemsView::Full);
+            assert!(!full_turn.items.is_empty());
+        }
+    }
 
     let asc_resume_id = primary
         .send_thread_resume_request(ThreadResumeParams {

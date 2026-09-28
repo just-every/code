@@ -7,7 +7,7 @@
 
 use crate::DbTelemetry;
 use crate::migrations::repair_legacy_recency_migration_version;
-use crate::runtime::RuntimeDbInitError;
+use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -16,9 +16,7 @@ use sqlx::ConnectOptions;
 use sqlx::Error;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::sqlite::SqliteSynchronous;
 use std::path::Path;
@@ -40,6 +38,9 @@ struct RuntimeDbSpec {
     kind: DbKind,
     open_phase: &'static str,
     migrate_phase: &'static str,
+    /// Opt in only after auditing writers for deferred read-to-write upgrades:
+    /// an intervening reclamation commit can make those fail with SQLITE_BUSY_SNAPSHOT.
+    background_reclamation: bool,
 }
 
 impl RuntimeDbSpec {
@@ -54,6 +55,7 @@ const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::State,
     open_phase: "open_state",
     migrate_phase: "migrate_state",
+    background_reclamation: false,
 };
 
 const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -62,6 +64,8 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::Logs,
     open_phase: "open_logs",
     migrate_phase: "migrate_logs",
+    // Log transactions write before reading, so they already hold the writer lock.
+    background_reclamation: true,
 };
 
 const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -70,6 +74,7 @@ const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::Goals,
     open_phase: "open_goals",
     migrate_phase: "migrate_goals",
+    background_reclamation: false,
 };
 
 const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -78,11 +83,13 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::Memories,
     open_phase: "open_memories",
     migrate_phase: "migrate_memories",
+    background_reclamation: false,
 };
 
 const MEMORIES_V2_DB: RuntimeDbSpec = RuntimeDbSpec {
     label: "memories v2 DB",
     filename: "memories_v2_1.sqlite",
+    background_reclamation: false,
     ..MEMORIES_DB
 };
 
@@ -92,6 +99,7 @@ const QUEUE_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::Queue,
     open_phase: "open_queue",
     migrate_phase: "migrate_queue",
+    background_reclamation: false,
 };
 
 const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -100,6 +108,7 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     kind: DbKind::ThreadHistory,
     open_phase: "open_thread_history",
     migrate_phase: "migrate_thread_history",
+    background_reclamation: false,
 };
 
 const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
@@ -116,6 +125,7 @@ const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
 pub struct RuntimeDbPath {
     pub label: &'static str,
     pub path: PathBuf,
+    pub(crate) background_reclamation: bool,
 }
 
 /// Resolved configuration shared by all Codex SQLite connections.
@@ -187,6 +197,7 @@ impl SqliteConfig {
             .map(|spec| RuntimeDbPath {
                 label: spec.label,
                 path: spec.path(self.home()),
+                background_reclamation: spec.background_reclamation,
             })
             .collect()
     }
@@ -299,13 +310,39 @@ impl SqliteConfig {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
             .busy_timeout(Duration::from_secs(5))
             .log_statements(LevelFilter::Off);
         SqlitePoolOptions::new()
             .max_connections(5)
+            .after_connect(|connection, _metadata| {
+                Box::pin(async move {
+                    let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+                        .fetch_one(&mut *connection)
+                        .await?;
+                    // The setter takes the writer lock even when the mode is unchanged.
+                    // Initialize it before WAL creates the first database page. Existing
+                    // NONE databases require VACUUM to convert; leave those alone.
+                    let empty = if mode == 0 {
+                        sqlx::query_scalar::<_, bool>(
+                            "SELECT NOT EXISTS (SELECT 1 FROM sqlite_schema)",
+                        )
+                        .fetch_one(&mut *connection)
+                        .await?
+                    } else {
+                        false
+                    };
+                    if mode == 1 || empty {
+                        sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+                            .execute(&mut *connection)
+                            .await?;
+                    }
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_with(options)
             .await
     }

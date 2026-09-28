@@ -3,6 +3,7 @@
 //! checks the previous model when it applies the final selection.
 
 use super::*;
+use crate::style::accent_color;
 
 impl ChatWidget {
     /// Offer the flourish only for a successful primary thread/start without initial work.
@@ -202,15 +203,20 @@ impl ChatWidget {
             let startup_tooltip_override = self.startup_tooltip_override.take();
             let show_fast_status = self
                 .should_show_fast_status(&model_for_header, self.effective_service_tier.as_deref());
-            let session_info_cell = history_cell::new_session_info(
+            let mut session_info_cell = history_cell::new_session_info(
                 &self.config,
                 &self.local_settings,
                 &model_for_header,
+                self.model_catalog.display_name(&session.model),
                 &session,
                 self.show_welcome_banner,
                 startup_tooltip_override,
                 self.plan_type,
                 show_fast_status,
+            );
+            history_cell::set_session_greeting(
+                &mut session_info_cell,
+                &self.empty_state_animation.borrow().greeting,
             );
             self.apply_session_info_cell(session_info_cell);
         } else if self
@@ -283,9 +289,9 @@ impl ChatWidget {
             vec![
                 "• ".dim(),
                 "Thread forked from ".into(),
-                name.cyan(),
+                name.fg(accent_color()),
                 " (".into(),
-                forked_from_id_text.cyan(),
+                forked_from_id_text.fg(accent_color()),
                 ")".into(),
             ]
             .into()
@@ -293,7 +299,7 @@ impl ChatWidget {
             vec![
                 "• ".dim(),
                 "Thread forked from ".into(),
-                forked_from_id_text.cyan(),
+                forked_from_id_text.fg(accent_color()),
             ]
             .into()
         };

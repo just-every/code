@@ -33,8 +33,6 @@ fn analytics_tools_reflow_and_keep_independent_days() {
         (29, 28, [0, 0, 1])
     );
     press(&mut view, KeyCode::Char('r'));
-    press(&mut view, KeyCode::Char('z'));
-    press(&mut view, KeyCode::Char('z'));
     assert_eq!(
         (
             view.sections[Section::Plugins].cursor,
@@ -43,7 +41,6 @@ fn analytics_tools_reflow_and_keep_independent_days() {
         ),
         (6, 5, Some(5))
     );
-    insta::assert_snapshot!(format!("{wide}\n{narrow}"));
 }
 
 #[test]
@@ -75,7 +72,6 @@ fn analytics_tools_handle_empty_days_and_independent_failures() {
     assert!(partial.contains("Skills could not be loaded"));
     press(&mut view, KeyCode::Char('4'));
     assert!(screen(&mut view, /*width*/ 140, /*height*/ 44).contains("186 calls"));
-    insta::assert_snapshot!(format!("{empty}\n{missing}\n{partial}"));
 }
 
 #[test]

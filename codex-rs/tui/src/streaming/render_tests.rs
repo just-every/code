@@ -102,7 +102,13 @@ fn incremental_render_keeps_final_block_mutable_and_matches_full_render() {
         "| --- | --- |\n",
         "| alpha | beta |\n",
     ];
-    let (source, render) = assert_rich_stream_matches_full_render(&chunks, Some(48));
+    let (source, render) = crate::terminal_palette::with_test_default_colors(
+        crate::terminal_probe::DefaultColors {
+            fg: (220, 220, 220),
+            bg: (20, 20, 20),
+        },
+        || assert_rich_stream_matches_full_render(&chunks, /*width*/ Some(48)),
+    );
 
     assert!(render.stable_source_len > 0);
     assert!(render.stable_source_len < source.len());
@@ -122,7 +128,13 @@ fn incremental_file_citations_preserve_metadata_unicode_and_markdown() {
     .map(|(filename, prefix)| {
         let tail = format!("path=\"{}\"}}\n", cwd.join(filename).display());
         let chunks = ["# Output\n\n", prefix, &tail, "\n", "Continue.\n"];
-        let (_, render) = assert_rich_stream_matches_full_render(&chunks, Some(80));
+        let (_, render) = crate::terminal_palette::with_test_default_colors(
+            crate::terminal_probe::DefaultColors {
+                fg: (220, 220, 220),
+                bg: (20, 20, 20),
+            },
+            || assert_rich_stream_matches_full_render(&chunks, /*width*/ Some(80)),
+        );
 
         render.lines
     });
@@ -156,6 +168,7 @@ fn growing_single_top_level_blocks_render_and_scan_in_one_pass() {
                 &source,
                 width,
                 Some(cwd.as_path()),
+                crate::markdown_render::ListSpacing::AfterMultiline,
             );
             assert_eq!(pending.last_top_level_block_start, None);
             assert_eq!(render.lines, pending.lines);
@@ -186,6 +199,59 @@ fn incremental_raw_render_preserves_blank_lines() {
         lines_to_plain_strings(&render.lines),
         vec!["alpha", "", "beta", ""],
     );
+}
+
+#[test]
+fn compact_list_spacing_keeps_incremental_and_full_renders_aligned() {
+    use crate::markdown_render::ListSpacing;
+
+    let cwd = test_cwd();
+    for mode in [HistoryRenderMode::Rich, HistoryRenderMode::Raw] {
+        let mut render = StreamingRender::new();
+        render.list_spacing = ListSpacing::Compact;
+        let mut source = String::new();
+        for chunk in [
+            "- Short\n",
+            "- A sibling with enough words to wrap across rows\n",
+            "- Last\n",
+            "\nAfter the list.\n\n",
+            "| Name | Value |\n| --- | --- |\n| A | B |\n",
+            "\n- Nested\n  - One\n  - Two\n- End\n",
+        ] {
+            append(&mut render, &mut source, chunk, Some(24), &cwd, mode);
+            assert_eq!(
+                render.lines,
+                super::render_source_with_list_spacing(
+                    &source,
+                    Some(24),
+                    &cwd,
+                    mode,
+                    /*inline_visualization_context*/ None,
+                    ListSpacing::Compact,
+                )
+            );
+        }
+        for width in [80, 24] {
+            render.recompute(
+                &source,
+                Some(width),
+                &cwd,
+                mode,
+                /*inline_visualization_context*/ None,
+            );
+            assert_eq!(
+                render.lines,
+                super::render_source_with_list_spacing(
+                    &source,
+                    Some(width),
+                    &cwd,
+                    mode,
+                    /*inline_visualization_context*/ None,
+                    ListSpacing::Compact,
+                )
+            );
+        }
+    }
 }
 
 #[test]

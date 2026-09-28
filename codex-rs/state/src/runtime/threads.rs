@@ -17,6 +17,8 @@ SELECT
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.originator,
+    threads.creator_user_id,
+    threads.creator_account_id,
     threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
@@ -72,7 +74,7 @@ WHERE threads.id = ?
     ) -> anyhow::Result<bool> {
         // Legacy threads display `title`, then fall back to the name index. Paginated threads
         // display `name`; `title` remains derived metadata used for search. Preserve an existing
-        // `name`, otherwise carry over the legacy display name.
+        // `name`, unless it is the Guardian default seeded by metadata cleanup.
         let result = sqlx::query(
             r#"
 UPDATE threads
@@ -80,11 +82,16 @@ SET
     history_mode = 'paginated',
     name = CASE
         WHEN name IS NULL OR trim(name) = '' THEN ?
+        WHEN history_mode = 'legacy'
+            AND source = '{"subagent":{"other":"guardian"}}'
+            AND name = ? THEN COALESCE(?, name)
         ELSE name
     END
 WHERE id = ?
             "#,
         )
+        .bind(legacy_name)
+        .bind(crate::GUARDIAN_THREAD_TITLE)
         .bind(legacy_name)
         .bind(thread_id.to_string())
         .execute(self.pool.as_ref())
@@ -621,6 +628,8 @@ INSERT INTO threads (
     recency_at_ms,
     source,
     originator,
+    creator_user_id,
+    creator_account_id,
     history_mode,
     thread_source,
     agent_nickname,
@@ -649,7 +658,7 @@ INSERT INTO threads (
     memory_mode,
     project_id,
     daybreak_enabled
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -663,6 +672,8 @@ ON CONFLICT(id) DO NOTHING
         .bind(datetime_to_epoch_millis(recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.originator.as_deref())
+        .bind(metadata.creator_user_id.as_deref())
+        .bind(metadata.creator_account_id.as_deref())
         .bind(metadata.history_mode.as_str())
         .bind(
             metadata
@@ -917,6 +928,8 @@ INSERT INTO threads (
     recency_at_ms,
     source,
     originator,
+    creator_user_id,
+    creator_account_id,
     history_mode,
     thread_source,
     agent_nickname,
@@ -945,7 +958,7 @@ INSERT INTO threads (
     memory_mode,
     project_id,
     daybreak_enabled
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -956,6 +969,8 @@ ON CONFLICT(id) DO UPDATE SET
     recency_at_ms = threads.recency_at_ms,
     source = excluded.source,
     originator = COALESCE(threads.originator, excluded.originator),
+    creator_user_id = COALESCE(threads.creator_user_id, excluded.creator_user_id),
+    creator_account_id = COALESCE(threads.creator_account_id, excluded.creator_account_id),
     -- Paginated history is a one-way promotion; stale legacy metadata must not downgrade it.
     history_mode = CASE
         WHEN threads.history_mode = 'paginated' THEN threads.history_mode
@@ -993,6 +1008,8 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(datetime_to_epoch_millis(insert_recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.originator.as_deref())
+        .bind(metadata.creator_user_id.as_deref())
+        .bind(metadata.creator_account_id.as_deref())
         .bind(metadata.history_mode.as_str())
         .bind(
             metadata
@@ -1300,6 +1317,8 @@ SELECT
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.originator,
+    threads.creator_user_id,
+    threads.creator_account_id,
     threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
@@ -1414,7 +1433,7 @@ fn push_thread_filters_with_preview<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-    if !include_empty_preview && !matches!(section, Some(Some(_))) {
+    if !archived_only && !include_empty_preview && !matches!(section, Some(Some(_))) {
         builder.push(" AND threads.preview <> ''");
     }
     match section {
@@ -1672,6 +1691,62 @@ mod tests {
                 .history_mode,
             ThreadHistoryMode::Paginated
         );
+    }
+
+    #[tokio::test]
+    async fn archived_threads_without_previews_remain_listed() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .unwrap();
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000045").unwrap();
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        metadata.preview = Some(String::new());
+        metadata.first_user_message = None;
+        runtime.upsert_thread(&metadata).await.unwrap();
+        let filters = |archived_only| ThreadFilterOptions {
+            archived_only,
+            allowed_sources: &[],
+            model_providers: None,
+            cwd_filters: None,
+            section: None,
+            project_id: None,
+            anchor: None,
+            sort_key: SortKey::CreatedAt,
+            sort_direction: SortDirection::Desc,
+            search_term: None,
+        };
+        let active = runtime
+            .list_threads(/*page_size*/ 10, filters(/*archived_only*/ false))
+            .await
+            .unwrap();
+        assert!(active.items.is_empty());
+
+        runtime
+            .mark_archived(thread_id, &metadata.rollout_path, Utc::now())
+            .await
+            .unwrap();
+        let archived = runtime
+            .list_threads(/*page_size*/ 10, filters(/*archived_only*/ true))
+            .await
+            .unwrap();
+        assert_eq!(
+            archived
+                .items
+                .iter()
+                .map(|thread| thread.id)
+                .collect::<Vec<_>>(),
+            vec![thread_id]
+        );
+        assert_eq!(archived.next_anchor, None);
+        let active = runtime
+            .list_threads(/*page_size*/ 10, filters(/*archived_only*/ false))
+            .await
+            .unwrap();
+        assert!(active.items.is_empty());
     }
 
     #[tokio::test]
@@ -2359,6 +2434,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archived_thread_pages_use_ordered_indexes_without_sorting() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let anchor = Anchor {
+            ts: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("valid timestamp"),
+            id: Some(ThreadId::new()),
+        };
+        for (sort_key, expected_index) in [
+            (SortKey::CreatedAt, "idx_threads_archive_created_at_ms"),
+            (SortKey::UpdatedAt, "idx_threads_archive_updated_at_ms"),
+            (SortKey::RecencyAt, "idx_threads_archive_recency_at_ms"),
+        ] {
+            for sort_direction in [SortDirection::Asc, SortDirection::Desc] {
+                for anchor in [None, Some(&anchor)] {
+                    let mut builder = QueryBuilder::<Sqlite>::new("EXPLAIN QUERY PLAN ");
+                    push_list_threads_query(
+                        &mut builder,
+                        ThreadFilterOptions {
+                            archived_only: true,
+                            allowed_sources: &[],
+                            model_providers: None,
+                            cwd_filters: None,
+                            section: None,
+                            project_id: None,
+                            anchor,
+                            sort_key,
+                            sort_direction,
+                            search_term: None,
+                        },
+                        /*relation_filter*/ None,
+                        /*limit*/ 2,
+                    );
+                    let details = builder
+                        .build()
+                        .fetch_all(runtime.pool.as_ref())
+                        .await
+                        .expect("load archive query plan")
+                        .into_iter()
+                        .map(|row| row.get::<String, _>("detail"))
+                        .collect::<Vec<_>>();
+                    assert!(
+                        details.iter().any(|detail| detail.contains(expected_index)),
+                        "archive page did not use {expected_index}: {details:?}"
+                    );
+                    assert!(
+                        !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
+                        "archive page needed a temporary sort: {details:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn list_threads_by_relation_filters_spawn_graph_with_keyset_pagination() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
@@ -2595,6 +2729,8 @@ mod tests {
         );
         let items = vec![RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
+                creator_user_id: None,
+                creator_account_id: None,
                 session_id: thread_id.into(),
                 id: thread_id,
                 forked_from_id: None,
@@ -2667,6 +2803,8 @@ mod tests {
         );
         let items = vec![RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
+                creator_user_id: None,
+                creator_account_id: None,
                 session_id: thread_id.into(),
                 id: thread_id,
                 forked_from_id: None,
@@ -2750,6 +2888,8 @@ mod tests {
 
         let mut rollout_metadata = metadata.clone();
         rollout_metadata.originator = Some("recorded_client".to_string());
+        rollout_metadata.creator_user_id = Some("creator-user".to_string());
+        rollout_metadata.creator_account_id = Some("creator-account".to_string());
         rollout_metadata.git_sha = Some("rollout-sha".to_string());
         rollout_metadata.git_branch = Some("rollout-branch".to_string());
         rollout_metadata.git_origin_url = Some(
@@ -2777,6 +2917,8 @@ mod tests {
 
         for incoming_originator in [None, Some("resume_client")] {
             rollout_metadata.originator = incoming_originator.map(str::to_owned);
+            rollout_metadata.creator_user_id = incoming_originator.map(str::to_owned);
+            rollout_metadata.creator_account_id = incoming_originator.map(str::to_owned);
             runtime
                 .upsert_thread(&rollout_metadata)
                 .await
@@ -2787,6 +2929,13 @@ mod tests {
                 .expect("thread should load")
                 .expect("thread should exist");
             assert_eq!(persisted.originator.as_deref(), Some("recorded_client"));
+            assert_eq!(
+                (
+                    persisted.creator_user_id.as_deref(),
+                    persisted.creator_account_id.as_deref()
+                ),
+                (Some("creator-user"), Some("creator-account")),
+            );
         }
     }
 

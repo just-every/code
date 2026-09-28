@@ -16,6 +16,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_api::SharedAuthProvider;
+use codex_config::McpServerOAuthConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
@@ -31,7 +32,6 @@ use rmcp::model::ClientNotification;
 use rmcp::model::ClientRequest;
 use rmcp::model::ContentBlock;
 use rmcp::model::CustomNotification;
-use rmcp::model::CustomRequest;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
@@ -89,6 +89,7 @@ use crate::oauth::StoredOAuthTokens;
 use crate::oauth::install_tokens_in_manager;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth::validate_refresh_token_issuer;
+use crate::oauth_client_credentials::OAuthClientCredentials;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::protocol_mode::McpProtocolMode;
@@ -163,6 +164,7 @@ enum TransportRecipe {
         bearer_token: Option<StreamableHttpBearerToken>,
         http_headers: Option<HashMap<String, String>>,
         env_http_headers: Option<HashMap<String, String>>,
+        oauth_config: Option<Arc<McpServerOAuthConfig>>,
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         pinned_credential_store: Arc<OnceLock<ResolvedOAuthCredentialStore>>,
@@ -319,6 +321,7 @@ pub enum Elicitation {
         requested_schema: serde_json::Value,
     },
     UserVerification {
+        meta: Option<serde_json::Value>,
         title: String,
         description: String,
         challenge: String,
@@ -329,10 +332,11 @@ impl Elicitation {
     pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         match self {
             Self::Mcp(request) => request.meta().map(|meta| &meta.0.0),
-            Self::OpenAiForm { meta, .. } | Self::OpenAiElicitationForm { meta, .. } => {
+            Self::OpenAiForm { meta, .. }
+            | Self::OpenAiElicitationForm { meta, .. }
+            | Self::UserVerification { meta, .. } => {
                 meta.as_ref().and_then(serde_json::Value::as_object)
             }
-            Self::UserVerification { .. } => None,
         }
     }
 }
@@ -566,6 +570,7 @@ impl RmcpClient {
             bearer_token.map(StreamableHttpBearerToken::Resolved),
             http_headers,
             env_http_headers,
+            /*oauth_config*/ None,
             store_mode,
             keyring_backend_kind,
             http_client,
@@ -584,6 +589,7 @@ impl RmcpClient {
         bearer_token: Option<StreamableHttpBearerToken>,
         http_headers: Option<HashMap<String, String>>,
         env_http_headers: Option<HashMap<String, String>>,
+        oauth_config: Option<McpServerOAuthConfig>,
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         http_client: Arc<dyn HttpClient>,
@@ -598,6 +604,7 @@ impl RmcpClient {
             bearer_token,
             http_headers,
             env_http_headers,
+            oauth_config: oauth_config.map(Arc::new),
             store_mode,
             keyring_backend_kind,
             pinned_credential_store: Arc::new(OnceLock::new()),
@@ -685,9 +692,10 @@ impl RmcpClient {
 
     pub async fn list_tools(
         &self,
-        mut params: Option<PaginatedRequestParams>,
+        params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListToolsResult> {
+        let mut params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
         if self.requires_read_only_tools {
             self.apply_read_only_tools_meta(&mut params.get_or_insert_default().meta);
@@ -746,6 +754,7 @@ impl RmcpClient {
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListResourcesResult> {
+        let params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
         let result = self
             .run_service_operation("resources/list", timeout, move |service| {
@@ -762,6 +771,7 @@ impl RmcpClient {
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListResourceTemplatesResult> {
+        let params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
         let result = self
             .run_service_operation("resources/templates/list", timeout, move |service| {
@@ -778,6 +788,8 @@ impl RmcpClient {
         params: ReadResourceRequestParams,
         timeout: Option<Duration>,
     ) -> Result<ReadResourceResult> {
+        let mut params = params;
+        params.meta = crate::trace_context::with_current_trace(params.meta);
         self.refresh_oauth_if_needed().await?;
         let requested_modern = self.protocol_mode == McpProtocolMode::V20260728;
         let result = self
@@ -848,6 +860,7 @@ impl RmcpClient {
             None => None,
         };
         self.apply_read_only_tools_meta(&mut meta);
+        let meta = crate::trace_context::with_current_trace(meta);
         let mut rmcp_params = CallToolRequestParams::new(name);
         rmcp_params.arguments = arguments;
         let requested_modern = self.protocol_mode == McpProtocolMode::V20260728;
@@ -966,10 +979,9 @@ impl RmcpClient {
             .run_service_operation("requests/custom", timeout, move |service| {
                 let params = params.clone();
                 async move {
+                    let request = crate::trace_context::traced_custom_request(method, params);
                     service
-                        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-                            method, params,
-                        )))
+                        .send_request(ClientRequest::CustomRequest(request))
                         .await
                 }
                 .boxed()
@@ -986,7 +998,7 @@ impl RmcpClient {
     ) -> Result<CancellableEventStreamRequest> {
         let service = self.service().await?;
         let (sender, notifications) = event_notification_channel();
-        let mut request = CustomRequest::new("events/stream", params);
+        let mut request = crate::trace_context::traced_custom_request("events/stream", params);
         request.extensions.insert(sender);
         let handle = service
             .peer()
@@ -1097,6 +1109,7 @@ impl RmcpClient {
                 bearer_token,
                 http_headers,
                 env_http_headers,
+                oauth_config,
                 store_mode,
                 keyring_backend_kind,
                 pinned_credential_store,
@@ -1128,6 +1141,7 @@ impl RmcpClient {
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {
+                    OAuthClientCredentials::resolve(oauth_config.as_deref())?;
                     let oauth_server_name = server_name.clone();
                     let oauth_url = url.clone();
                     let oauth_store_mode = *store_mode;
@@ -1192,6 +1206,7 @@ impl RmcpClient {
                         *redirect_mode,
                         *oauth_refresh_mode,
                         Arc::clone(initialize_deadline),
+                        oauth_config.as_deref(),
                     )
                     .await
                     {
@@ -1590,7 +1605,10 @@ async fn create_oauth_transport_and_runtime(
     redirect_mode: StreamableHttpRedirectMode,
     oauth_refresh_mode: McpOAuthRefreshMode,
     initialize_deadline: Arc<StdMutex<Option<Instant>>>,
+    oauth_config: Option<&McpServerOAuthConfig>,
 ) -> Result<PendingTransport> {
+    OAuthClientCredentials::resolve(oauth_config)?
+        .validate_stored_client_id(&initial_tokens.client_id)?;
     let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_with_redirect_mode(
         http_client.clone(),
         default_headers.clone(),
@@ -1619,13 +1637,14 @@ async fn create_oauth_transport_and_runtime(
         runtime_tokens.token_response.0.set_refresh_token(None);
         runtime_tokens.issuer = None;
     }
-    install_tokens_in_manager(&mut manager, &runtime_tokens).await?;
+    install_tokens_in_manager(&mut manager, &runtime_tokens, oauth_config).await?;
     let coordinated_store = match oauth_refresh_mode {
         McpOAuthRefreshMode::Coordinated if !use_stored_access_token_only => {
             let store = OAuthCredentialStore::new(
                 initial_tokens.clone(),
                 credential_store,
                 DefaultKeyringStore,
+                oauth_config.cloned(),
             );
             manager.set_credential_store(store.clone());
             Some(store)
@@ -1669,6 +1688,7 @@ async fn create_oauth_transport_and_runtime(
             auth_manager,
             credential_store,
             Some(initial_tokens),
+            oauth_config.cloned(),
         )),
     };
 

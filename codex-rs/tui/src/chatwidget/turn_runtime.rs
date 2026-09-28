@@ -2,6 +2,7 @@
 //!
 //! This module owns task start/completion state, runtime metrics, plan updates,
 //! and completion metadata rendering.
+//! Terminal errors retain live question drafts across queued input delivery.
 
 use super::*;
 
@@ -143,7 +144,10 @@ impl ChatWidget {
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_and_plan_streams();
+        self.flush_interrupt_activity();
+        self.finish_dynamic_activity();
         self.flush_unified_exec_wait_streak();
+        self.flush_completed_tool_activity();
         if !from_replay {
             self.collect_runtime_metrics_delta();
         }
@@ -310,6 +314,8 @@ impl ChatWidget {
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
         self.flush_answer_and_plan_streams();
+        self.flush_interrupt_activity();
+        self.finish_dynamic_activity();
         if self.status_state.reasoning_resume_turn_id.is_some() {
             self.on_agent_reasoning_final();
         }
@@ -358,7 +364,7 @@ impl ChatWidget {
             message
         };
 
-        self.add_to_history(history_cell::new_warning_event(message));
+        self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
         self.maybe_send_next_queued_input();
     }
@@ -464,12 +470,19 @@ impl ChatWidget {
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
     ) {
-        if codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) {
-            self.on_misalignment_policy_violation();
-        } else if codex_error_info
+        if codex_error_info
             .as_ref()
             .is_some_and(|info| self.handle_app_server_steer_rejected_error(info))
         {
+            return;
+        }
+        let question_drafts = if self.thread_usage.replaying_turn_completion {
+            None
+        } else {
+            self.take_question_drafts()
+        };
+        if codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) {
+            self.on_misalignment_policy_violation();
         } else if codex_error_info
             .as_ref()
             .is_some_and(is_app_server_cyber_policy_error)
@@ -500,6 +513,13 @@ impl ChatWidget {
             }
         } else {
             self.on_error(message);
+        }
+        if let Some(drafts) = question_drafts
+            && !self.has_misalignment_policy_violation()
+        {
+            self.bottom_pane.append_question_drafts(&drafts);
+            self.refresh_pending_input_preview();
+            self.request_redraw();
         }
     }
 
@@ -535,13 +555,5 @@ impl ChatWidget {
         self.transcript.last_plan_progress = (total > 0).then_some((completed, total));
         self.refresh_status_surfaces();
         self.add_to_history(history_cell::new_plan_update(update));
-    }
-
-    pub(super) fn interrupted_turn_message(&self, reason: TurnAbortReason) -> String {
-        if reason == TurnAbortReason::BudgetLimited {
-            return "Goal budget reached - the turn was stopped.".to_string();
-        }
-
-        "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.".to_string()
     }
 }

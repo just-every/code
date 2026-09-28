@@ -1,18 +1,22 @@
 use anyhow::Result;
+use anyhow::bail;
 use app_test_support::ChatGptIdTokenClaims;
 use app_test_support::TestAppServer;
 use app_test_support::encode_id_token;
 use app_test_support::to_response;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
+use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::time::Duration;
@@ -126,6 +130,26 @@ async fn recommended_plugins_after_external_login(
         LoginAccountResponse::ChatgptAuthTokens {}
     );
 
+    // Login clears the recommendation cache after its RPC response. Wait for completion so
+    // thread startup and the background refresh share the same cache generation.
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app_server.read_stream_until_notification_message("account/login/completed"),
+    )
+    .await??;
+    let ServerNotification::AccountLoginCompleted(payload) = notification.try_into()? else {
+        bail!("unexpected notification")
+    };
+    assert_eq!(
+        payload,
+        AccountLoginCompletedNotification {
+            login_id: None,
+            success: true,
+            error: None,
+            onboarding_entrypoint: None,
+        }
+    );
+
     let thread_id = app_server
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
@@ -170,9 +194,20 @@ async fn recommended_plugins_after_external_login(
                 .any(|text| text.contains("suggest a plugin"))
         })
         .expect("turn request");
-    let contextual_user_message = request.message_input_texts("user").join("\n");
-    assert!(contextual_user_message.contains("<recommended_plugins>"));
-    assert!(contextual_user_message.contains("- GitHub (github@openai-curated-remote)"));
+    let recommendations = request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("<recommended_plugins>"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recommendations,
+        vec![concat!(
+            "<recommended_plugins>\n",
+            "Here is a list of plugins that are available but not installed.\n\n",
+            "- GitHub (github@openai-curated-remote)\n",
+            "</recommended_plugins>",
+        )]
+    );
     let body = request.body_json();
     let tool_names = body
         .get("tools")

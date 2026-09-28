@@ -275,7 +275,7 @@ impl CommandExecManager {
                 &env,
                 &arg0,
                 size.unwrap_or_default(),
-                &[],
+                codex_utils_pty::ChildFds::Inherited(&[]),
             )
             .await
         } else if stream_stdin {
@@ -719,7 +719,6 @@ mod tests {
             SandboxType::WindowsRestrictedToken,
             vec![cwd],
             WindowsSandboxLevel::Disabled,
-            /*windows_sandbox_private_desktop*/ false,
             PermissionProfile::read_only(),
             /*arg0*/ None,
         )
@@ -837,7 +836,6 @@ mod tests {
                     SandboxType::None,
                     vec![cwd.clone()],
                     WindowsSandboxLevel::Disabled,
-                    /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
                     /*arg0*/ None,
                 ),
@@ -931,7 +929,6 @@ mod tests {
                     SandboxType::None,
                     vec![cwd],
                     WindowsSandboxLevel::Disabled,
-                    /*windows_sandbox_private_desktop*/ false,
                     PermissionProfile::read_only(),
                     /*arg0*/ None,
                 ),

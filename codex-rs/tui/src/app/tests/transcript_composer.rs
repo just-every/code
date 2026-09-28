@@ -4,6 +4,7 @@
 //! Analytics also preserves the composer and stays separate from transcript backtracking.
 
 use super::*;
+use crate::pager_overlay::TranscriptHistoryState;
 use crate::test_support::test_path_display;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -153,29 +154,32 @@ async fn analytics_menu_reopen_preserves_navigation_and_explicit_view_selects_su
             }
         })
         .await??;
-        let screen = buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(
-            &tui.terminal,
-        ));
-        screens.push(screen);
+        let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+        if explicit.is_none() {
+            let plugins = buffer
+                .content()
+                .windows("Plugins".len())
+                .find(|cells| {
+                    cells
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                        == "Plugins"
+                })
+                .expect("Plugins tab is visible");
+            let active = crate::bottom_pane::active_tab_style();
+            assert_eq!(
+                (plugins[0].fg, plugins[0].bg),
+                (active.fg.unwrap(), active.bg.unwrap()),
+                "the initial and reopened report must select Plugins"
+            );
+        }
+        screens.push(buffer_text(buffer));
         press_key(&mut app, &mut tui, &mut app_server, KeyCode::Char('q')).await?;
     }
     assert_eq!(screens[0], screens[1]);
-    assert!(screens[1].contains("[4 Plugins called]"));
-    assert!(screens[2].contains("[1 Summary]"));
+    assert!(screens[2].contains("Lifetime tokens"));
     assert!(screens[2].contains("Weekly"));
-    let snapshot = screens.join("\n\n");
-    let snapshot = snapshot
-        .lines()
-        .map(|line| {
-            if line.starts_with("  [7d]  30d  · ") {
-                "  [7d]  30d  · [date range]"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    insta::assert_snapshot!(snapshot);
     Ok(())
 }
 
@@ -267,11 +271,26 @@ async fn transcript_flag_off_preserves_viewer_and_backtracking() -> Result<()> {
     insta::assert_snapshot!("transcript_flag_off_viewer", buffer_text(&buffer));
     for (key, selected) in [
         (KeyCode::Esc, 1),
-        (KeyCode::Esc, 0),
+        (KeyCode::Left, 0),
         (KeyCode::Right, 1),
         (KeyCode::Right, 1),
     ] {
+        if let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() {
+            overlay.set_history_state(TranscriptHistoryState::LoadingBeginning);
+            overlay.render(area, &mut buffer);
+            assert_eq!(
+                overlay.set_history_state(TranscriptHistoryState::LoadingBeginning),
+                TranscriptHistoryState::LoadingBeginning,
+            );
+        }
         press_key(&mut app, &mut tui, &mut app_server, key).await?;
+        let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
+            panic!("viewer closed")
+        };
+        assert_eq!(
+            overlay.set_history_state(TranscriptHistoryState::Complete),
+            TranscriptHistoryState::LoadingOlder,
+        );
         assert_eq!(app.backtrack.nth_user_message, selected);
     }
     press_key(&mut app, &mut tui, &mut app_server, KeyCode::Enter).await?;
@@ -280,15 +299,15 @@ async fn transcript_flag_off_preserves_viewer_and_backtracking() -> Result<()> {
         std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| matches!(
             event,
             AppEvent::RevertSessionForPromptEdit {
-                nth_user_message: 1,
+                selected_cell,
                 ..
-            }
+            } if Arc::ptr_eq(&selected_cell, &app.transcript_cells[crate::app_backtrack::nth_user_position(&app.transcript_cells, /*nth*/ 1).unwrap()])
         ))
     );
     Ok(())
 }
 
-async fn assert_transcript_close_repaints_inline_draft(mut app: App) -> Result<()> {
+async fn assert_transcript_close_repaints_inline_draft(mut app: Box<App>) -> Result<()> {
     let mut app_server = start_config_write_test_app_server(&app).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.chat_widget.insert_str("EDGE-DRAFT-MUST-SURVIVE");

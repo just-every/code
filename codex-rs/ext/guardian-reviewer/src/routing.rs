@@ -45,6 +45,8 @@ pub struct ReviewRequest<'a, H> {
     pub cancellation: CancellationToken,
     pub model: &'a ModelInfo,
     pub telemetry: &'a SessionTelemetry,
+    /// The host verified the assessment opt-in and an explicit OTLP log destination.
+    pub log_assessments: bool,
     pub analytics: &'a AnalyticsEventsClient,
     pub metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
@@ -87,7 +89,9 @@ impl<H: ReviewHost> ReviewRequest<'_, H> {
                     "automatic approval review could not prepare the action",
                 ));
             };
+            let permissions = self.host.permissions();
             let input = ApprovalDecisionInput {
+                permissions: permissions.as_ref(),
                 approval_id: self.approval_id,
                 tool_call_id: self.tool_call_id,
                 action,

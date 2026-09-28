@@ -73,8 +73,12 @@ use crate::tools::SkillAnalytics;
 use crate::tools::SkillToolAuthority;
 use crate::tools::skill_tools;
 use crate::warnings::bounded_warnings;
+use crate::world_state::CLOUD_SKILLS_WORLD_STATE_ID;
 use crate::world_state_catalogs::CatalogContext;
 use crate::world_state_catalogs::CatalogStatus;
+
+#[path = "cloud_skill.rs"]
+mod cloud_skill;
 
 struct SkillsExtension<C> {
     providers: SkillProviders,
@@ -145,13 +149,13 @@ where
                 mcp_resources: input.mcp_resource_client.clone(),
                 extension_metrics: input.extension_metrics.clone(),
             });
-            let orchestrator_skills_available = !input
+            let cloud_skills_available = !input
                 .environments
                 .iter()
                 .any(|environment| environment.environment_id == LOCAL_ENVIRONMENT_ID);
             input.thread_store.insert(SkillsThreadState::new(
                 (self.config_from_host)(input.config),
-                orchestrator_skills_available,
+                cloud_skills_available,
             ));
         })
     }
@@ -172,11 +176,8 @@ where
         if let Some(state) = thread_store.get::<SkillsThreadState>() {
             state.set_config(next_config);
         } else {
-            let orchestrator_skills_available = true;
-            thread_store.insert(SkillsThreadState::new(
-                next_config,
-                orchestrator_skills_available,
-            ));
+            let cloud_skills_available = true;
+            thread_store.insert(SkillsThreadState::new(next_config, cloud_skills_available));
         }
     }
 }
@@ -207,7 +208,7 @@ where
                         host_snapshot: None,
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
-                        include_orchestrator_skills: false,
+                        include_cloud_skills: false,
                         mcp_resources: session_store
                             .get::<SkillsSessionState>()
                             .and_then(|state| state.mcp_resources.clone()),
@@ -266,6 +267,25 @@ where
                 .collect()
         })
     }
+
+    fn retain_world_state_after_compaction(
+        &self,
+        previous_world_state: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut retained = serde_json::Map::new();
+        if let Some(allocation) = previous_world_state
+            .get(CLOUD_SKILLS_WORLD_STATE_ID)
+            .and_then(|section| section.get("allocation"))
+        {
+            // Allocation survives lost history; the catalog fingerprint and budget still
+            // determine whether it can be reused after fresh discovery and policy resolution.
+            retained.insert(
+                CLOUD_SKILLS_WORLD_STATE_ID.to_string(),
+                serde_json::json!({ "allocation": allocation }),
+            );
+        }
+        retained
+    }
 }
 
 impl<C> ToolContributor for SkillsExtension<C>
@@ -306,7 +326,7 @@ where
             host_snapshot: None,
             include_host_skills: false,
             include_bundled_skills: false,
-            include_orchestrator_skills: false,
+            include_cloud_skills: false,
             mcp_resources: None,
             executor_capability_discovery: step_store
                 .get::<ExecutorCapabilityDiscoverySnapshot>()
@@ -384,7 +404,7 @@ where
                 host_snapshot: host_snapshot.clone(),
                 include_host_skills: host_skills.is_none() && !host_catalog_in_world_state,
                 include_bundled_skills: config.bundled_skills_enabled,
-                include_orchestrator_skills: thread_state.orchestrator_skills_enabled(),
+                include_cloud_skills: thread_state.cloud_skill_enabled(),
                 mcp_resources: mcp_resources.clone(),
                 executor_capability_discovery: None,
             };
@@ -423,7 +443,7 @@ where
                 let mut turn_catalog = catalog.clone();
                 turn_catalog.entries.retain(|entry| {
                     entry.authority.kind != SkillSourceKind::Executor
-                        && entry.authority.kind != SkillSourceKind::Orchestrator
+                        && entry.authority.kind != SkillSourceKind::Cloud
                 });
                 let model_info = thread_store.get::<ModelInfo>();
                 let include_usage = model_info
@@ -581,16 +601,13 @@ impl<C> SkillsExtension<C> {
         mut query: SkillListQuery,
         thread_state: &SkillsThreadState,
     ) -> SkillCatalog {
-        let include_orchestrator_skills = query.include_orchestrator_skills;
-        let orchestrator_query = query.clone();
-        query.include_orchestrator_skills = false;
+        let include_cloud_skills = query.include_cloud_skills;
+        query.include_cloud_skills = false;
 
         let mut catalog = self.providers.list_for_turn(query).await;
-        if include_orchestrator_skills {
-            let orchestrator_catalog = thread_state
-                .orchestrator_catalog_snapshot(&self.providers, orchestrator_query)
-                .await;
-            catalog.extend(orchestrator_catalog);
+        if include_cloud_skills {
+            let cloud_catalog = thread_state.cloud_catalog_snapshot();
+            catalog.extend(cloud_catalog);
         }
         catalog
     }
@@ -674,6 +691,7 @@ pub fn install_with_providers_and_metrics<C>(
     });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.turn_lifecycle_contributor(Arc::new(SkillTelemetry));
+    registry.turn_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.prompt_contributor(extension.clone());
     registry.turn_input_contributor(extension.clone());

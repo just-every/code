@@ -4,6 +4,40 @@ use super::*;
 use crate::bottom_pane::paste_burst::FlushResult;
 
 impl ChatComposer {
+    pub(crate) fn insert_str(&mut self, text: &str) {
+        if !text.is_empty() && self.sparkle.draft.get() == sparkle::SparkleDraft::Untouched {
+            self.dismiss_sparkle();
+        }
+        let started_vim_edit = self.begin_direct_vim_edit();
+        let elements_before = self
+            .draft
+            .textarea
+            .mouse_selection_range()
+            .map(|_| self.draft.textarea.element_payloads());
+        self.draft.textarea.insert_str(text);
+        if let Some(elements_before) = elements_before {
+            self.reconcile_deleted_elements(elements_before);
+        }
+        self.sync_bash_mode_from_text();
+        self.sync_popups();
+        if started_vim_edit {
+            self.finish_vim_edit();
+        }
+    }
+
+    /// Include accepted but unflushed keys without changing live paste detection.
+    pub(crate) fn recovery_snapshot(&self) -> ComposerDraftSnapshot {
+        let mut snapshot = self.draft_snapshot();
+        if let Some(pending) = self.draft.paste_burst.clone().flush_before_modified_input() {
+            let mut textarea = TextArea::new();
+            textarea.set_text_with_elements(&snapshot.text, &snapshot.text_elements);
+            textarea.insert_str_at(snapshot.cursor, &pending);
+            snapshot.text = textarea.text().to_owned();
+            snapshot.text_elements = textarea.text_elements();
+        }
+        snapshot
+    }
+
     /// Classify an explicit paste before integrating text shared with the buffered key path.
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         self.note_sparkle_paste(&pasted);
@@ -95,6 +129,7 @@ impl ChatComposer {
             return true;
         }
         let started_vim_edit = self.begin_direct_vim_edit();
+        let elements_before = self.draft.textarea.element_payloads();
         let char_count = pasted.chars().count();
         if char_count > LARGE_PASTE_CHAR_THRESHOLD {
             let placeholder = self.next_large_paste_placeholder(char_count);
@@ -112,6 +147,7 @@ impl ChatComposer {
             self.insert_str(&pasted);
         }
         self.draft.paste_burst.clear_after_explicit_paste();
+        self.reconcile_deleted_elements(elements_before);
         self.sync_popups();
         if started_vim_edit {
             self.finish_vim_edit();

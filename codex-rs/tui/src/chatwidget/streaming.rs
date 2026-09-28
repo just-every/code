@@ -4,6 +4,7 @@
 //! cells, commit ticks, and interrupt deferral.
 
 use super::*;
+use crate::markdown_render::ListSpacing;
 
 fn latest_summary_line(text: &str) -> Option<String> {
     text.lines().rev().find_map(|line| {
@@ -64,10 +65,9 @@ impl ChatWidget {
     pub(super) fn flush_answer_and_plan_streams(&mut self) {
         self.flush_answer_stream_with_separator();
         if let Some(mut controller) = self.plan_stream_controller.take() {
-            let had_live_tail = controller.has_live_tail();
             self.clear_active_stream_tail();
             let (cell, source) = controller.finalize();
-            if !had_live_tail && let Some(cell) = cell {
+            if let Some(cell) = cell {
                 self.add_boxed_history(cell);
             }
             if let Some(source) = source {
@@ -215,11 +215,20 @@ impl ChatWidget {
             // Before starting a plan stream, flush any active exec cell group.
             self.flush_unified_exec_wait_streak();
             self.flush_active_cell();
-            self.plan_stream_controller = Some(PlanStreamController::new(
-                self.current_stream_width(/*reserved_cols*/ 4),
-                &self.config.cwd,
-                self.history_render_mode(),
-            ));
+            self.plan_stream_controller = Some(
+                PlanStreamController::new(
+                    self.current_stream_width(/*reserved_cols*/ 4),
+                    &self.config.cwd,
+                    self.history_render_mode(),
+                )
+                .with_list_spacing(
+                    if self.local_settings.transcript_mode.is_owned() {
+                        ListSpacing::Compact
+                    } else {
+                        ListSpacing::AfterMultiline
+                    },
+                ),
+            );
         }
         let changed = self
             .plan_stream_controller
@@ -256,10 +265,10 @@ impl ChatWidget {
         self.transcript.saw_plan_item_this_turn = true;
         let (finalized_streamed_cell, consolidated_plan_source) =
             if let Some(mut controller) = self.plan_stream_controller.take() {
-                let had_live_tail = controller.has_live_tail();
+                let source_only = controller.has_live_tail() && controller.tail_starts_stream();
                 self.clear_active_stream_tail();
                 let (cell, source) = controller.finalize();
-                if had_live_tail {
+                if source_only {
                     (None, source)
                 } else {
                     (cell, source)
@@ -349,8 +358,20 @@ impl ChatWidget {
             .or(self.reasoning_header.take());
         if !self.reasoning_summary_parts.is_empty() {
             let reasoning_parts = std::mem::take(&mut self.reasoning_summary_parts);
-            let cell = history_cell::new_reasoning_summary_block(reasoning_parts, &self.config.cwd);
-            self.add_boxed_history(cell);
+            let mut cell =
+                history_cell::new_reasoning_summary_block(reasoning_parts, &self.config.cwd);
+            if let Some(id) = &self.status_state.reasoning_item_id {
+                cell.set_source_item_id(id.clone());
+            }
+            let cell: Box<dyn HistoryCell> = cell;
+            let result = match self.transcript.active_cell.as_mut() {
+                Some(active) => active.append_reasoning(cell),
+                None => Err(cell),
+            };
+            match result {
+                Ok(()) => self.bump_active_cell_revision(),
+                Err(cell) => self.add_boxed_history(cell),
+            }
         }
         self.reasoning_buffer.clear();
         // Keep the last useful summary through tools and later empty items.
@@ -515,6 +536,12 @@ impl ChatWidget {
         self.interrupts = mgr;
     }
 
+    pub(super) fn flush_interrupt_activity(&mut self) {
+        let mut mgr = std::mem::take(&mut self.interrupts);
+        mgr.flush_activity(self);
+        self.interrupts = mgr;
+    }
+
     /// Move a lifecycle payload into the interrupt queue or its immediate handler.
     #[inline]
     pub(super) fn defer_or_handle<T>(
@@ -555,12 +582,21 @@ impl ChatWidget {
                     thread_id,
                 )
             });
-            self.stream_controller = Some(StreamController::new_with_inline_visualizations(
-                self.current_stream_width(/*reserved_cols*/ 2),
-                &self.config.cwd,
-                self.history_render_mode(),
-                inline_visualization_context,
-            ));
+            self.stream_controller = Some(
+                StreamController::new_with_inline_visualizations(
+                    self.current_stream_width(/*reserved_cols*/ 2),
+                    &self.config.cwd,
+                    self.history_render_mode(),
+                    inline_visualization_context,
+                )
+                .with_list_spacing(
+                    if self.local_settings.transcript_mode.is_owned() {
+                        ListSpacing::Compact
+                    } else {
+                        ListSpacing::AfterMultiline
+                    },
+                ),
+            );
         }
         let changed = self
             .stream_controller

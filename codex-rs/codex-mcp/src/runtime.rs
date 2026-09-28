@@ -5,6 +5,8 @@
 //! [`crate::rmcp_client`] and connection-set behavior lives in
 //! [`crate::connection_manager`].
 
+mod status;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -35,6 +37,7 @@ use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::with_http_headers_helper;
 use codex_utils_path_uri::PathUri;
@@ -48,6 +51,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::McpConfig;
 use crate::binding::McpBinding;
+use crate::binding::PreparedMcpCall;
 use crate::client_tool_catalog::CodexAppsToolSnapshot;
 use crate::connection_manager::BindingCatalogRevision;
 use crate::connection_manager::McpConnectionSet;
@@ -88,8 +92,6 @@ pub struct McpRuntimeInput {
     pub client_mcp_extensions: ClientMcpExtensions,
     pub auth: Option<CodexAuth>,
     pub auth_manager: Option<Arc<AuthManager>>,
-    /// Whether the owning thread may prompt the user; automatic decisions remain available.
-    pub allow_user_interaction: bool,
     pub elicitation_reviewer: Option<ElicitationReviewerHandle>,
     pub elicitation_lifecycle: Option<ElicitationLifecycle>,
 }
@@ -118,9 +120,11 @@ struct PublishedMcpRuntime {
     config: Option<Arc<McpConfig>>,
     auth: Option<CodexAuth>,
     auth_token: Option<String>,
+    auth_generation: Arc<()>,
     plugins_available: bool,
     ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
-    selected_environments: HashMap<String, Arc<Environment>>,
+    environment_selections: Arc<[TurnEnvironmentSelection]>,
+    ready_environments: HashMap<String, Arc<Environment>>,
     cached_binding: Mutex<Option<CachedMcpBinding>>,
 }
 
@@ -141,6 +145,23 @@ fn ensure_host_owned_apps_registration(
         anyhow::bail!("MCP server '{server}' is not registered by the hosted runtime");
     }
     Ok(())
+}
+
+impl PublishedMcpRuntime {
+    // Shared by dirty detection and cache-key publication so their auth rules agree.
+    fn auth_matches(&self, auth: Option<&CodexAuth>) -> bool {
+        match (self.auth.as_ref(), auth) {
+            (Some(previous), Some(latest)) => {
+                previous == latest
+                    && previous.get_account_id() == latest.get_account_id()
+                    && previous.get_chatgpt_user_id() == latest.get_chatgpt_user_id()
+                    && previous.is_fedramp_account() == latest.is_fedramp_account()
+                    && self.auth_token == latest.get_token().ok()
+            }
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
+    }
 }
 
 struct CachedMcpBinding {
@@ -209,9 +230,11 @@ impl McpRuntime {
                 config: None,
                 auth: None,
                 auth_token: None,
+                auth_generation: Arc::new(()),
                 plugins_available: false,
                 ready_selected_capability_roots: Vec::new(),
-                selected_environments: HashMap::new(),
+                environment_selections: Arc::default(),
+                ready_environments: HashMap::new(),
                 cached_binding: Mutex::new(None),
             }),
             event_stream_cancellation: Mutex::new(EventStreamCancellation {
@@ -311,9 +334,16 @@ impl McpRuntime {
         let config = Arc::clone(&input.config);
         let auth = input.auth.clone();
         let auth_token = auth.as_ref().and_then(|auth| auth.get_token().ok());
+        let current = self.current.load_full();
+        let auth_generation = if current.auth_matches(auth.as_ref()) {
+            Arc::clone(&current.auth_generation)
+        } else {
+            Arc::new(())
+        };
         let plugins_available = input.plugins_available;
         let ready_selected_capability_roots = input.ready_selected_capability_roots.clone();
-        let selected_environments = input.runtime_context.selected_environments.clone();
+        let environment_selections = Arc::clone(&input.runtime_context.environment_selections);
+        let ready_environments = input.runtime_context.ready_environments.clone();
         let connections = Arc::new(
             McpConnectionSet::new(
                 previous,
@@ -341,9 +371,11 @@ impl McpRuntime {
             config: Some(config),
             auth,
             auth_token,
+            auth_generation,
             plugins_available,
             ready_selected_capability_roots,
-            selected_environments,
+            environment_selections,
+            ready_environments,
             cached_binding: Mutex::new(None),
         }));
         let _ = publish.send(true);
@@ -388,12 +420,13 @@ impl McpRuntime {
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> Option<Arc<McpBinding>> {
-        Self::binding_from_published_runtime(
-            self.current.load_full(),
+        let current = self.current.load_full();
+        current.connections.record_startup_readiness(
+            "model_binding",
             required_servers,
             required_plugins,
-        )
-        .await
+        );
+        Self::binding_from_published_runtime(current, required_servers, required_plugins).await
     }
 
     async fn binding_from_published_runtime(
@@ -458,17 +491,18 @@ impl McpRuntime {
 
     /// Returns whether the published snapshot still belongs to the current credentials.
     pub fn current_auth_matches(&self, auth: Option<&CodexAuth>) -> bool {
+        self.current.load().auth_matches(auth)
+    }
+
+    pub(crate) fn auth_cache_key_for_server(
+        &self,
+        server: &str,
+    ) -> crate::McpResourceClientAuthKey {
         let current = self.current.load();
-        match (current.auth.as_ref(), auth) {
-            (Some(previous), Some(latest)) => {
-                previous == latest
-                    && previous.get_account_id() == latest.get_account_id()
-                    && previous.get_chatgpt_user_id() == latest.get_chatgpt_user_id()
-                    && previous.is_fedramp_account() == latest.is_fedramp_account()
-                    && current.auth_token == latest.get_token().ok()
-            }
-            (None, None) => true,
-            (Some(_), None) | (None, Some(_)) => false,
+        crate::McpResourceClientAuthKey {
+            generation: Arc::clone(&current.auth_generation),
+            server: server.to_string(),
+            available: current.connections.contains_server(server),
         }
     }
 
@@ -504,6 +538,16 @@ impl McpRuntime {
             .await;
     }
 
+    /// Prepares one advertised tool against this publication's current client and policy.
+    /// Its model-visible name stays fixed while execution metadata comes from the live catalog.
+    pub async fn prepare_call(&self, advertised_tool: &ToolInfo) -> Option<PreparedMcpCall> {
+        let current = self.current.load_full();
+        current
+            .connections
+            .prepare_call_for_tool(Arc::clone(current.config.as_ref()?), advertised_tool)
+            .await
+    }
+
     /// Captures the current runtime after its selected server has finished startup.
     pub async fn current_binding_for_call(&self, server: &str) -> Option<Arc<McpBinding>> {
         let current = self.current.load_full();
@@ -528,17 +572,19 @@ impl McpRuntime {
         self.current.load().ready_selected_capability_roots.clone()
     }
 
-    /// Whether this publication uses the currently ready environment handles.
+    /// Whether this publication uses the same selections and currently ready environment handles.
     pub fn current_environments_match(
         &self,
-        environments: &HashMap<String, Arc<Environment>>,
+        selections: &[TurnEnvironmentSelection],
+        ready_environments: &HashMap<String, Arc<Environment>>,
     ) -> bool {
         let current = self.current.load();
         current.config.is_some()
-            && current.selected_environments.len() == environments.len()
-            && environments.iter().all(|(id, environment)| {
+            && current.environment_selections.as_ref() == selections
+            && current.ready_environments.len() == ready_environments.len()
+            && ready_environments.iter().all(|(id, environment)| {
                 current
-                    .selected_environments
+                    .ready_environments
                     .get(id)
                     .is_some_and(|published| Arc::ptr_eq(published, environment))
             })
@@ -749,11 +795,12 @@ pub struct SandboxState {
 /// Runtime context used when resolving per-server MCP environments.
 ///
 /// `McpConfig` describes what servers exist. This value carries the canonical
-/// environment registry plus the host-local cwd used by local MCP processes.
+/// environment registry, captured thread selections, and the host-local cwd used by MCP processes.
 #[derive(Clone)]
 pub struct McpRuntimeContext {
     environment_manager: Arc<EnvironmentManager>,
-    selected_environments: HashMap<String, Arc<Environment>>,
+    environment_selections: Arc<[TurnEnvironmentSelection]>,
+    ready_environments: HashMap<String, Arc<Environment>>,
     local_process_cwd: PathBuf,
     local_http_client: Arc<dyn HttpClient>,
 }
@@ -797,18 +844,21 @@ impl McpRuntimeContext {
         );
         Self {
             environment_manager,
-            selected_environments: HashMap::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
             local_process_cwd,
             local_http_client,
         }
     }
 
-    /// Pins the concrete environment handles captured for this thread or model step.
+    /// Pins all captured selections and the concrete handles for environments already ready.
     pub fn with_selected_environments(
         mut self,
-        selected_environments: HashMap<String, Arc<Environment>>,
+        environment_selections: Arc<[TurnEnvironmentSelection]>,
+        ready_environments: HashMap<String, Arc<Environment>>,
     ) -> Self {
-        self.selected_environments = selected_environments;
+        self.environment_selections = environment_selections;
+        self.ready_environments = ready_environments;
         self
     }
 
@@ -829,7 +879,7 @@ impl McpRuntimeContext {
         // HTTP is the one current exception: it can use the ambient HTTP client
         // even when no local Environment is configured.
         if let Some(environment) = self
-            .selected_environments
+            .ready_environments
             .get(&config.environment_id)
             .cloned()
             .or_else(|| {
@@ -912,7 +962,9 @@ mod tests {
             environment_id: environment_id.to_string(),
             enabled: true,
             required: false,
+            startup_readiness: Default::default(),
             supports_parallel_tool_calls: false,
+            tool_input_schema_max_bytes: None,
             omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: None,
@@ -971,9 +1023,11 @@ mod tests {
             config: Some(Arc::new(config)),
             auth: None,
             auth_token: None,
+            auth_generation: Arc::new(()),
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
-            selected_environments: HashMap::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
             cached_binding: Mutex::new(None),
         });
         let before = McpRuntime::binding_from_published_runtime(
@@ -1043,9 +1097,11 @@ mod tests {
             ))),
             auth: None,
             auth_token: None,
+            auth_generation: Arc::new(()),
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
-            selected_environments: HashMap::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
             cached_binding: Mutex::new(None),
         });
         let first = McpRuntime::binding_from_published_runtime(

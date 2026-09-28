@@ -1,14 +1,14 @@
 ---
 source: tui/src/app/agents_overview_usage_tests.rs
-expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{project}  2\"),\n&group).replace(&project, \"/tmp/project\").replace(\"del\", \"del\")"
+expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{project}  2\"),\n&group).replace(&project, \"/tmp/project\").replace(\"fwd del\", \"del\")"
 ---
-  Agent command center
-  1 need input   0 working   1 ready
+  Agent command center  Group: Project  g
+   All 2   Needs you 1   Working 0   Ready 1   Inactive 0                 tab/shift+tab filter
   ────────────────────────────────────────────────────────────────────────────────────────────
-  /tmp/project  2                                     │ Task details
-  › ● Review parser  Needs input                      │
-    ○ Other task  Ready                               │ Review parser
-                                                      │ ● Needs input
+      Tasks                                           │ Task details
+  /tmp/project  2                                     │
+  › ● Review parser                                   │ Review parser
+    ○ Other task                                      │ ● Needs input
                                                       │
                                                       │ Needs attention
                                                       │ Which dependency version should I use?
@@ -24,5 +24,5 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │ Review parser
                                                       │
                                                       │
-  ↑↓ navigate o resume enter open n new w new worktree f search g group: project r rename
-  x stop h hide a archive del delete ctrl+c quit
+                                                      │
+  ? help  esc back  ↑/↓ move  enter open  n new

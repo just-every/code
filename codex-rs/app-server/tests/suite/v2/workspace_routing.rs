@@ -18,6 +18,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::sync::Notify;
 use tokio::time::timeout;
 use wiremock::Mock;
@@ -37,13 +38,14 @@ async fn config(home: &TempDir, backend: &MockServer) -> Result<()> {
             backend.uri()
         ),
     )?;
+    // Routing uses a plain HTTP fixture; restricted policies require HTTPS/WSS.
     Mock::given(method("GET")).and(path("/backend-api/wham/config/bundle"))
         .respond_with(|request: &wiremock::Request| {
             let account_id = request.headers.get("chatgpt-account-id").expect("workspace header")
                 .to_str().expect("workspace header text");
             ResponseTemplate::new(200).set_body_json(json!({"requirements_toml": {"enterprise_managed": [{
                 "id": "workspace-policy", "name": "Workspace policy",
-                "contents": format!("[application.network.domains]\n'{account_id}.example' = 'allow'"),
+                "contents": format!("[application.network]\nenabled = false\n[application.network.domains]\n'{account_id}.example' = 'allow'"),
             }]}}))
         }).mount(backend).await;
     Ok(())
@@ -84,8 +86,15 @@ fn routing(account: &str, origin: &str, routing: &str) -> Value {
     json!({"chatgptAccountId": account, "backendOrigin": origin, "accountRoutingOverride": routing})
 }
 
+#[test_case(0, 0, "pro"; "immediate_responses")]
+#[test_case(6, 0, "pro"; "slow_accounts_response")]
+#[test_case(0, 12, "enterprise"; "slow_cloud_bundle_response")]
 #[tokio::test]
-async fn saved_workspace_is_discovered_once_and_not_the_default_account() -> Result<()> {
+async fn saved_workspace_is_discovered_once_and_not_the_default_account(
+    accounts_delay_secs: u64,
+    bundle_delay_secs: u64,
+    plan_type: &str,
+) -> Result<()> {
     let backend = MockServer::start().await;
     Mock::given(method("GET")).and(path("/backend-api/wham/accounts/check"))
         .and(header("chatgpt-account-id", "selected"))
@@ -94,18 +103,44 @@ async fn saved_workspace_is_discovered_once_and_not_the_default_account() -> Res
                 {"id": "other", "workspace_backend_origin": "https://other.example", "account_routing_override": "us"},
                 {"id": "selected", "workspace_backend_origin": "https://gov.chatgpt.com", "account_routing_override": "NO_CONSTRAINT"}
             ], "default_account_id": "other"
-        }))).expect(1).mount(&backend).await;
+        })).set_delay(Duration::from_secs(accounts_delay_secs)))
+        .expect(if accounts_delay_secs > 5 { 2 } else { 1 })
+        .mount(&backend).await;
     let home = TempDir::new()?;
     config(&home, &backend).await?;
+    if bundle_delay_secs > 0 {
+        Mock::given(method("GET"))
+            .and(path("/backend-api/wham/config/bundle"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({}))
+                    .set_delay(Duration::from_secs(bundle_delay_secs)),
+            )
+            .with_priority(1)
+            // Startup and account hydration each retry this delayed response via proxy fallback.
+            .expect(4)
+            .mount(&backend)
+            .await;
+    }
     write_chatgpt_auth(
         home.path(),
         ChatGptAuthFixture::new("token")
             .account_id("selected")
             .email("user@example.com")
-            .plan_type("pro"),
+            .plan_type(plan_type),
         AuthCredentialsStoreMode::File,
     )?;
-    let mut server = start(&home).await?;
+    let mut env_overrides = vec![("OPENAI_API_KEY", None), ("CODEX_API_KEY", None)];
+    env_overrides.extend(
+        codex_network_proxy::PROXY_ENV_KEYS
+            .iter()
+            .map(|key| (*key, None)),
+    );
+    let mut server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .with_env_overrides(&env_overrides)
+        .build_initialized_with_timeout(READ_TIMEOUT)
+        .await?;
     let notification = timeout(
         READ_TIMEOUT,
         server.read_stream_until_notification_message("account/updated"),
@@ -113,10 +148,10 @@ async fn saved_workspace_is_discovered_once_and_not_the_default_account() -> Res
     .await??;
     assert_eq!(
         notification.params,
-        Some(json!({"authMode": "chatgpt", "planType": "pro"}))
+        Some(json!({"authMode": "chatgpt", "planType": plan_type}))
     );
     let expected = json!({
-        "account": {"type": "chatgpt", "email": "user@example.com", "planType": "pro"},
+        "account": {"type": "chatgpt", "email": "user@example.com", "planType": plan_type},
         "requiresOpenaiAuth": true, "workspaceRouting": routing("selected", "https://gov.chatgpt.com", "NO_CONSTRAINT")
     });
     assert_eq!(read(&mut server).await?, expected);
@@ -244,7 +279,7 @@ async fn login_and_workspace_switch_notify_after_routing_is_ready_then_logout_cl
         assert_eq!(
             requirements["requirements"]["application"],
             json!({"network": {
-                "enabled": true, "domains": {format!("{account}.example"): "allow"}
+                "enabled": false, "domains": {format!("{account}.example"): "allow"}
             }})
         );
     }

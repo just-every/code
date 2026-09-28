@@ -7,6 +7,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_config::McpStartupReadiness;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use futures::future::join_all;
 use tracing::Instrument;
@@ -59,14 +60,58 @@ pub fn tool_is_model_visible(tool: &ToolInfo) -> bool {
         .any(|target| target.as_str() == Some(MCP_UI_MODEL_VISIBILITY))
 }
 
-/// Catalog identity within one published connection set, including dormant servers.
+/// Catalog identity within one published connection set, including cached declarations.
 #[derive(PartialEq, Eq)]
 pub(crate) enum BindingCatalogRevision {
     Ready(ClientToolCatalogRevision),
-    Dormant(u64),
+    Cached(u64),
 }
 
 impl McpConnectionSet {
+    /// Observes opted-in servers at startup gates without waiting or cloning catalogs.
+    pub(crate) fn record_startup_readiness(
+        &self,
+        phase: &'static str,
+        required_servers: &[String],
+        required_plugins: &HashSet<String>,
+    ) {
+        if !tracing::enabled!(tracing::Level::INFO) {
+            return;
+        }
+        for (server_name, view) in &self.servers {
+            if view.startup_readiness != McpStartupReadiness::Catalog {
+                continue;
+            }
+            let client = &view.connection.client;
+            let startup_pending = !client.startup_complete.load(Ordering::Acquire);
+            let cache_eligible = startup_pending
+                && client
+                    .tool_catalog_cache_context
+                    .as_ref()
+                    .is_some_and(|cache| {
+                        cache
+                            .current_revision_if(|tools| view.accepts_cached_tools(tools))
+                            .is_some()
+                    });
+            let explicitly_required = required_servers.contains(server_name)
+                || (self.is_selected_plugin_mcp_server(server_name)
+                    && self
+                        .plugin_id_for_mcp_server_name(server_name)
+                        .is_some_and(|plugin_id| required_plugins.contains(plugin_id)));
+            tracing::info!(
+                event.name = "mcp.startup_readiness",
+                server_name = %server_name,
+                phase,
+                startup_pending,
+                startup_readiness = "catalog",
+                cache_eligible,
+                required = self.required_servers.binary_search(server_name).is_ok(),
+                explicitly_required,
+                "MCP startup readiness observed"
+            );
+        }
+    }
+
     pub(crate) async fn stable_catalog_revisions(
         &self,
         required_servers: &[String],
@@ -74,15 +119,17 @@ impl McpConnectionSet {
     ) -> Option<HashMap<String, BindingCatalogRevision>> {
         let mut revisions = HashMap::new();
         for (server_name, view) in &self.servers {
-            if !view
+            let startup_complete = view
                 .connection
                 .client
                 .startup_complete
-                .load(Ordering::Acquire)
+                .load(Ordering::Acquire);
+            if !startup_complete
+                || (view.startup_readiness == McpStartupReadiness::Catalog
+                    && view.connection.client.ready_client().is_none())
             {
-                // A cached catalog can remain stable without starting its server.
-                // Explicit requirements must still start the server during binding capture.
-                if !view.connection.startup_is_dormant()
+                // Explicit requirements still wait for a live connection during capture.
+                if !view.allows_cached_startup()
                     || view.connection.client.cancel_token.is_cancelled()
                     || required_servers
                         .iter()
@@ -99,10 +146,10 @@ impl McpConnectionSet {
                     .client
                     .tool_catalog_cache_context
                     .as_ref()?
-                    .current_revision()?;
+                    .current_revision_if(|tools| view.accepts_cached_tools(tools))?;
                 revisions.insert(
                     server_name.clone(),
-                    BindingCatalogRevision::Dormant(revision),
+                    BindingCatalogRevision::Cached(revision),
                 );
                 continue;
             }
@@ -132,49 +179,57 @@ impl McpConnectionSet {
 
     /// Returns all tools with model-visible names normalized.
     pub async fn list_all_tools(&self) -> Vec<ToolInfo> {
-        self.list_tools_with_errors().await.0
+        Box::pin(self.list_tools_with_errors(|_| true)).await.0
     }
 
     #[instrument(level = "trace", skip_all, fields(mcp_server_count = self.servers.len()))]
-    pub(crate) async fn list_tools_with_errors(&self) -> (Vec<ToolInfo>, HashMap<String, String>) {
+    pub(crate) async fn list_tools_with_errors(
+        &self,
+        include_server: impl Fn(&str) -> bool,
+    ) -> (Vec<ToolInfo>, HashMap<String, String>) {
         let mut tools = Vec::new();
         let mut errors = HashMap::new();
         let mut available_server_count = 0;
         let mut unavailable_server_count = 0;
-        let server_results = join_all(self.servers.iter().map(|(server_name, view)| async move {
-            view.connection.client.reconnect_failed_startup().await;
-            let has_cached_tools = view.connection.client.has_cached_tools();
-            let startup_complete = view
-                .connection
-                .client
-                .startup_complete
-                .load(Ordering::Acquire);
-            let server_tools = view
-                .listed_tools(&self.tool_plugin_context)
-                .instrument(trace_span!(
-                    "list_tools_for_server",
-                    server_name = %server_name,
-                    has_cached_tools,
-                    startup_complete
-                ))
-                .await;
-            let result = match server_tools {
-                Ok(server_tools) => Ok(server_tools
-                    .into_iter()
-                    .map(|tool| Self::with_server_metadata(tool, &view.metadata))
-                    .collect::<Vec<_>>()),
-                Err(error) => {
-                    trace!(
-                        server_name = %server_name,
-                        has_cached_tools,
-                        startup_complete,
-                        "MCP server tools unavailable while building tool list"
-                    );
-                    Err(error)
-                }
-            };
-            (server_name, result)
-        }))
+        let server_results = join_all(
+            self.servers
+                .iter()
+                .filter(|(name, _)| include_server(name))
+                .map(|(server_name, view)| async move {
+                    view.connection.client.reconnect_failed_startup().await;
+                    let has_cached_tools = view.connection.client.has_cached_tools();
+                    let startup_complete = view
+                        .connection
+                        .client
+                        .startup_complete
+                        .load(Ordering::Acquire);
+                    let server_tools = view
+                        .listed_tools(&self.tool_plugin_context)
+                        .instrument(trace_span!(
+                            "list_tools_for_server",
+                            server_name = %server_name,
+                            has_cached_tools,
+                            startup_complete
+                        ))
+                        .await;
+                    let result = match server_tools {
+                        Ok(server_tools) => Ok(server_tools
+                            .into_iter()
+                            .map(|tool| Self::with_server_metadata(tool, &view.metadata))
+                            .collect::<Vec<_>>()),
+                        Err(error) => {
+                            trace!(
+                                server_name = %server_name,
+                                has_cached_tools,
+                                startup_complete,
+                                "MCP server tools unavailable while building tool list"
+                            );
+                            Err(error)
+                        }
+                    };
+                    (server_name, result)
+                }),
+        )
         .await;
         for (server_name, server_tools) in server_results {
             match server_tools {
@@ -222,12 +277,10 @@ impl McpConnectionSet {
             {
                 let required = self.required_servers.binary_search(server_name).is_ok();
                 // Keep the catalog that lets us skip startup even if it expires during the wait.
-                let cached_tools = view.connection.client.cached_tools().filter(|tools| {
-                    view.connection.client.is_codex_apps_mcp_server || !tools.is_empty()
-                });
+                let cached_tools = view.cached_startup_tools(/*fallback*/ None);
                 let has_cached_tools = cached_tools.is_some();
                 let must_wait_for_startup = (required
-                    && (!view.connection.startup_is_dormant() || !has_cached_tools))
+                    && (!view.allows_cached_startup() || !has_cached_tools))
                     || required_servers
                         .iter()
                         .any(|required| required == server_name)
@@ -237,6 +290,7 @@ impl McpConnectionSet {
                             .is_some_and(|plugin_id| required_plugins.contains(plugin_id)))
                     || (server_name == CODEX_APPS_MCP_SERVER_NAME && !has_cached_tools);
                 if !must_wait_for_startup && has_cached_tools {
+                    trace!(server_name = %server_name, "using cached MCP catalog without waiting for startup");
                     return (server_name, view, cached_tools);
                 }
                 if !must_wait_for_startup && optional_mcp_startup_grace.is_zero() {
@@ -283,14 +337,30 @@ impl McpConnectionSet {
         }))
         .await;
         let server_results = join_all(server_snapshots.into_iter().map(|(server_name, view, cached_tools)| async move {
-            let (client, server_tools) = if !view
+            let startup_pending = !view
                 .connection
                 .client
                 .startup_complete
-                .load(Ordering::Acquire)
+                .load(Ordering::Acquire);
+            let accepts_cached_catalog = view.startup_readiness == McpStartupReadiness::Catalog;
+            let cached_tools = if startup_pending
+                || (accepts_cached_catalog && view.connection.client.ready_client().is_none())
             {
-                (None, view.connection.client.cached_tools_or(cached_tools)?)
+                view.cached_startup_tools(cached_tools)
             } else {
+                None
+            };
+            let (client, server_tools) = if let Some(cached_tools) = cached_tools {
+                (None, cached_tools)
+            } else {
+                // A server may opt out of caching after the first pass. Required catalog
+                // readiness must then wait for discovery rather than silently omit its tools.
+                if startup_pending
+                    && !(accepts_cached_catalog
+                        && self.required_servers.binary_search(server_name).is_ok())
+                {
+                    return None;
+                }
                 view.connection.client.reconnect_failed_startup().await;
                 let Ok(mut client) = view.connection.client().await else {
                     trace!(server_name = %server_name, "omitting MCP server without an exact ready client");
@@ -383,6 +453,52 @@ impl McpConnectionSet {
             tools,
             calls,
         )
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    pub(crate) async fn prepare_call_for_tool(
+        self: &Arc<Self>,
+        config: Arc<crate::McpConfig>,
+        advertised_tool: &ToolInfo,
+    ) -> Option<PreparedMcpCall> {
+        let server_name = &advertised_tool.server_name;
+        let view = self.servers.get(server_name)?;
+        if !view.tool_filter.allows(&advertised_tool.tool.name) {
+            return None;
+        }
+        let mut client = view.connection.client().await.ok()?;
+        client.tool_timeout = view.tool_timeout;
+        let snapshot = client.tool_catalog.read(Arc::new).await;
+        let current_tool = snapshot.tools.iter().find(|tool| {
+            tool.server_name == *server_name
+                && tool.tool.name == advertised_tool.tool.name
+                && tool.connector_id == advertised_tool.connector_id
+        })?;
+        let mut tool_info = if server_name == CODEX_APPS_MCP_SERVER_NAME {
+            prepare_codex_apps_tools_for_model(
+                vec![current_tool.clone()],
+                &self.tool_plugin_context,
+            )
+        } else {
+            crate::rmcp_client::prepare_regular_mcp_tools_for_model(
+                vec![current_tool.clone()],
+                &self.tool_plugin_context,
+            )
+        }
+        .pop()?;
+        if !tool_is_model_visible(&tool_info) {
+            return None;
+        }
+        tool_info = Self::with_server_metadata(tool_info, &view.metadata);
+        // Preserve the globally normalized identity advertised to the model, while
+        // taking schema, annotations, and approval metadata from the current catalog.
+        tool_info
+            .callable_namespace
+            .clone_from(&advertised_tool.callable_namespace);
+        tool_info
+            .callable_name
+            .clone_from(&advertised_tool.callable_name);
+        self.prepare_call(&tool_info, Arc::new(client), config, snapshot)
     }
 
     fn prepare_call(

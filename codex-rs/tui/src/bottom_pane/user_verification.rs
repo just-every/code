@@ -101,7 +101,9 @@ impl UserVerificationView {
             ),
             items,
             header,
-            ..Default::default()
+            header_view_all_hint: approval_keymap
+                .primary_hint("open_fullscreen", &approval_keymap.open_fullscreen),
+            ..SelectionViewParams::picker()
         };
         Self {
             request,

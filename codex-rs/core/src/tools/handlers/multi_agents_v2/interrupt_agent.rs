@@ -1,8 +1,8 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
-use crate::agent::control::AgentInterruptError;
-use crate::agent::control::AgentInterruptOutcome;
+use crate::agent::api::AgentTarget;
 use crate::tools::handlers::multi_agents_spec::create_interrupt_agent_tool_v2;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -45,20 +45,20 @@ async fn handle_interrupt_agent(
     let args: InterruptAgentArgs = parse_arguments(&arguments)?;
     let agent_id = resolve_agent_target(&session, &turn, &args.target).await?;
     analytics.set_receiver(agent_id);
-    let AgentInterruptOutcome {
-        agent_path,
-        previous_status,
-    } = session
+    let snapshot = session
         .services
         .agent_control
-        .interrupt_spawned_agent(session.thread_id, agent_id)
+        .interrupt(
+            session.thread_id,
+            AgentTarget::Id(agent_id),
+            MultiAgentVersion::V2,
+        )
         .await
-        .map_err(|err| match err {
-            AgentInterruptError::InvalidRequest(message) => {
-                FunctionCallError::RespondToModel(message)
-            }
-            AgentInterruptError::Agent(err) => collab_agent_error(agent_id, err),
-        })?;
+        .map_err(|err| collab_v2_agent_error(agent_id, err))?;
+    let agent_path = snapshot.metadata().agent_path.clone().ok_or_else(|| {
+        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
+    })?;
+    let previous_status = snapshot.status().cloned().unwrap_or(AgentStatus::NotFound);
     emit_sub_agent_activity(
         &session,
         &turn,

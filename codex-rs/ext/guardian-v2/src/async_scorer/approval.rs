@@ -17,6 +17,7 @@ use codex_extension_api::ApprovalReviewContributor;
 use codex_extension_api::ExtensionFuture;
 use codex_protocol::approvals::GuardianReviewReason;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::mcp::is_node_repl_backed_connector;
 use codex_protocol::openai_models::GuardianModelPolicy;
 use codex_protocol::openai_models::GuardianReviewMode;
 use codex_protocol::openai_models::GuardianScope;
@@ -149,7 +150,7 @@ async fn cached_evidence(
         return Err(GuardianReviewReason::ScoringFailure);
     }
     let context_mode = GuardianContextMode::from_history(history.as_ref());
-    if context_mode == GuardianContextMode::ThreadOwned {
+    if context_mode != GuardianContextMode::Legacy {
         let sampler = store
             .get::<LunaSampler>()
             .ok_or(GuardianReviewReason::MissingScore)?;
@@ -169,17 +170,29 @@ async fn cached_evidence(
     let action = input.action;
     if input.category == GuardianScope::ComputerUse
         && policy.allows_initial_cua_call()
-        && action.get("tool_name").and_then(serde_json::Value::as_str) == Some("js")
-        && action
-            .get("connector_id")
-            .and_then(serde_json::Value::as_str)
-            == Some("node_repl")
+        && matches!(
+            action.get("tool_name").and_then(serde_json::Value::as_str),
+            Some("js" | "browser_js")
+        )
+        && is_node_repl_backed_connector(
+            action
+                .get("server")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+            action
+                .get("connector_id")
+                .and_then(serde_json::Value::as_str),
+        )
         && cached.js_executions == 1
     {
         record_fast_decision(metrics, "approved", "initial_cua_call");
         return Ok(());
     }
-    let current = ScoreAuthorization::current(thread).await;
+    let Some(permissions) = input.permissions else {
+        record_fast_decision(metrics, "deferred", "permission_resolution_error");
+        return Err(GuardianReviewReason::AuthorizationChanged);
+    };
+    let current = ScoreAuthorization::current(thread, permissions).await;
     // Classification may publish or fail while authorization is collected.
     let cached = progress.inspect(input.tool_call_id);
     if cached.oversized {

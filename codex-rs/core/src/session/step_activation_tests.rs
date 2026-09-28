@@ -1,6 +1,7 @@
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::agents_md_manager::SessionInstructions;
+use crate::session::Submission;
 use crate::session::handlers::submission_loop;
 use crate::session::step_context::StepContext;
 use crate::session::step_settings::StepSettings;
@@ -8,6 +9,7 @@ use crate::session::tests::HeldStepTask;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::update_selected_settings_for_test;
 use crate::session::tests::update_turn_settings_for_test;
+use crate::session::turn_context::TurnEnvironment;
 use crate::state::TaskKind;
 use codex_config::AutoReviewRequirementsToml;
 use codex_config::ConfigLayerStack;
@@ -42,7 +44,6 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::TurnAbortReason;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeSet;
@@ -123,7 +124,7 @@ async fn instruction_refresh_serializes_reads_and_releases_on_cancellation() {
     session
         .services
         .agents_md_manager
-        .refresh(&turn.config, &turn.environments)
+        .refresh(&turn.config, &turn.initial_environments)
         .await
         .0
         .expect("install initial provider");
@@ -161,6 +162,45 @@ async fn instruction_refresh_serializes_reads_and_releases_on_cancellation() {
     );
 }
 
+#[tokio::test]
+async fn next_step_waits_for_environment_publication_before_capturing() {
+    let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
+    let next_cwd = turn.config.cwd.join("next-step-environment");
+    std::fs::create_dir_all(&next_cwd).expect("create next workspace");
+    let next_cwd = codex_utils_path_uri::PathUri::from_abs_path(&next_cwd);
+    let mut selections = session.services.turn_environments.selections();
+    let primary = selections.first_mut().expect("initial environment");
+    assert_ne!(primary.cwd, next_cwd);
+    primary.cwd = next_cwd.clone();
+    primary.workspace_roots = vec![next_cwd.clone()];
+    let mut next_settings = turn.next_step_settings.load_full().as_ref().clone();
+    Arc::make_mut(&mut next_settings.model_info).slug = "next-step-model".to_string();
+
+    let cancellation = CancellationToken::new();
+    let capture = session.capture_step_context(Arc::clone(&turn), &cancellation);
+    tokio::pin!(capture);
+    {
+        let _active = session.active_turn.lock().await;
+        let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(std::future::Future::poll(capture.as_mut(), &mut context).is_pending());
+        turn.next_step_settings.store(Arc::new(next_settings));
+        session
+            .services
+            .turn_environments
+            .update_selections(&selections);
+    }
+
+    let step = capture.await.expect("capture after publication");
+    assert_eq!(
+        (
+            step.settings.model_info.slug.as_str(),
+            step.environments.primary().map(TurnEnvironment::cwd),
+        ),
+        ("next-step-model", Some(&next_cwd)),
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[test_case(None; "thread only")]
 #[test_case(Some("global instructions"); "with global instructions")]
 #[tokio::test]
@@ -195,7 +235,7 @@ async fn thread_instruction_refresh_serializes_reads_and_releases_on_cancellatio
     session
         .services
         .agents_md_manager
-        .refresh(&turn.config, &turn.environments)
+        .refresh(&turn.config, &turn.initial_environments)
         .await
         .0
         .expect("install initial provider");
@@ -457,6 +497,7 @@ fn settings_submission(
             trace: None,
             parent_turn_id: None,
             root_turn_id: None,
+            residency_guard: None,
         },
         receiver,
     )
@@ -739,7 +780,7 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
         lookup,
     } = activation_fixture(models).await;
     let desired = desired_step_settings(&session).await;
-    let original = turn.current_settings.load_full();
+    let original = turn.next_step_settings.load_full();
     let update_session = Arc::clone(&session);
     let turn_id = turn.sub_id.clone();
     let update = tokio::spawn(async move {
@@ -763,7 +804,7 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
             .expect("active task");
         (task.cancellation_token.clone(), Arc::clone(&task.done))
     };
-    let (expected_turn, expected_settings) = match change {
+    let (expected_turn, expected_inputs) = match change {
         TaskChangeDuringLookup::CancelledWithRejectedDestination => {
             cancellation_token.cancel();
             (Arc::clone(&turn), original)
@@ -787,7 +828,7 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
                 TaskChangeDuringLookup::FinishedAndReusedContext => Arc::clone(&turn),
                 TaskChangeDuringLookup::CancelledWithRejectedDestination => unreachable!(),
             };
-            let settings = replacement.current_settings.load_full();
+            let inputs = replacement.next_step_settings.load_full();
             session
                 .spawn_task(
                     Arc::clone(&replacement),
@@ -798,8 +839,8 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
                     },
                 )
                 .await;
-            assert!(Arc::ptr_eq(&turn.current_settings.load_full(), &original));
-            (replacement, settings)
+            assert!(Arc::ptr_eq(&turn.next_step_settings.load_full(), &original));
+            (replacement, inputs)
         }
     };
     lookup.release();
@@ -808,8 +849,8 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
         TurnSettingsUpdateOutcome::TargetUnavailable
     );
     assert!(Arc::ptr_eq(
-        &expected_turn.current_settings.load_full(),
-        &expected_settings,
+        &expected_turn.next_step_settings.load_full(),
+        &expected_inputs,
     ));
     assert_eq!(desired_step_settings(&session).await, desired);
     session.abort_all_tasks(TurnAbortReason::Replaced).await;
@@ -826,7 +867,7 @@ enum ManagedAuthorizationChange {
 #[tokio::test]
 async fn reviewer_only_activation_enforces_managed_authority(required_review: bool) {
     let ActivationFixture { session, turn, .. } = activation_fixture(activation_models()).await;
-    let original = turn.current_settings.load_full();
+    let original = turn.next_step_settings.load_full();
     let desired = desired_step_settings(&session).await;
     let source = RequirementSource::Unknown;
     let mut sourced = ConfigRequirementsWithSources::default();
@@ -870,7 +911,7 @@ async fn reviewer_only_activation_enforces_managed_authority(required_review: bo
             .await,
         TurnSettingsUpdateOutcome::Rejected { .. }
     ));
-    assert!(Arc::ptr_eq(&turn.current_settings.load_full(), &original));
+    assert!(Arc::ptr_eq(&turn.next_step_settings.load_full(), &original));
     assert_eq!(desired_step_settings(&session).await, desired);
     session.abort_all_tasks(TurnAbortReason::Replaced).await;
 }
@@ -887,7 +928,7 @@ async fn delayed_activation_rechecks_live_managed_authorization(
         lookup,
         ..
     } = activation_fixture(activation_models()).await;
-    let original = turn.current_settings.load_full();
+    let original = turn.next_step_settings.load_full();
     let desired = desired_step_settings(&session).await;
     let update_session = Arc::clone(&session);
     let turn_id = turn.sub_id.clone();
@@ -968,7 +1009,7 @@ async fn delayed_activation_rechecks_live_managed_authorization(
             reason: expected_error.to_string(),
         }
     );
-    assert!(Arc::ptr_eq(&turn.current_settings.load_full(), &original,));
+    assert!(Arc::ptr_eq(&turn.next_step_settings.load_full(), &original));
     assert_eq!(desired_step_settings(&session).await, desired);
     session.abort_all_tasks(TurnAbortReason::Replaced).await;
 }
@@ -1028,7 +1069,12 @@ async fn activation_must_match_the_retained_turn_authority(change: ManagedPolicy
     let mut live = session.state.lock().await.session_configuration.clone();
     live.original_config_do_not_use = Arc::clone(&prepared.config);
     assert_eq!(
-        session.validate_active_step_settings(&prepared, &destination, &live,),
+        session.validate_active_step_settings(
+            &prepared,
+            &destination,
+            &live,
+            &session.services.turn_environments.selections(),
+        ),
         Ok(())
     );
     assert_eq!(
@@ -1082,7 +1128,12 @@ async fn activation_must_match_the_retained_turn_authority(change: ManagedPolicy
     // The destination satisfies today's managed policy. Only the temporary
     // compatibility check rejects the mismatch with retained turn consumers.
     assert_eq!(
-        session.validate_active_step_settings(&prepared, &destination, &live,),
+        session.validate_active_step_settings(
+            &prepared,
+            &destination,
+            &live,
+            &session.services.turn_environments.selections(),
+        ),
         Ok(())
     );
     assert_eq!(

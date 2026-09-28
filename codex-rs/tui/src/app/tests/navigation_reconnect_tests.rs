@@ -144,7 +144,12 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         app.agents_overview.visible_thread_ids = view.thread_ids();
         app.chat_widget.show_bottom_pane_view(Box::new(view));
         app.agents_overview.view_state.lock().unwrap().input = "Keep this task draft".into();
-        app.agents_overview.view_state.lock().unwrap().renaming = true;
+        app.agents_overview.view_state.lock().unwrap().rename_target =
+            Some(if previous_thread.is_some() {
+                vanished
+            } else {
+                selected
+            });
         let draft = |app: &App| app.agents_overview.view_state.lock().unwrap().input.clone();
         let stale_request = Uuid::new_v4();
         app.agents_overview.request_id = Some(stale_request);
@@ -433,20 +438,6 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             )
             .await?;
 
-            assert!(app.chat_widget.has_active_view());
-            app.handle_tui_event(
-                &mut tui,
-                &mut session,
-                TuiEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-            )
-            .await?;
-
-            assert!(app.chat_widget.has_active_view());
-            // Esc stays in the overview. Dismiss the retained view explicitly
-            // to inspect the unavailable conversation and its cached draft below.
-            app.agents_overview.view_state.lock().unwrap().completion =
-                Some(crate::bottom_pane::ViewCompletion::Accepted);
-            app.chat_widget.handle_key_event(KeyCode::Null.into());
             assert!(!app.chat_widget.has_active_view());
             assert_eq!(app.current_displayed_thread_id(), Some(id));
             let history = drain_history(&mut app, &mut tui, &mut session, &mut events).await?;

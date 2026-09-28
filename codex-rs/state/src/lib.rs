@@ -19,6 +19,7 @@ mod runtime;
 mod sqlite;
 mod telemetry;
 
+pub use log_db::LogWriteFailureReporter;
 pub use model::CreatedProject;
 pub use model::LogEntry;
 pub use model::LogQuery;
@@ -38,10 +39,13 @@ pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;
+pub use extract::GUARDIAN_THREAD_PREVIEW;
+pub use extract::GUARDIAN_THREAD_TITLE;
 /// Low-level storage engine: useful for focused tests.
 ///
 /// Most consumers should prefer [`StateRuntime`].
 pub use extract::apply_rollout_item;
+pub use extract::is_guardian_review_source;
 pub use extract::rollout_item_affects_thread_metadata;
 pub use model::AddThreadAttachmentOutcome;
 pub use model::Anchor;
@@ -78,13 +82,13 @@ pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
-pub use runtime::RuntimeDbBackup;
 pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::backup_runtime_db_for_fresh_start;
 pub use runtime::is_sqlite_corruption_error;
 pub use runtime::open_thread_history_db;
+pub use runtime::recovery::RuntimeDbBackup;
 pub use runtime::runtime_db_path_for_corruption_error;
 pub use runtime::sqlite_error_detail_is_corruption;
 pub use runtime::sqlite_error_detail_is_lock;

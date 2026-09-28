@@ -21,7 +21,6 @@ use crate::app_event::AgentsOverviewThreadRefresh;
 use crate::bottom_pane::SelectionDescriptionLayout;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line_for_keymap;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::startup_draft::StartupDraftPump;
 use codex_app_server_protocol::SessionSource;
@@ -35,6 +34,8 @@ pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
 pub(super) struct AgentsOverviewState {
     /// Missing metadata records a local resume until the next metadata refresh.
     pub(super) threads: HashMap<ThreadId, Option<Thread>>,
+    /// Lifecycle removals take precedence over delayed tool registration responses.
+    pub(super) removed_threads: HashSet<ThreadId>,
     /// Local visibility only; activity and metadata refreshes never reveal hidden roots.
     pub(super) hidden_threads: HashSet<ThreadId>,
     pub(super) last_messages: HashMap<ThreadId, String>,
@@ -91,13 +92,12 @@ impl App {
                             .dim(),
                     )
                 }),
-                footer_hint: Some(standard_popup_hint_line_for_keymap(&self.keymap.list)),
                 items: [
                     #[cfg(any(unix, windows))]
                     (!workload_identity_selected).then(|| SelectionItem {
                         name: "Start background server".to_string(),
                         description: Some(
-                            "Open `codex agents` in another terminal afterward.".to_string(),
+                            "Open `codex agents` in another terminal afterward".to_string(),
                         ),
                         actions: vec![Box::new(|tx| tx.send(AppEvent::StartAgentsDaemon))],
                         dismiss_on_select: true,
@@ -112,10 +112,10 @@ impl App {
                 .into_iter()
                 .flatten()
                 .collect(),
-                description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
+                description_layout: SelectionDescriptionLayout::HideWhenNarrow {
                     min_description_width: 28,
                 },
-                ..Default::default()
+                ..SelectionViewParams::picker()
             });
             return;
         }
@@ -130,7 +130,22 @@ impl App {
         let view = self.agents_overview_view(threads, /*selected_thread_id*/ None);
         self.agents_overview.visible_thread_ids = view.thread_ids();
         self.chat_widget.show_bottom_pane_view(Box::new(view));
-        self.refresh_agents_overview_threads(app_server);
+        if self.reconnect.offline {
+            self.reconnect.presentation = reconnect::ReconnectPresentation::Overview;
+            let mut state = self
+                .agents_overview
+                .view_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.loading = false;
+            state.connection_notice = Some(if self.reconnect.failed {
+                "Reconnect failed — agent list is stale; relaunch to retry"
+            } else {
+                "Reconnecting — agent list is stale"
+            });
+        } else {
+            self.refresh_agents_overview_threads(app_server);
+        }
     }
 
     pub(super) fn apply_agents_overview_thread_refresh(
@@ -144,13 +159,17 @@ impl App {
         }
         self.agents_overview.request_id = None;
         self.agents_overview.refresh_task = None;
-        self.agents_overview
-            .view_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .refresh_failed = !result
-            .as_ref()
-            .is_ok_and(|refresh| refresh.recent_seed_complete);
+        {
+            let mut state = self
+                .agents_overview
+                .view_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.loading = false;
+            state.refresh_failed = !result
+                .as_ref()
+                .is_ok_and(|refresh| refresh.recent_seed_complete);
+        }
         match result {
             Ok(refresh) => {
                 self.agents_overview.initialized = refresh.recent_seed_complete;
@@ -209,9 +228,16 @@ impl App {
         };
         let selected_thread_id = self
             .agents_overview
-            .visible_thread_ids
-            .get(selected)
-            .copied();
+            .view_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rename_target
+            .or_else(|| {
+                self.agents_overview
+                    .visible_thread_ids
+                    .get(selected)
+                    .copied()
+            });
         let threads = self
             .agents_overview
             .threads
@@ -224,7 +250,7 @@ impl App {
         if selected_thread_id
             .is_some_and(|thread_id| !self.agents_overview.visible_thread_ids.contains(&thread_id))
             && let Ok(mut state) = self.agents_overview.view_state.lock()
-            && state.renaming
+            && state.rename_target.is_some()
         {
             self.chat_widget.add_info_message(
                 format!(
@@ -233,7 +259,7 @@ impl App {
                 ),
                 /*hint*/ None,
             );
-            state.renaming = false;
+            state.rename_target = None;
             state.input.clear();
         }
         self.chat_widget
@@ -265,6 +291,11 @@ impl App {
             }
         }
 
+        let voice_owner = self.voice_owner_thread_id().map(|id| id.to_string());
+        let voice_session = threads
+            .iter()
+            .find(|thread| Some(&thread.id) == voice_owner.as_ref())
+            .map(|thread| &thread.session_id);
         let mut roots = threads
             .iter()
             .filter(|thread| thread.parent_thread_id.is_none())
@@ -290,6 +321,7 @@ impl App {
                 thread_id,
                 group,
                 is_current: self.primary_thread_id == Some(thread_id),
+                has_voice: voice_session == Some(&root.session_id),
             });
         }
 
@@ -346,7 +378,10 @@ impl App {
         if self.reject_pending_permission_root_switch() {
             return Ok(AppRunControl::Continue);
         }
-        loading::draw(tui)?;
+        if startup_draft.is_none() {
+            loading::draw(tui)?;
+        }
+        let mut restored_blank_session = false;
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             if let Some(id) = previous_displayed_thread_id
@@ -421,10 +456,7 @@ impl App {
             );
             let preserve_explicit_permissions = unloaded || started.is_some();
             let (mut resume_config, mut local_settings) = if let Some((config, _)) = &started {
-                (
-                    config.clone(),
-                    crate::local_settings::LocalSettings::from(config),
-                )
+                (config.clone(), self.local_settings.reloaded(config))
             } else if unloaded {
                 let target_session = SessionTarget {
                     path: target_thread.path.clone(),
@@ -473,10 +505,12 @@ impl App {
                 {
                     return Ok(control);
                 }
-                local_settings = crate::local_settings::LocalSettings::from(&resume_config);
+                local_settings = self.local_settings.reloaded(&resume_config);
             }
             // Folder selection and trust prompts can replace or clear the loading frame.
-            loading::draw(tui)?;
+            if startup_draft.is_none() {
+                loading::draw(tui)?;
+            }
             let baseline_approval = resume_config.permissions.approval_policy.value();
             let baseline_permissions =
                 RuntimePermissionProfileOverride::from_config(&resume_config);
@@ -513,7 +547,9 @@ impl App {
                 }
             };
             let mut history_notice = None;
-            let presentation = if started.is_some() {
+            let presentation = if startup_draft.is_some() {
+                ThreadAttachPresentation::FreshWithDraft
+            } else if started.is_some() {
                 ThreadAttachPresentation::Fresh
             } else {
                 ThreadAttachPresentation::SessionLineage
@@ -525,7 +561,10 @@ impl App {
             {
                 // An untouched task has no rollout for thread/resume yet. Its live
                 // subscription and saved settings are sufficient to restore the editor.
-                (blank.clone(), false)
+                restored_blank_session = true;
+                let mut blank = blank.clone();
+                blank.session.thread_name.clone_from(&target_thread.name);
+                (blank, false)
             } else {
                 match app_server
                     .resume_thread(
@@ -611,10 +650,19 @@ impl App {
                 match startup_draft.as_deref_mut() {
                     Some(draft) => {
                         draft
-                            .run_until(tui, self.shutdown_current_thread(app_server))
+                            .run_until(
+                                tui,
+                                self.detach_current_thread_for_navigation(
+                                    app_server,
+                                    Some(root_thread_id),
+                                ),
+                            )
                             .await?
                     }
-                    None => self.shutdown_current_thread(app_server).await,
+                    None => {
+                        self.detach_current_thread_for_navigation(app_server, Some(root_thread_id))
+                            .await
+                    }
                 }
             }
             // Explicit choices carry across cold resumes and new sessions.
@@ -653,7 +701,9 @@ impl App {
                 return Ok(AppRunControl::Continue);
             }
             // Replacing the widget clears the terminal before the remaining server requests.
-            loading::draw(tui)?;
+            if startup_draft.is_none() {
+                loading::draw(tui)?;
+            }
             if read_only {
                 self.ensure_thread_channel(root_thread_id)
                     .mark_external_writer();
@@ -704,6 +754,7 @@ impl App {
             for thread_id in previous_thread_ids {
                 if previous_running_thread_ids.is_empty()
                     && thread_id != root_thread_id
+                    && self.voice_owner_thread_id() != Some(thread_id)
                     && Some(thread_id) != previous_displayed_thread_id
                     && !self.agents_overview.blank_sessions.contains_key(&thread_id)
                     && let Err(error) = StartupDraftPump::run_with_optional_draft(
@@ -731,8 +782,12 @@ impl App {
                 .await;
         }
         if self.current_displayed_thread_id() == Some(root_thread_id)
-            && let Some(input_state) = self.agents_overview.input_states.remove(&root_thread_id)
+            && let Some(mut input_state) = self.agents_overview.input_states.remove(&root_thread_id)
         {
+            // A saved draft includes model settings, so apply newer server settings after it.
+            let pending_settings = restored_blank_session
+                .then(|| input_state.pending_thread_settings.take())
+                .flatten();
             let preserve_in_flight_turn = !read_only
                 && self
                     .active_turn_id_for_thread(root_thread_id)
@@ -744,6 +799,9 @@ impl App {
                     preserve_in_flight_turn,
                 },
             );
+            if let Some(settings) = pending_settings {
+                self.chat_widget.on_thread_settings_updated(settings);
+            }
             if !preserve_in_flight_turn {
                 self.chat_widget.maybe_send_next_queued_input();
             }
@@ -952,7 +1010,11 @@ impl App {
                 let turns = match thread.history_mode {
                     ThreadHistoryMode::Paginated if app_server.supports_paginated_history() => {
                         app_server
-                            .thread_turns_page(thread_id, /*cursor*/ None)
+                            .thread_turns_page(
+                                thread_id,
+                                /*cursor*/ None,
+                                crate::app_server_session::INITIAL_HISTORY_TURN_LIMIT,
+                            )
                             .await?
                             .data
                     }

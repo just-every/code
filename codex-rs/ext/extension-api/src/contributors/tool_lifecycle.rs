@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use codex_config::McpServerConfig;
+use codex_file_system::ExecutorFileSystem;
 use codex_mcp::McpServerSource;
 use codex_mcp::PreparedMcpCall;
 use codex_mcp::ResolvedMcpServer;
@@ -134,6 +135,8 @@ pub struct ToolStartInput<'a> {
     pub tool_name: &'a ToolName,
     /// Read-only metadata and provenance from the exact MCP call that will execute.
     pub mcp_tool: Option<&'a McpToolContext>,
+    /// Resolves evidence from the issuing step only when awaited; `None` prevents cached approval.
+    pub permissions: crate::ExtensionFuture<'a, Option<codex_guardian_context::PermissionContext>>,
     /// Finalized tool arguments, including any pre-tool-use hook rewrites.
     ///
     /// Payloads can contain sensitive plaintext and must not be logged.
@@ -142,6 +145,31 @@ pub struct ToolStartInput<'a> {
     pub conversation_history: Arc<dyn ConversationHistorySnapshot>,
     /// Source that issued the tool call.
     pub source: ToolCallSource,
+}
+
+/// Finalized builtin command and the executor that will run it.
+///
+/// This runs after command hooks and environment resolution, before command
+/// attribution and measurement selection. Filesystem paths belong to the selected
+/// executor and must not be interpreted as host-local paths.
+pub struct CommandStartInput<'a> {
+    /// Store scoped to the host session runtime.
+    pub session_store: &'a ExtensionData,
+    /// Store scoped to this thread runtime.
+    pub thread_store: &'a ExtensionData,
+    /// Store scoped to this turn runtime.
+    pub turn_store: &'a ExtensionData,
+    /// Current turn submission id.
+    pub turn_id: &'a str,
+    /// Host tool call id.
+    pub call_id: &'a str,
+    /// Resolved argv, including the selected executor's shell wrapper.
+    /// Commands can contain sensitive plaintext and must not be logged.
+    pub command: &'a [String],
+    /// Effective working directory in the selected executor.
+    pub cwd: &'a PathUri,
+    /// Filesystem of the selected executor.
+    pub file_system: &'a dyn ExecutorFileSystem,
 }
 
 /// Input supplied after an MCP server responds, before the host reports completion.
@@ -184,4 +212,46 @@ pub struct ToolFinishInput<'a> {
     pub source: ToolCallSource,
     /// Host-observed result of the tool call.
     pub outcome: ToolCallOutcome,
+}
+
+/// The execution interval represented by a tool timing observation.
+#[derive(Clone, Copy, Debug)]
+pub enum ToolTimingBoundary {
+    /// Elapsed time from admission through the parallel-execution gate until the
+    /// outer dispatch completes or is dropped. Includes routing, hooks, policy
+    /// checks, and result processing; excludes runtime readiness and gate waiting.
+    /// Zero if dispatch never passed the gate.
+    Handler,
+    /// Duration reported by the code-mode host for its exec or wait operation.
+    /// Measures the remote operation rather than the enclosing local dispatch.
+    HostOperation,
+}
+
+/// A measured tool interval. Handler observations also cover cancellation;
+/// host-operation observations are available only when the host reports a duration.
+/// Observers must not block.
+pub struct ToolTimingInput<'a> {
+    /// Thread that owns the tool call.
+    pub thread_id: &'a str,
+    /// Current turn submission id.
+    pub turn_id: &'a str,
+    /// Model-visible tool call id used to correlate dispatch and timing observations.
+    pub call_id: &'a str,
+    /// Execution interval measured by this observation.
+    pub boundary: ToolTimingBoundary,
+    /// Elapsed time within the specified boundary.
+    pub duration: std::time::Duration,
+}
+
+/// A direct call entering dispatch, before readiness, hooks, or policy checks.
+/// Observers must return promptly and cannot affect tool execution.
+pub struct ToolDispatchInput<'a> {
+    /// Thread that owns the tool call.
+    pub thread_id: &'a str,
+    /// Current turn submission id.
+    pub turn_id: &'a str,
+    /// Model-visible tool call id used to correlate dispatch and timing observations.
+    pub call_id: &'a str,
+    /// Tool name supplied to dispatch, before pre-tool hooks run.
+    pub tool_name: &'a ToolName,
 }

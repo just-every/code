@@ -7,7 +7,7 @@ use codex_exec_server_protocol::JSONRPCErrorError;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::invalid_request;
 use crate::rpc::session_already_attached;
@@ -64,7 +64,7 @@ impl SessionRegistry {
         self: &Arc<Self>,
         resume_session_id: Option<String>,
         notifications: RpcNotificationSender,
-        runtime_paths: ExecServerRuntimePaths,
+        runtime_paths: ExecServerRuntimeOptions,
     ) -> Result<SessionHandle, JSONRPCErrorError> {
         enum AttachOutcome {
             Attached(Arc<SessionEntry>),

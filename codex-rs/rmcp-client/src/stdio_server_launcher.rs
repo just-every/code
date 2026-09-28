@@ -10,6 +10,7 @@
 //! Both paths return [`StdioServerTransport`], so `RmcpClient` can hand the
 //! resulting byte stream to rmcp without knowing where the process lives. The
 //! executor-specific byte adaptation lives in `executor_process_transport`.
+//! Unix local servers use the stdio-only descriptor policy.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -38,14 +39,14 @@ use codex_exec_server::ExecProcess;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
-#[cfg(all(unix, not(target_os = "macos")))]
+use codex_utils_pty::Command;
+#[cfg(unix)]
+use codex_utils_pty::DescriptorPolicy;
+use codex_utils_pty::ProcessMode;
+#[cfg(unix)]
 use codex_utils_pty::process_group::kill_process_group;
-#[cfg(target_os = "macos")]
-use codex_utils_pty::process_group::kill_process_group_with_member_fallback as kill_process_group;
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 use codex_utils_pty::process_group::terminate_process_group;
-#[cfg(target_os = "macos")]
-use codex_utils_pty::process_group::terminate_process_group_with_member_fallback as terminate_process_group;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use rmcp::service::RoleClient;
@@ -54,7 +55,6 @@ use rmcp::service::TxJsonRpcMessage;
 use rmcp::transport::Transport;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
-use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::info;
@@ -214,6 +214,11 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
 
 // Local private implementation.
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
 #[cfg(unix)]
 const PROCESS_GROUP_TERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
@@ -280,13 +285,16 @@ impl LocalStdioServerLauncher {
 
         let build_command = || {
             let mut command = Command::new(&resolved_program);
-            command
-                .current_dir(&cwd)
-                .env_clear()
-                .envs(&envs)
-                .args(&args);
+            command.current_dir(&cwd).envs(&envs).args(&args);
+            command.process_mode(ProcessMode::NewGroup);
+            // MCP uses only stdio; select Explicit to exclude unrelated
+            // orchestrator descriptors from the server and commands it launches.
+            // Descriptor allowlisting is Unix-only. Windows can still inherit unrelated
+            // handles and needs a handle allowlist in the shared spawn backend.
             #[cfg(unix)]
-            command.process_group(0);
+            command.descriptor_policy(DescriptorPolicy::Explicit);
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NO_WINDOW);
             command
         };
         #[cfg(windows)]
@@ -296,7 +304,9 @@ impl LocalStdioServerLauncher {
         #[cfg(windows)]
         let job = match codex_utils_pty::JobObject::create_without_breakaway() {
             Ok(job) => {
-                job.prepare_suspended_spawn(&mut command);
+                command.prepare_suspended_spawn(&job);
+                // The helper replaces creation flags; retain suspension and suppress the console.
+                command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
                 Some(job)
             }
             Err(error) => {

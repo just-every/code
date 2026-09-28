@@ -56,26 +56,10 @@ impl AnalyticsView {
                 ));
             }
         }
-        let plan = self.account.ready().map(|plan| {
-            use codex_protocol::account::PlanType;
-            match plan {
-                PlanType::Free => "Free",
-                PlanType::Go => "Go",
-                PlanType::Plus => "Plus",
-                PlanType::Pro => "Pro",
-                PlanType::ProLite => "Pro Lite",
-                PlanType::Team
-                | PlanType::Business
-                | PlanType::SelfServeBusinessProLite
-                | PlanType::SelfServeBusinessUsageBased => "Business",
-                PlanType::Ent26
-                | PlanType::EnterpriseCbpAutomation
-                | PlanType::EnterpriseCbpUsageBased
-                | PlanType::Enterprise => "Enterprise",
-                PlanType::Edu | PlanType::EduPlus | PlanType::EduPro => "Education",
-                PlanType::Unknown => "Account",
-            }
-        });
+        let plan = self
+            .account
+            .ready()
+            .map(|plan| crate::subscription::SubscriptionDisplay::Analytics.label(*plan));
         if let Some(plan) = plan {
             lines.push(center(
                 plan.set_style(secondary_style()).into(),
@@ -156,17 +140,7 @@ impl AnalyticsView {
             lines.extend([values, labels, Line::default()]);
         }
         let selected = self.sections[Section::Summary].group;
-        let controls = Line::from(super::summary::VIEWS[selected].label());
-        if inner_width >= 58 {
-            lines.push(columns(
-                "Token activity".bold().into(),
-                controls,
-                inner_width,
-            ));
-        } else {
-            lines.push("Token activity".bold().into());
-            lines.extend(word_wrap_lines([controls], RtOptions::new(inner_width)));
-        }
+        lines.push("Token activity".bold().into());
         lines.push("Last 12 months".set_style(secondary_style()).into());
         lines.push(Line::default());
         if let Some(buckets) = &tokens.daily_usage_buckets {

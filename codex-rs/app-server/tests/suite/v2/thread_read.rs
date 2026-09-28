@@ -24,6 +24,9 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemEntry;
+use codex_app_server_protocol::ThreadItemsListAnchor;
+use codex_app_server_protocol::ThreadItemsListCursor;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadListParams;
@@ -588,6 +591,8 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
     );
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,
@@ -856,6 +861,7 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -926,6 +932,7 @@ async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_pa
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -1034,6 +1041,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -1648,6 +1656,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
     );
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,
@@ -2004,9 +2014,19 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         SortDirection::Asc,
     )
     .await?;
-    assert_eq!(first_items_page.data.len(), 1);
-    assert_eq!(first_items_page.data[0].turn_id, "turn-1");
-    assert_eq!(first_items_page.data[0].item.id(), "user-1");
+    assert_eq!(
+        first_items_page.data,
+        vec![ThreadItemEntry {
+            turn_id: "turn-1".to_string(),
+            item: ThreadItem::UserMessage {
+                id: "user-1".to_string(),
+                client_id: None,
+                content: Vec::new(),
+            },
+            started_at_ms: Some(0),
+            completed_at_ms: Some(1),
+        }]
+    );
     let second_items_page = read_items_page(
         &mut mcp,
         thread_id,
@@ -2033,6 +2053,84 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
     assert_eq!(third_items_page.data[0].item.id(), "agent-1");
     assert_eq!(third_items_page.data[1].turn_id, "turn-2");
     assert_eq!(third_items_page.data[1].item.id(), "user-2");
+
+    let anchor_params = ThreadItemsListParams {
+        thread_id: thread_id.to_string(),
+        turn_id: Some("turn-1".to_string()),
+        cursor: None,
+        limit: Some(1),
+        sort_direction: None,
+    };
+    for direction in [None, Some(SortDirection::Desc)] {
+        let request = mcp
+            .send_thread_items_list_request(ThreadItemsListParams {
+                limit: Some(10),
+                sort_direction: direction,
+                ..anchor_params.clone()
+            })
+            .await?;
+        let ordinary: ThreadItemsListResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request)).await??;
+        assert_eq!(ordinary.data.len(), 3);
+        let request = mcp
+            .send_thread_items_list_request(ThreadItemsListParams {
+                cursor: Some(ThreadItemsListCursor::Anchor(ThreadItemsListAnchor::Item {
+                    item_id: ordinary.data[0].item.id().to_string(),
+                })),
+                sort_direction: direction,
+                ..anchor_params.clone()
+            })
+            .await?;
+        let anchored: ThreadItemsListResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request)).await??;
+        assert_eq!(anchored.data, ordinary.data[1..2]);
+        let request = mcp
+            .send_thread_items_list_request(ThreadItemsListParams {
+                cursor: Some(ThreadItemsListCursor::Opaque(
+                    anchored
+                        .next_cursor
+                        .expect("anchored page has a continuation"),
+                )),
+                sort_direction: direction,
+                ..anchor_params.clone()
+            })
+            .await?;
+        let continued: ThreadItemsListResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request)).await??;
+        assert_eq!(continued.data, ordinary.data[2..]);
+        assert_eq!(continued.next_cursor, None);
+    }
+    for (turn_id, anchor, message) in [
+        (
+            None,
+            "steer-1",
+            "turnId is required when cursor is an item anchor",
+        ),
+        (
+            Some("turn-1"),
+            "missing",
+            "cursor.itemId does not identify an item in the requested history scope",
+        ),
+    ] {
+        let request = mcp
+            .send_thread_items_list_request(ThreadItemsListParams {
+                turn_id: turn_id.map(str::to_string),
+                cursor: Some(ThreadItemsListCursor::Anchor(ThreadItemsListAnchor::Item {
+                    item_id: anchor.to_string(),
+                })),
+                ..anchor_params.clone()
+            })
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request)),
+        )
+        .await??;
+        assert_eq!(
+            (error.error.code, error.error.message.as_str()),
+            (-32602, message)
+        );
+    }
 
     let turn_start_id = mcp
         .send_turn_start_request(TurnStartParams {
@@ -2281,7 +2379,7 @@ async fn read_items_page(
         .send_thread_items_list_request(ThreadItemsListParams {
             thread_id: thread_id.to_string(),
             turn_id: turn_id.map(str::to_string),
-            cursor,
+            cursor: cursor.map(ThreadItemsListCursor::Opaque),
             limit,
             sort_direction: Some(sort_direction),
         })
@@ -2376,6 +2474,8 @@ async fn seed_pathless_store_thread(
 ) -> Result<()> {
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,

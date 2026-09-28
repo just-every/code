@@ -36,6 +36,7 @@ use crate::connection::JsonRpcConnection;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::connection::JsonRpcTransport;
 use crate::rpc_server_requests::RpcServerRequestSender;
+use crate::rpc_timing::RpcCompletion;
 
 #[cfg(test)]
 #[path = "rpc_client_metrics_tests.rs"]
@@ -60,7 +61,7 @@ pub(crate) enum RpcCallError {
     PendingRequestLimitExceeded { limit: usize },
 }
 
-type PendingRequest = oneshot::Sender<Result<Value, RpcCallError>>;
+type PendingRequest = oneshot::Sender<RpcCompletion>;
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type RequestRoute<S> = Box<
     dyn Fn(Arc<S>, JSONRPCRequest) -> BoxFuture<Option<RpcServerOutboundMessage>> + Send + Sync,
@@ -652,6 +653,23 @@ impl RpcClient {
                 return Err(RpcCallError::Json(err));
             }
         };
+        let response = self
+            .send_request_and_wait(method, request_id, params, response_rx, call_timeout)
+            .await?;
+        serde_json::from_value(response).map_err(RpcCallError::Json)
+    }
+
+    // Sending and waiting are independent of P and T, so share this future
+    // across typed calls. Register and serialize in call_inner in that order:
+    // a disconnected client must still take precedence over a serialization error.
+    async fn send_request_and_wait(
+        &self,
+        method: &str,
+        request_id: RequestId,
+        params: Value,
+        response_rx: oneshot::Receiver<RpcCompletion>,
+        call_timeout: RpcCallTimeout,
+    ) -> Result<Value, RpcCallError> {
         if self
             .write_tx
             .send(JSONRPCMessage::Request(JSONRPCRequest {
@@ -666,7 +684,13 @@ impl RpcClient {
             self.pending.lock().await.remove(&request_id);
             return Err(RpcCallError::Closed);
         }
-
+        tracing::event!(
+            name: "codex.exec_server.request_enqueued",
+            target: "codex_otel.trace_safe",
+            tracing::Level::INFO,
+            event.name = "codex.exec_server.request_enqueued",
+            rpc.method = method,
+        );
         // Do not race in-flight requests directly against the transport-close
         // watch value. The connection reader receives JSON-RPC messages and
         // the terminal disconnect event on one ordered queue, then drains any
@@ -686,12 +710,9 @@ impl RpcClient {
                 }
             },
         };
-        let result: Result<Value, RpcCallError> = response.map_err(|_| RpcCallError::Closed)?;
-        let response = match result {
-            Ok(response) => response,
-            Err(error) => return Err(error),
-        };
-        serde_json::from_value(response).map_err(RpcCallError::Json)
+        let completion = response.map_err(|_| RpcCallError::Closed)?;
+        completion.record_receipt(method);
+        completion.result
     }
 
     #[cfg(test)]
@@ -821,12 +842,12 @@ async fn handle_server_message(
     match message {
         JSONRPCMessage::Response(JSONRPCResponse { id, result }) => {
             if let Some(pending) = pending.lock().await.remove(&id) {
-                let _ = pending.send(Ok(result));
+                let _ = pending.send(RpcCompletion::new(Ok(result)));
             }
         }
         JSONRPCMessage::Error(JSONRPCError { id, error }) => {
             if let Some(pending) = pending.lock().await.remove(&id) {
-                let _ = pending.send(Err(RpcCallError::Server(error)));
+                let _ = pending.send(RpcCompletion::new(Err(RpcCallError::Server(error))));
             }
         }
         JSONRPCMessage::Notification(notification) => {
@@ -857,7 +878,7 @@ async fn drain_pending(pending: &Mutex<HashMap<RequestId, PendingRequest>>) {
             .collect::<Vec<_>>()
     };
     for pending in pending {
-        let _ = pending.send(Err(RpcCallError::Closed));
+        let _ = pending.send(RpcCompletion::new(Err(RpcCallError::Closed)));
     }
 }
 

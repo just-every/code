@@ -282,7 +282,7 @@ impl CoreShellActionProvider {
         };
         match stopwatch
             .pause_for(async {
-                let (turn_context, step_settings, strict_auto_review) = self
+                let (turn_context, settings, _, strict_auto_review) = self
                     .session
                     .active_turn_context_and_strict_auto_review()
                     .await
@@ -295,8 +295,8 @@ impl CoreShellActionProvider {
                 let approval_ctx = ApprovalContext {
                     review_context: GuardianReviewContext::from_resolved_settings(
                         Arc::clone(&turn_context),
-                        &step_settings,
-                        &turn_context.environments,
+                        &settings,
+                        self.review_context.environments(),
                     ),
                     // The running process can outlive its launching tool or code-mode cell.
                     cancellation_token: None,
@@ -657,7 +657,6 @@ impl CoreShellCommandExecutor {
                 windows_sandbox_policy_cwd: self.sandbox_policy_cwd.clone().into(),
                 windows_sandbox_workspace_roots: self.windows_sandbox_workspace_roots.clone(),
                 windows_sandbox_level: self.windows_sandbox_level,
-                windows_sandbox_private_desktop: false,
                 permission_profile: self.permission_profile.clone(),
                 windows_sandbox_filesystem_overrides: None,
                 arg0: self.arg0.clone(),
@@ -796,7 +795,6 @@ impl CoreShellCommandExecutor {
             sandbox_exe: self.codex_linux_sandbox_exe.as_deref(),
             use_legacy_landlock: self.use_legacy_landlock,
             windows_sandbox_level: self.windows_sandbox_level,
-            windows_sandbox_private_desktop: false,
         })?;
         let mut exec_request = crate::sandboxing::ExecRequest::from_sandbox_exec_request(
             exec_request,

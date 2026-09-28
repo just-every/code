@@ -13,6 +13,8 @@ pub(crate) fn build_reviewer_config(parent_config: &Config) -> anyhow::Result<Co
     let mut config = parent_config.clone();
     config.model_provider.request_max_retries = Some(1);
     config.model_provider.stream_max_retries = Some(1);
+    // Approvals wait for TurnComplete; post-turn compaction must not delay it.
+    config.model_post_turn_compact_threshold_percent = 0;
     config.include_skill_instructions = false;
     config.memories.use_memories = false;
     config.memories.dedicated_tools = false;
@@ -34,6 +36,9 @@ pub(crate) fn build_reviewer_config(parent_config: &Config) -> anyhow::Result<Co
     config.mcp_servers.set(HashMap::new()).map_err(|err| {
         anyhow::anyhow!("guardian review session could not clear MCP servers: {err}")
     })?;
+    let conversation_history_tools = config
+        .features
+        .enabled(Feature::GuardianConversationHistoryTools);
     for feature in [
         Feature::Collab,
         Feature::MultiAgentV2,
@@ -46,6 +51,9 @@ pub(crate) fn build_reviewer_config(parent_config: &Config) -> anyhow::Result<Co
         Feature::WebSearchRequest,
         Feature::WebSearchCached,
     ] {
+        if feature == Feature::Apps && conversation_history_tools {
+            continue;
+        }
         config.features.disable(feature).map_err(|err| {
             anyhow::anyhow!(
                 "guardian review session could not disable `features.{}`: {err}",

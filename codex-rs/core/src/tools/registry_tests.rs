@@ -563,7 +563,9 @@ async fn code_mode_wait_does_not_expose_default_hook_payloads() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let output = crate::tools::context::FunctionToolOutput::from_text("ok".to_string(), Some(true));
 
-    let wait = crate::tools::handlers::CodeModeWaitHandler;
+    let wait = crate::tools::handlers::CodeModeWaitHandler::new(
+        /*description_override*/ None, /*parameters_override*/ None,
+    );
     let wait_invocation = test_invocation(
         Arc::new(session),
         Arc::new(turn),
@@ -756,25 +758,25 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
     let turn = Arc::new(turn);
 
     registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
                 "ok-call",
                 codex_tools::ToolName::namespaced(DEFAULT_FUNCTION_NAMESPACE, "ok_tool"),
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await?;
     let err = match registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
                 "failing-call",
                 failing_tool.clone(),
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await
     {

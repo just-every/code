@@ -23,6 +23,7 @@ fn insert_splash(app: &mut App, tui: &mut tui::Tui) {
             &app.config,
             &app.local_settings,
             "gpt-test",
+            &session.model,
             &session,
             /*is_first_event*/ false,
             /*tooltip_override*/ None,
@@ -38,6 +39,101 @@ fn drain_history(app: &mut App, tui: &mut tui::Tui, events: &mut UnboundedReceiv
             app.insert_history_cell(tui, cell);
         }
     }
+}
+
+#[tokio::test]
+async fn deprecation_delivery_deduplicates_retained_transcript() -> Result<()> {
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ false)?;
+    let notice = ServerNotification::DeprecationNotice(
+        codex_app_server_protocol::DeprecationNoticeNotification {
+            summary: "`transcript_v2` is deprecated.".into(),
+            details: Some("Remove it from your configuration.".into()),
+        },
+    );
+    app.chat_widget
+        .handle_server_notification(notice.clone(), /*replay_kind*/ None);
+    drain_history(&mut app, &mut tui, &mut events);
+    app.chat_widget.open_warnings(&app.transcript_cells);
+    app.chat_widget.handle_key_event(KeyCode::Esc.into());
+    app.insert_history_cell(
+        &mut tui,
+        Box::new(UserHistoryCell {
+            message: "Hello\nPlease say hello.".into(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+            spoken: false,
+        }),
+    );
+    app.open_transcript_overlay(&mut tui);
+    // Deliver both duplicates before draining: insertion must not depend on frame timing.
+    for replay_kind in [None, Some(crate::chatwidget::ReplayKind::ThreadSnapshot)] {
+        app.chat_widget
+            .handle_server_notification(notice.clone(), replay_kind);
+    }
+    drain_history(&mut app, &mut tui, &mut events);
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 1);
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 12,
+    );
+    let mut buffer = Buffer::empty(area);
+    let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
+        panic!("expected transcript")
+    };
+    overlay.render(area, &mut buffer);
+    insta::assert_snapshot!("deduplicated_deprecation_transcript", format!("{buffer:?}"));
+
+    for (summary, details) in [
+        ("`transcript_v2` is deprecated.", None),
+        ("`transcript_v2` is deprecated.", Some("Updated guidance.")),
+        ("Another deprecated setting.", Some("Updated guidance.")),
+    ] {
+        app.chat_widget.handle_server_notification(
+            ServerNotification::DeprecationNotice(
+                codex_app_server_protocol::DeprecationNoticeNotification {
+                    summary: summary.into(),
+                    details: details.map(str::to_owned),
+                },
+            ),
+            /*replay_kind*/ None,
+        );
+    }
+    drain_history(&mut app, &mut tui, &mut events);
+    assert_eq!(app.transcript_cells.len(), 5);
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 2);
+    assert_eq!(
+        history_cell::warning_entries(&app.transcript_cells)
+            .into_iter()
+            .map(|entry| entry.details)
+            .collect::<Vec<_>>(),
+        vec![
+            "`transcript_v2` is deprecated.\nRemove it from your configuration.\n\n`transcript_v2` is deprecated.\nUpdated guidance.",
+            "Another deprecated setting.\nUpdated guidance.",
+        ],
+    );
+
+    app.reset_app_ui_state_after_clear();
+    app.chat_widget
+        .handle_server_notification(notice.clone(), /*replay_kind*/ None);
+    drain_history(&mut app, &mut tui, &mut events);
+    assert_eq!(app.transcript_cells.len(), 1);
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 1);
+
+    app.reset_for_thread_switch(&mut tui)?;
+    for replay_kind in [
+        Some(crate::chatwidget::ReplayKind::ResumeInitialMessages),
+        None,
+    ] {
+        app.chat_widget
+            .handle_server_notification(notice.clone(), replay_kind);
+    }
+    drain_history(&mut app, &mut tui, &mut events);
+    assert_eq!(app.transcript_cells.len(), 1);
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 1);
+    Ok(())
 }
 
 #[tokio::test]
@@ -109,16 +205,24 @@ async fn mcp_startup_summary_counts_servers_and_sign_in_subset() -> Result<()> {
     drain_history(&mut app, &mut tui, &mut events);
     assert_eq!(app.transcript_cells.len(), 2);
     let warnings = &app.transcript_cells[1];
-    insta::assert_debug_snapshot!("mcp_startup_summary", warnings.display_lines(/*width*/ 100));
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 3);
+    assert_eq!(
+        history_cell::warning_entries(&app.transcript_cells)
+            .into_iter()
+            .map(|entry| (entry.source, entry.details.contains("Sign-in required.")))
+            .collect::<Vec<_>>(),
+        vec![
+            ("MCP · alpha".into(), true),
+            ("MCP · beta".into(), true),
+            ("MCP · gamma".into(), false)
+        ],
+    );
     insta::assert_snapshot!(
         "mcp_startup_details",
         lines_to_single_string(&warnings.transcript_lines(/*width*/ 40))
     );
     insert_warnings(&mut app, &mut tui, &["Skill manifest is invalid."]);
-    insta::assert_debug_snapshot!(
-        "mixed_startup_summary",
-        app.transcript_cells[1].display_lines(/*width*/ 100)
-    );
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 4);
     Ok(())
 }
 
@@ -141,18 +245,13 @@ async fn startup_warnings_wait_for_splash_and_coalesce_with_full_details() -> Re
     let transcript = app.transcript_cells[1].transcript_lines(/*width*/ 80);
     insta::assert_snapshot!(format!("display:\n{}\n\ntranscript:\n{}", lines_to_single_string(&display), lines_to_single_string(&transcript)), @"
     display:
-    ⚠ 2 startup issues · ctrl + t for details
+
 
     transcript:
     ⚠ Skill manifest is invalid.
     ⚠ MCP alpha failed to start.
     ");
-    app.keymap.app.open_transcript = vec![crate::key_hint::plain(crossterm::event::KeyCode::F(12))];
-    app.merge_startup_warnings(&mut tui, &StartupWarningsCell::default());
-    insta::assert_snapshot!(lines_to_single_string(&app.transcript_cells[1].display_lines(/*width*/ 80)), @"⚠ 2 startup issues · f12 for details");
-    app.keymap.app.open_transcript.clear();
-    app.merge_startup_warnings(&mut tui, &StartupWarningsCell::default());
-    insta::assert_snapshot!(lines_to_single_string(&app.transcript_cells[1].display_lines(/*width*/ 80)), @"⚠ 2 startup issues");
+    assert_eq!(history_cell::warning_count(&app.transcript_cells), 2);
     Ok(())
 }
 
@@ -198,7 +297,7 @@ async fn startup_skill_load_order_preserves_runtime_error_recurrence() -> Result
         assert_eq!(app.transcript_cells.len(), 3);
         let runtime = app.transcript_cells[1..]
             .iter()
-            .flat_map(|cell| cell.display_lines(/*width*/ 120))
+            .flat_map(|cell| cell.transcript_lines(/*width*/ 120))
             .collect::<Vec<_>>();
         insta::allow_duplicates! {
             insta::assert_snapshot!(lines_to_single_string(&runtime), @"

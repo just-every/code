@@ -26,6 +26,7 @@ use tokio::time::Instant;
 use crate::McpProtocolMode;
 use crate::McpRuntimeContext;
 use crate::ToolInfo;
+use crate::server::McpCredentialPolicy;
 use crate::server::McpServerConnectionIdentity;
 use crate::server::has_explicit_http_authorization;
 
@@ -116,18 +117,22 @@ impl Default for ToolCatalogCacheEntry {
 
 impl McpToolCatalogCacheContext {
     pub(crate) fn has_tools(&self) -> bool {
-        self.current_revision().is_some()
+        self.current_revision_if(|_| true).is_some()
     }
 
-    /// Identifies the current usable catalog without cloning its tool definitions.
-    /// The entry is fixed for a connection; accepted publications advance its revision.
-    pub(crate) fn current_revision(&self) -> Option<u64> {
+    /// Checks eligibility and reads the revision under one lock without cloning tools.
+    /// The predicate borrows the current catalog while the cache entry is locked.
+    pub(crate) fn current_revision_if(
+        &self,
+        accepts_tools: impl FnOnce(&[ToolInfo]) -> bool,
+    ) -> Option<u64> {
         let state = lock_unpoisoned(&self.entry.state);
         let snapshot = state.snapshot.as_ref()?;
         (!state.disabled_by_server
             && !snapshot.tools.is_empty()
-            && snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL)
-            .then_some(state.last_accepted_generation)
+            && snapshot.published_at.elapsed() <= TOOL_CATALOG_CACHE_TTL
+            && accepts_tools(&snapshot.tools))
+        .then_some(state.last_accepted_generation)
     }
 
     pub(crate) fn optional_startup_deadline(
@@ -320,6 +325,10 @@ impl ToolCatalogTransportIdentity {
             }
 
             let mut hasher = Sha1::new();
+            hasher.update(match connection_identity.credential_policy {
+                McpCredentialPolicy::HostFallbackAllowed => b"host-fallback".as_slice(),
+                McpCredentialPolicy::ExecutorOnly => b"executor-only".as_slice(),
+            });
             hasher.update(
                 serde_json::to_vec(&(
                     url,
@@ -347,9 +356,12 @@ impl ToolCatalogTransportIdentity {
             env_vars.dedup();
             for name in env_vars {
                 hasher.update(name.as_bytes());
-                let mut value_hasher = DefaultHasher::new();
-                std::env::var_os(name).hash(&mut value_hasher);
-                hasher.update(value_hasher.finish().to_le_bytes());
+                if connection_identity.credential_policy == McpCredentialPolicy::HostFallbackAllowed
+                {
+                    let mut value_hasher = DefaultHasher::new();
+                    std::env::var_os(name).hash(&mut value_hasher);
+                    hasher.update(value_hasher.finish().to_le_bytes());
+                }
             }
             return Some(Self::StreamableHttp {
                 fingerprint: hasher.finalize().into(),

@@ -4,8 +4,11 @@
 //! when text reaches a terminal buffer or scrollback writer so OSC 8 bytes never affect geometry.
 
 mod paragraph;
+mod source;
 
 pub(crate) use paragraph::HyperlinkParagraph;
+pub(crate) use source::LineWrapPolicy;
+pub(crate) use source::LogicalLineSource;
 
 use std::num::NonZeroU16;
 use std::ops::Range;
@@ -31,7 +34,6 @@ use crate::render::line_utils::line_to_borrowed;
 use crate::render::line_utils::line_to_static;
 use crate::width::display_width;
 use crate::wrapping::RtOptions;
-use crate::wrapping::adaptive_wrap_line;
 
 // Destinations are repeated in every linked buffer cell. Leave oversized URLs as plain text.
 const MAX_HYPERLINK_DESTINATION_BYTES: usize = 8 * 1024;
@@ -120,7 +122,7 @@ impl TerminalHyperlink {
         }
     }
 
-    fn with_columns(&self, columns: Range<usize>) -> Self {
+    pub(crate) fn with_columns(&self, columns: Range<usize>) -> Self {
         Self {
             columns,
             destination: self.destination.clone(),
@@ -128,7 +130,7 @@ impl TerminalHyperlink {
         }
     }
 
-    fn terminal_destination(&self) -> Option<String> {
+    pub(crate) fn terminal_destination(&self) -> Option<String> {
         match self.destination_kind {
             DestinationKind::Web => web_destination(&self.destination),
             DestinationKind::TrustedFile => trusted_file_destination(&self.destination),
@@ -136,10 +138,40 @@ impl TerminalHyperlink {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default)]
 pub(crate) struct HyperlinkLine {
     pub(crate) line: Line<'static>,
     pub(crate) hyperlinks: Vec<TerminalHyperlink>,
+    pub(crate) source: Option<LogicalLineSource>,
+}
+
+// Source provenance is shared layout metadata; omit it from visual diagnostics to avoid
+// repeating an entire logical line for every wrapped fragment.
+impl std::fmt::Debug for HyperlinkLine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HyperlinkLine")
+            .field("line", &self.line)
+            .field("hyperlinks", &self.hyperlinks)
+            .finish()
+    }
+}
+
+impl PartialEq for HyperlinkLine {
+    fn eq(&self, other: &Self) -> bool {
+        self.line == other.line && self.hyperlinks == other.hyperlinks
+    }
+}
+
+impl Eq for HyperlinkLine {}
+
+/// Cache equality also tracks source whitespace hidden by display wrapping.
+pub(crate) fn lines_with_sources_eq(left: &[HyperlinkLine], right: &[HyperlinkLine]) -> bool {
+    left == right
+        && left
+            .iter()
+            .map(|line| &line.source)
+            .eq(right.iter().map(|line| &line.source))
 }
 
 impl HyperlinkLine {
@@ -147,6 +179,7 @@ impl HyperlinkLine {
         Self {
             line,
             hyperlinks: Vec::new(),
+            source: None,
         }
     }
 
@@ -155,6 +188,7 @@ impl HyperlinkLine {
     }
 
     pub(crate) fn push_span(&mut self, span: Span<'static>, destination: Option<&str>) {
+        self.source = None;
         let start = self.width();
         let end = start + display_width(span.content.as_ref());
         self.line.push_span(span);
@@ -168,6 +202,9 @@ impl HyperlinkLine {
 
     pub(crate) fn style(mut self, style: ratatui::style::Style) -> Self {
         self.line = self.line.style(style);
+        if let Some(source) = &mut self.source {
+            source.line_style = style;
+        }
         self
     }
 }
@@ -220,6 +257,16 @@ pub(crate) fn prefix_hyperlink_lines(
                 subsequent_prefix.clone()
             };
             let shift = display_width(prefix.content.as_ref());
+            let mut source = line
+                .source
+                .take()
+                .unwrap_or_else(|| LogicalLineSource::from_line(&line.line));
+            source.prefix_bytes += prefix.content.len();
+            source
+                .continuation_indent
+                .spans
+                .insert(/*index*/ 0, subsequent_prefix.clone());
+            line.source = Some(source);
             let mut spans = Vec::with_capacity(line.line.spans.len() + 1);
             spans.push(prefix);
             spans.extend(line.line.spans);
@@ -230,6 +277,46 @@ pub(crate) fn prefix_hyperlink_lines(
             line
         })
         .collect()
+}
+
+/// Retain a known first-line label in copy text without changing the existing wrapping.
+///
+/// Callers pass the suffix of the first row's synthetic prefix that carries meaning, such as
+/// a checkbox or `answer:`. Only that row's shared logical source is updated.
+pub(crate) fn retain_initial_prefix(lines: &mut [HyperlinkLine], prefix: &str) {
+    let Some(origin) = lines.first().and_then(|line| line.source.clone()) else {
+        return;
+    };
+    debug_assert!(origin.prefix_bytes >= prefix.len());
+    let prefix_line = LogicalLineSource::from_line(&lines[0].line)
+        .styled_range(origin.prefix_bytes - prefix.len()..origin.prefix_bytes);
+    let mut styles = LogicalLineSource::from_line(&prefix_line).styles.to_vec();
+    styles.extend(origin.styles.iter().map(|(range, style)| {
+        (
+            range.start + prefix.len()..range.end + prefix.len(),
+            origin.line_style.patch(*style).patch(origin.span_style),
+        )
+    }));
+    let styles = std::sync::Arc::from(styles);
+    let text: std::sync::Arc<str> = format!("{prefix}{}", origin.text).into();
+    for (index, line) in lines.iter_mut().enumerate() {
+        let Some(source) = line
+            .source
+            .as_mut()
+            .filter(|source| std::sync::Arc::ptr_eq(&source.text, &origin.text))
+        else {
+            continue;
+        };
+        source.text = std::sync::Arc::clone(&text);
+        source.styles = std::sync::Arc::clone(&styles);
+        source.line_style = ratatui::style::Style::default();
+        source.span_style = ratatui::style::Style::default();
+        source.range = source.range.start + prefix.len()..source.range.end + prefix.len();
+        if index == 0 {
+            source.range.start = 0;
+            source.prefix_bytes -= prefix.len();
+        }
+    }
 }
 
 pub(crate) fn adaptive_wrap_hyperlink_lines(
@@ -245,12 +332,14 @@ pub(crate) fn adaptive_wrap_hyperlink_lines(
                 .clone()
                 .initial_indent(options.subsequent_indent.clone())
         };
-        out.extend(remap_wrapped_line(
-            line,
-            adaptive_wrap_line(&line.line, options)
-                .into_iter()
-                .map(|wrapped| line_to_static(&wrapped))
-                .collect(),
+        let mut source = line.clone();
+        source
+            .source
+            .get_or_insert_with(|| LogicalLineSource::from_line(&line.line))
+            .continuation_indent = options.subsequent_indent.clone();
+        out.extend(remap_source_wrapped_line(
+            &source,
+            crate::wrapping::adaptive_wrap_line_with_source(&line.line, options),
         ));
     }
     out
@@ -271,21 +360,82 @@ pub(crate) fn annotate_web_urls_in_line(line: Line<'static>) -> HyperlinkLine {
     out
 }
 
+/// Project annotations from the exact source slices used by the existing wrapping algorithm.
+pub(crate) fn remap_source_wrapped_line(
+    source: &HyperlinkLine,
+    wrapped: Vec<crate::wrapping::WrappedLine<'_>>,
+) -> Vec<HyperlinkLine> {
+    let text = line_text(&source.line);
+    let mut logical = source
+        .source
+        .clone()
+        .unwrap_or_else(|| LogicalLineSource::from_line(&source.line));
+    // Wrapping bakes the row style into each span; mirror it once for all source fragments.
+    if logical.line_style != ratatui::style::Style::default() {
+        logical.styles = logical
+            .styles
+            .iter()
+            .map(|(range, style)| (range.clone(), logical.line_style.patch(*style)))
+            .collect::<Vec<_>>()
+            .into();
+    }
+    let mut source_byte = 0;
+    let mut source_column = 0;
+    wrapped
+        .into_iter()
+        .map(|wrapped| {
+            let line = line_to_static(&wrapped.line);
+            let displayed = line_text(&line);
+            let prefix_columns = display_width(&displayed[..wrapped.prefix_bytes]);
+            source_column += display_width(&text[source_byte..wrapped.range.start]);
+            let start = source_column;
+            let end = start + display_width(&text[wrapped.range.clone()]);
+            source_byte = wrapped.range.end;
+            source_column = end;
+            let hyperlinks = source
+                .hyperlinks
+                .iter()
+                .filter_map(|link| {
+                    let first = link.columns.start.max(start);
+                    let last = link.columns.end.min(end);
+                    (first < last).then(|| {
+                        link.with_columns(
+                            prefix_columns + first - start..prefix_columns + last - start,
+                        )
+                    })
+                })
+                .collect();
+            HyperlinkLine {
+                line,
+                hyperlinks,
+                source: Some(logical.wrapped(wrapped.range, wrapped.prefix_bytes)),
+            }
+        })
+        .collect()
+}
+
 /// Re-attach source hyperlink ranges after visible-text wrapping has split a line.
 ///
 /// Link text is matched in display order so a URL split across table rows retains the complete
 /// destination on every rendered fragment. Whitespace inserted or removed at line boundaries is
 /// ignored while matching; hyperlink destinations themselves are never reconstructed from output.
+/// This legacy projection does not infer logical source provenance. New wrapping callers should
+/// pass authoritative ranges to [`remap_source_wrapped_line`].
 pub(crate) fn remap_wrapped_line(
     source: &HyperlinkLine,
     wrapped: Vec<Line<'static>>,
 ) -> Vec<HyperlinkLine> {
     let mut out = plain_hyperlink_lines(wrapped);
-    if source.hyperlinks.is_empty() {
+    if source.hyperlinks.is_empty() && source.source.is_none() {
         return out;
     }
-
     let source_text = line_text(&source.line);
+    if source_text.trim().is_empty() {
+        for line in &mut out {
+            line.source = source.source.clone();
+        }
+        return out;
+    }
     let mut source_byte = 0usize;
     let mut source_column = 0usize;
     let mut link_index = 0usize;
@@ -303,6 +453,10 @@ pub(crate) fn remap_wrapped_line(
             continue;
         };
         let mapped = &rendered[rendered_start..];
+        line.source = source
+            .source
+            .as_ref()
+            .map(|source| source.wrapped(source_byte..source_byte + mapped.len(), rendered_start));
         let mut output_column = display_width(&rendered[..rendered_start]);
         for grapheme in mapped.graphemes(/*is_extended*/ true) {
             let width = display_width(grapheme);
@@ -505,7 +659,23 @@ pub(crate) fn strip_osc8(text: &str) -> String {
 
 pub(crate) fn decorate_spans(line: &HyperlinkLine) -> Vec<Span<'static>> {
     if line.hyperlinks.is_empty() {
-        return line.line.spans.clone();
+        return line
+            .line
+            .spans
+            .iter()
+            .map(|span| Span {
+                style: span.style,
+                content: if span.content.contains(char::is_control) {
+                    span.content
+                        .graphemes(/*is_extended*/ true)
+                        .filter(|grapheme| !grapheme.contains(char::is_control))
+                        .collect::<String>()
+                        .into()
+                } else {
+                    span.content.clone()
+                },
+            })
+            .collect();
     }
 
     let mut out = Vec::new();
@@ -516,6 +686,12 @@ pub(crate) fn decorate_spans(line: &HyperlinkLine) -> Vec<Span<'static>> {
     for span in &line.line.spans {
         for grapheme in span.content.graphemes(/*is_extended*/ true) {
             let width = display_width(grapheme);
+            // Match ratatui's filtering, retaining source columns for semantic links.
+            // Only the hyperlink metadata below may introduce terminal escapes.
+            if grapheme.contains(char::is_control) {
+                column += width;
+                continue;
+            }
             while line
                 .hyperlinks
                 .get(link_index)
@@ -758,6 +934,7 @@ mod tests {
     fn decorates_a_contiguous_web_link_with_one_osc8_pair() {
         let destination = "https://example.com/a/very/long/path";
         let line = HyperlinkLine {
+            source: None,
             line: Line::from(destination),
             hyperlinks: vec![TerminalHyperlink::web(
                 /*columns*/ 0..usize::from(destination.cell_width()),
@@ -823,6 +1000,7 @@ mod tests {
             wrapped,
             vec![
                 HyperlinkLine {
+                    source: None,
                     line: Line::from("  alpha 😀here"),
                     hyperlinks: vec![TerminalHyperlink::web(
                         /*columns*/ 10..14,
@@ -830,6 +1008,7 @@ mod tests {
                     )],
                 },
                 HyperlinkLine {
+                    source: None,
                     line: Line::from("    middle there end"),
                     hyperlinks: vec![TerminalHyperlink::web(
                         /*columns*/ 11..16,
@@ -1091,6 +1270,7 @@ mod tests {
         );
         link.retarget_to_trusted_file(&file_url);
         let line = HyperlinkLine {
+            source: None,
             line: Line::from("view"),
             hyperlinks: vec![link],
         };

@@ -27,6 +27,8 @@ use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+#[cfg(unix)]
+use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsLoadInput;
@@ -50,6 +52,8 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
+#[cfg(unix)]
+use core_test_support::skip_if_sandbox;
 use core_test_support::skip_if_target_windows;
 use core_test_support::stdio_server_bin;
 use core_test_support::submit_thread_settings;
@@ -68,6 +72,7 @@ use test_case::test_case;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -88,7 +93,7 @@ fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
         include_instructions: config.include_skill_instructions,
         max_context_tokens: config.skill_max_context_tokens,
         bundled_skills_enabled: config.bundled_skills_enabled(),
-        orchestrator_skills_enabled: config.orchestrator_skills_enabled,
+        cloud_skill_enabled: config.cloud_skill_enabled,
         shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
     });
     Arc::new(extensions.build())
@@ -498,6 +503,300 @@ async fn persisted_remote_plugin_command_attribution_flows_through_turn_context(
     Ok(())
 }
 
+#[cfg(unix)]
+#[test_case(codex_exec_server::LOCAL_ENVIRONMENT_ID; "local")]
+#[test_case(codex_exec_server::REMOTE_ENVIRONMENT_ID; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_metrics_stdin_works_with_sandbox_approval_disabled(
+    environment_id: &str,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let script = write_remote_plugin_script_and_config(home.as_ref());
+    std::fs::write(
+        &script,
+        r#"test -n "${CODEX_PLUGIN_METRICS_OUTPUT:-}" || exit 2
+IFS= read -r input
+test "$input" = continue || exit 3
+printf '%s' '{"version":1,"measurements":[{"name":"files_scanned","value":7}]}' > "$CODEX_PLUGIN_METRICS_OUTPUT" || exit 4
+printf 'STDIN_OK\n'
+"#,
+    )?;
+    std::fs::write(
+        script
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("analytics.yaml"),
+        "version: 1\noperations: {scan: {path: ./scripts/run.sh, measurements: {files_scanned: {}}}}\n",
+    )?;
+    let command = shlex::try_join(["/bin/sh", script.to_string_lossy().as_ref()])?;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call(
+                    "open",
+                    "exec_command",
+                    &serde_json::json!({
+                        "cmd": command,
+                        "login": false,
+                        "tty": true,
+                        "yield_time_ms": 1000,
+                        "environment_id": environment_id,
+                    })
+                    .to_string(),
+                ),
+                ev_completed("opened"),
+            ]),
+            sse(vec![
+                ev_function_call(
+                    "input",
+                    "write_stdin",
+                    &serde_json::json!({
+                        "session_id": 1000,
+                        "chars": "continue\n",
+                        "yield_time_ms": 1000,
+                    })
+                    .to_string(),
+                ),
+                ev_completed("sent"),
+            ]),
+            sse(vec![ev_completed("done")]),
+        ],
+    )
+    .await;
+    let base_url = server.uri();
+    let mut builder = test_codex()
+        .with_home(home)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model("gpt-5.2")
+        .with_config(move |config| {
+            config.chatgpt_base_url = base_url;
+            config.analytics_enabled = Some(true);
+            config
+                .features
+                .enable(Feature::SkipHostSkillDiscovery)
+                .unwrap();
+        });
+    // Exercise both native and executor-managed sandboxes with the same plugin fixture.
+    let _executor = if environment_id == codex_exec_server::REMOTE_ENVIRONMENT_ID {
+        let executor = super::multi_exec_server_sandbox::ExecServerProcess::start().await?;
+        builder = builder.with_exec_server_url(executor.websocket_url.clone());
+        Some(executor)
+    } else {
+        None
+    };
+    let test = builder.build(&server).await?;
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::read_only(), test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "send input to the plugin".into(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Granular(GranularApprovalConfig {
+                    sandbox_approval: false,
+                    rules: false,
+                    skill_approval: false,
+                    request_permissions: false,
+                    mcp_elicitations: false,
+                })),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let output = responses.function_call_output_text("input").unwrap();
+    assert!(output.contains("Process exited with code 0"), "{output}");
+    assert!(output.contains("STDIN_OK"), "{output}");
+    let measurement = wait_for_analytics_event(&server, "codex_plugin_measurement_event").await;
+    assert_eq!(
+        serde_json::json!({
+            "plugin_id": measurement["event_params"]["plugin_id"],
+            "measurement_name": measurement["event_params"]["measurement_name"],
+            "number_value": measurement["event_params"]["number_value"],
+        }),
+        serde_json::json!({
+            "plugin_id": REMOTE_PLUGIN_CONFIG_NAME,
+            "measurement_name": "files_scanned",
+            "number_value": 7.0,
+        }),
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_plugin_measurements_require_the_frontend_version() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    // This fixture needs a real remote transport with separately controlled frontend
+    // and executor caches, rather than the runner's automatic executor selection.
+    let executor = super::multi_exec_server_sandbox::ExecServerProcess::start().await?;
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let frontend_script = write_remote_plugin_script_and_config(home.as_ref());
+    let script = r#"if [ -n "${CODEX_PLUGIN_METRICS_OUTPUT:-}" ]; then
+  printf '%s' '{"version":1,"measurements":[{"name":"duration_ms","value":7,"dimensions":{"release":"v1"}}]}' > "$CODEX_PLUGIN_METRICS_OUTPUT"
+else
+  printf 'no metrics sidecar\n'
+fi
+"#;
+    std::fs::write(&frontend_script, script)?;
+    std::fs::write(
+        frontend_script
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("analytics.yaml"),
+        "version: 1\noperations:\n  dependency_install:\n    path: ./scripts/run.sh\n    measurements:\n      duration_ms:\n        dimensions:\n          release: [v1]\n",
+    )?;
+    let executor_home = TempDir::new()?;
+    let mut responses = Vec::new();
+    for (version, call_id) in [("2.0.0", "wrong-version"), ("1.2.3", "matching-version")] {
+        let root = executor_home.path().join(format!(
+            "plugins/cache/openai-curated-remote/sample/{version}"
+        ));
+        std::fs::create_dir_all(root.join("scripts"))?;
+        let path = root.join("scripts/run.sh");
+        std::fs::write(&path, script)?;
+        // The executor's declaration is never an authority, even for matching bytes.
+        std::fs::write(
+            root.join("analytics.yaml"),
+            "version: 1\noperations: {untrusted: {path: ./scripts/run.sh, measurements: {other: {}}}}\n",
+        )?;
+        // A plugin-shaped alias must use the canonical plugin's identity and version.
+        let alias = executor_home.path().join(format!(
+            "plugins/cache/openai-curated-remote/apparent-plugin/{version}"
+        ));
+        std::fs::create_dir_all(alias.parent().unwrap())?;
+        std::os::unix::fs::symlink(&root, &alias)?;
+        let alias_script = alias.join("scripts/run.sh");
+        let command = shlex::try_join(["/bin/sh", alias_script.to_string_lossy().as_ref()])?;
+        responses.push(sse(vec![
+            ev_response_created(call_id),
+            ev_function_call(
+                call_id,
+                "exec_command",
+                &serde_json::json!({
+                    "cmd": command,
+                    "login": false,
+                    "environment_id": codex_exec_server::REMOTE_ENVIRONMENT_ID,
+                    "yield_time_ms": 1000,
+                })
+                .to_string(),
+            ),
+            ev_completed(call_id),
+        ]));
+    }
+    responses.push(sse(vec![
+        ev_response_created("done"),
+        ev_assistant_message("done-message", "done"),
+        ev_completed("done"),
+    ]));
+    let response_mock = mount_sse_sequence(&server, responses).await;
+    let base_url = server.uri();
+    let mut builder = test_codex()
+        .with_exec_server_url(executor.websocket_url.clone())
+        .with_home(home)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model("gpt-5.2")
+        .with_config(move |config| {
+            config.chatgpt_base_url = base_url;
+            config.analytics_enabled = Some(true);
+            config
+                .features
+                .enable(Feature::SkipHostSkillDiscovery)
+                .unwrap();
+        });
+    let test = builder.build(&server).await?;
+    let manager = test.thread_manager.environment_manager();
+    let remote = manager.default_environment().unwrap();
+    tokio::time::timeout(Duration::from_secs(30), remote.wait_until_ready()).await??;
+    assert!(remote.is_remote());
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "run both plugin versions".into(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
+        .await?;
+    for call_id in ["wrong-version", "matching-version"] {
+        let expected = (Some(REMOTE_PLUGIN_CONFIG_NAME), Some("scripts/run.sh"));
+        let begin = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ExecCommandBegin(event) if event.call_id == call_id => Some(event.clone()),
+            _ => None,
+        })
+        .await;
+        let end = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ExecCommandEnd(event) if event.call_id == call_id => Some(event.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(end.exit_code, 0, "{}", end.aggregated_output);
+        assert_eq!(
+            (begin.plugin_id.as_deref(), begin.script_path.as_deref()),
+            expected
+        );
+        assert_eq!(
+            (end.plugin_id.as_deref(), end.script_path.as_deref()),
+            expected
+        );
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        response_mock
+            .function_call_output_text("wrong-version")
+            .unwrap()
+            .contains("no metrics sidecar")
+    );
+    let event = wait_for_analytics_event(&server, "codex_plugin_measurement_event").await;
+    assert_eq!(
+        serde_json::json!({
+            "plugin_id": event["event_params"]["plugin_id"],
+            "operation": event["event_params"]["operation"],
+            "measurement_name": event["event_params"]["measurement_name"],
+            "number_value": event["event_params"]["number_value"],
+            "dimensions": event["event_params"]["dimensions"],
+            "thread_id": event["event_params"]["thread_id"],
+            "item_id": event["event_params"]["item_id"],
+        }),
+        serde_json::json!({
+            "plugin_id": REMOTE_PLUGIN_CONFIG_NAME,
+            "operation": "dependency_install",
+            "measurement_name": "duration_ms",
+            "number_value": 7.0,
+            "dimensions": {"release": "v1"},
+            "thread_id": test.session_configured.thread_id.to_string(),
+            "item_id": "matching-version",
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_disabled_plugins_filter_skills_and_tools_without_changing_shared_plugins()
 -> Result<()> {
@@ -838,11 +1137,13 @@ async fn legacy_plugin_skill_prompt_remains_complete() -> Result<()> {
     Ok(())
 }
 
-#[test_case(true, true, (true, false); "enabled remote supersedes bundled")]
-#[test_case(false, true, (false, false); "disabled remote does not reactivate bundled")]
-#[test_case(true, false, (false, true); "missing remote bundle preserves bundled")]
+#[test_case(None, true, true, (true, false); "enabled remote supersedes bundled")]
+#[test_case(Some("tpp"), true, true, (true, false); "configured work sku")]
+#[test_case(None, false, true, (false, false); "disabled remote does not reactivate bundled")]
+#[test_case(None, true, false, (false, true); "missing remote bundle preserves bundled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sites_compatibility_guard_in_agent_turn(
+    product_sku: Option<&str>,
     remote_enabled: bool,
     cache_remote_sites: bool,
     expected_skills: (bool, bool),
@@ -856,6 +1157,7 @@ async fn sites_compatibility_guard_in_agent_turn(
     .await;
     Mock::given(method("GET"))
         .and(path("/ps/plugins/installed"))
+        .and(header("OAI-Product-Sku", product_sku.unwrap_or("codex")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "plugins": [{
                 "id": "plugins~plugin_connector_1p_689987207de08191979cf68eca2941c6",
@@ -912,11 +1214,15 @@ enabled = true
     }
 
     let chatgpt_base_url = server.uri();
+    let product_sku = product_sku.map(str::to_owned);
     let mut builder = test_codex()
         .with_home(codex_home)
         .with_extensions(skills_extensions())
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(move |config| config.chatgpt_base_url = chatgpt_base_url);
+        .with_config(move |config| {
+            config.chatgpt_base_url = chatgpt_base_url;
+            config.apps_mcp_product_sku = product_sku;
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     let auth = test.thread_manager.auth_manager().auth().await;
@@ -1761,12 +2067,13 @@ async fn explicit_plugin_mentions_track_plugin_used_analytics() -> Result<()> {
     let codex = Arc::clone(&test_codex.codex);
 
     codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![
-            codex_protocol::user_input::UserInput::Mention {
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![codex_protocol::user_input::UserInput::Mention {
                 name: "sample".into(),
                 path: format!("plugin://{SAMPLE_PLUGIN_CONFIG_NAME}"),
-            },
-        ]))
+            }])
+            .with_responses_metadata(Some(std::collections::HashMap::from([]))),
+        )
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 

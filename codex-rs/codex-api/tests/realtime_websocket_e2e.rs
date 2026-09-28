@@ -13,6 +13,8 @@ use codex_api::RealtimeSessionMode;
 use codex_api::RealtimeTranscriptState;
 use codex_api::RealtimeWebsocketClient;
 use codex_api::RetryConfig;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy::ReqwestDefault;
 use codex_protocol::protocol::RealtimeHandoffRequested;
 use codex_protocol::protocol::RealtimeTranscriptDelta;
 use codex_protocol::protocol::RealtimeTranscriptDone;
@@ -140,7 +142,7 @@ async fn realtime_ws_e2e_session_create_and_event_flow() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
+    let client = test_client(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
@@ -246,8 +248,7 @@ async fn realtime_ws_connect_webrtc_sideband_retries_join_until_server_is_availa
     provider.retry.max_attempts = 1;
     provider.retry.base_delay = Duration::from_millis(100);
 
-    let client = RealtimeWebsocketClient::new(provider)
-        .with_webrtc_sideband_base_url(format!("http://{addr}"));
+    let client = test_client(provider).with_webrtc_sideband_base_url(format!("http://{addr}"));
     let connection = client
         .connect_webrtc_sideband(
             RealtimeSessionConfig {
@@ -322,7 +323,7 @@ async fn realtime_ws_e2e_send_while_next_event_waits() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
+    let client = test_client(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
@@ -392,7 +393,7 @@ async fn realtime_ws_e2e_disconnected_emitted_once() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
+    let client = test_client(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
@@ -458,7 +459,7 @@ async fn realtime_ws_e2e_ignores_unknown_text_events() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
+    let client = test_client(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
@@ -567,7 +568,7 @@ async fn realtime_ws_e2e_realtime_v2_parser_emits_handoff_requested() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
+    let client = test_client(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
@@ -644,4 +645,8 @@ async fn realtime_ws_e2e_realtime_v2_parser_emits_handoff_requested() {
 
     connection.close().await.expect("close");
     server.await.expect("server task");
+}
+
+fn test_client(provider: Provider) -> RealtimeWebsocketClient {
+    RealtimeWebsocketClient::new(provider, HttpClientFactory::new(ReqwestDefault))
 }

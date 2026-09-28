@@ -253,8 +253,8 @@ impl Inner {
     pub(super) async fn rpc_client(self: &Arc<Self>) -> Result<Arc<RpcClient>, ExecServerError> {
         let mut connection_changed = self.connection_changed.subscribe();
         loop {
-            if let Some(message) = self.failure_message() {
-                return Err(ExecServerError::Disconnected(message));
+            if let Some(message) = self.connection_failure() {
+                return Err(message.into());
             }
 
             let rpc_client = {
@@ -310,10 +310,10 @@ impl Inner {
     }
 
     pub(super) fn is_failed(&self) -> bool {
-        self.failure_message().is_some()
+        self.connection_failure().is_some()
     }
 
-    pub(super) fn failure_message(&self) -> Option<String> {
+    pub(super) fn connection_failure(&self) -> Option<super::ConnectionFailure> {
         let connection = self
             .connection
             .lock()
@@ -372,11 +372,13 @@ impl Inner {
             let message = format!(
                 "{disconnect_message}; failed to resume exec-server session: recovery timed out after {SESSION_RECOVERY_TIMEOUT:?}"
             );
-            self.fail(message).await;
+            self.fail(super::ConnectionFailure::Disconnected(message))
+                .await;
             return;
         }
         if self.reconnect_strategy.is_none() {
-            self.fail(disconnect_message).await;
+            self.fail(super::ConnectionFailure::Disconnected(disconnect_message))
+                .await;
             return;
         }
 
@@ -384,7 +386,8 @@ impl Inner {
             let message = format!(
                 "{disconnect_message}; failed to resume exec-server session: missing session id"
             );
-            self.fail(message).await;
+            self.fail(super::ConnectionFailure::Disconnected(message))
+                .await;
             return;
         };
         let uses_registry_backoff = matches!(
@@ -394,15 +397,20 @@ impl Inner {
         let mut registry_retry_attempt = 0;
         let last_error = loop {
             match timeout_at(deadline, self.resume_once(&session_id)).await {
-                Ok(Ok((rpc_client, _attempt))) => {
-                    if !rpc_client.is_disconnected() && self.install_recovered_client(rpc_client) {
+                Ok(Ok((rpc_client, _attempt, executor_registration_id))) => {
+                    if self.install_recovered_client(rpc_client, executor_registration_id) {
                         return;
                     }
                 }
-                Ok(Err(error)) if !is_retryable_recovery_error(&error) => {
-                    break error.to_string();
+                Ok(Err(error)) => {
+                    if let Some(denial) = error.application_network_policy_denial() {
+                        self.fail(super::ConnectionFailure::Policy(denial)).await;
+                        return;
+                    }
+                    if !is_retryable_recovery_error(&error) {
+                        break error.to_string();
+                    }
                 }
-                Ok(Err(_)) => {}
                 Err(_) => {
                     break format!("recovery timed out after {SESSION_RECOVERY_TIMEOUT:?}");
                 }
@@ -425,7 +433,8 @@ impl Inner {
 
         let message =
             format!("{disconnect_message}; failed to resume exec-server session: {last_error}");
-        self.fail(message).await;
+        self.fail(super::ConnectionFailure::Disconnected(message))
+            .await;
     }
 
     async fn wait_for_process_starts(&self) {
@@ -444,17 +453,23 @@ impl Inner {
         }
     }
 
-    fn install_recovered_client(&self, rpc_client: Arc<RpcClient>) -> bool {
+    fn install_recovered_client(
+        &self,
+        rpc_client: Arc<RpcClient>,
+        executor_registration_id: Option<String>,
+    ) -> bool {
         let installed = {
             let mut connection = self
                 .connection
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !matches!(connection.status, ConnectionStatus::Recovering)
+            if self.retired.is_cancelled()
+                || !matches!(connection.status, ConnectionStatus::Recovering)
                 || rpc_client.is_disconnected()
             {
                 false
             } else {
+                connection.executor_registration_id = executor_registration_id;
                 connection.set_status(ConnectionStatus::Connected(rpc_client));
                 true
             }
@@ -472,13 +487,23 @@ impl Inner {
     async fn resume_once(
         self: &Arc<Self>,
         session_id: &str,
-    ) -> Result<(Arc<RpcClient>, Option<tokio::sync::OwnedSemaphorePermit>), ExecServerError> {
+    ) -> Result<
+        (
+            Arc<RpcClient>,
+            Option<tokio::sync::OwnedSemaphorePermit>,
+            Option<String>,
+        ),
+        ExecServerError,
+    > {
         let reconnect_strategy = self
             .reconnect_strategy
             .as_ref()
             .ok_or_else(|| ExecServerError::Protocol("missing reconnect strategy".to_string()))?;
         let attempt = reconnect_strategy.resume(session_id).await?;
         let (connection, options, attempt_permit, noise_context) = attempt.into_parts();
+        let executor_registration_id = noise_context
+            .as_ref()
+            .map(|context| context.executor_registration_id.clone());
         let (rpc_client, events_rx) = RpcClient::new(connection);
         let rpc_client = Arc::new(rpc_client);
         let client = ExecServerClient {
@@ -495,7 +520,7 @@ impl Inner {
             .await?;
 
         self.recover_processes(&rpc_client).await?;
-        Ok((rpc_client, attempt_permit))
+        Ok((rpc_client, attempt_permit, executor_registration_id))
     }
 
     async fn recover_processes(
@@ -554,7 +579,7 @@ impl Inner {
         Ok(())
     }
 
-    async fn fail(self: &Arc<Self>, message: String) {
+    async fn fail(self: &Arc<Self>, message: super::ConnectionFailure) {
         let (message, newly_failed) = {
             let mut connection = self
                 .connection
@@ -570,7 +595,7 @@ impl Inner {
         };
         if newly_failed {
             self.notify_connection_changed();
-            fail_all_in_flight_work(self, message.clone()).await;
+            fail_all_in_flight_work(self, message.to_string()).await;
         }
     }
 }
@@ -833,6 +858,9 @@ impl ExecServerClient {
 }
 
 pub(crate) fn is_retryable_recovery_error(error: &ExecServerError) -> bool {
+    if error.application_network_policy_denial().is_some() {
+        return false;
+    }
     if let ExecServerError::ConnectionAttempt(error) = error {
         return is_retryable_recovery_error(error.as_ref());
     }

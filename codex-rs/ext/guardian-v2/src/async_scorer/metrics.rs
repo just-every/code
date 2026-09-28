@@ -42,17 +42,19 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
             ApiError::Transport(TransportError::RetryLimit) => "retry_limit",
             ApiError::Transport(TransportError::Build(_)) => "request_build_error",
             ApiError::Transport(TransportError::ResponseTooLarge { .. }) => "response_too_large",
+            ApiError::Transport(TransportError::Policy(_)) => "network_policy_denied",
             ApiError::Stream(_) => "stream_error",
             ApiError::ContextWindowExceeded => "context_window_exceeded",
             ApiError::QuotaExceeded => "quota_exceeded",
             ApiError::UsageNotIncluded => "usage_not_included",
             ApiError::Retryable { .. } => "retryable_api_error",
             ApiError::RateLimitExceeded { .. } | ApiError::RateLimit(_) => "rate_limit",
-            ApiError::InvalidRequest { .. } => "invalid_request",
-            ApiError::CyberPolicy { .. } | ApiError::MisalignmentPolicyViolation { .. } => {
-                "policy_error"
-            }
-            ApiError::ServerOverloaded => "server_overloaded",
+            ApiError::InvalidRequest { .. } | ApiError::InvalidPrompt { .. } => "invalid_request",
+            ApiError::CyberPolicy { .. }
+            | ApiError::BioPolicy { .. }
+            | ApiError::MisalignmentPolicyViolation { .. } => "policy_error",
+            ApiError::ServerOverloaded { .. } => "server_overloaded",
+            ApiError::FlexUnavailable => "flex_unavailable",
         },
     }
 }

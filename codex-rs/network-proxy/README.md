@@ -47,7 +47,8 @@ mode = "full" # default when unset; use "limited" for read-only mode
 # Hostnames that resolve to local/private IPs are still blocked even if allowlisted.
 # Clients that always bypass proxies for loopback, such as Go's `net/http`, remain blocked by
 # the operating-system sandbox when local binding is disabled.
-allow_local_binding = false
+# Omitted: true for MXC, false elsewhere. MXC rejects an effective false.
+# allow_local_binding = false
 
 # DANGEROUS (macOS-only): bypasses unix socket allowlisting and permits any
 # absolute socket path from `x-unix-socket`.
@@ -82,8 +83,34 @@ strip_request_headers = ["authorization"]
 
 ### 2) Run the proxy
 
+The proxy can also run without a full Codex permissions profile. Put the network policy in a
+standalone JSON file:
+
+```json
+{
+  "network": {
+    "enabled": true,
+    "proxy_url": "http://127.0.0.1:3128",
+    "enable_socks5": false,
+    "enable_socks5_udp": false,
+    "allow_upstream_proxy": false,
+    "allow_local_binding": false,
+    "mode": "full",
+    "mitm": false,
+    "domains": {
+      "api.example.com": "allow"
+    }
+  }
+}
+```
+
+`mitm` defaults to `false`. `mitm_ca` defaults to `None` and is omitted from serialized JSON when
+unset. HTTPS MITM is enabled automatically for limited mode or configured `mitm_hooks`. Set `mitm` to
+`true` to enable it explicitly. The proxy requires `network.enabled = true` and rejects unknown
+fields, including fields nested inside MITM hooks.
+
 ```bash
-cargo run -p codex-network-proxy --
+cargo run -p codex-network-proxy -- --config /path/to/network-proxy.json
 ```
 
 ### 3) Point a client at it

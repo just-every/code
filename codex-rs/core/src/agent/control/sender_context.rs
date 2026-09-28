@@ -10,9 +10,9 @@ use codex_history::SenderUserMessages;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 
-use super::AgentControl;
+use super::LocalAgentRuntime;
 
-impl AgentControl {
+impl LocalAgentRuntime {
     pub(crate) async fn capture_sender_user_messages(
         &self,
         item: &ResponseItem,
@@ -64,6 +64,7 @@ impl AgentControl {
                             RetainedContextEntry::UserMessage(message),
                         ) => Some(message.complete.then(|| message.text.clone())),
                         (RetainedContextOrder::Inherited(_), _)
+                        | (_, RetainedContextEntry::AssistantMessage(_))
                         | (_, RetainedContextEntry::VerifiedAnswer(_)) => None,
                     })
                     .rev()

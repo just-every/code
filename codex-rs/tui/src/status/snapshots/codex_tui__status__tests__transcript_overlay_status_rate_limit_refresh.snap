@@ -6,61 +6,61 @@ before:
 / T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 /status
 
-╭──────────────────────────────────────────────────────────────────────────╮
-│  >_ OpenAI Codex (v0.0.0)                                                │
-│                                                                          │
-│ Visit https://chatgpt.com/codex/settings/usage for up-to-date            │
-│ information on rate limits and credits                                   │
-│                                                                          │
-│  Model:         gpt-5.1-codex-max (reasoning none, summaries auto)       │
-│  Directory: [[workspace]]                                                │
-│  Permissions:   Custom (workspace with network access, Ask for approval) │
-│  Agents.md:     <none>                                                   │
-│                                                                          │
-│  Token usage:   0 total  (0 input + 0 output)                            │
-│  Limits:        refresh requested; run /status again shortly.            │
-╰──────────────────────────────────────────────────────────────────────────╯
-~
-~
-~
-~
-~
-~
-~
-~
-~
-───────────────────────────────────────────────────────────────────────── 100% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q close   esc to edit prev
+  >_ OpenAI Codex (v0.0.0)
+
+  Visit https://chatgpt.com/codex/settings/usage for up-to-date
+  information on rate limits and credits
+
+  Model:        gpt-5.1-codex-max (reasoning none, summaries auto)
+  Directory:    [[workspace]]
+  Permissions:  Custom (workspace with network access, Ask for approval)
+  Agents.md:    <none>
+
+  Token usage:  0 total  (0 input + 0 output)
+  Limits:       refresh requested; run /status again shortly.
+
+
+
+
+
+
+
+
+
+
+
+Ctrl+Space select
+ ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
+ q close · f3 find · esc browse prompts
 
 
 after:
 / T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 /status
 
-╭───────────────────────────────────────────────────────────────────────────╮
-│  >_ OpenAI Codex (v0.0.0)                                                 │
-│                                                                           │
-│ Visit https://chatgpt.com/codex/settings/usage for up-to-date             │
-│ information on rate limits and credits                                    │
-│                                                                           │
-│  Model:          gpt-5.1-codex-max (reasoning none, summaries auto)       │
-│  Directory: [[workspace]]                                                 │
-│  Permissions:    Custom (workspace with network access, Ask for approval) │
-│  Agents.md:      <none>                                                   │
-│                                                                           │
-│  Token usage:    0 total  (0 input + 0 output)                            │
-│  spark limit:                                                             │
-│  5h limit:       [███████████░░░░░░░░░] 55% left (resets soon)            │
-│  Weekly limit:   [██████████████░░░░░░] 70% left (resets later)           │
-╰───────────────────────────────────────────────────────────────────────────╯
+  >_ OpenAI Codex (v0.0.0)
+
+  Visit https://chatgpt.com/codex/settings/usage for up-to-date
+  information on rate limits and credits
+
+  Model:         gpt-5.1-codex-max (reasoning none, summaries auto)
+  Directory:     [[workspace]]
+  Permissions:   Custom (workspace with network access, Ask for approval)
+  Agents.md:     <none>
+
+  Token usage:   0 total  (0 input + 0 output)
+  spark limit:
+  5h limit:      [███████████░░░░░░░░░] 55% left (resets soon)
+  Weekly limit:  [██████████████░░░░░░] 70% left (resets later)
 
 next message
-~
-~
-~
-~
-~
-───────────────────────────────────────────────────────────────────────── 100% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q close   esc to edit prev
+
+
+
+
+
+
+
+Ctrl+Space select
+ ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
+ q close · f3 find · esc browse prompts

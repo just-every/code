@@ -366,6 +366,7 @@ use codex_core::read_head_for_summary;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_core::truncate_rollout_after_turn_id;
 use codex_core::truncate_rollout_before_turn_id;
+use codex_core::validate_environment_ids_and_cwds;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core::windows_sandbox::WindowsSandboxSetupMode as CoreWindowsSandboxSetupMode;
 use codex_core::windows_sandbox::WindowsSandboxSetupRequest;
@@ -484,6 +485,7 @@ use codex_thread_store::DeleteThreadsParams as StoreDeleteThreadsParams;
 use codex_thread_store::GitInfoPatch as StoreGitInfoPatch;
 use codex_thread_store::ItemSortKey as StoreItemSortKey;
 use codex_thread_store::ListItemsParams as StoreListItemsParams;
+use codex_thread_store::ListItemsPosition as StoreListItemsPosition;
 use codex_thread_store::ListThreadsParams as StoreListThreadsParams;
 use codex_thread_store::ListTimelineParams as StoreListTimelineParams;
 use codex_thread_store::ListTurnsParams as StoreListTurnsParams;
@@ -544,6 +546,7 @@ mod diagnostics;
 mod environment_processor;
 mod feedback_doctor_report;
 mod feedback_processor;
+mod feedback_rollout_history;
 mod feedback_thread_index;
 mod fs_processor;
 mod git_processor;
@@ -675,8 +678,7 @@ fn resolve_turn_environment_selections(
             config: EnvironmentConfigState::FromThread,
         });
     }
-    thread_manager
-        .validate_environment_selections(&selections)
+    validate_environment_ids_and_cwds(&thread_manager.environment_manager(), &selections)
         .map_err(environment_selection_error)?;
     Ok(Some(selections))
 }

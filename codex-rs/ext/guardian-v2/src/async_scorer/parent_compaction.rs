@@ -31,6 +31,12 @@ pub(super) fn select_parent_compaction(
 ) -> Result<ParentCompaction, ParentCompactionError> {
     let checkpoint = history.latest_compaction();
     let model_hash = match mode {
+        GuardianContextMode::Independent => {
+            return Ok(ParentCompaction {
+                item: None,
+                model_hash: None,
+            });
+        }
         GuardianContextMode::Legacy => legacy_model_hash,
         GuardianContextMode::ThreadOwned => checkpoint.and_then(|checkpoint| checkpoint.model_hash),
     };

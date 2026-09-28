@@ -29,7 +29,7 @@ impl ChatWidget {
             subtitle: Some("Applies to your next voice conversation.".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 

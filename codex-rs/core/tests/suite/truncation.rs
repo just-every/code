@@ -219,7 +219,7 @@ async fn tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> {
     let server = start_mock_server().await;
 
     // Use a model that exposes the exec_command tool.
-    let mut builder = test_codex().with_model("gpt-5.4");
+    let mut builder = test_codex().with_model("gpt-5.5");
     let fixture = builder.build(&server).await?;
 
     let call_id = "shell-too-large";
@@ -302,7 +302,7 @@ async fn tool_call_output_truncated_only_once() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_model("gpt-5.4");
+    let mut builder = test_codex().with_model("gpt-5.5");
     let fixture = builder.build(&server).await?;
     let call_id = "shell-single-truncation";
     let command = if cfg!(windows) {
@@ -413,7 +413,9 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
                 environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
+                startup_readiness: Default::default(),
                 supports_parallel_tool_calls: false,
+                tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
                 disabled_reason: None,
                 startup_timeout_sec: Some(std::time::Duration::from_secs(10)),
@@ -516,7 +518,9 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
                 environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
+                startup_readiness: Default::default(),
                 supports_parallel_tool_calls: false,
+                tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
@@ -593,7 +597,7 @@ async fn token_policy_marker_reports_tokens() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
         config.tool_output_token_limit = Some(50); // small budget to force truncation
     });
     let fixture = builder.build(&server).await?;
@@ -699,7 +703,7 @@ async fn exec_command_output_not_truncated_with_custom_limit() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
         config.tool_output_token_limit = Some(50_000); // ample budget
     });
     let fixture = builder.build(&server).await?;

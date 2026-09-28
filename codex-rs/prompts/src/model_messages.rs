@@ -3,9 +3,13 @@
 //! Prompt composition and runtime settings remain with consumers; each accessor
 //! selects and resolves only the requested message family.
 
+use codex_protocol::openai_models::CodeModeToolMessages;
 use codex_protocol::openai_models::ConfirmationPolicies;
+use codex_protocol::openai_models::IndirectDescriptionPrefixes;
+use codex_protocol::openai_models::McpResourceToolMessages;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
+use codex_protocol::openai_models::ToolMessage;
 use permissions::ResolvedApprovalMessages;
 use permissions::ResolvedPermissionMessages;
 
@@ -151,23 +155,66 @@ impl<'a> ResolvedModelMessages<'a> {
             .unwrap_or(REQUEST_USER_INPUT_ASYNC_DESCRIPTION)
     }
 
+    /// Selects the asynchronous user-input schema; parsing belongs to the tool consumer.
+    pub fn request_user_input_async_parameters_override(&self) -> Option<&'a str> {
+        self.catalog_messages?
+            .tools
+            .as_ref()?
+            .send_user_message_async
+            .as_ref()?
+            .parameters
+            .as_deref()
+    }
+
     /// Selects a V2 tool's static description by its name, independently of its runtime namespace.
     /// Missing text retains the tool's bundled description; an empty string replaces it.
     pub fn multi_agent_tool_description_override(&self, tool_name: &str) -> Option<&'a str> {
-        let tools = self
-            .catalog_messages
+        self.multi_agent_tool(tool_name)?.description.as_deref()
+    }
+
+    /// Selects a V2 tool's complete parameter schema; parsing belongs to the tool consumer.
+    pub fn multi_agent_tool_parameters_override(&self, tool_name: &str) -> Option<&'a str> {
+        self.multi_agent_tool(tool_name)?.parameters.as_deref()
+    }
+
+    fn multi_agent_tool(self, tool_name: &str) -> Option<&'a ToolMessage> {
+        self.catalog_messages
             .and_then(|messages| messages.tools.as_ref())
-            .and_then(|tools| tools.multi_agent.as_ref())?;
-        let tool = match tool_name {
-            "spawn_agent" => &tools.spawn_agent,
-            "send_message" => &tools.send_message,
-            "followup_task" => &tools.followup_task,
-            "wait_agent" => &tools.wait_agent,
-            "interrupt_agent" => &tools.interrupt_agent,
-            "list_agents" => &tools.list_agents,
-            _ => return None,
-        };
-        tool.as_ref()?.description.as_deref()
+            .and_then(|tools| tools.multi_agent.as_ref())?
+            .by_name(tool_name)
+    }
+
+    /// Selects resource helper messages; schema parsing belongs to the tool owner.
+    pub fn mcp_resources(&self) -> Option<&'a McpResourceToolMessages> {
+        self.catalog_messages?
+            .tools
+            .as_ref()?
+            .mcp_resources
+            .as_ref()
+    }
+
+    /// Selects indirect tool guidance; tool rendering owns namespace mapping and normalization.
+    pub fn indirect_description_prefixes(&self) -> Option<&'a IndirectDescriptionPrefixes> {
+        self.catalog_messages?
+            .tools
+            .as_ref()?
+            .indirect_description_prefixes
+            .as_ref()
+    }
+
+    /// Selects Code Mode messages; bundled text and runtime composition belong to the tool owner.
+    pub fn code_mode(&self) -> Option<&'a CodeModeToolMessages> {
+        self.catalog_messages?.tools.as_ref()?.code_mode.as_ref()
+    }
+
+    /// Selects wait's complete description.
+    pub fn code_mode_wait_description_override(&self) -> Option<&'a str> {
+        self.code_mode()?.wait.as_ref()?.description.as_deref()
+    }
+
+    /// Selects wait's parameter schema. Exec uses a harness-owned freeform grammar.
+    pub fn code_mode_wait_parameters_override(&self) -> Option<&'a str> {
+        self.code_mode()?.wait.as_ref()?.parameters.as_deref()
     }
 
     /// Resolves persistent-mode instructions without deciding whether the mode is active.

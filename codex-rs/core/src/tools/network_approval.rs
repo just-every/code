@@ -18,7 +18,6 @@ use codex_network_proxy::NetworkPolicyDecider;
 use codex_network_proxy::NetworkPolicyRequest;
 use codex_network_proxy::NetworkProtocol;
 use codex_network_proxy::NetworkProxy;
-use codex_network_proxy::NetworkProxyExecutorOs;
 use codex_network_proxy::NetworkRequestCancellation;
 use codex_network_proxy::NetworkRequestCancellationReason;
 use codex_network_proxy::NetworkRequestDisconnect;
@@ -33,6 +32,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::WarningEvent;
 use codex_sandboxing::record_network_sandbox_violation;
 use codex_tools::ToolName;
+use codex_utils_path_uri::Platform;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -652,7 +652,7 @@ impl NetworkApprovalService {
         let Some(environment_id) = active_environment_id.or_else(|| {
             active_turn
                 .as_ref()
-                .and_then(|(turn_context, _, _)| turn_context.environments.primary())
+                .and_then(|(_, _, environments, _)| environments.primary())
                 .map(|environment| environment.selection.environment_id.clone())
         }) else {
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
@@ -679,7 +679,8 @@ impl NetworkApprovalService {
             format!("Network access to \"{target}\" was blocked by policy.");
         let prompt_reason = format!("{} is not in the allowed_domains", request.host);
 
-        let Some((turn_context, step_settings, strict_auto_review)) = active_turn else {
+        let Some((turn_context, settings, active_environments, strict_auto_review)) = active_turn
+        else {
             if let Some(owner_call) = owner_call.as_ref() {
                 self.record_call_outcome(&owner_call.registration_id, policy_denial_message);
             }
@@ -709,12 +710,15 @@ impl NetworkApprovalService {
         pending_owner.disconnect = request.disconnect.clone();
         pending_owner.cancellation = request.cancellation.clone();
 
+        // Review under current settings, but an owned process keeps the environments it started in.
+        let review_environments = owner_call
+            .as_ref()
+            .map_or(&active_environments, |call| &call.environments);
         let permission_profile = owner_call
             .as_ref()
             .map(|call| &call.permission_profile)
             .or_else(|| {
-                turn_context
-                    .environments
+                review_environments
                     .turn_environments()
                     .find(|environment| environment.selection.environment_id == environment_id)
                     .map(TurnEnvironment::permission_profile)
@@ -728,12 +732,8 @@ impl NetworkApprovalService {
         }
         let review_context = GuardianReviewContext::from_resolved_settings(
             Arc::clone(&turn_context),
-            &step_settings,
-            // Review this new request under current settings, in its originating execution's
-            // environments. Completing the original turn does not transfer process ownership.
-            owner_call
-                .as_ref()
-                .map_or(&turn_context.environments, |call| &call.environments),
+            &settings,
+            review_environments,
         );
         if !allows_network_approval_flow(review_context.approval_policy) {
             if let Some(owner_call) = owner_call.as_ref() {
@@ -762,8 +762,7 @@ impl NetworkApprovalService {
         {
             cwd
         } else {
-            turn_context
-                .environments
+            review_environments
                 .turn_environments()
                 .find(|environment| environment.selection.environment_id == environment_id)
                 .and_then(|environment| environment.cwd().to_abs_path().ok())
@@ -1117,6 +1116,9 @@ pub(crate) async fn begin_network_approval(
     }
 
     let controller = turn.config.permissions.network.as_ref();
+    let environment = environments
+        .turn_environments()
+        .find(|environment| environment.selection.environment_id == environment_id);
     let owner_spec = network_policy
         .as_ref()
         .map(|policy| {
@@ -1126,6 +1128,15 @@ pub(crate) async fn begin_network_approval(
                 policy,
                 &permission_profile,
                 session.services.exec_policy.current().as_ref(),
+                environment.map_or(
+                    codex_network_proxy::LocalBindingPolicy::DefaultFalse,
+                    |environment| {
+                        crate::windows_sandbox::local_binding_policy_for_sandbox(
+                            environment.config().windows_sandbox_type,
+                            environment.executor_platform_os.as_deref(),
+                        )
+                    },
+                ),
             )
         })
         .transpose()
@@ -1152,16 +1163,14 @@ pub(crate) async fn begin_network_approval(
                 })?
         } else {
             // This carrier never listens: the executor starts the real per-command proxy.
-            let executor_os = NetworkProxyExecutorOs::from_platform_os(
-                environments
-                    .turn_environments()
-                    .find(|environment| environment.selection.environment_id == environment_id)
-                    .and_then(|environment| environment.executor_platform_os.as_deref()),
+            let executor_os = Platform::from_platform_os(
+                environment.and_then(|environment| environment.executor_platform_os.as_deref()),
             );
             let state = owner_spec
                 .build_state_with_audit_metadata(
                     session.services.network_proxy_audit_metadata.clone(),
                     executor_os,
+                    codex_network_proxy::LocalBindingPolicy::DefaultFalse,
                 )
                 .map_err(|error| {
                     ToolError::Rejected(format!(

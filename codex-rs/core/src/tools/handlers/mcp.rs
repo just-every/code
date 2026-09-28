@@ -25,7 +25,7 @@ use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolTelemetryTags;
 use codex_extension_api::McpToolContext;
 use codex_mcp::ToolInfo;
-use codex_protocol::mcp::is_node_repl_backed_server;
+use codex_protocol::mcp::is_node_repl_backed_connector;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -51,21 +51,37 @@ const MAX_MCP_NAMESPACE_DESCRIPTION_BYTES: usize = 512 * 1024;
 pub struct McpHandler {
     tool_info: ToolInfo,
     spec: Arc<ToolSpec>,
-    code_mode_tool_definitions: OnceLock<Vec<codex_code_mode::ToolDefinition>>,
+    code_mode_tool_definitions: OnceLock<(Option<usize>, Vec<codex_code_mode::ToolDefinition>)>,
 }
 
 impl McpHandler {
     pub fn new(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
-        Self::with_agent_plugin(tool_info, /*agent_plugin*/ false)
+        Self::with_agent_plugin(
+            tool_info, /*agent_plugin*/ false, /*schema_max_bytes*/ None,
+        )
+    }
+
+    pub fn new_with_schema_max_bytes(
+        tool_info: ToolInfo,
+        schema_max_bytes: usize,
+    ) -> Result<Self, serde_json::Error> {
+        Self::with_agent_plugin(
+            tool_info,
+            /*agent_plugin*/ false,
+            Some(schema_max_bytes),
+        )
     }
 
     pub fn new_agent_plugin(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
-        Self::with_agent_plugin(tool_info, /*agent_plugin*/ true)
+        Self::with_agent_plugin(
+            tool_info, /*agent_plugin*/ true, /*schema_max_bytes*/ None,
+        )
     }
 
     fn with_agent_plugin(
         mut tool_info: ToolInfo,
         agent_plugin: bool,
+        schema_max_bytes: Option<usize>,
     ) -> Result<Self, serde_json::Error> {
         if agent_plugin {
             tool_info.namespace_description =
@@ -80,7 +96,11 @@ impl McpHandler {
                         .to_string()
                     });
         }
-        let spec = Arc::new(create_tool_spec(&tool_info, agent_plugin)?);
+        let spec = Arc::new(create_tool_spec(
+            &tool_info,
+            agent_plugin,
+            schema_max_bytes,
+        )?);
         Ok(Self {
             tool_info,
             spec,
@@ -177,13 +197,7 @@ impl McpHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let prepared_mcp_call = invocation
-            .session
-            .prepare_mcp_call(
-                &self.tool_info.server_name,
-                self.tool_info.tool.name.as_ref(),
-            )
-            .await;
+        let prepared_mcp_call = invocation.session.prepare_mcp_call(&self.tool_info).await;
         // Use the executed call's binding; a later catalog refresh must not change eligibility.
         let result_metadata_capture_allowed = invocation
             .session
@@ -213,6 +227,7 @@ impl McpHandler {
             cancellation_token,
             call_id,
             tool_name,
+            source,
             payload,
             ..
         } = invocation;
@@ -243,6 +258,7 @@ impl McpHandler {
             prepared_mcp_call,
             self.hook_tool_name(),
             tool_name,
+            &source,
             payload,
         )
         .await;
@@ -265,21 +281,23 @@ impl CoreToolRuntime for McpHandler {
         Some(&self.spec)
     }
 
-    fn cached_code_mode_definitions(&self) -> Option<&[codex_code_mode::ToolDefinition]> {
-        Some(
-            self.code_mode_tool_definitions
-                .get_or_init(|| {
-                    let mut definitions = codex_tools::collect_code_mode_tool_definitions(
-                        std::iter::once(self.spec.as_ref()),
-                    );
-                    for definition in &mut definitions {
-                        definition.input_schema = None;
-                        definition.output_schema = None;
-                    }
-                    definitions
-                })
-                .as_slice(),
-        )
+    fn cached_code_mode_definitions(
+        &self,
+        code_mode_input_schema_max_bytes: Option<usize>,
+    ) -> Option<&[codex_code_mode::ToolDefinition]> {
+        let (cached_budget, definitions) = self.code_mode_tool_definitions.get_or_init(|| {
+            let mut definitions = codex_tools::collect_code_mode_tool_definitions(
+                std::iter::once(self.spec.as_ref()),
+                code_mode_input_schema_max_bytes,
+            );
+            for definition in &mut definitions {
+                definition.input_schema = None;
+                definition.output_schema = None;
+            }
+            (code_mode_input_schema_max_bytes, definitions)
+        });
+        // A config change must not reuse descriptions rendered under the previous budget.
+        (*cached_budget == code_mode_input_schema_max_bytes).then_some(definitions.as_slice())
     }
 
     fn wait_until_ready<'a>(&'a self, session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
@@ -310,8 +328,10 @@ impl CoreToolRuntime for McpHandler {
             .thread_extension_data
             .get::<NodeReplReviewEvidence>()
             .is_some_and(|evidence| evidence.image_capture_enabled());
-        if !is_node_repl_backed_server(&self.tool_info.server_name)
-            || !result.success_for_logging()
+        if !is_node_repl_backed_connector(
+            &self.tool_info.server_name,
+            self.tool_info.connector_id.as_deref(),
+        ) || !result.success_for_logging()
             || evidence_mode == NodeReplReviewEvidenceMode::Disabled && !image_capture_enabled
         {
             return;
@@ -478,12 +498,13 @@ impl CoreToolRuntime for McpHandler {
 fn create_tool_spec(
     tool_info: &ToolInfo,
     agent_plugin: bool,
+    schema_max_bytes: Option<usize>,
 ) -> Result<ToolSpec, serde_json::Error> {
     let tool_name = tool_info.canonical_tool_name();
     let tool = if agent_plugin {
         agent_plugin_mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool)?
     } else {
-        mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool)?
+        mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool, schema_max_bytes)?
     };
     let description = tool_info
         .namespace_description
@@ -808,16 +829,17 @@ mod tests {
         ));
 
         let first = handler
-            .cached_code_mode_definitions()
+            .cached_code_mode_definitions(/*code_mode_input_schema_max_bytes*/ None)
             .expect("MCP definitions should be cached");
         assert_eq!(first.len(), 1);
         assert!(first[0].input_schema.is_none());
         assert!(first[0].output_schema.is_none());
 
         let second = handler
-            .cached_code_mode_definitions()
+            .cached_code_mode_definitions(/*code_mode_input_schema_max_bytes*/ None)
             .expect("MCP definitions should be cached");
         assert!(std::ptr::eq(first, second));
+        assert!(handler.cached_code_mode_definitions(Some(32_000)).is_none());
     }
 
     #[test]

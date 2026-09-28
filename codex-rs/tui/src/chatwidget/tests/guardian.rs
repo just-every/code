@@ -1,3 +1,4 @@
+use super::helpers::drain_insert_history_transcript;
 use super::*;
 use pretty_assertions::assert_eq;
 
@@ -206,7 +207,7 @@ async fn auto_review_denials_popup_lists_stored_auto_review_denials() {
 
     chat.open_auto_review_denials_popup();
 
-    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    let popup = render_bottom_popup(&chat, /*width*/ 40);
     assert_chatwidget_snapshot!("auto_review_denials_popup", popup);
 }
 
@@ -307,7 +308,7 @@ async fn guardian_denied_exec_renders_warning_and_denied_request() {
     let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
     term.set_viewport_area(viewport);
 
-    for lines in drain_insert_history(&mut rx) {
+    for lines in drain_insert_history_transcript(&mut rx) {
         crate::insert_history::insert_history_lines(&mut term, lines)
             .expect("Failed to insert history lines in test");
     }
@@ -523,7 +524,7 @@ async fn guardian_timed_out_exec_renders_warning_and_timed_out_request() {
     let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
     term.set_viewport_area(viewport);
 
-    for lines in drain_insert_history(&mut rx) {
+    for lines in drain_insert_history_transcript(&mut rx) {
         crate::insert_history::insert_history_lines(&mut term, lines)
             .expect("Failed to insert history lines in test");
     }

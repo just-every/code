@@ -91,7 +91,7 @@ impl PidBackend {
         command
             // Handoff suppression belongs to the foreground CLI, not its long-lived children.
             .env_remove(crate::telemetry::HANDOFF_ENV)
-            .args(self.command_args())
+            .args(self.command_args().iter().map(std::borrow::Cow::as_ref))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log.into_std().await));
@@ -235,7 +235,11 @@ impl PidBackend {
             }
         }
 
-        let child = match command.spawn() {
+        #[cfg(windows)]
+        let child = super::super::windows::spawn_without_inheriting_stdio(&mut command);
+        #[cfg(not(windows))]
+        let child = command.spawn().map_err(anyhow::Error::from);
+        let child = match child {
             Ok(child) => child,
             Err(err) => {
                 if replacement.is_none() {
@@ -258,10 +262,6 @@ impl PidBackend {
             .id()
             .context("spawned app-server process has no pid")?;
         let record = match async {
-            #[cfg(windows)]
-            super::super::windows::Process::open(pid)?
-                .context("daemon exited during launch")?
-                .ensure_detached()?;
             let process_start_time = read_process_start_time(pid).await?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let process_identity = super::identity::read_process_details(pid)

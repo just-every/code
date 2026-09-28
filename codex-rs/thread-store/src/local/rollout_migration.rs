@@ -35,6 +35,7 @@ use tokio::time::Instant;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
+use super::helpers::has_guardian_default_title;
 use super::thread_history;
 use super::thread_history::ProjectedRolloutLine;
 use super::thread_history::RolloutProjectionStep;
@@ -712,14 +713,7 @@ impl LocalThreadStore {
         // phase. Keep the individual operations readable and tag the phase once if it fails.
         let conversion_result = async {
             let bounded_subagent_context = if kind == RolloutMigrationKind::Subagent {
-                let RolloutItem::SessionMeta(session_meta) = &canonical_session_meta.item else {
-                    return Err(migration_error("canonical session metadata is missing"));
-                };
-                let context = subagent::select_bounded_context(
-                    source_path.to_path_buf(),
-                    session_meta.clone(),
-                )
-                .await?;
+                let context = subagent::select_bounded_context(source_path.to_path_buf()).await?;
                 limiter.account(source_metadata.len()).await;
                 context
             } else {
@@ -1103,9 +1097,14 @@ impl LocalThreadStore {
             {
                 return Ok(());
             }
-            let legacy_name = distinct_thread_metadata_title(&metadata)
-                .or_else(|| legacy_names.get(&thread_id).cloned())
-                .filter(|name| !name.trim().is_empty());
+            let title = distinct_thread_metadata_title(&metadata);
+            let indexed_name = legacy_names.get(&thread_id).cloned();
+            let legacy_name = if has_guardian_default_title(&metadata) {
+                indexed_name.or(title)
+            } else {
+                title.or(indexed_name)
+            }
+            .filter(|name| !name.trim().is_empty());
             if !state_db
                 .mark_thread_paginated(thread_id, legacy_name.as_deref())
                 .await

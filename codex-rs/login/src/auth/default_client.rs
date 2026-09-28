@@ -1,5 +1,5 @@
 //! Default Codex HTTP client: shared `User-Agent`, `originator`, optional residency header, and
-//! `HttpClient` construction.
+//! HTTP client and transport construction.
 //!
 //! Use [`crate::default_client`] or [`codex_login::default_client`] from other crates in this
 //! workspace.
@@ -11,6 +11,8 @@ use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 pub use codex_http_client::RequestBuilder as CodexRequestBuilder;
+use codex_http_client::ReqwestTransport;
+use codex_http_client::RouteAwareClientPool;
 use codex_terminal_detection::user_agent;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -148,8 +150,11 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
+    // OS discovery can spawn subprocesses on Linux. Reuse it across requests,
+    // while continuing to read the mutable originator and suffix below.
+    static OS_INFO: LazyLock<os_info::Info> = LazyLock::new(os_info::get);
     let build_version = env!("CARGO_PKG_VERSION");
-    let os_info = os_info::get();
+    let os_info = &*OS_INFO;
     let originator = originator();
     let prefix = format!(
         "{}/{build_version} ({} {}; {}) {}",
@@ -213,13 +218,28 @@ pub fn create_client() -> HttpClient {
     build_default_client(default_http_client_builder())
 }
 
-/// Creates the default client with configured ChatGPT cookies and no sensitive-response logging.
+/// Creates an API client retaining managed policy, ChatGPT cookies, and no request diagnostics.
 pub fn create_client_with_chatgpt_cookies(http_client_factory: &HttpClientFactory) -> HttpClient {
-    build_default_client(
-        default_http_client_builder()
-            .with_chatgpt_cookies(http_client_factory)
-            .without_request_logging(),
-    )
+    let builder = default_http_client_builder()
+        .with_chatgpt_cookies(http_client_factory)
+        .without_request_logging();
+    if !http_client_factory.network_policy().is_managed() {
+        return build_default_client(builder);
+    }
+    let mut pool = RouteAwareClientPool::with_builder(
+        http_client_factory.clone(),
+        ClientRouteClass::Api,
+        builder,
+    );
+    if is_sandboxed() {
+        pool = pool.with_legacy_direct_proxy_and_custom_ca_fallback();
+    } else if matches!(
+        http_client_factory.outbound_proxy_policy(),
+        OutboundProxyPolicy::ReqwestDefault
+    ) {
+        pool = pool.with_legacy_custom_ca_fallback();
+    }
+    pool.into_client()
 }
 
 /// Create the default HTTP client without request URL or response-header diagnostics.
@@ -245,6 +265,31 @@ pub fn create_client_for_route(
         ClientRedirectPolicy::Default => default_http_client_builder(),
         ClientRedirectPolicy::Reject => default_http_client_builder().without_redirects(),
     };
+    create_client_for_route_with_builder(http_client_factory, request_url, route_class, builder)
+}
+
+fn create_client_for_route_with_builder(
+    http_client_factory: &HttpClientFactory,
+    request_url: &str,
+    route_class: ClientRouteClass,
+    builder: HttpClientBuilder,
+) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+    if http_client_factory.network_policy().is_managed() {
+        let mut pool = codex_http_client::RouteAwareClientPool::with_builder(
+            http_client_factory.clone(),
+            route_class,
+            builder,
+        );
+        if is_sandboxed() {
+            pool = pool.with_legacy_direct_proxy_and_custom_ca_fallback();
+        } else if matches!(
+            http_client_factory.outbound_proxy_policy(),
+            OutboundProxyPolicy::ReqwestDefault
+        ) {
+            pool = pool.with_legacy_custom_ca_fallback();
+        }
+        return Ok(pool.into_client());
+    }
     if matches!(
         http_client_factory.outbound_proxy_policy(),
         OutboundProxyPolicy::ReqwestDefault
@@ -273,6 +318,40 @@ pub async fn create_client_for_route_async(
     http_client_factory: HttpClientFactory,
     request_url: String,
     route_class: ClientRouteClass,
+    redirect_policy: ClientRedirectPolicy,
+) -> std::io::Result<HttpClient> {
+    create_client_for_route_async_with_builder(
+        http_client_factory,
+        request_url,
+        route_class,
+        move || match redirect_policy {
+            ClientRedirectPolicy::Default => default_http_client_builder(),
+            ClientRedirectPolicy::Reject => default_http_client_builder().without_redirects(),
+        },
+    )
+    .await
+}
+
+/// Builds a routed default client without request URL or response-header diagnostics.
+pub async fn create_client_for_route_without_request_logging_async(
+    http_client_factory: HttpClientFactory,
+    request_url: String,
+    route_class: ClientRouteClass,
+) -> std::io::Result<HttpClient> {
+    create_client_for_route_async_with_builder(
+        http_client_factory,
+        request_url,
+        route_class,
+        || default_http_client_builder().without_request_logging(),
+    )
+    .await
+}
+
+async fn create_client_for_route_async_with_builder(
+    http_client_factory: HttpClientFactory,
+    request_url: String,
+    route_class: ClientRouteClass,
+    builder: impl FnOnce() -> HttpClientBuilder + Send + 'static,
 ) -> std::io::Result<HttpClient> {
     let permit = ROUTE_AWARE_CLIENT_BUILD_PERMIT
         .acquire()
@@ -280,16 +359,58 @@ pub async fn create_client_for_route_async(
         .map_err(std::io::Error::other)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        create_client_for_route(
+        create_client_for_route_with_builder(
             &http_client_factory,
             &request_url,
             route_class,
-            ClientRedirectPolicy::Default,
+            builder(),
         )
         .map_err(std::io::Error::from)
     })
     .await
     .map_err(std::io::Error::other)?
+}
+
+/// Builds the default Codex transport without blocking the async runtime worker.
+///
+/// Route-aware proxy handling resolves each request and redirect destination. When it is disabled,
+/// or the client is running inside the Codex sandbox, this preserves the default client's proxy
+/// behavior while retaining managed application network policy enforcement.
+pub async fn create_transport_for_routes_async(
+    http_client_factory: HttpClientFactory,
+    route_class: ClientRouteClass,
+) -> std::io::Result<ReqwestTransport> {
+    let permit = ROUTE_AWARE_CLIENT_BUILD_PERMIT
+        .acquire()
+        .await
+        .map_err(std::io::Error::other)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let sandboxed = is_sandboxed();
+        let transport_default_proxy = matches!(
+            http_client_factory.outbound_proxy_policy(),
+            OutboundProxyPolicy::ReqwestDefault
+        );
+        if !http_client_factory.network_policy().is_managed()
+            && (transport_default_proxy || sandboxed)
+        {
+            return ReqwestTransport::from_http_client(create_client());
+        }
+
+        let mut pool = RouteAwareClientPool::with_builder(
+            http_client_factory,
+            route_class,
+            default_http_client_builder(),
+        );
+        if sandboxed {
+            pool = pool.with_legacy_direct_proxy_and_custom_ca_fallback();
+        } else if transport_default_proxy {
+            pool = pool.with_legacy_custom_ca_fallback();
+        }
+        ReqwestTransport::from_route_aware_client_pool(pool)
+    })
+    .await
+    .map_err(std::io::Error::other)
 }
 
 fn default_http_client_builder() -> HttpClientBuilder {
@@ -315,7 +436,7 @@ pub(crate) fn create_raw_auth_client(
     auth_route_config: &AuthRouteConfig,
 ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
     auth_route_config
-        .http_client_factory()
+        .authentication_factory(endpoint)
         .build_client_without_request_logging(endpoint, ClientRouteClass::Auth)
 }
 
@@ -325,7 +446,7 @@ pub(crate) fn create_default_auth_client(
     auth_route_config: &AuthRouteConfig,
 ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
     create_client_for_route(
-        auth_route_config.http_client_factory(),
+        &auth_route_config.authentication_factory(endpoint),
         endpoint,
         ClientRouteClass::Auth,
         ClientRedirectPolicy::Default,

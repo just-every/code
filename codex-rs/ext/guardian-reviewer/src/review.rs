@@ -12,6 +12,8 @@ use codex_extension_api::ExtensionFuture;
 use codex_extension_api::SynchronousApprovalReviewer;
 use codex_protocol::approvals::GuardianReviewReason;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentOutcome;
@@ -27,6 +29,10 @@ use tokio_util::sync::CancellationToken;
 /// they do not select Guardian outcomes, retry policy or reporting effects.
 pub trait ReviewHost: Send + Sync {
     type Prepared: Send + Sync;
+    /// Evidence captured for one completed assessment, never reused by another attempt.
+    type Evidence: Send;
+    /// Returns the target's rules, or no evidence when they cannot be resolved.
+    fn permissions(&self) -> Option<codex_guardian_context::PermissionContext>;
     /// Captures the turn currently servicing reviews, which may differ from a yielded cell's origin.
     fn servicing_turn(&self) -> impl Future<Output = Option<(String, Arc<ModelInfo>)>> + Send;
     /// Returns the owning turn and optional target item after validating the action.
@@ -38,27 +44,39 @@ pub trait ReviewHost: Send + Sync {
         deadline: Instant,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = Result<(Self::Prepared, ReviewReport), ReviewDecision>> + Send;
-    /// Rejects stale approvals before returning the attempt's outcome.
+    /// Captures fresh authorization evidence and rejects stale approvals for each attempt.
     fn attempt(
         &self,
         prepared: &Self::Prepared,
         deadline: Instant,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = (GuardianReviewOutcome, GuardianReviewAnalyticsResult)> + Send;
+    ) -> impl Future<
+        Output = (
+            GuardianReviewOutcome,
+            GuardianReviewAnalyticsResult,
+            Option<Self::Evidence>,
+        ),
+    > + Send;
     fn emit(&self, event: EventMsg) -> impl Future<Output = ()> + Send;
     fn record_evidence(
         &self,
         prepared: &Self::Prepared,
+        evidence: Self::Evidence,
         event: &GuardianAssessmentEvent,
     ) -> impl Future<Output = ()> + Send;
-    fn interrupt(&self, turn_id: &str, warning: EventMsg) -> impl Future<Output = ()> + Send;
+    fn interrupt(
+        &self,
+        turn_id: &str,
+        warning: EventMsg,
+        error: ErrorEvent,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
     fn review(&self, reason: GuardianReviewReason) -> ExtensionFuture<'_, Option<ReviewDecision>> {
         Box::pin(async move {
             let deadline = Instant::now() + crate::REVIEW_TIMEOUT;
-            let (context, report) = match self
+            let (prepared, report) = match self
                 .host
                 .prepare(self.approval_id, reason, deadline, &self.cancellation)
                 .await
@@ -69,10 +87,11 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
             self.host
                 .emit(EventMsg::GuardianAssessment(report.started_event()))
                 .await;
-            let (outcome, analytics) = if self.cancellation.is_cancelled() {
+            let (outcome, analytics, evidence) = if self.cancellation.is_cancelled() {
                 (
                     GuardianReviewOutcome::Error(GuardianReviewError::Cancelled),
                     GuardianReviewAnalyticsResult::without_session(),
+                    None,
                 )
             } else {
                 Box::pin(crate::run_with_retry(
@@ -81,7 +100,7 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                         deadline,
                     },
                     Some(&self.cancellation),
-                    |deadline| self.host.attempt(&context, deadline, &self.cancellation),
+                    |deadline| self.host.attempt(&prepared, deadline, &self.cancellation),
                 ))
                 .await
             };
@@ -93,6 +112,10 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                 analytics,
                 completed_at_ms.try_into().unwrap_or_default(),
             );
+            if self.log_assessments {
+                self.telemetry
+                    .guardian_assessment(&completed.event, completed.assessment_outcome);
+            }
             report.track(
                 self.telemetry,
                 self.analytics,
@@ -104,8 +127,12 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                     .emit(EventMsg::GuardianWarning(WarningEvent { message }))
                     .await;
             }
-            if completed.assessment_outcome.is_some() {
-                self.host.record_evidence(&context, &completed.event).await;
+            if completed.assessment_outcome.is_some()
+                && let Some(evidence) = evidence
+            {
+                self.host
+                    .record_evidence(&prepared, evidence, &completed.event)
+                    .await;
             }
             self.host
                 .emit(EventMsg::GuardianAssessment(completed.event))
@@ -117,7 +144,14 @@ impl<H: ReviewHost> SynchronousApprovalReviewer for ReviewRequest<'_, H> {
                         self.host
                             .interrupt(
                                 &turn_id,
-                                EventMsg::GuardianWarning(WarningEvent { message }),
+                                EventMsg::GuardianWarning(WarningEvent {
+                                    message: message.clone(),
+                                }),
+                                ErrorEvent {
+                                    message,
+                                    codex_error_info: Some(CodexErrorInfo::TooManyDenials),
+                                    misalignment: None,
+                                },
                             )
                             .await;
                     }

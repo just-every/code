@@ -1,3 +1,4 @@
+use super::Submission;
 use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
 use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
 use crate::realtime_conversation::handle_speech as handle_realtime_conversation_speech;
@@ -5,7 +6,6 @@ use crate::realtime_conversation::handle_start as handle_realtime_conversation_s
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
 use async_channel::Receiver;
 use codex_otel::set_parent_from_w3c_trace_context;
-use codex_protocol::protocol::Submission;
 use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
@@ -23,6 +23,7 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -241,6 +242,8 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 }
 
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+    // Stop the old turn before the compact task picks up the next turn's environments.
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
@@ -282,7 +285,13 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
-    if let Some(startup_prewarm) = sess.take_session_startup_prewarm().await {
+    let startup_prewarm = {
+        let mut state = sess.state.lock().await;
+        // Stop admission and take the current warmup together so resume cannot replace it.
+        state.shutting_down = true;
+        state.take_session_startup_prewarm()
+    };
+    if let Some(startup_prewarm) = startup_prewarm {
         startup_prewarm.abort().await;
     }
     let _ = sess.conversation.shutdown().await;
@@ -308,6 +317,8 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         sess.mcp_refresh.close();
         sess.services.mcp_runtime.shutdown().await;
     }
+
+    sess.drain_code_mode_messages().await;
 
     crate::hook_runtime::run_session_end_hooks(sess).await;
     emit_thread_stop_lifecycle(sess).await;
@@ -426,6 +437,11 @@ pub(super) async fn submission_loop(
                     interrupt(&sess).await;
                     false
                 }
+                Op::InterruptIfNoPendingInput { turn_id, reply } => {
+                    sess.interrupt_turn_if_no_pending_input(&turn_id, reply)
+                        .await;
+                    false
+                }
                 Op::CleanBackgroundTerminals => {
                     clean_background_terminals(&sess).await;
                     false
@@ -503,8 +519,36 @@ pub(super) async fn submission_loop(
                     let _ = reply.send(result);
                     should_exit
                 }
-                Op::ThreadSettings { thread_settings } => {
-                    thread_settings::update(&sess, sub.id.clone(), thread_settings).await;
+                Op::ThreadSettings {
+                    thread_settings,
+                    reply,
+                } => {
+                    let _settings_guard = thread_settings::acquire_persistence_lock(&sess).await;
+                    match thread_settings::update(&sess, thread_settings).await {
+                        Ok(snapshot) => {
+                            // Reply first: the caller may hold a lock its event consumer needs.
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                            thread_settings::emit_applied(&sess, sub.id.clone(), snapshot).await;
+                        }
+                        Err(error) => {
+                            let message = format!("invalid thread settings override: {error}");
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Err(CodexErr::InvalidRequest(message)));
+                            } else {
+                                sess.send_event_raw(Event {
+                                    id: sub.id.clone(),
+                                    msg: EventMsg::Error(ErrorEvent {
+                                        misalignment: None,
+                                        message,
+                                        codex_error_info: Some(CodexErrorInfo::BadRequest),
+                                    }),
+                                })
+                                .await;
+                            }
+                        }
+                    }
                     false
                 }
                 Op::TurnSettings {
@@ -596,6 +640,7 @@ pub(super) async fn submission_loop(
         }
         .instrument(dispatch_span)
         .await;
+        drop(sub.residency_guard);
         if should_exit {
             shutdown_received = true;
             break;

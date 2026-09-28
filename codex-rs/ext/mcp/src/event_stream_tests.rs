@@ -161,7 +161,7 @@ impl Fixture {
             ready_selected_capability_roots: Vec::new(),
             mcp_servers: HashMap::from([(
                 CODEX_APPS_MCP_SERVER_NAME.into(),
-                EffectiveMcpServer::configured(server_config.clone()),
+                EffectiveMcpServer::from_host_config(server_config.clone()),
             )]),
             submit_id: "test".into(),
             tx_event: None,
@@ -176,7 +176,6 @@ impl Fixture {
             client_mcp_extensions: Default::default(),
             auth: Some(auth_value.clone()),
             auth_manager: Some(Arc::clone(&auth)),
-            allow_user_interaction: true,
             elicitation_reviewer: None,
             elicitation_lifecycle: None,
         };

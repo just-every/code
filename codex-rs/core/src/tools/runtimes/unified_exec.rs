@@ -24,7 +24,7 @@ use crate::tools::runtimes::RuntimePathPrepends;
 use crate::tools::runtimes::apply_zsh_fork_path_prepend;
 use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
-use crate::tools::runtimes::prepare_powershell_command_for_elevated_windows_sandbox;
+use crate::tools::runtimes::prepare_powershell_command_for_windows_sandbox;
 use crate::tools::runtimes::zsh_fork;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalAction;
@@ -34,6 +34,7 @@ use crate::tools::sandboxing::Sandboxable;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
+use crate::tools::sandboxing::executor_windows_sandbox_selection;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 use crate::tools::sandboxing::sandbox_permissions_preserving_denied_reads;
 use crate::unified_exec::NoopSpawnLifecycle;
@@ -60,6 +61,10 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+mod launch;
+
+use launch::with_launch_failure_events;
 
 // Allow 5s for Guardian cleanup and 5s for controller processing after review.
 const REMOTE_NETWORK_POLICY_DECISION_MARGIN: Duration = Duration::from_secs(10);
@@ -229,9 +234,12 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
             req.sandbox_permissions,
             &file_system_sandbox_policy,
         );
-        let network =
-            managed_network_for_sandbox_permissions(req.network.as_ref(), sandbox_permissions)
-                .cloned();
+        // Explicit full escalation bypasses controller and attachment-owned network proxies.
+        // Denied-read restrictions above can still require a sandboxed launch.
+        if sandbox_permissions.requires_escalated_permissions() {
+            return None;
+        }
+        let network = req.network.clone();
         // No-proxy fast path; owners still need a spec for execution-only proxies.
         if network.is_none() && req.turn_environment.config().network_policy.is_none() {
             return None;
@@ -351,13 +359,21 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         };
         let (mut env, managed_network_context, network_proxy_launch) = match managed_network {
             Some(network) if environment_is_remote => {
-                let mut launch = network.remote_launch_config().await.map_err(|err| {
-                    ToolError::Codex(CodexErr::Io(io::Error::other(err.to_string())))
-                })?;
+                let mut launch = network
+                    .remote_launch_config(crate::windows_sandbox::local_binding_policy_for_sandbox(
+                        req.turn_environment.config().windows_sandbox_type,
+                        req.turn_environment.executor_platform_os.as_deref(),
+                    ))
+                    .await
+                    .map_err(|err| {
+                        ToolError::Codex(CodexErr::Io(io::Error::other(err.to_string())))
+                    })?;
                 if routes_approval_policy_to_guardian(
                     ctx.step_context.settings.approval_policy(),
                     ctx.step_context.settings.approvals_reviewer(),
-                ) && network.remote_policy_decider().is_some()
+                ) && network
+                    .remote_policy_decider(launch.proxy.allow_local_binding)
+                    .is_some()
                 {
                     let timeout = ctx
                         .session
@@ -556,11 +572,17 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         {
             network.restore_and_disable_brokered_credentials(&mut env, &mut command);
         }
-        let command = prepare_powershell_command_for_elevated_windows_sandbox(
+        // The executor selection is Disabled for non-Windows target paths, so this
+        // preparation is a no-op for PowerShell on other platforms.
+        let command = prepare_powershell_command_for_windows_sandbox(
             &command,
             Some(&req.shell_type),
             attempt.sandbox_requested,
-            attempt.windows_sandbox_level,
+            executor_windows_sandbox_selection(
+                attempt.windows_sandbox_type,
+                attempt.windows_sandbox_level,
+                attempt.sandbox_cwd,
+            ),
             environment_is_remote,
         );
         let command = if matches!(req.shell_type, ShellType::PowerShell) {
@@ -642,7 +664,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                                 .to_string(),
                         ));
                     }
-                    let mut process = self
+                    let process = self
                         .manager
                         .open_session_with_prepared_exec_env(
                             req.process_id,
@@ -663,7 +685,8 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                                 }))
                             }
                             other => ToolError::Rejected(other.to_string()),
-                        })?;
+                        });
+                    let mut process = with_launch_failure_events(process, req, ctx).await?;
                     process._shell_snapshot = shell_snapshot;
                     return Ok(UnifiedExecAttempt {
                         process,
@@ -692,7 +715,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
             error @ ToolError::Codex(_) => error,
         })?;
         let options = unified_exec_options(attempt.network_denial_cancellation_token.clone());
-        let mut process = self
+        let process = self
             .manager
             .open_session_with_exec_env(
                 req.process_id,
@@ -710,7 +733,8 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 Box::new(NoopSpawnLifecycle),
                 req.turn_environment.environment.as_ref(),
             )
-            .await?;
+            .await;
+        let mut process = with_launch_failure_events(process, req, ctx).await?;
         process._shell_snapshot = shell_snapshot;
         Ok(UnifiedExecAttempt {
             process,
@@ -753,7 +777,6 @@ mod tests {
                     workspace_roots: Vec::new(),
                     windows_sandbox_level: WindowsSandboxLevel::Disabled,
                     windows_sandbox_type: codex_sandboxing::SandboxType::None,
-                    windows_sandbox_private_desktop: true,
                     use_legacy_landlock: false,
                     permission_profile: PermissionProfileSnapshot::legacy(
                         PermissionProfile::read_only(),

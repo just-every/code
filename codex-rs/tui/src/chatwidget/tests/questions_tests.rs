@@ -1,5 +1,6 @@
 //! Verify question input delivery, retained drafts, and visible editor behavior.
 use super::*;
+use crate::bottom_pane::RestrictedInputMode;
 use codex_protocol::items::AsyncUserInputQuestion;
 use pretty_assertions::assert_eq;
 
@@ -47,15 +48,65 @@ async fn accepted_question_answer_uses_existing_delivery_and_keeps_main_draft() 
         assert_eq!(chat.bottom_pane.composer_text(), "main draft");
         let expected = "> Which way?\n\n!literal answer";
         if queued {
-            assert_eq!(
-                chat.input_queue.queued_user_messages.front().unwrap().text,
-                expected
+            insta::assert_snapshot!(
+                "queued_async_question_reply",
+                render_bottom_popup(&chat, /*width*/ 80)
             );
+            let restored = chat.pop_latest_queued_composer_state().unwrap();
+            assert_eq!(restored.text, expected);
             assert!(op_rx.try_recv().is_err());
         } else {
             assert_answer(op_rx.try_recv().unwrap(), expected);
         }
     }
+}
+
+#[tokio::test]
+async fn async_question_answers_preserve_ambiguous_skill_selection_and_dismiss_remotely() {
+    use codex_context_fragments::AnsweredQuestion;
+    use codex_context_fragments::ContextualUserFragment;
+
+    let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let skill = SkillMetadata {
+        name: "route".into(),
+        description: "Choose a route".into(),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        path: test_path_buf("/tmp/route/SKILL.md").abs(),
+        scope: crate::test_support::skill_scope_repo(),
+        enabled: true,
+        plugin_id: None,
+    };
+    let mut duplicate = skill.clone();
+    duplicate.path = test_path_buf("/tmp/other-route/SKILL.md").abs();
+    chat.set_skills(Some(vec![skill.clone(), duplicate]));
+    chat.add_async_questions("message", &questions());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.bottom_pane.handle_paste("Use $route".into());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let Op::UserTurn { items, .. } = ops.try_recv().unwrap() else {
+        panic!("user turn")
+    };
+    let id = serde_json::json!(["request_user_input_async", "message", 0]).to_string();
+    assert_eq!(
+        items,
+        vec![
+            UserInput::Text {
+                text: AnsweredQuestion::new(&id, "Which way?", "Use $route").render(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Skill {
+                name: skill.name,
+                path: skill.path.to_path_buf()
+            },
+        ]
+    );
+    let (mut other, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    other.add_async_questions("message", &questions());
+    complete_user_message_for_inputs(&mut other, "answer", items);
+    assert_eq!(question_count(&other), 1);
 }
 
 #[tokio::test]
@@ -348,12 +399,21 @@ async fn disconnected_questions_remain_editable_without_sending() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.add_async_questions("message", &questions());
     chat.pause_for_disconnect();
-    chat.handle_disconnected_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    chat.handle_restricted_key(
+        KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+        RestrictedInputMode::Disconnected,
+    );
     chat.bottom_pane.handle_paste("offline draft".into());
-    chat.handle_disconnected_key(KeyEvent::from(KeyCode::Enter));
+    chat.handle_restricted_key(
+        KeyEvent::from(KeyCode::Enter),
+        RestrictedInputMode::Disconnected,
+    );
     assert_eq!(question_count(&chat), 2);
     assert!(op_rx.try_recv().is_err());
-    chat.handle_disconnected_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL));
+    chat.handle_restricted_key(
+        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
+        RestrictedInputMode::Disconnected,
+    );
     assert_eq!(question_count(&chat), 2);
 }
 
@@ -388,12 +448,14 @@ async fn selected_answers_preserve_long_labels_and_reject_oversized_submissions(
         if length > 512 {
             assert_eq!(question_count(&chat), saved);
             assert!(ops.try_recv().is_err());
-            chat.bottom_pane
-                .handle_paste("x".repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS));
+            // JSON escaping must count toward the limit even when the answer itself fits.
+            chat.bottom_pane.handle_paste(
+                "\"".repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS / 2),
+            );
             chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
             assert_eq!(question_count(&chat), saved);
             let rendered = render_bottom_popup(&chat, /*width*/ 80);
-            insta::assert_snapshot!(rendered.lines().find(|line| line.contains("Answer too long")).unwrap(), @"  Answer too long; limit 1048562 characters");
+            insta::assert_snapshot!(rendered.lines().find(|line| line.contains("Answer too long")).unwrap(), @"  Answer too long; shorten it before sending");
         } else {
             assert_answer(ops.try_recv().unwrap(), &format!("> What next?\n\n{label}"));
         }
@@ -614,7 +676,10 @@ async fn question_queue_key_does_not_steer_the_running_turn() {
     chat.bottom_pane.handle_paste("  later  ".into());
     chat.handle_key_event(KeyEvent::from(KeyCode::Tab));
     assert_eq!(
-        chat.input_queue.queued_user_messages.front().unwrap().text,
+        crate::async_question_reply::display_text(
+            &chat.input_queue.queued_user_messages.front().unwrap().text
+        )
+        .unwrap(),
         "> First?\n\nlater"
     );
     let mut repeat = KeyEvent::from(KeyCode::Tab);
@@ -773,6 +838,10 @@ fn assert_answer(op: Op, expected: &str) {
     let Op::UserTurn { items, .. } = op else {
         panic!("user turn")
     };
+    let mut items = items;
+    if let [UserInput::Text { text, .. }] = items.as_mut_slice() {
+        *text = crate::async_question_reply::display_text(text).unwrap_or_else(|| text.clone());
+    }
     assert_eq!(
         items,
         vec![UserInput::Text {
@@ -796,19 +865,233 @@ async fn questions_and_queued_messages_share_the_resolved_shortcut() {
         .queued_user_messages
         .push_back(UserMessage::from("queued".to_string()).into());
     chat.refresh_pending_input_preview();
-    for binding in [key_hint::shift(KeyCode::Left), key_hint::alt(KeyCode::Up)] {
+    let forward_hint = key_hint::shift(KeyCode::Left).display_label();
+    let backward_hint = key_hint::shift(KeyCode::Right).display_label();
+    assert!(
+        render_bottom_popup(&chat, /*width*/ 100)
+            .contains(&format!("{forward_hint} edit last queued message"))
+    );
+    chat.add_async_questions("message", &questions());
+    assert!(
+        render_bottom_popup(&chat, /*width*/ 100).contains(&format!("{forward_hint} to answer"))
+    );
+
+    for (forward, backward) in [
+        (
+            KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
+        ),
+        (
+            KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
+        ),
+    ] {
+        chat.handle_key_event(forward);
+        let rendered = render_bottom_popup(&chat, /*width*/ 100);
+        assert!(rendered.contains(&format!("{backward_hint} main prompt")));
+        assert!(rendered.contains(&format!("{forward_hint} next question")));
+        if forward.code == KeyCode::Left {
+            insta::assert_snapshot!(
+                "question_queue_hint_Left",
+                render_bottom_popup(&chat, /*width*/ 100)
+            );
+        }
+        chat.handle_key_event(forward);
+        let rendered = render_bottom_popup(&chat, /*width*/ 100);
+        assert!(rendered.contains(&format!("{backward_hint} prev question")));
+        assert!(rendered.contains(&format!("{forward_hint} queued messages")));
+        chat.handle_key_event(backward);
+        assert!(render_bottom_popup(&chat, /*width*/ 100).contains("Which way?"));
+        chat.handle_key_event(backward);
+        assert!(!chat.bottom_pane.questions.as_ref().unwrap().expanded);
+    }
+
+    let config = toml::from_str(
+        r#"
+[chat]
+edit_queued_message = ["alt-up", "shift-left"]
+prompt_stack_back = ["alt-down", "shift-right"]
+"#,
+    )
+    .unwrap();
+    let keymap = RuntimeKeymap::from_config(&config).expect("valid alternate shortcuts");
+    chat.apply_keymap_update(config, &keymap);
+    chat.add_async_questions("remapped", &questions());
+    let forward_hint = key_hint::alt(KeyCode::Up).display_label();
+    assert!(
+        render_bottom_popup(&chat, /*width*/ 100).contains(&format!("{forward_hint} to answer"))
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    insta::assert_snapshot!(
+        "question_queue_hint_Up",
+        render_bottom_popup(&chat, /*width*/ 100)
+    );
+
+    let config = toml::from_str(
+        r#"
+[chat]
+edit_queued_message = ["ctrl-x up", "shift-left"]
+prompt_stack_back = ["ctrl-x down", "shift-right"]
+"#,
+    )
+    .unwrap();
+    let keymap = RuntimeKeymap::from_config(&config).expect("valid configured chords");
+    chat.apply_keymap_update(config, &keymap);
+    let hint = |completion| {
+        crate::key_hint::ShortcutHint::Chord {
+            prefix: key_hint::ctrl(KeyCode::Char('x')),
+            completion: key_hint::plain(completion),
+        }
+        .display_label()
+    };
+    let rendered = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(rendered.contains(&format!("{} main prompt", hint(KeyCode::Down))));
+    assert!(rendered.contains(&format!("{} next question", hint(KeyCode::Up))));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    assert!(
+        render_bottom_popup(&chat, /*width*/ 100)
+            .contains(&format!("{} to answer", hint(KeyCode::Up)))
+    );
+}
+
+#[tokio::test]
+async fn desktop_async_answer_dismisses_only_its_question_and_preserves_the_other_draft() {
+    for replay_kind in [None, Some(ReplayKind::ThreadSnapshot)] {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let questions = vec![
+            question("Same title?", /*options*/ None),
+            question("Same title?", /*options*/ None),
+        ];
+        chat.add_async_questions("questions", &questions);
+        chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
         chat.bottom_pane
-            .set_queued_message_edit_binding(Some(binding.into()));
-        let hint = binding.display_label();
-        assert!(render_bottom_popup(&chat, /*width*/ 100).contains(&hint));
-        chat.add_async_questions(&hint, &questions());
-        assert!(render_bottom_popup(&chat, /*width*/ 100).contains(&format!("{hint} to answer")));
-        let (key, modifiers) = binding.parts();
-        chat.handle_key_event(KeyEvent::new(key, modifiers));
-        insta::assert_snapshot!(
-            format!("question_queue_hint_{}", key),
-            render_bottom_popup(&chat, /*width*/ 100)
+            .questions
+            .as_mut()
+            .unwrap()
+            .navigate(/*forward*/ true);
+        chat.bottom_pane
+            .handle_paste("My draft for the second question".into());
+        let reply = r#"<send_user_message_question_reply>
+[{"questionItemId":"[\"request_user_input_async\",\"questions\",0]","question":"Same title?","answer":"Answer from desktop"}]
+</send_user_message_question_reply>"#;
+        let reply = format!(
+            "# Context from my IDE setup:\n\n## Open tabs:\n- lib.rs: src/lib.rs\n\n## My request for Codex:\n{reply}"
         );
-        chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+        let item = AppServerThreadItem::UserMessage {
+            id: "answer".into(),
+            client_id: None,
+            content: vec![UserInput::Text {
+                text: reply,
+                text_elements: Vec::new(),
+            }],
+        };
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                completed_at_ms: 0,
+                item: item.clone(),
+            }),
+            replay_kind,
+        );
+        assert_eq!(question_count(&chat), 1);
+        let cells = crate::thread_transcript::thread_items_to_transcript_cells(
+            /*thread_id*/ None,
+            &chat.config.cwd,
+            [item],
+            crate::thread_transcript::RawReasoningVisibility::Hidden,
+            /*config*/ None,
+        );
+        insta::assert_snapshot!(
+            "desktop_async_question_reply",
+            lines_to_single_string(&cells[0].transcript_lines(/*width*/ 80))
+        );
+        insta::assert_snapshot!(
+            "async_question_answered_on_another_client",
+            render_bottom_popup(&chat, /*width*/ 80)
+        );
+        chat.thread_id = Some(ThreadId::new());
+        chat.input_queue.suppress_queue_autosend = true;
+        chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(question_count(&chat), 0);
+        // Removing the first question must not renumber the surviving question's identity.
+        let queued = &chat.input_queue.queued_user_messages.front().unwrap().text;
+        let replies = crate::async_question_reply::parse(queued).unwrap();
+        assert_eq!(
+            replies[0].question_item_id,
+            r#"["request_user_input_async","questions",1]"#
+        );
+        assert_eq!(
+            crate::async_question_reply::display_text(queued).unwrap(),
+            "> Same title?\n\nMy draft for the second question"
+        );
+    }
+}
+
+#[tokio::test]
+async fn distinct_async_question_replies_with_identical_text_both_render() {
+    use codex_context_fragments::AnsweredQuestion;
+    use codex_context_fragments::ContextualUserFragment;
+
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    drain_insert_history(&mut rx);
+    for id in ["first", "first", "second"] {
+        let items = [UserInput::Text {
+            text: AnsweredQuestion::new(id, "Continue?", "Yes").render(),
+            text_elements: Vec::new(),
+        }];
+        chat.on_committed_user_message(
+            &items, /*client_id*/ None, /*from_replay*/ false, "turn",
+        );
+    }
+    let history = drain_insert_history(&mut rx);
+    assert_eq!(history.len(), 2);
+}
+
+#[tokio::test]
+async fn retried_question_answers_keep_separate_envelopes_and_order() {
+    for interrupt in [false, true] {
+        let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.on_task_started();
+        chat.submit_user_message(UserMessage::from("before"));
+        chat.add_async_questions("message", &questions());
+        chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        for answer in ["North", "Bring a map"] {
+            chat.bottom_pane.handle_paste(answer.into());
+            chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        }
+        chat.submit_user_message(UserMessage::from("after"));
+        let mut original = Vec::new();
+        while let Ok(op) = ops.try_recv() {
+            let Op::UserTurn { items, .. } = op else {
+                panic!("user turn")
+            };
+            let [UserInput::Text { text, .. }] = items.as_slice() else {
+                panic!("one text input")
+            };
+            original.push(text.clone());
+        }
+        assert_eq!(original.len(), 4);
+        let mut retried = Vec::new();
+        if interrupt {
+            chat.input_queue.submit_pending_steers_after_interrupt = true;
+            chat.on_interrupted_turn(TurnAbortReason::Interrupted);
+            let Op::UserTurn { items, .. } = ops.try_recv().unwrap() else {
+                panic!("user turn")
+            };
+            let [UserInput::Text { text, .. }] = items.as_slice() else {
+                panic!("one text input")
+            };
+            retried.push(text.clone());
+        } else {
+            while !chat.input_queue.pending_steers.is_empty() {
+                assert!(chat.enqueue_rejected_steer());
+            }
+        }
+        while let Some((message, _)) = chat.pop_next_queued_user_message() {
+            retried.push(message.text.clone());
+        }
+        assert_eq!(retried, original);
     }
 }

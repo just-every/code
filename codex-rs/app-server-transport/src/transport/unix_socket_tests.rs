@@ -21,6 +21,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::Bytes;
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -54,6 +55,48 @@ fn listen_unix_socket_accepts_relative_custom_path() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn long_control_socket_paths_connect_to_distinct_daemons() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let long_parent = temp_dir.path().join("x".repeat(120));
+    let mut sockets = Vec::new();
+    let mut acceptors = Vec::new();
+
+    for name in ["first", "second"] {
+        let codex_home = long_parent.join(name);
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+        let socket_path = app_server_control_socket_path(&codex_home).expect("socket path");
+        let (transport_event_tx, _transport_event_rx) =
+            mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+        let shutdown_token = CancellationToken::new();
+        let acceptor = start_control_socket_acceptor(
+            socket_path.clone(),
+            transport_event_tx,
+            shutdown_token.clone(),
+            DaemonShutdownAccess::Disabled,
+        )
+        .await
+        .expect("control socket acceptor should start");
+        sockets.push(socket_path);
+        acceptors.push((shutdown_token, acceptor));
+    }
+
+    assert_ne!(
+        std::fs::read_link(sockets[0].as_path()).expect("first socket target"),
+        std::fs::read_link(sockets[1].as_path()).expect("second socket target")
+    );
+    for socket in &sockets {
+        connect_to_socket(socket.as_path())
+            .await
+            .expect("client should connect through long path");
+    }
+    for (shutdown_token, acceptor) in acceptors {
+        shutdown_token.cancel();
+        acceptor.await.expect("acceptor should stop");
+    }
+}
+
 #[tokio::test]
 async fn control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_and_pings() {
     let temp_dir = tempfile::TempDir::new().expect("temp dir");
@@ -77,6 +120,26 @@ async fn control_socket_acceptor_upgrades_and_forwards_websocket_text_messages_a
         .await
         .expect("websocket upgrade should complete");
     assert_eq!(response.status().as_u16(), 101);
+    let advertised_max = response
+        .headers()
+        .get("x-codex-websocket-max-unfragmented-message-bytes")
+        .expect("byte cap header should be advertised")
+        .to_str()
+        .expect("byte cap header should be ASCII")
+        .parse::<usize>()
+        .expect("byte cap header should be a number");
+    let websocket_config = WebSocketConfig::default();
+    assert_eq!(
+        advertised_max,
+        [
+            websocket_config.max_frame_size,
+            websocket_config.max_message_size,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .expect("default websocket config should have an incoming size limit")
+    );
 
     let opened = timeout(Duration::from_secs(1), transport_event_rx.recv())
         .await

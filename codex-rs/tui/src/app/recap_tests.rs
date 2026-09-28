@@ -24,12 +24,17 @@ use crate::history_cell::ThreadRecapHistoryCell;
 use crate::history_cell::ThreadRecapLoadingCell;
 use crate::history_cell::UserHistoryCell;
 use crate::line_truncation::line_width;
+use crate::style::accent_color;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Stylize;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -653,11 +658,11 @@ fn recap_history_cell_uses_hanging_indent_and_right_padding() {
     let cell =
         ThreadRecapHistoryCell::new("Automatic recaps stay compact on wide terminals.".to_string());
     let lines = cell.display_lines(/*width*/ 56);
-    assert!(
-        lines
-            .iter()
-            .all(|line| line.style.add_modifier.contains(Modifier::ITALIC))
-    );
+    assert!(lines.iter().all(|line| {
+        line.style
+            .add_modifier
+            .contains(Modifier::ITALIC | Modifier::DIM)
+    }));
     assert_eq!(
         &lines[0].spans[..3],
         &["  ".into(), "↳ ".dim(), "Recap: ".bold()],
@@ -690,6 +695,34 @@ fn recap_history_cell_wraps_in_narrow_terminals() {
       ↳ Recap: Keep conversation
                recaps readable in
                narrow terminals.
+    ");
+}
+
+#[tokio::test]
+async fn recap_history_uses_one_separator_before_following_message() {
+    let mut app = make_test_app().await;
+    app.transcript_cells = vec![
+        Arc::new(
+            ThreadRecapHistoryCell::new("The draft is ready.".into())
+                .with_next_action(Some("Review the changes.".into())),
+        ),
+        Arc::new(AgentMessageCell::new(
+            vec!["Follow-up response.".into()],
+            /*is_first_line*/ true,
+        )),
+    ];
+    let rendered = app
+        .render_transcript_lines_for_reflow(/*width*/ 80)
+        .lines
+        .iter()
+        .map(|line| line.line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+      ↳ Recap: The draft is ready.
+               Next: Review the changes.
+
+    • Follow-up response.
     ");
 }
 
@@ -726,11 +759,11 @@ fn recap_history_cell_wraps_long_urls_in_narrow_terminals() {
             .skip(/*n*/ 1)
             .all(|line| line.to_string().starts_with("           "))
     );
-    assert!(
-        lines
-            .iter()
-            .all(|line| line.style.add_modifier.contains(Modifier::ITALIC))
-    );
+    assert!(lines.iter().all(|line| {
+        line.style
+            .add_modifier
+            .contains(Modifier::ITALIC | Modifier::DIM)
+    }));
     let rendered = lines
         .iter()
         .map(ToString::to_string)
@@ -827,7 +860,7 @@ fn recap_history_cell_wraps_next_action_urls_in_narrow_terminals() {
             .iter()
             .flat_map(|line| &line.spans)
             .find(|span| span.content == "Next: "),
-        Some(&"Next: ".bold().cyan().italic()),
+        Some(&"Next: ".bold().fg(accent_color()).italic()),
     );
     let rendered = lines
         .iter()
@@ -850,19 +883,40 @@ fn recap_history_cell_preserves_line_breaks_and_optional_next() {
         .with_next_action(Some(
             "Run focused tests and check the empty-input case.".to_string(),
         ));
-    let lines = cell.display_lines(/*width*/ 48);
+    let hyperlink_lines = cell.display_hyperlink_lines(/*width*/ 48);
+    for line in &hyperlink_lines {
+        let source = line.source.as_ref().expect("recap source");
+        assert!(
+            source
+                .styled_range(source.range.clone())
+                .spans
+                .iter()
+                .all(|span| {
+                    span.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::DIM)
+                })
+        );
+    }
+    let lines = hyperlink_lines
+        .into_iter()
+        .map(|line| line.line)
+        .collect::<Vec<_>>();
     assert_eq!(
         lines
             .iter()
             .flat_map(|line| &line.spans)
             .find(|span| span.content == "Next: "),
-        Some(&"Next: ".bold().cyan().italic()),
+        Some(&"Next: ".bold().fg(accent_color()).italic()),
     );
-    let displayed = lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let area = Rect::new(
+        /*x*/ 0,
+        /*y*/ 0,
+        /*width*/ 48,
+        lines.len() as u16,
+    );
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(lines).render(area, &mut buffer);
     let raw = cell
         .raw_lines()
         .iter()
@@ -870,12 +924,7 @@ fn recap_history_cell_preserves_line_breaks_and_optional_next() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    insta::assert_snapshot!(displayed, @r"
-      ↳ Recap: Finished the parser.
-               Twelve tests pass.
-               Next: Run focused tests and check
-               the empty-input case.
-    ");
+    insta::assert_snapshot!("recap_dimmed", format!("{buffer:?}"));
     insta::assert_snapshot!(raw, @r"
     Conversation recap
     Finished the parser.

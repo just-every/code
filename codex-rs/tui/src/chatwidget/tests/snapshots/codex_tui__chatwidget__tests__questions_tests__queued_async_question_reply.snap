@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/questions_tests.rs
+expression: "render_bottom_popup(&chat, 80)"
+---
+• Queued follow-up inputs
+  ↳ > Which way?
+
+    !literal answer
+
+  Any details?
+
+  Type your answer
+
+  enter submit   ctrl+] skip   shift+→ main prompt   shift+← queued messages

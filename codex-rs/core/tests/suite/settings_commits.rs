@@ -35,7 +35,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 const INITIAL_MODEL: &str = "gpt-5.4";
-const COMMITTED_MODEL: &str = "gpt-5.2";
+pub(super) const COMMITTED_MODEL: &str = "gpt-5.2";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn assert_checkpoints(test: &TestCodex, expected: &[ThreadSettingsSnapshot]) -> Result<()> {
@@ -138,8 +138,8 @@ async fn initial_plugin_ids_use_turn_context_without_extra_settings_checkpoints(
     Ok(())
 }
 
-struct PauseAfterCommit {
-    gate: Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
+pub(super) struct PauseAfterCommit {
+    pub(super) gate: Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
 }
 
 impl ConfigContributor<Config> for PauseAfterCommit {
@@ -226,7 +226,12 @@ async fn settings_notifications_keep_their_commit_across_postcommit_work(
                     Ok(turn_id)
                 }
                 SettingsOperation::Standalone => {
-                    codex.submit(Op::ThreadSettings { thread_settings }).await
+                    codex
+                        .submit(Op::ThreadSettings {
+                            thread_settings,
+                            reply: None,
+                        })
+                        .await
                 }
             }
         }

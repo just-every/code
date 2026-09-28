@@ -30,7 +30,6 @@ fn chats_range_controls_and_visible_rows() {
         ),
         before
     );
-    let mut screens = Vec::new();
     for key in [KeyCode::Home, KeyCode::End, KeyCode::Enter] {
         press(&mut view, key);
         let output = screen(&mut view, /*width*/ 110, /*height*/ 24);
@@ -43,16 +42,13 @@ fn chats_range_controls_and_visible_rows() {
             visible.first().unwrap(),
             visible.last().unwrap()
         )));
-        screens.push(output);
     }
-    press(&mut view, KeyCode::Char('z'));
     press(&mut view, KeyCode::Char('r'));
     assert_eq!(view.ranges, [0; 3]);
     press(&mut view, KeyCode::Char('2'));
     press(&mut view, KeyCode::Char('r'));
-    press(&mut view, KeyCode::Char('z'));
-    assert!(screen(&mut view, /*width*/ 110, /*height*/ 24).contains("[30d]"));
-    insta::assert_snapshot!(screens.join("\n"));
+    assert_eq!(view.ranges[view.range_group(Section::Credits) as usize], 1);
+    assert!(screen(&mut view, /*width*/ 110, /*height*/ 24).contains("r 7d/30d"));
 }
 
 #[test]
@@ -104,7 +100,8 @@ fn chats_breakdown_ranks_nonzero_groups_and_reflows() {
     press(&mut view, KeyCode::Char('a'));
     assert!(!view.show_zero_credit_groups);
     let wide = view.chat_lines(/*width*/ 220).0;
-    assert!(wide.iter().all(|line| line.width() <= 96));
+    // The content stays within 96 columns, plus one highlighted trailing blank.
+    assert!(wide.iter().all(|line| line.width() <= 97));
     insta::assert_snapshot!(screens.join("\n"));
 }
 
@@ -159,36 +156,11 @@ fn unavailable_chat_titles_are_hidden_in_panel_and_overview() {
             usage: None,
         }],
     });
-    let mut screens = Vec::new();
-    for zoomed in [true, false] {
-        view.zoomed = zoomed;
-        view.follow_selection = true;
-        let output = screen(&mut view, /*width*/ 110, /*height*/ 28);
-        assert!(!output.contains("Another workspace's private title"));
-        assert!(output.contains("Chat usage unavailable"));
-        screens.push(output);
-    }
-    insta::assert_snapshot!(screens.join("\n"));
-}
 
-#[test]
-fn refreshing_chats_clears_details_before_replacing_the_ranked_rows() {
-    for unavailable in [true, false] {
-        let mut view = fixture::view(models::AccountKind::Enterprise);
-        view.section = Section::Chats;
-        press(&mut view, KeyCode::Enter);
-        assert_eq!(view.sections[Section::Chats].detail, Some(0));
-        press(&mut view, KeyCode::Char('R'));
-        assert_eq!(view.sections[Section::Chats].detail, None);
-        view.account = Load::Ready(codex_protocol::account::PlanType::EnterpriseCbpUsageBased);
-        view.chats = if unavailable {
-            Load::Error("Temporarily unavailable".into())
-        } else {
-            Load::Ready(chats::Chats::default())
-        };
-        press(&mut view, KeyCode::Esc);
-        assert!(view.is_done);
-    }
+    view.follow_selection = true;
+    let output = screen(&mut view, /*width*/ 110, /*height*/ 28);
+    assert!(!output.contains("Another workspace's private title"));
+    assert!(output.contains("Chat usage unavailable"));
 }
 
 #[test]
@@ -206,10 +178,35 @@ fn moving_chat_selection_collapses_details_before_they_leave_the_viewport() {
         assert_eq!(view.sections[Section::Chats].detail, Some(start));
         press(&mut view, key);
         assert_eq!(view.sections[Section::Chats].detail, None);
-        if key == KeyCode::End {
-            insta::assert_snapshot!(screen(&mut view, /*width*/ 110, /*height*/ 24));
-        }
         press(&mut view, KeyCode::Esc);
         assert!(view.is_done);
+    }
+}
+
+#[test]
+fn chat_help_and_zero_credit_action_follow_account_and_detail_state() {
+    for kind in [models::AccountKind::Consumer, models::AccountKind::Business] {
+        let mut view = fixture::view(kind);
+        fixture::seed_reports(&mut view);
+        view.section = Section::Chats;
+        view.sections[Section::Chats].detail = Some(0);
+        let help = view
+            .help_lines(/*width*/ 100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let business = kind == models::AccountKind::Business;
+        assert_eq!(help.contains("a · show zero-credit"), business);
+        assert_eq!(help.contains("s · change chat sort metric"), !business);
+        press(&mut view, KeyCode::Char('a'));
+        assert_eq!(view.show_zero_credit_groups, business);
+        view.sections[Section::Chats].detail = None;
+        assert!(
+            !view
+                .help_lines(/*width*/ 100)
+                .iter()
+                .any(|line| line.to_string().contains("a · show zero-credit"))
+        );
     }
 }

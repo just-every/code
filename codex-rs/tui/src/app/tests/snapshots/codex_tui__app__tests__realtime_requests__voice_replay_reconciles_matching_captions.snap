@@ -1,14 +1,11 @@
 ---
 source: tui/src/app/tests/realtime_requests.rs
-assertion_line: 561
+assertion_line: 716
 expression: "normalize_voice_snapshot_directory(&rendered, &app.config.cwd)"
 ---
-╭────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.0.0)               │
-│                                        │
-│ model:     gpt-test   /model to change │
-│ directory: /tmp/project                │
-╰────────────────────────────────────────╯
+
+  >_ OpenAI Codex (v0.0.0)
+     /tmp/project
 
   To get started, describe a task or try one of these commands:
 

@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use crate::facts::AppInvocation;
@@ -313,6 +314,7 @@ pub enum GuardianReviewTerminalStatus {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuardianReviewFailureReason {
+    StaleAuthorization,
     Timeout,
     Cancelled,
     PromptBuildError,
@@ -792,6 +794,7 @@ pub(crate) enum WebSearchActionKind {
 
 #[derive(Serialize)]
 pub(crate) struct CodexCommandExecutionEventParams {
+    pub(crate) sandbox_backend: Option<String>,
     pub(crate) model_slug: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
     #[serde(flatten)]
@@ -1022,6 +1025,7 @@ pub(crate) struct CodexCompactionEventParams {
     pub(crate) status: CompactionStatus,
     pub(crate) codex_error_kind: Option<CodexErrKind>,
     pub(crate) codex_error_http_status_code: Option<u16>,
+    pub(crate) usage_limit_window_minutes: Option<u16>,
     pub(crate) active_context_tokens_before: i64,
     pub(crate) active_context_tokens_after: i64,
     pub(crate) retained_image_count: Option<usize>,
@@ -1068,6 +1072,8 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) thread_id: String,
     pub(crate) session_id: String,
     pub(crate) turn_id: String,
+    /// First received active plugin inventory. Null is unknown; [] is observed empty.
+    pub(crate) active_plugin_ids_at_turn_start: Option<Vec<String>>,
     pub(crate) voice_session_id: Option<String>,
     pub(crate) root_turn_id: Option<String>,
     pub(crate) turn_trigger: Option<String>,
@@ -1105,6 +1111,8 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) turn_error: Option<CodexErrorInfo>,
     pub(crate) codex_error_kind: Option<CodexErrKind>,
     pub(crate) codex_error_http_status_code: Option<u16>,
+    /// The server-selected window responsible for a usage limit, when known.
+    pub(crate) usage_limit_window_minutes: Option<u16>,
     pub(crate) steer_count: Option<usize>,
     pub(crate) total_tool_call_count: Option<usize>,
     pub(crate) shell_command_count: Option<usize>,
@@ -1384,6 +1392,7 @@ pub(crate) fn codex_compaction_event_params(
         status: input.status,
         codex_error_kind: input.codex_error_kind,
         codex_error_http_status_code: input.codex_error_http_status_code,
+        usage_limit_window_minutes: input.usage_limit_window_minutes,
         active_context_tokens_before: input.active_context_tokens_before,
         active_context_tokens_after: input.active_context_tokens_after,
         retained_image_count: input.retained_image_count,
@@ -1494,7 +1503,9 @@ fn analytics_hook_source(source: HookSource) -> &'static str {
 }
 
 pub(crate) fn current_runtime_metadata() -> CodexRuntimeMetadata {
-    let os_info = os_info::get();
+    // Runtime metadata is stable; avoid launching OS discovery subprocesses per event.
+    static OS_INFO: LazyLock<os_info::Info> = LazyLock::new(os_info::get);
+    let os_info = &*OS_INFO;
     CodexRuntimeMetadata {
         codex_rs_version: env!("CARGO_PKG_VERSION").to_string(),
         runtime_os: std::env::consts::OS.to_string(),

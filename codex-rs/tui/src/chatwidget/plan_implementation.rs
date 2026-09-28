@@ -34,6 +34,7 @@ pub(super) fn selection_view_params(
         Some(mask) => {
             let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::FollowTranscript);
                 tx.send(AppEvent::SubmitUserMessageWithMode {
                     text: user_text.clone(),
                     collaboration_mode: mask.clone(),
@@ -70,8 +71,8 @@ pub(super) fn selection_view_params(
     };
 
     let clear_context_description = clear_context_usage_label.map_or_else(
-        || "Fresh thread with this plan.".to_string(),
-        |label| format!("Fresh thread. Context: {label}."),
+        || "Fresh thread with this plan".to_string(),
+        |label| format!("Start a fresh thread (current context: {label})"),
     );
 
     SelectionViewParams {
@@ -81,7 +82,7 @@ pub(super) fn selection_view_params(
         items: vec![
             SelectionItem {
                 name: PLAN_IMPLEMENTATION_YES.to_string(),
-                description: Some("Switch to Default and start coding.".to_string()),
+                description: Some("Switch to Default and start coding".to_string()),
                 selected_description: None,
                 is_current: false,
                 actions: implement_actions,
@@ -101,7 +102,7 @@ pub(super) fn selection_view_params(
             },
             SelectionItem {
                 name: PLAN_IMPLEMENTATION_NO.to_string(),
-                description: Some("Continue planning with the model.".to_string()),
+                description: Some("Continue planning with the model".to_string()),
                 selected_description: None,
                 is_current: false,
                 actions: Vec::new(),
@@ -109,6 +110,6 @@ pub(super) fn selection_view_params(
                 ..Default::default()
             },
         ],
-        ..Default::default()
+        ..SelectionViewParams::picker()
     }
 }

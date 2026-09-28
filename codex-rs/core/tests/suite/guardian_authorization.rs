@@ -8,6 +8,7 @@ use codex_core::context::ContextualUserFragment;
 use codex_core::context::GuardianContextMode;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
+use codex_core::context::UserGoalUpdate;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -46,10 +47,10 @@ enum PendingReviewChange {
     Compaction,
 }
 
-#[test_case(PendingReviewChange::UserInstruction, GuardianContextMode::ThreadOwned, GuardianAssessmentStatus::Aborted; "new user instruction")]
-#[test_case(PendingReviewChange::VerifiedAnswer, GuardianContextMode::ThreadOwned, GuardianAssessmentStatus::Aborted; "verified answer")]
-#[test_case(PendingReviewChange::UserInstruction, GuardianContextMode::Legacy, GuardianAssessmentStatus::Aborted; "migration user instruction")]
-#[test_case(PendingReviewChange::VerifiedAnswer, GuardianContextMode::Legacy, GuardianAssessmentStatus::Aborted; "migration verified answer")]
+#[test_case(PendingReviewChange::UserInstruction, GuardianContextMode::ThreadOwned, GuardianAssessmentStatus::Denied; "new user instruction")]
+#[test_case(PendingReviewChange::VerifiedAnswer, GuardianContextMode::ThreadOwned, GuardianAssessmentStatus::Denied; "verified answer")]
+#[test_case(PendingReviewChange::UserInstruction, GuardianContextMode::Legacy, GuardianAssessmentStatus::Denied; "migration user instruction")]
+#[test_case(PendingReviewChange::VerifiedAnswer, GuardianContextMode::Legacy, GuardianAssessmentStatus::Denied; "migration verified answer")]
 #[test_case(PendingReviewChange::Compaction, GuardianContextMode::Legacy, GuardianAssessmentStatus::Aborted; "compaction promotes policy")]
 #[test_case(PendingReviewChange::Compaction, GuardianContextMode::ThreadOwned, GuardianAssessmentStatus::Approved; "ordinary compaction preserves review")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -133,6 +134,16 @@ async fn guardian_revalidates_owning_session_before_allow(
                 }
             },
         }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_assistant_message(
+                    "refreshed-review",
+                    r#"{"risk_level":"low","user_authorization":"low","outcome":"deny","rationale":"The user now says not to run the command."}"#,
+                ),
+                responses::ev_completed("refreshed-review"),
+            ]),
+        }],
     ]).await;
     let base_url = format!("{}/v1", streaming_server.uri());
     let server = responses::start_mock_server().await;
@@ -149,7 +160,6 @@ async fn guardian_revalidates_owning_session_before_allow(
                 .set_legacy_sandbox_policy(SandboxPolicy::new_workspace_write_policy())
                 .expect("set sandbox policy");
             for feature in [
-                Feature::GuardianThreadContext,
                 Feature::CodeMode,
                 Feature::CodeModeInterrupt,
                 Feature::DefaultModeRequestUserInput,
@@ -274,6 +284,16 @@ async fn guardian_revalidates_owning_session_before_allow(
         }
     };
     assert_eq!(status, expected_status);
+    if expected_status == GuardianAssessmentStatus::Denied {
+        let requests = streaming_server.requests().await;
+        let refreshed: Value =
+            serde_json::from_slice(requests.last().expect("fresh Guardian request"))?;
+        assert_eq!(
+            refreshed.pointer("/client_metadata/x-openai-subagent"),
+            Some(&json!("guardian"))
+        );
+        assert!(refreshed.to_string().contains("Do not run the command."));
+    }
     test.codex.shutdown_and_wait().await?;
     streaming_server.shutdown().await;
     Ok(())
@@ -309,6 +329,16 @@ async fn guardian_authorization_revision_survives_compaction_not_user_input() ->
     test.codex
         .inject_response_items(vec![ContextualUserFragment::into(internal_context)])
         .await?;
+    assert_eq!(test.codex.guardian_authorization_version().await, expected);
+
+    // An explicit user goal edit invalidates cached authorization, unlike its continuation.
+    test.codex
+        .record_user_goal_update(UserGoalUpdate::Set {
+            objective: Some("Do not deploy; inspect only.".to_owned()),
+            status: None,
+        })
+        .await?;
+    expected.user_message_revision += 1;
     assert_eq!(test.codex.guardian_authorization_version().await, expected);
 
     // The same text submitted by the user must invalidate, even if it looks internal.

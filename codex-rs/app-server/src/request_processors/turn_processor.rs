@@ -227,6 +227,7 @@ impl TurnRequestProcessor {
                     approvals_reviewer: params
                         .approvals_reviewer
                         .map(codex_app_server_protocol::ApprovalsReviewer::to_core),
+                    environments: None,
                     model: params.model,
                     // Match thread/settings/update: public null does not clear effort.
                     effort: params.effort.map(Some),
@@ -958,7 +959,10 @@ impl TurnRequestProcessor {
             self.submit_core_op(
                 request_id,
                 thread.as_ref(),
-                Op::ThreadSettings { thread_settings },
+                Op::ThreadSettings {
+                    thread_settings,
+                    reply: None,
+                },
             )
             .await
             .map_err(|err| internal_error(format!("failed to update thread settings: {err}")))?;
@@ -1238,6 +1242,7 @@ impl TurnRequestProcessor {
                 codex_responses_as_items: params.codex_responses_as_items.unwrap_or(false),
                 codex_response_item_prefix: params.codex_response_item_prefix,
                 codex_response_handoff_mode: params.codex_response_handoff_mode.unwrap_or_default(),
+                backend_reasoning_status: params.backend_reasoning_status,
                 codex_response_handoff_channel_prefixes: params
                     .codex_response_handoff_channel_prefixes,
                 model: params.model,
@@ -1450,7 +1455,7 @@ impl TurnRequestProcessor {
         parent_thread: Arc<CodexThread>,
         prompt: &str,
     ) -> std::result::Result<(), JSONRPCErrorError> {
-        // AgentRunner::start still delegates to spawn_subagent, which forks from the parent's
+        // AgentRunner::start still delegates to spawn_legacy_subagent, which forks from the parent's
         // full history. Paginated threads only allow bounded model-context reads, so keep this
         // closed until detached review has a bounded fork path.
         if matches!(
@@ -1607,11 +1612,10 @@ impl TurnRequestProcessor {
             let is_running = matches!(thread.agent_status().await, AgentStatus::Running);
             {
                 let mut thread_state = thread_state.lock().await;
-                if let Some(active_turn) = thread_state.active_turn_snapshot() {
-                    if active_turn.id != turn_id {
+                if let Some(active_turn_id) = thread_state.active_turn_id() {
+                    if active_turn_id != turn_id {
                         return Err(invalid_request(format!(
-                            "expected active turn id {turn_id} but found {}",
-                            active_turn.id
+                            "expected active turn id {turn_id} but found {active_turn_id}"
                         )));
                     }
                 } else if thread_state.last_terminal_turn_id.as_deref() == Some(turn_id.as_str())

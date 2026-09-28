@@ -1,6 +1,6 @@
 use crate::StartThreadOptions;
 use crate::ThreadManager;
-use crate::agent::AgentControl;
+use crate::agent::LocalAgentControl;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
@@ -38,7 +38,10 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         .await
         .expect("start root thread");
     let control = manager.agent_control();
-    let state = control.upgrade().expect("thread manager should be live");
+    let state = control
+        .runtime
+        .upgrade()
+        .expect("thread manager should be live");
 
     let first_slot = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -86,7 +89,10 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
         .await
         .expect("start root thread");
     let control = manager.agent_control();
-    let state = control.upgrade().expect("thread manager should be live");
+    let state = control
+        .runtime
+        .upgrade()
+        .expect("thread manager should be live");
 
     let first_slot = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -134,7 +140,7 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
 }
 
 async fn spawn_v2_subagent(
-    control: &AgentControl,
+    control: &LocalAgentControl,
     state: &Arc<ThreadManagerState>,
     config: Config,
     parent_thread_id: ThreadId,
@@ -188,6 +194,7 @@ async fn mark_thread_interrupted(thread: &CodexThread) {
                 turn_id: Some(turn.sub_id.clone()),
                 started_at: None,
                 reason: TurnAbortReason::Interrupted,
+                error: None,
                 completed_at: None,
                 duration_ms: None,
             }),

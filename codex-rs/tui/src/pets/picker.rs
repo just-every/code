@@ -131,7 +131,7 @@ pub(crate) fn build_pet_picker_params(
         stacked_side_content: Some(Box::new(())),
         preserve_side_content_bg: true,
         on_selection_changed,
-        ..Default::default()
+        ..SelectionViewParams::picker()
     }
 }
 

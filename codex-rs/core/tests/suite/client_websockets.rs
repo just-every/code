@@ -9,7 +9,9 @@ use codex_core::ResponseEvent;
 use codex_core::TurnInputRequest;
 use codex_core::X_CODEX_ROUTING_HINT_HEADER;
 use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
+use codex_core::test_support::EmptyUserInstructionsProvider;
 use codex_core::test_support::with_parent_turn;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthManager;
@@ -50,6 +52,7 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
 use core_test_support::TestCodexResponsesRequestKind;
+use core_test_support::ThreadIdle;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::WebSocketConnectionConfig;
 use core_test_support::responses::WebSocketTestServer;
@@ -60,6 +63,7 @@ use core_test_support::responses::start_websocket_server;
 use core_test_support::responses::start_websocket_server_with_headers;
 use core_test_support::responses_metadata as test_responses_metadata;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::RecordingUserInstructionsProvider;
 use core_test_support::test_codex::test_codex;
 use core_test_support::tracing::install_test_tracing;
 use core_test_support::wait_for_event;
@@ -210,7 +214,7 @@ async fn responses_websocket_preserves_credit_usage_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_omits_raw_tool_metadata_for_openai_named_custom_endpoint() {
+async fn responses_websocket_preserves_raw_tool_metadata_for_openai_custom_endpoint() {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![vec![vec![
@@ -234,11 +238,7 @@ async fn responses_websocket_omits_raw_tool_metadata_for_openai_named_custom_end
     output.append_executed_tool_calls(vec![call]);
     output.mark_tool_calls_complete();
     let prompt = prompt_with_input(vec![output.clone()]);
-    let mut expected = serde_json::to_value(&output).unwrap();
-    expected["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("tool_result_metadata");
+    let expected = serde_json::to_value(&output).unwrap();
 
     let mut client_session = harness.client.new_session();
     stream_until_complete_with_model_info(
@@ -539,7 +539,7 @@ async fn responses_websocket_reuses_connection_with_per_turn_trace_payloads() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_preconnect_does_not_replace_turn_trace_payload() {
+async fn responses_websocket_preconnect_reuses_connection_without_replacing_turn_trace() {
     skip_if_no_network!();
 
     let _trace_test_context = install_test_tracing("client-websocket-test");
@@ -556,11 +556,28 @@ async fn responses_websocket_preconnect_does_not_replace_turn_trace_payload() {
     client_session
         .preconnect_websocket(
             &harness.model_info,
+            /*service_tier*/ None,
             &harness.session_telemetry,
             &responses_metadata,
         )
         .await
         .expect("websocket preconnect failed");
+    assert!(server.single_connection().is_empty());
+    let handshake = server.single_handshake();
+    assert_eq!(
+        handshake.header(USER_AGENT_HEADER),
+        Some(codex_login::default_client::get_codex_user_agent())
+    );
+    assert_eq!(
+        handshake.header("x-codex-window-id"),
+        Some(TEST_WINDOW_ID.to_string())
+    );
+    assert_eq!(handshake.header("x-codex-turn-metadata"), None);
+    assert_eq!(handshake.header(X_CODEX_ROUTING_HINT_HEADER), None);
+    assert_eq!(
+        handshake.header(OPENAI_BETA_HEADER),
+        Some(WS_V2_BETA_HEADER_VALUE.to_string())
+    );
     let prompt = prompt_with_input(vec![message_item("hello")]);
 
     let expected_trace = async {
@@ -577,34 +594,67 @@ async fn responses_websocket_preconnect_does_not_replace_turn_trace_payload() {
     assert_eq!(connection.len(), 1);
     let request = connection.first().expect("missing request").body_json();
     assert_request_trace_matches(&request, &expected_trace);
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        request["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("turn metadata"),
+    )
+    .expect("valid turn metadata");
+    assert_eq!(turn_metadata["request_kind"], "turn");
 
     server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_preconnect_reuses_connection() {
-    skip_if_no_network!();
+async fn responses_websocket_resume_prewarm_reuses_and_repairs_connection() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
 
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
+    let server = start_websocket_server_with_headers(vec![
+        WebSocketConnectionConfig {
+            requests: vec![
+                vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+                vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+                vec![
+                    ev_response_created("resp-2"),
+                    ev_assistant_message("msg_2", "ready to continue"),
+                    ev_completed("resp-2"),
+                ],
+            ],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+        WebSocketConnectionConfig {
+            requests: vec![
+                vec![ev_response_created("warm-2"), ev_completed("warm-2")],
+                vec![ev_response_created("resp-3"), ev_completed("resp-3")],
+            ],
+            response_headers: Vec::new(),
+            accept_delay: Some(Duration::from_millis(100)),
+            close_after_requests: false,
+        },
+    ])
     .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let instructions = Arc::new(RecordingUserInstructionsProvider::new(Arc::new(
+        EmptyUserInstructionsProvider,
+    )));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_user_instructions_provider(instructions.clone())
+        .build_with_websocket_server(&server)
+        .await?;
+    test.submit_text_turn("hello").await?;
+    ThreadIdle::wait(&test.codex).await;
 
-    let harness = websocket_harness(&server).await;
-    let mut client_session = harness.client.new_session();
-    let responses_metadata = websocket_connection_metadata(&harness);
-    client_session
-        .preconnect_websocket(
-            &harness.model_info,
-            &harness.session_telemetry,
-            &responses_metadata,
-        )
-        .await
-        .expect("websocket preconnect failed");
-    let prompt = prompt_with_input(vec![message_item("hello")]);
-    stream_until_complete(&mut client_session, &harness, &prompt).await;
+    // A healthy warm resume skips preparation; only the user turn reloads instructions.
+    let instruction_loads = instructions.load_count();
+    test.codex.prewarm_with_history().await;
+    test.codex.prewarm_with_history().await;
+    test.submit_text_turn("continue").await?;
 
+    assert_eq!(instructions.load_count(), instruction_loads + 1);
     assert_eq!(server.handshakes().len(), 1);
     assert_eq!(
         server.single_handshake().header(USER_AGENT_HEADER),
@@ -612,12 +662,60 @@ async fn responses_websocket_preconnect_reuses_connection() {
     );
     assert_eq!(
         server.single_handshake().header("x-codex-window-id"),
-        Some(TEST_WINDOW_ID.to_string())
+        Some(format!("{}:0", test.session_configured.thread_id))
     );
     let connection = server.single_connection();
-    assert_eq!(connection.len(), 1);
+    assert_eq!(connection.len(), 3);
+    assert_eq!(connection[0].body_json()["input"], json!([]));
+    assert_eq!(connection[2].body_json()["previous_response_id"], "resp-1");
+    let mut expected_history = connection
+        .iter()
+        .flat_map(|request| request.body_json()["input"].as_array().unwrap().clone())
+        .collect::<Vec<_>>();
+    expected_history.push(serde_json::to_value(assistant_message_item(
+        "2",
+        "ready to continue",
+    ))?);
 
+    // Turn idle does not synchronize with the reader observing the server's close.
+    // Retry resume until it sees the close; pending attempts must still share one socket.
+    ThreadIdle::wait(&test.codex).await;
+    let instruction_loads = instructions.load_count();
+    let warmup = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            test.codex.prewarm_with_history().await;
+            test.codex.prewarm_with_history().await;
+            tokio::select! {
+                request = server.wait_for_request(/*connection_index*/ 1, /*request_index*/ 0) => break request,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    })
+    .await?;
+    assert!(instructions.load_count() > instruction_loads);
+    assert_eq!(warmup.body_json()["generate"], false);
+    assert!(warmup.body_json().get("previous_response_id").is_none());
+    let mut actual_history: Vec<ResponseItem> =
+        serde_json::from_value(warmup.body_json()["input"].clone())?;
+    let mut expected_history: Vec<ResponseItem> = serde_json::from_value(json!(expected_history))?;
+    for item in actual_history.iter_mut().chain(&mut expected_history) {
+        item.clear_internal_chat_message_metadata_passthrough();
+    }
+    assert_eq!(actual_history, expected_history);
+    assert!(warmup.body_json().get("prompt_cache_options").is_none());
+
+    test.submit_text_turn("continue after reconnect").await?;
+    assert_eq!(server.handshakes().len(), 2);
+    let connections = server.connections();
+    assert_eq!(connections[1].len(), 2);
+    assert_eq!(
+        connections[1][1].body_json()["previous_response_id"],
+        "warm-2"
+    );
+
+    test.codex.shutdown_and_wait().await?;
     server.shutdown().await;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -657,9 +755,14 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
     stream_until_complete(&mut client_session, &harness, &prompt).await;
 
     assert_eq!(server.handshakes().len(), 1);
+    let handshake = server.single_handshake();
     assert_eq!(
-        server.single_handshake().header(USER_AGENT_HEADER),
+        handshake.header(USER_AGENT_HEADER),
         Some(codex_login::default_client::get_codex_user_agent())
+    );
+    assert_eq!(
+        handshake.header(OPENAI_BETA_HEADER),
+        Some(WS_V2_BETA_HEADER_VALUE.to_string())
     );
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
@@ -674,6 +777,10 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
 
     assert_eq!(warmup["type"].as_str(), Some("response.create"));
     assert_eq!(warmup["generate"].as_bool(), Some(false));
+    assert_eq!(
+        warmup["input"],
+        serde_json::to_value(&prompt.input).unwrap()
+    );
     assert_eq!(
         warmup["stream_options"]["reasoning_summary_delivery"].as_str(),
         Some("sequential_cutoff")
@@ -692,6 +799,13 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
     assert_eq!(follow_up["type"].as_str(), Some("response.create"));
     assert_eq!(follow_up["previous_response_id"].as_str(), Some("warm-1"));
     assert_eq!(follow_up["input"], serde_json::json!([]));
+    let follow_up_turn_metadata: serde_json::Value = serde_json::from_str(
+        follow_up["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("follow-up turn metadata"),
+    )
+    .expect("valid follow-up turn metadata");
+    assert_eq!(follow_up_turn_metadata["request_kind"], "turn");
     assert_eq!(
         follow_up["stream_options"]["reasoning_summary_delivery"].as_str(),
         Some("sequential_cutoff")
@@ -947,6 +1061,17 @@ async fn responses_websocket_reconnects_after_account_switch() {
             if index == 5 || (index == 3 && new_turn_on_switch) {
                 drop(client_session);
                 client_session = harness.client.new_session();
+                if index == 3 {
+                    client_session
+                        .preconnect_websocket(
+                            &harness.model_info,
+                            /*service_tier*/ None,
+                            &harness.session_telemetry,
+                            &websocket_connection_metadata(&harness),
+                        )
+                        .await
+                        .expect("new account should establish its own socket during preconnect");
+                }
             }
             input.push(message_item(&format!("request {index}")));
             stream_until_complete_with_model_info(
@@ -1098,125 +1223,15 @@ async fn responses_websocket_sends_responses_lite_metadata_per_request() {
     server.shutdown().await;
 }
 
+#[test_case::test_case(MODEL, Some("ultrafast"), Some("ultrafast"); "matching hint")]
+#[test_case::test_case(MODEL, None, Some("ultrafast"); "tier selected after handshake")]
+#[test_case::test_case("gpt-5.2", Some("ultrafast"), None; "model and tier changed after handshake")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_preconnect_is_reused_even_with_header_changes() {
-    skip_if_no_network!();
-
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
-    .await;
-
-    let harness = websocket_harness(&server).await;
-    let mut client_session = harness.client.new_session();
-    let preconnect_metadata = websocket_connection_metadata(&harness);
-    client_session
-        .preconnect_websocket(
-            &harness.model_info,
-            &harness.session_telemetry,
-            &preconnect_metadata,
-        )
-        .await
-        .expect("websocket preconnect failed");
-    let prompt = prompt_with_input(vec![message_item("hello")]);
-    let responses_metadata = turn_metadata(&harness, /*turn_id*/ None);
-    let mut stream = client_session
-        .stream(
-            &prompt,
-            &harness.model_info,
-            &harness.session_telemetry,
-            harness.effort.clone(),
-            harness.summary,
-            /*service_tier*/ None,
-            &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
-        )
-        .await
-        .expect("websocket stream failed");
-
-    while let Some(event) = stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
-
-    assert_eq!(server.handshakes().len(), 1);
-    assert_eq!(server.single_connection().len(), 1);
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_request_prewarm_is_reused_even_with_header_changes() {
-    skip_if_no_network!();
-
-    let server = start_websocket_server(vec![vec![
-        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
-        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
-    ]])
-    .await;
-
-    let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ true).await;
-    let mut client_session = harness.client.new_session();
-    let prompt = prompt_with_input(vec![message_item("hello")]);
-    let prewarm_responses_metadata = prewarm_metadata(&harness, /*turn_id*/ None);
-    client_session
-        .prewarm_websocket(
-            &prompt,
-            &harness.model_info,
-            &harness.session_telemetry,
-            harness.effort.clone(),
-            harness.summary,
-            /*service_tier*/ None,
-            &prewarm_responses_metadata,
-        )
-        .await
-        .expect("websocket prewarm failed");
-    let responses_metadata = turn_metadata(&harness, /*turn_id*/ None);
-    let mut stream = client_session
-        .stream(
-            &prompt,
-            &harness.model_info,
-            &harness.session_telemetry,
-            harness.effort.clone(),
-            harness.summary,
-            /*service_tier*/ None,
-            &responses_metadata,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
-        )
-        .await
-        .expect("websocket stream failed");
-
-    while let Some(event) = stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
-
-    assert_eq!(server.handshakes().len(), 1);
-    let connection = server.single_connection();
-    assert_eq!(connection.len(), 2);
-    let warmup = connection
-        .first()
-        .expect("missing warmup request")
-        .body_json();
-    let follow_up = connection
-        .get(1)
-        .expect("missing follow-up request")
-        .body_json();
-    assert_eq!(warmup["type"].as_str(), Some("response.create"));
-    assert_eq!(warmup["generate"].as_bool(), Some(false));
-    assert_eq!(warmup["tools"], serde_json::json!([]));
-    assert_eq!(follow_up["type"].as_str(), Some("response.create"));
-    assert_eq!(follow_up["previous_response_id"].as_str(), Some("warm-1"));
-    assert_eq!(follow_up["input"], serde_json::json!([]));
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
+async fn responses_websocket_prewarm_reuses_advisory_model_and_tier_routing_hint(
+    warmup_model: &str,
+    preconnect_tier: Option<&str>,
+    warmup_tier: Option<&str>,
+) {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![vec![vec![
@@ -1227,15 +1242,36 @@ async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
 
     let harness = websocket_harness_for_codex_backend(&server).await;
     let mut model_info = harness.model_info.clone();
-    let service_tier = ServiceTier::Fast.request_value();
     model_info.service_tiers.push(ModelServiceTier {
-        id: service_tier.to_string(),
-        name: "Fast".to_string(),
-        description: "Priority processing".to_string(),
+        id: "ultrafast".to_string(),
+        name: "Ultrafast".to_string(),
+        description: "Ultrafast processing".to_string(),
     });
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
     let responses_metadata = prewarm_metadata(&harness, /*turn_id*/ None);
+    client_session
+        .preconnect_websocket(
+            &model_info,
+            preconnect_tier.map(str::to_string),
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
+        .await
+        .expect("eager handshake should connect");
+    let handshake = server.single_handshake();
+    assert_eq!(
+        handshake.header(X_CODEX_ROUTING_HINT_HEADER),
+        Some(match preconnect_tier {
+            Some(tier) => format!("model={MODEL};tier={tier}"),
+            None => format!("model={MODEL}"),
+        })
+    );
+    assert_eq!(
+        handshake.header(OPENAI_BETA_HEADER),
+        Some(WS_V2_BETA_HEADER_VALUE.to_string())
+    );
+    model_info.slug = warmup_model.to_string();
     client_session
         .prewarm_websocket(
             &prompt,
@@ -1243,73 +1279,12 @@ async fn responses_websocket_prewarm_includes_model_and_tier_routing_hint() {
             &harness.session_telemetry,
             harness.effort.clone(),
             harness.summary,
-            Some(service_tier.to_string()),
+            warmup_tier.map(str::to_string),
             &responses_metadata,
         )
         .await
         .expect("websocket prewarm failed");
 
-    let handshake = server.single_handshake();
-    assert_eq!(
-        handshake.header(X_CODEX_ROUTING_HINT_HEADER),
-        Some(format!("model={MODEL};tier={service_tier}"))
-    );
-    assert_eq!(
-        handshake.header(OPENAI_BETA_HEADER),
-        Some(WS_V2_BETA_HEADER_VALUE.to_string())
-    );
-    let connection = server.single_connection();
-    let prewarm = connection
-        .first()
-        .expect("missing prewarm request")
-        .body_json();
-    assert_eq!(prewarm["service_tier"].as_str(), Some(service_tier));
-
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets() {
-    skip_if_no_network!();
-
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
-    .await;
-
-    let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ false).await;
-    let mut client_session = harness.client.new_session();
-    let prompt = prompt_with_input(vec![message_item("hello")]);
-    let responses_metadata = prewarm_metadata(&harness, /*turn_id*/ None);
-    client_session
-        .prewarm_websocket(
-            &prompt,
-            &harness.model_info,
-            &harness.session_telemetry,
-            harness.effort.clone(),
-            harness.summary,
-            /*service_tier*/ None,
-            &responses_metadata,
-        )
-        .await
-        .expect("websocket prewarm failed");
-
-    // V2 prewarm issues a request on the websocket connection.
-    assert_eq!(server.handshakes().len(), 1);
-    assert_eq!(server.single_connection().len(), 1);
-
-    let handshake = server.single_handshake();
-    let openai_beta_header = handshake
-        .header(OPENAI_BETA_HEADER)
-        .expect("missing OpenAI-Beta header");
-    assert!(
-        openai_beta_header
-            .split(',')
-            .map(str::trim)
-            .any(|value| value == WS_V2_BETA_HEADER_VALUE)
-    );
-    stream_until_complete(&mut client_session, &harness, &prompt).await;
     assert_eq!(server.handshakes().len(), 1);
     let connection = server.single_connection();
     assert_eq!(connection.len(), 1);
@@ -1317,66 +1292,12 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
         .first()
         .expect("missing prewarm request")
         .body_json();
-    assert_eq!(prewarm["type"].as_str(), Some("response.create"));
-    assert_eq!(
-        prewarm["input"],
-        serde_json::to_value(&prompt.input).unwrap()
-    );
+    assert_eq!(prewarm["type"], "response.create");
+    assert_eq!(prewarm["generate"], false);
+    assert_eq!(prewarm["model"], warmup_model);
+    assert_eq!(prewarm["service_tier"].as_str(), warmup_tier);
+    assert_eq!(prewarm.get("previous_response_id"), None);
 
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_preconnect_runs_when_only_v2_feature_enabled() {
-    skip_if_no_network!();
-
-    let server = start_websocket_server(vec![vec![vec![
-        ev_response_created("resp-1"),
-        ev_completed("resp-1"),
-    ]]])
-    .await;
-
-    let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ true).await;
-    let mut client_session = harness.client.new_session();
-    let responses_metadata = websocket_connection_metadata(&harness);
-    client_session
-        .preconnect_websocket(
-            &harness.model_info,
-            &harness.session_telemetry,
-            &responses_metadata,
-        )
-        .await
-        .expect("websocket preconnect failed");
-
-    assert_eq!(server.handshakes().len(), 1);
-    assert_eq!(server.single_connection().len(), 0);
-    assert_eq!(
-        server.single_handshake().header("x-codex-turn-metadata"),
-        None
-    );
-    assert_eq!(
-        server
-            .single_handshake()
-            .header(X_CODEX_ROUTING_HINT_HEADER),
-        None
-    );
-
-    let prompt = prompt_with_input(vec![message_item("hello")]);
-    stream_until_complete(&mut client_session, &harness, &prompt).await;
-
-    assert_eq!(server.handshakes().len(), 1);
-    assert_eq!(server.single_connection().len(), 1);
-
-    let handshake = server.single_handshake();
-    let openai_beta_header = handshake
-        .header(OPENAI_BETA_HEADER)
-        .expect("missing OpenAI-Beta header");
-    assert!(
-        openai_beta_header
-            .split(',')
-            .map(str::trim)
-            .any(|value| value == WS_V2_BETA_HEADER_VALUE)
-    );
     server.shutdown().await;
 }
 
@@ -2347,6 +2268,7 @@ async fn responses_websocket_creates_on_non_prefix() {
     assert_eq!(second["type"].as_str(), Some("response.create"));
     assert_eq!(second["model"].as_str(), Some(MODEL));
     assert_eq!(second["stream"], serde_json::Value::Bool(true));
+    assert_eq!(second.get("previous_response_id"), None);
     assert_eq!(
         second["input"],
         serde_json::to_value(&prompt_two.input).unwrap()
@@ -2721,10 +2643,12 @@ fn websocket_provider_with_connect_timeout(
     ModelProviderInfo {
         name: "mock-ws".into(),
         base_url: Some(format!("{}/v1", server.uri())),
+        model_catalog_url: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
@@ -2737,6 +2661,7 @@ fn websocket_provider_with_connect_timeout(
         requires_openai_auth: false,
         supports_websockets: true,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     }
 }
 
@@ -2884,6 +2809,7 @@ async fn websocket_harness_with_provider_options_and_auth(
         /*attestation_provider*/ None,
         http_client_factory,
         config.workspace_routing_context(),
+        Vec::new(),
     );
 
     WebsocketTestHarness {
@@ -2923,7 +2849,7 @@ async fn responses_websocket_restored_history_metric(fork: bool) -> anyhow::Resu
     options.thread_extension_init.insert(metrics);
     let restored = if fork {
         manager
-            .fork_thread(codex_core::ForkSnapshot::Interrupted, options, rollout_path)
+            .fork_legacy_thread(codex_core::ForkSnapshot::Interrupted, options, rollout_path)
             .await?
     } else {
         options.initial_history =

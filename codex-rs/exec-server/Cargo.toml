@@ -7,10 +7,13 @@ license.workspace = true
 [lib]
 doctest = false
 
-# Compiled through #[path] in src/client.rs; cargo-shear 1.11.2 does not normalize
-# the ../tests path and incorrectly reports this linked unit-test module as unlinked.
+# cargo-shear 1.11.2 misresolves these #[path] modules containing parent directories.
+# Both modules are compiled and exercised by the exec-server unit test target.
 [package.metadata.cargo-shear]
-ignored-paths = ["tests/unit/client_provisioning_tests.rs"]
+ignored-paths = [
+    "tests/unit/client_provisioning_tests.rs",
+    "src/discoverV2/tests/capability_watchers_tests.rs",
+]
 
 [lints]
 workspace = true
@@ -24,19 +27,24 @@ clatter = { workspace = true }
 codex-api = { workspace = true }
 codex-build-info = { workspace = true }
 codex-config = { workspace = true }
+codex-core-plugin-common = { workspace = true }
 codex-http-client = { workspace = true }
 codex-exec-server-protocol = { workspace = true }
 codex-file-system = { workspace = true }
+codex-file-watcher = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-shell-command = { workspace = true }
+codex-skills = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 codex-utils-pty = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
 codex-utils-rustls-provider = { workspace = true }
+codex-websocket-auth = { workspace = true }
 codex-websocket-client = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
@@ -65,8 +73,10 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
+codex-uds = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true, features = ["fs"] }
+tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [

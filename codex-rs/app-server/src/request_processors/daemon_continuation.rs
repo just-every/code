@@ -105,6 +105,7 @@ impl ThreadRequestProcessor {
                 TurnAbortedEvent {
                     turn_id: Some(saved.turn_id.clone()),
                     reason: TurnAbortReason::Interrupted,
+                    error: None,
                     started_at: None,
                     completed_at: None,
                     duration_ms: None,

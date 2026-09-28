@@ -1,5 +1,6 @@
 //! Executes one prepared classifier request with the existing retry and streaming rules.
 //! The first output returns immediately; a detached drain preserves reuse and token accounting.
+//! Requests and retries stop when the account owner that started the classification changes.
 
 use super::CLASSIFICATION_TOKEN_USAGE_METRIC;
 use super::ConnectionPool;
@@ -30,6 +31,7 @@ const RESPONSES_LITE_METADATA_KEY: &str =
 const TURN_METADATA_KEY: &str = "x-codex-turn-metadata";
 
 pub(super) struct SamplingExecution {
+    pub(super) auth_owner_generation: Option<u64>,
     pub(super) config: Arc<LunaSamplerConfig>,
     pub(super) connections: Arc<ConnectionPool>,
     pub(super) request: ResponsesApiRequest,
@@ -52,7 +54,8 @@ impl SamplingExecution {
                 ApiError::Retryable { .. }
                 | ApiError::RateLimitExceeded { .. }
                 | ApiError::Stream(_)
-                | ApiError::ServerOverloaded,
+                | ApiError::ServerOverloaded { .. }
+                | ApiError::FlexUnavailable,
             )
             | LunaSamplerError::Api(ApiError::Transport(
                 TransportError::RetryLimit
@@ -83,15 +86,19 @@ impl SamplingExecution {
             | LunaSamplerError::InputTooLarge
             | LunaSamplerError::Api(
                 ApiError::Transport(
-                    TransportError::Build(_) | TransportError::ResponseTooLarge { .. },
+                    TransportError::Build(_)
+                    | TransportError::ResponseTooLarge { .. }
+                    | TransportError::Policy(_),
                 )
                 | ApiError::ContextWindowExceeded
                 | ApiError::QuotaExceeded
                 | ApiError::UsageNotIncluded
                 | ApiError::RateLimit(_)
                 | ApiError::InvalidRequest { .. }
+                | ApiError::InvalidPrompt { .. }
                 | ApiError::MisalignmentPolicyViolation { .. }
-                | ApiError::CyberPolicy { .. },
+                | ApiError::CyberPolicy { .. }
+                | ApiError::BioPolicy { .. },
             ) => false,
         };
         if retryable && *retries < MAX_SAMPLING_RETRIES {
@@ -106,6 +113,40 @@ impl SamplingExecution {
         mut superseded: oneshot::Receiver<()>,
         scored: Arc<AtomicBool>,
     ) -> Result<String, LunaSamplerError> {
+        let auth_changes = self
+            .config
+            .provider
+            .auth_manager()
+            .filter(|_| self.config.provider.info().auth.is_none())
+            .map(|manager| manager.auth_change_state_receiver());
+        let owner_generation = self.auth_owner_generation;
+        let account_changed_error = || {
+            LunaSamplerError::Provider(
+                std::io::Error::other("account changed during Luna classification").into(),
+            )
+        };
+        let ensure_account_owner = || {
+            if auth_changes
+                .as_ref()
+                .map(|changes| changes.borrow().owner_generation)
+                != owner_generation
+            {
+                return Err(account_changed_error());
+            }
+            Ok(())
+        };
+        let mut owner_changes = auth_changes.clone();
+        let owner_changed = async move {
+            let Some(changes) = owner_changes.as_mut() else {
+                return std::future::pending::<()>().await;
+            };
+            while Some(changes.borrow_and_update().owner_generation) == owner_generation {
+                if changes.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::pin!(owner_changed);
         let mut retries = 0;
         let mut auth_recovery = self
             .config
@@ -113,8 +154,10 @@ impl SamplingExecution {
             .auth_manager()
             .map(|manager| manager.unauthorized_recovery());
         'retry: loop {
+            ensure_account_owner()?;
             let lease = match tokio::select! {
                 biased;
+                _ = &mut owner_changed => return Err(account_changed_error()),
                 _ = &mut superseded => return Err(LunaSamplerError::Superseded),
                 lease = self.connections.lease() => lease,
             } {
@@ -129,6 +172,7 @@ impl SamplingExecution {
                     return Err(error);
                 }
             };
+            ensure_account_owner()?;
             self.request.service_tier = if lease.request_kind == RequestMode::GuardianClassifier {
                 None
             } else {
@@ -167,6 +211,7 @@ impl SamplingExecution {
             self.request.client_metadata = Some(client_metadata);
             let mut stream = match tokio::select! {
                 biased;
+                _ = &mut owner_changed => return Err(account_changed_error()),
                 _ = &mut superseded => return Err(LunaSamplerError::Superseded),
                 stream = lease.stream_request(&self.request) => stream,
             } {
@@ -186,6 +231,7 @@ impl SamplingExecution {
             let mut output = String::new();
             while let Some(event) = tokio::select! {
                 biased;
+                _ = &mut owner_changed => return Err(account_changed_error()),
                 _ = &mut superseded => {
                     return if scored.load(Ordering::Relaxed) && !output.is_empty() {
                         Ok(output)
@@ -195,6 +241,7 @@ impl SamplingExecution {
                 }
                 event = stream.rx_event.recv() => event,
             } {
+                ensure_account_owner()?;
                 let event = match event {
                     Ok(event) => event,
                     Err(error) => {

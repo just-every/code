@@ -95,7 +95,7 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
     ] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         app.local_settings.tui.animations = true;
-        app.local_settings.tui.whimsy = true;
+        app.local_settings.tui.effects.starfield = true;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let mut thread = started("gpt-6-astra");
         let presentation = if scenario == "empty_resume" {
@@ -142,7 +142,7 @@ async fn disconnected_sparkle_input_routed_by_app_consumes_the_opportunity_witho
         for edited in [false, true] {
             let (mut app, _events, _ops) = make_test_app_with_channels().await;
             app.local_settings.tui.animations = true;
-            app.local_settings.tui.whimsy = true;
+            app.local_settings.tui.effects.starfield = true;
             let mut server = start_config_write_test_app_server(&app).await?;
             let mut tui = crate::tui::test_support::make_test_tui()?;
             app.replace_chat_widget_with_app_server_thread(
@@ -197,7 +197,7 @@ async fn commands_can_precede_the_sparkle_but_inserted_or_typed_drafts_cannot() 
     ] {
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         app.local_settings.tui.animations = true;
-        app.local_settings.tui.whimsy = true;
+        app.local_settings.tui.effects.starfield = true;
         app.local_settings.tui.disable_paste_burst = Some(true);
         let mut server = start_config_write_test_app_server(&app).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -226,7 +226,7 @@ async fn commands_can_precede_the_sparkle_but_inserted_or_typed_drafts_cannot() 
                     .handle_key_event(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
                 assert!(
                     render_bottom_popup(&app.chat_widget, /*width*/ 80)
-                        .contains("customize shortcuts with /keymap")
+                        .contains("Keyboard shortcuts")
                 );
             }
             "commands" => {
@@ -281,7 +281,7 @@ async fn commands_can_precede_the_sparkle_but_inserted_or_typed_drafts_cannot() 
 async fn overlays_shortcuts_and_key_chords_leave_the_main_sparkle_untouched() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     app.local_settings.tui.animations = true;
-    app.local_settings.tui.whimsy = true;
+    app.local_settings.tui.effects.starfield = true;
     let mut server = start_config_write_test_app_server(&app).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.replace_chat_widget_with_app_server_thread(
@@ -346,7 +346,7 @@ async fn a_command_pending_on_fresh_astra_start_can_finish_before_the_sparkle() 
     for (command, visible_after) in [("/status", true), ("/mention", false)] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         app.chat_widget.local_settings.tui.animations = true;
-        app.chat_widget.local_settings.tui.whimsy = true;
+        app.chat_widget.local_settings.tui.effects.starfield = true;
         app.pending_startup_thread_start = true;
         app.chat_widget.handle_paste(command.into());
         let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
@@ -378,7 +378,7 @@ async fn only_confirmed_picker_model_changes_can_arm_the_sparkle() -> Result<()>
     ] {
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         app.local_settings.tui.animations = true;
-        app.local_settings.tui.whimsy = true;
+        app.local_settings.tui.effects.starfield = true;
         app.local_settings.tui.disable_paste_burst = Some(true);
         let mut server = start_config_write_test_app_server(&app).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -489,7 +489,7 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         app.config.model = Some("gpt-5.5".into());
         app.local_settings.tui.animations = true;
-        app.local_settings.tui.whimsy = true;
+        app.local_settings.tui.effects.starfield = true;
         let mut server = start_config_write_test_app_server(&app).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let thread = server.start_thread(&app.config).await?;
@@ -571,13 +571,85 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
     Ok(())
 }
 
+#[test]
+fn astra_picker_xhigh_applies_on_a_bounded_stack() -> Result<()> {
+    const STACK_SIZE: usize = 4 * 1024 * 1024;
+    const SERVER_STACK_SIZE: usize = 8 * 1024 * 1024;
+    const WORKER_THREADS: usize = 1;
+
+    std::thread::Builder::new()
+        .name("astra-picker".into())
+        .stack_size(STACK_SIZE)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(WORKER_THREADS)
+                .thread_stack_size(SERVER_STACK_SIZE)
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(async {
+                let (mut app, mut events, _ops) = Box::pin(make_test_app_with_channels()).await;
+                app.config.model = Some("gpt-5.5".into());
+                let mut server = Box::pin(start_config_write_test_app_server(&app)).await?;
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                let thread = server.start_thread(&app.config).await?;
+                Box::pin(app.replace_chat_widget_with_app_server_thread(
+                    &mut tui,
+                    thread,
+                    ThreadAttachPresentation::Fresh,
+                    /*initial_user_message*/ None,
+                ))
+                .await?;
+
+                let mut preset = crate::test_support::TEST_MODEL_PRESETS[0].clone();
+                preset.model = "gpt-6-astra".into();
+                preset.default_reasoning_effort = ReasoningEffortConfig::XHigh;
+                preset.supported_reasoning_efforts = vec![
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffortConfig::XHigh,
+                        description: "Extra High".into(),
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffortConfig::Low,
+                        description: "Low".into(),
+                    },
+                ];
+                app.chat_widget.open_reasoning_popup(preset);
+                app.chat_widget.handle_key_event(KeyCode::Enter.into());
+                let mut confirmed = false;
+                while let Ok(event) = events.try_recv() {
+                    confirmed |= matches!(event, AppEvent::AstraSelectedFromModelPicker { .. });
+                    if matches!(
+                        &event,
+                        AppEvent::AstraSelectedFromModelPicker { .. }
+                            | AppEvent::UpdateReasoningEffort(_)
+                            | AppEvent::PersistModelSelection { .. }
+                    ) {
+                        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+                    }
+                }
+                assert!(confirmed);
+                assert_eq!(
+                    (
+                        app.chat_widget.current_model(),
+                        app.chat_widget.current_reasoning_effort(),
+                    ),
+                    ("gpt-6-astra", Some(ReasoningEffortConfig::XHigh)),
+                );
+                server.shutdown().await?;
+                Ok(())
+            }))
+        })?
+        .join()
+        .expect("Astra picker thread panicked")
+}
+
 #[tokio::test]
 async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     app.config.model = Some("gpt-5.5".into());
     app.config.model_reasoning_effort = Some(ReasoningEffortConfig::Medium);
     app.local_settings.tui.animations = true;
-    app.local_settings.tui.whimsy = true;
+    app.local_settings.tui.effects.starfield = true;
     app.local_settings.tui.disable_paste_burst = Some(true);
     let config_path = app.config.codex_home.join("config.toml");
     let defaults = "model = 'gpt-5.5'\nmodel_reasoning_effort = 'medium'\n";
@@ -665,7 +737,7 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
 async fn a_read_only_command_can_return_to_active_stars_but_mention_ends_them() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     app.local_settings.tui.animations = true;
-    app.local_settings.tui.whimsy = true;
+    app.local_settings.tui.effects.starfield = true;
     app.local_settings.tui.disable_paste_burst = Some(true);
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.replace_chat_widget_with_app_server_thread(
@@ -695,7 +767,7 @@ async fn early_input_and_real_work_consume_the_sparkle() -> Result<()> {
     for scenario in ["untouched", "typed_then_erased", "paste", "turn", "review"] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         app.chat_widget.local_settings.tui.animations = true;
-        app.chat_widget.local_settings.tui.whimsy = true;
+        app.chat_widget.local_settings.tui.effects.starfield = true;
         app.pending_startup_thread_start = true;
         match scenario {
             "typed_then_erased" => {

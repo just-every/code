@@ -1,0 +1,21 @@
+---
+source: tui/src/startup_draft_layout_tests.rs
+expression: "format!(\"cursor={:?}\\n{frame}\",\nlayout.cursor_pos(area)).replace(crate::version::CODEX_CLI_VERSION,\n\"<VERSION>\")"
+---
+cursor=Some((13, 12))
+                                                
+  >_ OpenAI Codex (v<VERSION>)                      
+     loading                                    
+                                                
+  Pull up a prompt.                             
+                                                
+                                                
+                                                
+                                                
+                                                
+                                                
+› first line                                    
+  second line                                   
+                                                
+                                                
+  Waiting for startup  · esc cancel

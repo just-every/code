@@ -716,6 +716,11 @@ goals = true
 
     let primary_thread_id = ThreadId::new();
     app.primary_thread_id = Some(primary_thread_id);
+    let voice_owner = ThreadId::new();
+    let (mut owner, _, _, _) = crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+    crate::chatwidget::activate_voice_for_thread(&mut owner, voice_owner);
+    owner.park_voice();
+    app.background_voice = Some(Box::new(owner));
     Box::pin(app.retry_safety_buffered_turn(
         &mut tui,
         &mut app_server,
@@ -790,6 +795,7 @@ goals = true
         },
     ))
     .await;
+    assert_eq!(app.voice_owner_thread_id(), Some(voice_owner));
 
     if scenario == SafetyRetryScenario::UnsupportedPermissions {
         assert_eq!(app.active_thread_id, Some(source_thread_id));
@@ -914,7 +920,9 @@ goals = true
         return Ok(());
     }
 
-    drive_until_request_count(&mut app, &mut app_server, &server, expected_request_count).await;
+    let retry_thread_id = app.chat_widget.thread_id().expect("retry thread id");
+    // Capture the completed retry before processing its automatic goal continuation.
+    wait_for_turn_completed(&mut app, &mut app_server, retry_thread_id).await;
     let mut replayed_history = String::new();
     while let Ok(event) = app_event_rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
@@ -952,7 +960,7 @@ goals = true
         insta::assert_snapshot!("safety_retry_committed_steer_history", rendered_retry);
     }
 
-    let retry_thread_id = app.chat_widget.thread_id().expect("retry thread id");
+    drive_until_request_count(&mut app, &mut app_server, &server, expected_request_count).await;
     let source = app_server
         .thread_read(source_thread_id, /*include_turns*/ true)
         .await?;

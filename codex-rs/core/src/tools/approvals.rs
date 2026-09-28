@@ -149,6 +149,7 @@ pub(crate) enum ApprovalAction {
     },
     RequestPermissions {
         id: String,
+        environment_id: String,
         turn_id: String,
         reason: Option<String>,
         permissions: RequestPermissionProfile,
@@ -333,6 +334,7 @@ impl ApprovalAction {
             #[cfg(unix)]
             Self::Execve {
                 id,
+                environment_id,
                 source,
                 program,
                 argv,
@@ -341,6 +343,7 @@ impl ApprovalAction {
                 ..
             } => crate::guardian::GuardianApprovalRequest::Execve {
                 id,
+                environment_id,
                 source,
                 program: program.to_string_lossy().into_owned(),
                 argv,
@@ -349,12 +352,14 @@ impl ApprovalAction {
             },
             Self::ApplyPatch {
                 id,
+                environment_id,
                 cwd,
                 files,
                 patch,
                 ..
             } => crate::guardian::GuardianApprovalRequest::ApplyPatch {
                 id,
+                environment_id,
                 cwd,
                 files,
                 patch,
@@ -388,6 +393,7 @@ impl ApprovalAction {
             Self::NetworkAccess {
                 id,
                 turn_id,
+                environment_id,
                 target,
                 host,
                 protocol,
@@ -397,6 +403,7 @@ impl ApprovalAction {
             } => crate::guardian::GuardianApprovalRequest::NetworkAccess {
                 id,
                 turn_id,
+                environment_id,
                 target,
                 host,
                 protocol,
@@ -405,11 +412,13 @@ impl ApprovalAction {
             },
             Self::RequestPermissions {
                 id,
+                environment_id,
                 turn_id,
                 reason,
                 permissions,
             } => crate::guardian::GuardianApprovalRequest::RequestPermissions {
                 id,
+                environment_id,
                 turn_id,
                 reason,
                 permissions,

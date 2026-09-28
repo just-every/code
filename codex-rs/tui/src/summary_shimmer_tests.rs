@@ -25,7 +25,8 @@ fn short_and_long_labels_sweep_smoothly_in_both_themes() {
     ] {
         with_test_default_colors(colors, || {
             for text in ["Working", "Preparing bootstrap diagnostics", "界e\u{301}界"] {
-                for ms in [0, 500, 1000, 1500, 2000] {
+                // Initial delay, the first sweep, the gap, and the next sweep.
+                for ms in [0, 850, 1100, 1350, 3600, 5100] {
                     let spans =
                         summary_shimmer(text, Duration::from_millis(ms), MotionMode::Animated);
                     let levels = spans
@@ -52,7 +53,8 @@ fn working_has_overlapping_highlights_without_frame_to_frame_flashes() {
         },
         || {
             let mut previous = Vec::new();
-            for ms in (0..=2000).step_by(/*step*/ 16) {
+            // Sample two sweeps and the intervening gap at the status row's 32 ms cadence.
+            for ms in (0..=5600).step_by(/*step*/ 32) {
                 let spans =
                     summary_shimmer("Working", Duration::from_millis(ms), MotionMode::Animated);
                 let brightness = spans
@@ -66,13 +68,15 @@ fn working_has_overlapping_highlights_without_frame_to_frame_flashes() {
                     assert!(brightness.iter().filter(|value| **value > 160).count() >= 2);
                 }
                 for (current, previous) in brightness.iter().zip(&previous) {
-                    assert!(u8::abs_diff(*current, *previous) <= 7);
+                    // At this speed the cosine band's maximum change over 32 ms is
+                    // 112 * sin(PI * (13 * 0.032) / 6), rounded up.
+                    assert!(u8::abs_diff(*current, *previous) <= 25);
                 }
                 previous = brightness;
             }
             let midpoint = summary_shimmer(
                 "Working",
-                Duration::from_secs(/*secs*/ 1),
+                Duration::from_millis(/*millis*/ 1100),
                 MotionMode::Animated,
             );
             let expected = "Working"

@@ -1,6 +1,11 @@
 //! Background terminal interaction and process-summary history cells.
+//!
+//! Polling and stdin bookkeeping stay in detailed and raw history; the normal chat view
+//! relies on command output and the background-process status instead of repeating notices.
 
 use super::*;
+use crate::style::accent_color;
+use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 use crate::width::display_width;
 
 #[derive(Debug)]
@@ -19,7 +24,15 @@ impl UnifiedExecInteractionCell {
 }
 
 impl HistoryCell for UnifiedExecInteractionCell {
-    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        Vec::new()
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        visible_lines(self.transcript_hyperlink_lines(width))
+    }
+
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         if width == 0 {
             return Vec::new();
         }
@@ -39,9 +52,7 @@ impl HistoryCell for UnifiedExecInteractionCell {
         }
         let header = Line::from(header_spans);
 
-        let mut out: Vec<Line<'static>> = Vec::new();
-        let header_wrapped = adaptive_wrap_line(&header, RtOptions::new(wrap_width));
-        push_owned_lines(&header_wrapped, &mut out);
+        let mut out = adaptive_wrap_hyperlink_lines(&[header.into()], RtOptions::new(wrap_width));
 
         if waited_only {
             return out;
@@ -53,8 +64,8 @@ impl HistoryCell for UnifiedExecInteractionCell {
             .map(|line| Line::from(line.to_string()))
             .collect();
 
-        let input_wrapped = adaptive_wrap_lines(
-            input_lines,
+        let input_wrapped = adaptive_wrap_hyperlink_lines(
+            &plain_hyperlink_lines(input_lines),
             RtOptions::new(wrap_width)
                 .initial_indent(Line::from("  └ ".dim()))
                 .subsequent_indent(Line::from("    ".dim())),
@@ -148,17 +159,17 @@ impl HistoryCell for UnifiedExecProcessesCell {
             }
             let command = &process.command_display;
             let (snippet, snippet_truncated) = {
-                let (first_line, has_more_lines) = match command.split_once('\n') {
-                    Some((first, _)) => (first, true),
-                    None => (command.as_str(), false),
-                };
                 let max_graphemes = 80;
-                let mut graphemes = first_line.grapheme_indices(true);
-                if let Some((byte_index, _)) = graphemes.nth(max_graphemes) {
-                    (first_line[..byte_index].to_string(), true)
-                } else {
-                    (first_line.to_string(), has_more_lines)
-                }
+                let mut graphemes = command.graphemes(true);
+                let snippet: String = graphemes
+                    .by_ref()
+                    .take(max_graphemes)
+                    .map(|grapheme| match grapheme {
+                        "\n" | "\r\n" => "↵",
+                        _ => grapheme,
+                    })
+                    .collect();
+                (snippet, graphemes.next().is_some())
             };
             if wrap_width <= prefix_width {
                 out.push(Line::from(prefix.dim()));
@@ -176,10 +187,17 @@ impl HistoryCell for UnifiedExecProcessesCell {
             if needs_suffix && budget > truncation_suffix_width {
                 let available = budget.saturating_sub(truncation_suffix_width);
                 let (truncated, _, _) = take_prefix_by_width(&snippet, available);
-                out.push(vec![prefix.dim(), truncated.cyan(), truncation_suffix.dim()].into());
+                out.push(
+                    vec![
+                        prefix.dim(),
+                        truncated.fg(accent_color()),
+                        truncation_suffix.dim(),
+                    ]
+                    .into(),
+                );
             } else {
                 let (truncated, _, _) = take_prefix_by_width(&snippet, budget);
-                out.push(vec![prefix.dim(), truncated.cyan()].into());
+                out.push(vec![prefix.dim(), truncated.fg(accent_color())].into());
             }
 
             let chunk_prefix_first = "    ↳ ";

@@ -136,6 +136,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
             /*log_db*/ None,
             /*state_db*/ None,
             Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            Default::default(),
         )
         .await?;
         let mut server = AppServerSession::new(
@@ -166,7 +167,7 @@ async fn model_default_saves_report_server_outcomes_and_target_server_profile() 
         let messages = std::iter::from_fn(|| events.try_recv().ok())
             .filter_map(|event| match event {
                 AppEvent::InsertHistoryCell(cell) => {
-                    Some(lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+                    Some(lines_to_single_string(&cell.transcript_lines(/*width*/ 80)))
                 }
                 _ => None,
             })

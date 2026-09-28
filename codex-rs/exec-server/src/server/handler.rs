@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::client::http_client::PendingRouteAwareHttpBodyStream;
 use crate::client::http_client::RouteAwareHttpClient;
 use crate::client::http_client::RouteAwareHttpRequestRunner;
@@ -52,6 +52,7 @@ use crate::protocol::FsWalkParams;
 use crate::protocol::FsWalkResponse;
 use crate::protocol::FsWriteFileParams;
 use crate::protocol::FsWriteFileResponse;
+use crate::protocol::HTTP_REQUEST_METHOD;
 use crate::protocol::HttpRequestParams;
 use crate::protocol::InitializeParams;
 use crate::protocol::InitializeResponse;
@@ -82,7 +83,7 @@ pub(crate) struct ExecServerHandler {
     background_task_shutdown: CancellationToken,
     background_tasks: TaskTracker,
     file_system: FileSystemHandler,
-    runtime_paths: ExecServerRuntimePaths,
+    runtime_paths: ExecServerRuntimeOptions,
     http_client: RouteAwareHttpClient,
     initialize_requested: AtomicBool,
     initialized: AtomicBool,
@@ -92,7 +93,7 @@ impl ExecServerHandler {
     pub(crate) fn new(
         session_registry: Arc<SessionRegistry>,
         notifications: RpcNotificationSender,
-        runtime_paths: ExecServerRuntimePaths,
+        runtime_paths: ExecServerRuntimeOptions,
         http_client_factory: HttpClientFactory,
     ) -> Self {
         Self {
@@ -292,6 +293,15 @@ impl ExecServerHandler {
             }
             return Err(error);
         }
+        // This response bypasses the dispatcher; record it before body-stream setup.
+        tracing::event!(
+            name: "codex.exec_server.response_enqueued",
+            target: "codex_otel.trace_safe",
+            tracing::Level::INFO,
+            event.name = "codex.exec_server.response_enqueued",
+            rpc.method = HTTP_REQUEST_METHOD,
+            outcome = "success",
+        );
         if let Some(pending_stream) = pending_stream {
             self.start_http_body_stream(pending_stream).await;
         }

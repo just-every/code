@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_stream_nested_mixed_lists_ordered_marker_is_light_blue() {
+    async fn e2e_stream_nested_mixed_lists_ordered_marker_uses_terminal_palette() {
         let md = [
             "1. First\n",
             "   - Second level\n",
@@ -316,14 +316,14 @@ mod tests {
         });
         let idx = find_idx.expect("expected third-level ordered line");
         let line = &out[idx];
-        // Expect at least one span on this line to be styled light blue
-        let has_light_blue = line
+        // Expect at least one span on this line to use the terminal's LightBlue color.
+        let has_accent = line
             .spans
             .iter()
-            .any(|s| s.style.fg == Some(ratatui::style::Color::LightBlue));
+            .any(|s| s.style.fg == Some(Color::LightBlue));
         assert!(
-            has_light_blue,
-            "expected an ordered-list marker span with light blue fg on: {line:?}"
+            has_accent,
+            "expected an ordered-list marker span with LightBlue on: {line:?}"
         );
     }
 
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_stream_deep_nested_third_level_marker_is_light_blue() {
+    async fn e2e_stream_deep_nested_third_level_marker_uses_terminal_palette() {
         let md = "1. First\n   - Second level\n     1. Third level (ordered)\n        - Fourth level (bullet)\n          - Fifth level to test indent consistency\n";
         let streamed = super::simulate_stream_markdown_for_tests(&[md], /*finalize*/ true);
         let streamed_strs = lines_to_plain_strings(&streamed);
@@ -607,7 +607,7 @@ mod tests {
         });
 
         // The marker (including indent and "1.") is expected to be in the first span
-        // and colored LightBlue; following content should be default color.
+        // and colored with LightBlue; following content should be default color.
         assert!(
             !line.spans.is_empty(),
             "expected non-empty spans for the third-level line"
@@ -796,8 +796,8 @@ mod tests {
             "   This paragraph belongs to the same list item.".to_string(),
             "".to_string(),
             "4. Second loose item with a nested list after a blank line.".to_string(),
-            "    - Nested bullet under a loose item".to_string(),
-            "    - Another nested bullet".to_string(),
+            "    • Nested bullet under a loose item".to_string(),
+            "    • Another nested bullet".to_string(),
         ];
         assert_eq!(
             streamed_strs, expected,

@@ -360,6 +360,22 @@ async fn apply_metadata_update(
                     .map_err(|err| ThreadStoreError::Internal {
                         message: format!("failed to read thread metadata for {thread_id}: {err}"),
                     })?;
+            // Existing timestamp-only observations must not rewrite metadata or its indexes.
+            // Missing rows and changed rollout paths still need the normal repair path.
+            if let Some(updated_at) = patch.updated_at
+                && patch.is_empty_except_updated_at()
+                && existing.as_ref().is_some_and(|metadata| {
+                    rollout_path.as_ref().is_none_or(|path| path == &metadata.rollout_path)
+                })
+                && state_db
+                    .touch_thread_updated_at(thread_id, updated_at)
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!("failed to update thread timestamp for {thread_id}: {err}"),
+                    })?
+            {
+                return Ok(());
+            }
             let project_id = if existing.is_none()
                 && let Some(Some(project_id)) = patch.project_id.as_ref()
                 && state_db
@@ -449,6 +465,8 @@ async fn apply_metadata_update(
                 metadata.source = enum_to_string(&source);
             }
             metadata.originator = metadata.originator.or(patch.originator);
+            metadata.creator_user_id = metadata.creator_user_id.or(patch.creator_user_id);
+            metadata.creator_account_id = metadata.creator_account_id.or(patch.creator_account_id);
             if let Some(thread_source) = patch.thread_source {
                 metadata.thread_source = thread_source;
             }
@@ -737,6 +755,8 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.created_at.is_some()
         || patch.source.is_some()
         || patch.originator.is_some()
+        || patch.creator_user_id.is_some()
+        || patch.creator_account_id.is_some()
         || patch.thread_source.is_some()
         || patch.agent_nickname.is_some()
         || patch.agent_role.is_some()

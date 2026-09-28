@@ -11,7 +11,9 @@ use codex_guardian_context::effective_input_token_limit;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::user_input::UserInput;
 
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianBudgetOmission;
@@ -25,6 +27,12 @@ use crate::session::turn_context::TurnContext;
 
 #[derive(Clone)]
 pub(crate) struct PendingReviewContext(pub ComposedContext);
+
+/// Frozen originals for this review, restored only if its live history is compacted.
+pub(super) struct RetainedReviewContext {
+    pub context: ComposedContext,
+    pub history_version: u64,
+}
 
 /// Reject inputs that cannot fit even without history or tools before Core tries
 /// pre-turn compaction. This is only a feasibility check; its selected copy is
@@ -42,10 +50,15 @@ pub(crate) async fn check_pending(session: &Session, turn: &TurnContext) -> Code
         codex_protocol::protocol::TruncationPolicy::Bytes(base.text.len()).token_budget();
     let maximum = effective_input_token_limit(turn.model_info(), turn.config.model_context_window)
         .saturating_sub(super::request_budget::INPUT_TOKEN_MARGIN);
-    if pending.0.estimated_tokens().saturating_add(minimum_prefix) > maximum {
-        pending
-            .0
-            .clone()
+    let mut context = pending.0.clone();
+    context.retain_new_instructions(
+        &session
+            .clone_history()
+            .await
+            .for_prompt_annotated(&turn.model_info().input_modalities),
+    );
+    if context.estimated_tokens().saturating_add(minimum_prefix) > maximum {
+        context
             .enforce_budget(
                 RequestBudget {
                     max_input_tokens: maximum,
@@ -68,7 +81,7 @@ pub(crate) async fn check_pending(session: &Session, turn: &TurnContext) -> Code
 pub(crate) async fn finalize(
     session: &Session,
     step: &StepContext,
-    input: &mut [TurnInput],
+    input: &mut Vec<TurnInput>,
     history_truncation: HistoryTruncation,
 ) -> CodexResult<()> {
     let Some(pending) = session
@@ -78,16 +91,24 @@ pub(crate) async fn finalize(
     else {
         return Ok(());
     };
-    let [TurnInput::UserInput { content, .. }] = input else {
+    let [TurnInput::UserInput { content, .. }] = input.as_slice() else {
         return Err(CodexErr::InvalidRequest(
             "Guardian expects one review input".to_owned(),
         ));
     };
-    let context = pending.0.clone();
+    let mut context = pending.0.clone();
     let model = &step.settings.model_info;
     let history = session.clone_history().await;
+    let history_version = history.history_version();
+    let history = history.for_prompt_annotated(&model.input_modalities);
+    // Use the history that will actually reach the model. Recompute after every
+    // compaction retry; evidence removed by compaction must be delivered again.
+    context.retain_new_instructions(&history);
     let prompt = build_prompt(
-        history.for_prompt(&model.input_modalities),
+        history
+            .into_iter()
+            .map(codex_history::ResponseItemEnvelope::into_item)
+            .collect(),
         step,
         session.get_prompt_base_instructions().await,
     );
@@ -100,6 +121,7 @@ pub(crate) async fn finalize(
         &session
             .responses_metadata(step, CodexResponsesRequestKind::Turn)
             .await,
+        /*include_internal*/ true,
     )?;
     let mut existing = super::request_budget::estimate_request_tokens(&request)
         .max(usize::try_from(session.get_total_token_usage().await).unwrap_or(usize::MAX));
@@ -123,8 +145,8 @@ pub(crate) async fn finalize(
     if let Some(reminder) = session
         .services
         .agent_control
-        .rollout_budget()
-        .pending_reminder(session.thread_id(), &session.current_window_id().await)
+        .pending_budget_reminder(session.thread_id(), &session.current_window_id().await)
+        .await
     {
         let reminder = ContextualUserFragment::into(crate::context::RolloutBudgetContext {
             remaining_tokens: reminder.remaining_tokens,
@@ -178,9 +200,59 @@ pub(crate) async fn finalize(
                 );
         }
     }
-    *content = context
-        .into_user_inputs()
-        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    match context.clone().into_annotated_user_inputs() {
+        Ok((user_input, metadata)) => {
+            if metadata.is_some() {
+                input[0] = TurnInput::ResponseItem(codex_history::ResponseItemEnvelope {
+                    item: session.response_item_from_user_input(user_input),
+                    metadata,
+                });
+            } else if let TurnInput::UserInput { content, .. } = &mut input[0] {
+                *content = user_input;
+            }
+        }
+        Err(codex_guardian_context::SectionError::UnsupportedDelivery {
+            section: "conversation_transcript",
+        }) => {
+            *input = context
+                .into_annotated_messages()
+                .into_iter()
+                .map(|mut envelope| {
+                    // Preserve the ordinary user-content annotations on each text segment;
+                    // native messages retain the original author, recipient and ciphertext.
+                    if let ResponseItem::Message { role, content, .. } = &envelope.item
+                        && role == "user"
+                    {
+                        let user_input = content
+                            .iter()
+                            .map(|item| match item {
+                                ContentItem::InputText { text } => Ok(UserInput::Text {
+                                    text: text.clone(),
+                                    text_elements: Vec::new(),
+                                }),
+                                ContentItem::InputImage { image, detail } => Ok(UserInput::Image {
+                                    image: image.clone(),
+                                    detail: *detail,
+                                }),
+                                ContentItem::OutputText { .. } | ContentItem::InputAudio { .. } => {
+                                    Err(CodexErr::InvalidRequest(
+                                        "Unsupported Guardian input content".to_owned(),
+                                    ))
+                                }
+                            })
+                            .collect::<CodexResult<Vec<_>>>()?;
+                        envelope.item = session.response_item_from_user_input(user_input);
+                    }
+                    Ok(TurnInput::ResponseItem(envelope))
+                })
+                .collect::<CodexResult<Vec<_>>>()?;
+        }
+        Err(error) => return Err(CodexErr::InvalidRequest(error.to_string())),
+    }
+    step.turn.extension_data.insert(RetainedReviewContext {
+        context: pending.0.retained_instructions(),
+        history_version,
+    });
     session
         .services
         .thread_extension_data

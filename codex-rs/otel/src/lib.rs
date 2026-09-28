@@ -1,9 +1,13 @@
+pub mod auth_storage;
 pub(crate) mod config;
 mod events;
 pub(crate) mod metrics;
 pub(crate) mod provider;
 pub(crate) mod trace_context;
 
+mod agent_response;
+mod guardian_assessment;
+mod network_policy;
 mod otlp;
 mod targets;
 mod tool_result;
@@ -13,6 +17,8 @@ use codex_protocol::auth::AuthMode;
 use serde::Serialize;
 use strum_macros::Display;
 
+pub use crate::agent_response::AgentResponseContext;
+pub use crate::agent_response::AgentResponseLogger;
 pub use crate::config::OtelExporter;
 pub use crate::config::OtelHttpProtocol;
 pub use crate::config::OtelSettings;

@@ -78,25 +78,14 @@ pub(crate) fn query_package_name(
     Ok(Some(String::from_utf16(family)?))
 }
 
-/// Only an OS-verified packaged runner may propagate package context to sandbox children.
-pub(crate) fn current_process_is_registered_core_runner() -> Result<bool> {
-    let executable = std::env::current_exe().context("resolve current Core runner image")?;
-    if !executable
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("codex-command-runner.exe"))
-    {
-        return Ok(false);
-    }
-    let process = unsafe { GetCurrentProcess() };
-    if process_package_name(process)?.is_none() {
-        ensure!(
-            !registered_core_requested(),
-            "registered Core runner has no package identity"
-        );
-        return Ok(false);
-    }
-    verify_registered_core_runner(process, &executable)?;
-    Ok(true)
+/// Preserve the caller's OS-assigned package identity for sandboxed descendants.
+pub(crate) fn current_process_has_package_identity() -> Result<bool> {
+    let has_identity = current_package_full_name()?.is_some();
+    ensure!(
+        has_identity || !registered_core_requested(),
+        "registered Core process has no package identity"
+    );
+    Ok(has_identity)
 }
 
 fn staged_package_root(name: &[u16]) -> Result<PathBuf> {
@@ -207,13 +196,8 @@ pub(crate) fn registered_runner_alias(
     let package =
         current_package_full_name()?.context("registered Core launch requires an installed app")?;
     let owner = crate::winutil::resolve_sid(&crate::runtime_ownership::current_setup_user()?)?;
-    anyhow::ensure!(
-        record.user_sid
-            == crate::winutil::string_from_sid_bytes(&owner).map_err(anyhow::Error::msg)?
-            && record.codex_home == codex_home.canonicalize()?
-            && record.runtime()?.ready_for_package(&package),
-        "registered Core setup belongs to another owner or is being removed"
-    );
+    let owner = crate::winutil::string_from_sid_bytes(&owner).map_err(anyhow::Error::msg)?;
+    authorize_runner_receipt(&record, &owner, &codex_home.canonicalize()?, &package)?;
     let entry = record
         .runtime()?
         .accounts
@@ -236,6 +220,32 @@ pub(crate) fn registered_runner_alias(
         "registered Core setup contains an invalid alias"
     );
     Ok(path.clone())
+}
+
+fn authorize_runner_receipt(
+    record: &crate::installation_record::InstallationRecord,
+    owner: &str,
+    codex_home: &Path,
+    package: &str,
+) -> Result<()> {
+    ensure!(
+        record.user_sid == owner,
+        "registered Core setup belongs to another owner"
+    );
+    ensure!(
+        record.codex_home == codex_home,
+        "registered Core setup belongs to another Codex home"
+    );
+    let runtime = record.runtime()?;
+    ensure!(
+        runtime.retiring.is_none(),
+        "registered Core setup is being removed"
+    );
+    ensure!(
+        runtime.ready_for_package(package),
+        "registered Core setup is not complete for the installed app; retry sandbox setup"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

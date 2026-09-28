@@ -34,6 +34,9 @@ use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// Seed the command center with this many recent sessions, in addition to loaded sessions.
+const RECENT_SESSION_LIMIT: usize = 10;
+
 impl App {
     pub(super) fn track_agents_overview_notification(&mut self, notification: &ServerNotification) {
         let ServerNotificationThreadTarget::Thread(thread_id) =
@@ -71,11 +74,13 @@ impl App {
                 if started.thread.ephemeral {
                     return;
                 }
+                self.agents_overview.removed_threads.remove(&thread_id);
                 let mut thread = started.thread.clone();
                 thread.turns.clear();
                 self.agents_overview.threads.insert(thread_id, Some(thread));
             }
             ServerNotification::ThreadArchived(_) | ServerNotification::ThreadDeleted(_) => {
+                self.agents_overview.removed_threads.insert(thread_id);
                 self.agents_overview
                     .selected_permission_profiles
                     .remove(&thread_id);
@@ -84,6 +89,9 @@ impl App {
                 self.agents_overview.usage.remove(&thread_id);
                 self.agents_overview.threads.remove(&thread_id);
                 self.agents_overview.refresh_thread_ids.remove(&thread_id);
+            }
+            ServerNotification::ThreadUnarchived(_) => {
+                self.agents_overview.removed_threads.remove(&thread_id);
             }
             ServerNotification::ThreadClosed(_) => {
                 self.agents_overview.activity.remove(&thread_id);
@@ -207,6 +215,11 @@ impl App {
         let mut thread_ids = std::mem::take(&mut self.agents_overview.refresh_thread_ids);
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        self.agents_overview
+            .view_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .loading = !initialized;
         let refresh_task = tokio::spawn(async move {
             let result = async {
                 let mut threads = HashMap::new();
@@ -226,14 +239,14 @@ impl App {
                         let mut recent = Vec::new();
                         let mut cursor = None;
                         let mut sort_key = ThreadSortKey::RecencyAt;
-                        while recent.len() < 20 {
+                        while recent.len() < RECENT_SESSION_LIMIT {
                             let page = match request_handle
                                 .request_typed::<ThreadListResponse>(ClientRequest::ThreadList {
                                     request_id: RequestId::String(Uuid::new_v4().to_string()),
                                     params: ThreadListParams {
                                         originators: None,
                                         cursor,
-                                        limit: Some(20),
+                                        limit: Some(RECENT_SESSION_LIMIT as u32),
                                         sort_key: Some(sort_key),
                                         sort_direction: None,
                                         model_providers: Some(Vec::new()),
@@ -276,7 +289,7 @@ impl App {
                                                 )
                                             )
                                     })
-                                    .take(20 - recent.len()),
+                                    .take(RECENT_SESSION_LIMIT - recent.len()),
                             );
                             cursor = page.next_cursor;
                             if cursor.is_none() {
@@ -301,7 +314,7 @@ impl App {
                                 .cmp(&left.recency_at.unwrap_or(left.updated_at))
                                 .then_with(|| right.id.cmp(&left.id))
                         });
-                        recent.truncate(20);
+                        recent.truncate(RECENT_SESSION_LIMIT);
                         Ok::<_, TypedRequestError>(recent)
                     };
                     let (loaded, recent) = tokio::join!(loaded, recent);

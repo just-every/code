@@ -49,6 +49,26 @@ static TEST_MODEL_PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     presets
 });
 
+/// Inspect the same resolved environment configurations used to construct sampling steps.
+pub async fn environment_windows_sandbox_types(
+    thread: &crate::CodexThread,
+) -> Vec<(String, codex_sandboxing::SandboxType)> {
+    thread
+        .session
+        .services
+        .turn_environments
+        .snapshot()
+        .await
+        .turn_environments()
+        .map(|environment| {
+            (
+                environment.selection.environment_id.clone(),
+                environment.config().windows_sandbox_type,
+            )
+        })
+        .collect()
+}
+
 /// Reattaches request-only observations to a completed turn's history for capture assertions.
 /// Tests inspect this separately from the destination-filtered HTTP/WS request.
 pub async fn history_with_tool_call_metadata(
@@ -62,6 +82,18 @@ pub async fn history_with_tool_call_metadata(
         .executed_tool_calls
         .attach_to_prompt(&mut items, &mut Default::default());
     items
+}
+
+/// Returns the recorder state used by the next session metadata snapshot.
+/// This does not change destination filtering or issue a request.
+pub fn mcp_attribution_snapshot(
+    thread: &crate::CodexThread,
+) -> codex_protocol::mcp::McpAttribution {
+    thread
+        .session
+        .services
+        .executed_tool_calls
+        .mcp_attribution_snapshot()
 }
 
 /// Test-only provider that supplies no user instructions.
@@ -137,7 +169,7 @@ pub async fn start_thread_with_user_shell_override(
         .await
 }
 
-pub async fn resume_thread_from_rollout_with_user_shell_override(
+pub async fn resume_legacy_thread_from_rollout_with_user_shell_override(
     thread_manager: &ThreadManager,
     config: Config,
     rollout_path: PathBuf,
@@ -146,7 +178,7 @@ pub async fn resume_thread_from_rollout_with_user_shell_override(
     supports_openai_form_elicitation: bool,
 ) -> codex_protocol::error::Result<crate::NewThread> {
     thread_manager
-        .resume_thread_from_rollout_with_user_shell_override_for_tests(
+        .resume_legacy_thread_from_rollout_with_user_shell_override_for_tests(
             config,
             rollout_path,
             auth_manager,

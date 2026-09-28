@@ -1,3 +1,4 @@
+use super::helpers::drain_insert_history_transcript;
 use super::*;
 use codex_app_server_protocol::ImageReference;
 use pretty_assertions::assert_eq;
@@ -292,7 +293,7 @@ async fn esc_with_review_queued_steers_shows_warning_and_does_not_interrupt() {
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
     handle_entered_review_mode(&mut chat, "feature branch");
-    let _ = drain_insert_history(&mut rx);
+    let _ = drain_insert_history_transcript(&mut rx);
     chat.input_queue
         .pending_steers
         .push_back(pending_steer("review follow-up"));
@@ -304,7 +305,7 @@ async fn esc_with_review_queued_steers_shows_warning_and_does_not_interrupt() {
     assert_eq!(chat.input_queue.pending_steers.len(), 1);
     assert_no_submit_op(&mut op_rx);
 
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_transcript(&mut rx);
     let last = lines_to_single_string(cells.last().expect("review warning"));
     assert_chatwidget_snapshot!("review_submission_warning_snapshot", last);
 }
@@ -377,6 +378,7 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
 
     chat.restore_thread_input_state(
         Some(ThreadInputState {
+            pending_thread_settings: None,
             questions: None,
             composer: None,
             safety_buffering_prompt: None,
@@ -1113,7 +1115,7 @@ async fn review_commit_picker_shows_subjects_without_timestamps() {
             subject: "Fix bug Y".to_string(),
         },
     ];
-    super::show_review_commit_picker_with_entries(&mut chat, entries);
+    chat.show_review_commits(entries);
 
     // Render the bottom pane and inspect the lines for subjects and absence of time words.
     let width = 72;
@@ -1216,8 +1218,7 @@ async fn interrupt_exec_marks_failed_snapshot() {
     assert_chatwidget_snapshot!("interrupt_exec_marks_failed", exec_blob);
 }
 
-// Snapshot test: after an interrupted turn, a gentle error message is inserted
-// suggesting the user to tell the model what to do differently and to use /feedback.
+// Interruptions show a short, neutral notice with the feedback command.
 #[tokio::test]
 async fn interrupted_turn_error_message_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -1231,9 +1232,18 @@ async fn interrupted_turn_error_message_snapshot() {
     let cells = drain_insert_history(&mut rx);
     assert!(
         !cells.is_empty(),
-        "expected error message to be inserted after interruption"
+        "expected notice to be inserted after interruption"
     );
-    let last = lines_to_single_string(cells.last().unwrap());
+    let last = cells.last().unwrap();
+    let line = last.last().unwrap();
+    assert_eq!(
+        line.spans
+            .iter()
+            .map(|span| line.style.patch(span.style))
+            .collect::<Vec<_>>(),
+        vec![crate::style::secondary_text_style(); line.spans.len()]
+    );
+    let last = lines_to_single_string(last);
     assert_chatwidget_snapshot!("interrupted_turn_error_message", last);
 }
 
@@ -1334,9 +1344,7 @@ async fn budget_limited_turn_restores_queued_input_without_submitting() {
     assert_no_submit_op(&mut op_rx);
 }
 
-// Snapshot test: interrupting specifically to submit pending steers shows an
-// informational banner instead of the generic "tell the model what to do
-// differently" error prompt.
+// Interrupting to submit pending steers shows the steer-specific notice.
 #[tokio::test]
 async fn interrupted_turn_pending_steers_message_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

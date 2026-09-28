@@ -40,7 +40,7 @@ use crate::ExecProcessEvent;
 use crate::ExecProcessEventReceiver;
 use crate::ExecProcessFuture;
 use crate::ExecServerError;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::ProcessId;
 use crate::StartedExecProcess;
 use crate::network_policy_decisions::network_policy_decider;
@@ -174,7 +174,7 @@ struct Inner {
 #[derive(Clone)]
 pub(crate) struct LocalProcess {
     inner: Arc<Inner>,
-    runtime_paths: Option<ExecServerRuntimePaths>,
+    runtime_paths: Option<ExecServerRuntimeOptions>,
 }
 
 struct LocalExecProcess {
@@ -191,11 +191,11 @@ impl Default for LocalProcess {
 }
 
 impl LocalProcess {
-    pub(crate) fn with_local_runtime_paths(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub(crate) fn with_local_runtime_paths(runtime_paths: ExecServerRuntimeOptions) -> Self {
         Self::with_discarded_notifications(Some(runtime_paths))
     }
 
-    fn with_discarded_notifications(runtime_paths: Option<ExecServerRuntimePaths>) -> Self {
+    fn with_discarded_notifications(runtime_paths: Option<ExecServerRuntimeOptions>) -> Self {
         let (outgoing_tx, mut outgoing_rx) =
             mpsc::channel::<RpcServerOutboundMessage>(NOTIFICATION_CHANNEL_CAPACITY);
         tokio::spawn(async move { while outgoing_rx.recv().await.is_some() {} });
@@ -209,7 +209,7 @@ impl LocalProcess {
     pub(crate) fn new(
         notifications: RpcNotificationSender,
         telemetry: ExecServerTelemetry,
-        runtime_paths: ExecServerRuntimePaths,
+        runtime_paths: ExecServerRuntimeOptions,
     ) -> Self {
         Self::with_runtime_paths(notifications, telemetry, Some(runtime_paths))
     }
@@ -217,7 +217,7 @@ impl LocalProcess {
     fn with_runtime_paths(
         notifications: RpcNotificationSender,
         telemetry: ExecServerTelemetry,
-        runtime_paths: Option<ExecServerRuntimePaths>,
+        runtime_paths: Option<ExecServerRuntimeOptions>,
     ) -> Self {
         let requests = notifications.request_sender();
         Self {
@@ -379,7 +379,8 @@ impl LocalProcess {
         #[cfg(unix)]
         let mut prepared = prepared;
         #[cfg(unix)]
-        self.inner
+        let snapshot_file = self
+            .inner
             .shell_snapshots
             .prepare(
                 &params,
@@ -413,6 +414,13 @@ impl LocalProcess {
             );
         }
 
+        #[cfg(unix)]
+        let inherited_fds = snapshot_file
+            .iter()
+            .map(std::os::fd::AsRawFd::as_raw_fd)
+            .collect::<Vec<_>>();
+        #[cfg(not(unix))]
+        let inherited_fds = Vec::new();
         let spawned_result = codex_sandboxing::spawn_process(codex_sandboxing::SpawnRequest {
             command: &prepared.command,
             cwd: prepared.cwd.as_path(),
@@ -422,9 +430,11 @@ impl LocalProcess {
             windows_sandbox: prepared.windows_sandbox_spawn_request(),
             tty: params.tty,
             stdin_open: params.tty || params.pipe_stdin,
-            inherited_fds: &[],
+            inherited_fds: codex_utils_pty::ChildFds::Attached(&inherited_fds),
         })
         .await;
+        #[cfg(unix)]
+        drop(snapshot_file);
         let spawned = match spawned_result {
             Ok(spawned) => spawned,
             Err(err) => {
@@ -827,6 +837,7 @@ impl ExecBackend for LocalProcess {
                     CapturePurpose::Prewarm,
                 )
                 .await
+                .map(|_| ())
                 .map_err(map_handler_error)
         })
     }
@@ -1250,6 +1261,20 @@ mod tests {
     use crate::protocol::NetworkPolicyRequestParams;
     #[cfg(not(target_os = "windows"))]
     use crate::protocol::NetworkPolicyRequestResponse;
+
+    #[cfg(target_os = "linux")]
+    #[ctor::ctor]
+    fn initialize_spawn_helper() {
+        use std::os::unix::ffi::OsStringExt;
+        let command_line = std::fs::read("/proc/self/cmdline").expect("test command line");
+        codex_utils_pty::init_spawn_helper(
+            command_line
+                .strip_suffix(&[0])
+                .unwrap_or(&command_line)
+                .split(|byte| *byte == 0)
+                .map(|arg| std::ffi::OsString::from_vec(arg.to_vec())),
+        );
+    }
 
     fn test_exec_params(env: HashMap<String, String>) -> ExecParams {
         ExecParams {
@@ -1819,9 +1844,7 @@ mod tests {
             .expect("build remote network proxy config");
         let state = NetworkProxyState::from_remote_launch_config(
             RemoteNetworkProxyLaunchConfig::new(proxy_config),
-            codex_network_proxy::NetworkProxyExecutorOs::from_platform_os(Some(
-                std::env::consts::OS,
-            )),
+            codex_utils_path_uri::Platform::native(),
         )
         .expect("build network proxy state");
         let proxy = NetworkProxy::builder()

@@ -96,6 +96,7 @@ impl ChatWidget {
         if startup_has_content && self.local_settings.tui.vim_mode_default {
             self.bottom_pane.enable_vim_in_insert_mode();
         }
+        crate::startup_recovery::handed_off(|| self.bottom_pane.composer_recovery_snapshot());
     }
 
     /// Includes protected prompts deferred by streaming or the approval idle timer.
@@ -196,15 +197,23 @@ impl ChatWidget {
                     (user_message, history_record)
                 })
         } else {
+            // Reply envelopes must remain separate messages so other clients can read them.
+            let count = self
+                .input_queue
+                .rejected_steers_queue
+                .iter()
+                .position(|message| crate::async_question_reply::parse(&message.text).is_some())
+                .map(|index| index.max(/*other*/ 1))
+                .unwrap_or(self.input_queue.rejected_steers_queue.len());
             let rejected_messages = self
                 .input_queue
                 .rejected_steers_queue
-                .drain(..)
+                .drain(..count)
                 .collect::<Vec<_>>();
             let sources = self
                 .input_queue
                 .rejected_steer_sources
-                .drain(..)
+                .drain(..count.min(self.input_queue.rejected_steer_sources.len()))
                 .collect::<Vec<_>>();
             let source = if !rejected_messages.is_empty()
                 && sources.len() == rejected_messages.len()
@@ -219,7 +228,7 @@ impl ChatWidget {
             let mut history_records = self
                 .input_queue
                 .rejected_steer_history_records
-                .drain(..)
+                .drain(..count.min(self.input_queue.rejected_steer_history_records.len()))
                 .collect::<Vec<_>>();
             history_records.resize(
                 rejected_messages.len(),
@@ -314,9 +323,17 @@ impl ChatWidget {
                     /*hint*/ None,
                 ));
             } else {
-                self.add_to_history(history_cell::new_error_event(
-                    self.interrupted_turn_message(reason),
-                ));
+                self.add_to_history(match reason {
+                    TurnAbortReason::BudgetLimited => history_cell::new_error_event(
+                        "Goal budget reached - the turn was stopped.".to_string(),
+                    ),
+                    TurnAbortReason::Interrupted => PlainHistoryCell::new(vec![
+                        Line::from(
+                            "■ Conversation interrupted - use /feedback if something went wrong",
+                        )
+                        .style(crate::style::secondary_text_style()),
+                    ]),
+                });
             }
         }
 
@@ -329,15 +346,32 @@ impl ChatWidget {
                 .pending_steers
                 .drain(..)
                 .collect::<Vec<_>>();
-            if !pending_steers.is_empty() {
-                let source = if pending_steers
-                    .iter()
-                    .all(|pending| pending.source == UserMessageSource::QuestionAnswer)
-                {
-                    UserMessageSource::QuestionAnswer
-                } else {
-                    UserMessageSource::Prompt
-                };
+            if pending_steers
+                .iter()
+                .any(|pending| pending.source == UserMessageSource::QuestionAnswer)
+            {
+                // Keep answers intact when an interrupt retries uncommitted input.
+                for pending in pending_steers {
+                    self.input_queue
+                        .rejected_steers_queue
+                        .push_back(pending.user_message);
+                    self.input_queue
+                        .rejected_steer_sources
+                        .push_back(pending.source);
+                    self.input_queue
+                        .rejected_steer_history_records
+                        .push_back(pending.history_record);
+                }
+                if let Some((message, history_record)) = self.pop_next_queued_user_message() {
+                    let source = message.source;
+                    self.submit_user_message_with_history_and_shell_escape_policy(
+                        message.into_user_message(),
+                        history_record,
+                        ShellEscapePolicy::Allow,
+                        source,
+                    );
+                }
+            } else if !pending_steers.is_empty() {
                 let (user_message, history_record) = merge_user_messages_with_history_record(
                     pending_steers
                         .into_iter()
@@ -348,7 +382,7 @@ impl ChatWidget {
                     user_message,
                     history_record,
                     ShellEscapePolicy::Allow,
-                    source,
+                    UserMessageSource::Prompt,
                 );
             } else if let Some(combined) = self.drain_pending_messages_for_restore() {
                 self.restore_composer_state(combined);
@@ -536,6 +570,7 @@ impl ChatWidget {
                 .questions
                 .as_deref_mut()
                 .map(crate::bottom_pane::AsyncQuestions::capture),
+            pending_thread_settings: None,
             composer: composer.has_content().then_some(composer),
             safety_buffering_prompt: self.safety_buffering_prompt.clone(),
             safety_buffering_source: self.safety_buffering_source,

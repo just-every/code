@@ -189,6 +189,8 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
 
     let session_meta_line = SessionMetaLine {
         meta: SessionMeta {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             id: thread_id,
             forked_from_id: None,
@@ -1231,6 +1233,52 @@ async fn list_threads_db_disabled_does_not_skip_paginated_items() -> std::io::Re
     .await?;
     assert_eq!(page2.items.len(), 1);
     assert_eq!(page2.items[0].path, middle);
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_archived_threads_without_db_keeps_threads_without_previews() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let archive_dir = home.path().join(crate::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir_all(&archive_dir)?;
+    let older = ThreadId::new();
+    let newer = ThreadId::new();
+    for (timestamp, thread_id) in [
+        ("2026-07-09T00-00-00", older),
+        ("2026-07-09T00-01-00", newer),
+    ] {
+        let path = archive_dir.join(format!("rollout-{timestamp}-{thread_id}.jsonl"));
+        write_paginated_rollout(&path, thread_id, &[])?;
+    }
+
+    let mut cursor = None;
+    let mut found = Vec::new();
+    for expected_more in [true, false] {
+        let page = RolloutRecorder::list_archived_threads(
+            /*state_db_ctx*/ None,
+            &config,
+            /*page_size*/ 1,
+            cursor.as_ref(),
+            ThreadSortKey::CreatedAt,
+            SortDirection::Desc,
+            &[],
+            /*model_providers*/ None,
+            /*cwd_filters*/ None,
+            config.model_provider_id.as_str(),
+            /*search_term*/ None,
+        )
+        .await?;
+        assert_eq!(page.items.len(), 1);
+        found.extend(
+            page.items
+                .into_iter()
+                .map(|item| (item.thread_id, item.preview)),
+        );
+        cursor = page.next_cursor;
+        assert_eq!(cursor.is_some(), expected_more);
+    }
+    assert_eq!(found, vec![(Some(newer), None), (Some(older), None)]);
     Ok(())
 }
 

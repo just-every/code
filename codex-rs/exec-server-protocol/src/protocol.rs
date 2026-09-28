@@ -142,6 +142,9 @@ pub struct EnvironmentCapabilities {
     /// Whether capability discovery applies the filesystem sandbox sent with each root.
     #[serde(default)]
     pub capability_discovery_sandbox: bool,
+    /// Whether this executor supports V2 capability discovery.
+    #[serde(default)]
+    pub capability_discovery_v2: bool,
     /// Whether this executor supports the `environmentConfig/read` request.
     #[serde(default)]
     pub environment_config_read: bool,
@@ -157,6 +160,12 @@ pub struct EnvironmentCapabilities {
     /// Whether requests may explicitly select the MXC Windows sandbox backend.
     #[serde(default)]
     pub windows_mxc: bool,
+    /// Whether a Linux filesystem sandbox preserves standard devices when `/` is writable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linux_root_write_preserves_devices: bool,
+    /// Whether approved Linux root writes preserve devices and denied root-metadata symlink targets.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub linux_approved_root_write_preserves_restrictions: bool,
 }
 
 /// Status returned by an initialized exec-server connection.
@@ -248,11 +257,14 @@ impl EnvironmentInfo {
             capabilities: EnvironmentCapabilities {
                 network_proxy_launch: true,
                 capability_discovery_sandbox: true,
+                capability_discovery_v2: true,
                 environment_config_read: true,
                 http_header_env_vars: true,
                 sandboxed_file_streaming: true,
                 shell_snapshot_v2: cfg!(unix),
                 windows_mxc,
+                linux_root_write_preserves_devices: cfg!(target_os = "linux"),
+                linux_approved_root_write_preserves_restrictions: cfg!(target_os = "linux"),
             },
         }
     }
@@ -1158,6 +1170,20 @@ mod base64_bytes {
 #[cfg(test)]
 mod tests {
     use super::CapabilityRootDiscoverRequest;
+    #[test]
+    fn discovery_v2_support_defaults_off_for_older_executors() -> serde_json::Result<()> {
+        let legacy: super::EnvironmentCapabilities = serde_json::from_value(serde_json::json!({}))?;
+        assert!(!legacy.capability_discovery_v2);
+        let capabilities = super::EnvironmentInfo::local().capabilities;
+        assert_eq!(
+            serde_json::from_value::<super::EnvironmentCapabilities>(serde_json::to_value(
+                &capabilities
+            )?)?,
+            capabilities
+        );
+        Ok(())
+    }
+
     use super::EnvironmentCapabilities;
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
@@ -1366,12 +1392,49 @@ mod tests {
             EnvironmentCapabilities {
                 network_proxy_launch: true,
                 capability_discovery_sandbox: true,
+                capability_discovery_v2: false,
                 environment_config_read: false,
                 http_header_env_vars: false,
                 sandboxed_file_streaming: false,
                 shell_snapshot_v2: false,
                 windows_mxc: false,
+                linux_root_write_preserves_devices: false,
+                linux_approved_root_write_preserves_restrictions: false,
             }
+        );
+    }
+
+    #[test]
+    fn linux_approved_root_write_support_is_opt_in_on_the_wire() {
+        let mut capabilities = EnvironmentCapabilities::default();
+        let legacy = serde_json::to_value(&capabilities).unwrap();
+        assert!(legacy.get("linuxRootWritePreservesDevices").is_none());
+        assert!(
+            legacy
+                .get("linuxApprovedRootWritePreservesRestrictions")
+                .is_none()
+        );
+        capabilities.linux_root_write_preserves_devices = true;
+        let device_only = serde_json::from_value::<EnvironmentCapabilities>(
+            serde_json::to_value(&capabilities).unwrap(),
+        )
+        .unwrap();
+        assert!(!device_only.linux_approved_root_write_preserves_restrictions);
+        capabilities.linux_approved_root_write_preserves_restrictions = true;
+        assert_eq!(
+            serde_json::from_value::<EnvironmentCapabilities>(
+                serde_json::to_value(&capabilities).unwrap()
+            )
+            .unwrap(),
+            capabilities
+        );
+        let local = EnvironmentInfo::local().capabilities;
+        assert_eq!(
+            (
+                local.linux_root_write_preserves_devices,
+                local.linux_approved_root_write_preserves_restrictions,
+            ),
+            (cfg!(target_os = "linux"), cfg!(target_os = "linux"))
         );
     }
 
@@ -1388,6 +1451,7 @@ mod tests {
             "capabilities": {
                 "networkProxyLaunch": false,
                 "capabilityDiscoverySandbox": false,
+                "capabilityDiscoveryV2": false,
                 "environmentConfigRead": false,
                 "httpHeaderEnvVars": false,
                 "sandboxedFileStreaming": false,

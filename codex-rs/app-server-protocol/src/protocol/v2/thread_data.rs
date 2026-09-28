@@ -392,7 +392,7 @@ pub struct Turn {
     #[serde(default)]
     pub items_view: TurnItemsView,
     pub status: TurnStatus,
-    /// Only populated when the Turn's status is failed.
+    /// Error associated with a failed or interrupted turn.
     pub error: Option<TurnError>,
     /// Unix timestamp (in seconds) when the turn started.
     #[ts(type = "number | null")]

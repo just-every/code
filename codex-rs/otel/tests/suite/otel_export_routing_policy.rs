@@ -26,6 +26,9 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ToolResultLogConfig;
 use codex_protocol::models::ImageReference;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::GuardianAssessmentEvent;
+use codex_protocol::protocol::GuardianAssessmentOutcome;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -98,7 +101,7 @@ fn auth_env_metadata() -> AuthEnvTelemetryMetadata {
 }
 
 #[test]
-fn otel_export_routing_policy_routes_user_prompt_log_and_trace_events() {
+fn otel_export_routing_policy_routes_prompt_and_guardian_payloads() {
     let log_exporter = InMemoryLogExporter::default();
     let logger_provider = SdkLoggerProvider::builder()
         .with_simple_exporter(log_exporter.clone())
@@ -154,6 +157,37 @@ fn otel_export_routing_policy_routes_user_prompt_log_and_trace_events() {
                 detail: None,
             },
         ]);
+        let mut assessment: GuardianAssessmentEvent = serde_json::from_value(serde_json::json!({
+            "id": "review",
+            "turn_id": "turn",
+            "target_item_id": "tool-call",
+            "status": "in_progress",
+            "risk_level": "medium",
+            "user_authorization": "high",
+            "rationale": format!("{}🦀", "x".repeat(/*n*/ 65_535)),
+            "action": {"type": "mcp_tool_call", "server": "private-server", "tool_name": "tool"},
+        }))
+        .expect("assessment");
+        manager.guardian_assessment(&assessment, /*outcome*/ None);
+        for (status, outcome) in [
+            (
+                GuardianAssessmentStatus::Approved,
+                Some(GuardianAssessmentOutcome::Allow),
+            ),
+            (
+                GuardianAssessmentStatus::Denied,
+                Some(GuardianAssessmentOutcome::Deny),
+            ),
+            (GuardianAssessmentStatus::Denied, None),
+            (GuardianAssessmentStatus::TimedOut, None),
+            (GuardianAssessmentStatus::Aborted, None),
+        ] {
+            assessment.status = status;
+            if outcome.is_none() {
+                assessment.rationale = None;
+            }
+            manager.guardian_assessment(&assessment, outcome);
+        }
     });
 
     logger_provider.force_flush().expect("flush logs");
@@ -175,6 +209,46 @@ fn otel_export_routing_policy_routes_user_prompt_log_and_trace_events() {
         prompt_log_attrs.get("user.email").map(String::as_str),
         Some("engineer@example.com")
     );
+
+    let assessments: Vec<_> = logs
+        .iter()
+        .map(|log| log_attributes(&log.record))
+        .filter(|attrs| {
+            attrs.get("event.name").map(String::as_str) == Some("codex.guardian_assessment")
+        })
+        .collect();
+    assert_eq!(
+        assessments
+            .iter()
+            .map(|attrs| (
+                attrs["status"].as_str(),
+                attrs.get("outcome").map(String::as_str),
+                attrs.get("rationale").map(String::len),
+                attrs.get("rationale_length").map(String::as_str),
+                attrs.get("rationale_truncated").map(String::as_str),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "approved",
+                Some("allow"),
+                Some(65_535),
+                Some("65539"),
+                Some("true")
+            ),
+            (
+                "denied",
+                Some("deny"),
+                Some(65_535),
+                Some("65539"),
+                Some("true")
+            ),
+            ("denied", None, None, None, None),
+            ("timed_out", None, None, None, None),
+            ("aborted", None, None, None, None),
+        ],
+    );
+    assert!(!format!("{assessments:?}").contains("private-server"));
 
     let spans = span_exporter.get_finished_spans().expect("span export");
     assert_eq!(spans.len(), 1);
@@ -256,7 +330,7 @@ fn otel_export_routing_policy_routes_tool_result_log_and_trace_events() {
 
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();
-        let manager = make_manager(root_id, SessionSource::Cli);
+        let manager = make_manager(root_id, SessionSource::Cli).with_product_sku(Some("codex"));
         let root_span = tracing::info_span!("root");
         let _root_guard = root_span.enter();
         let manager = manager.with_tool_result_log_config(ToolResultLogConfig {
@@ -284,7 +358,8 @@ fn otel_export_routing_policy_routes_tool_result_log_and_trace_events() {
                 agent_nickname: Some("legacy nickname".to_string()),
                 agent_role: None,
             }),
-        );
+        )
+        .with_product_sku(Some("customer-specific-value"));
         child.tool_result_with_tags(
             &ToolName::plain("shell"),
             "call-2",
@@ -359,6 +434,13 @@ fn otel_export_routing_policy_routes_tool_result_log_and_trace_events() {
     assert_eq!(
         tool_logs
             .iter()
+            .map(|attrs| attrs.get("product_sku").map(String::as_str))
+            .collect::<Vec<_>>(),
+        vec![Some("codex"), Some("other"), Some("codex"), None, None],
+    );
+    assert_eq!(
+        tool_logs
+            .iter()
             .map(|attrs| (
                 attrs["conversation.id"].clone(),
                 attrs["agent_name"].clone(),
@@ -418,6 +500,7 @@ fn otel_export_routing_policy_routes_tool_result_log_and_trace_events() {
         assert_eq!(attrs.get("tool_name"), log.get("tool_name"));
         assert_eq!(attrs.get("tool_namespace"), log.get("tool_namespace"));
         assert_eq!(attrs.get("tool_result_seq"), log.get("tool_result_seq"));
+        assert_eq!(attrs.get("product_sku"), log.get("product_sku"));
         assert_eq!(attrs.get("output_truncated"), log.get("output_truncated"));
         assert!(!attrs.contains_key("agent_name"));
     }

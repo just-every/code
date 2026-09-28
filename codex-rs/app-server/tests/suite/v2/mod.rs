@@ -1,9 +1,13 @@
 mod account;
+#[path = "account_system_proxy_tests.rs"]
+mod account_system_proxy;
 mod account_thread_usage;
+mod agent_message_board;
 mod analytics;
 mod app_installed;
 mod app_list;
 mod app_read;
+mod application_network;
 mod attestation;
 mod auto_env;
 mod bedrock_setup;
@@ -49,6 +53,8 @@ mod external_agent_config;
 mod external_agent_import_sync;
 mod feedback;
 mod fs;
+#[path = "gateway_oauth_tests.rs"]
+mod gateway_oauth;
 mod git_attribution;
 mod guardian_v2;
 mod history_notes_extension;
@@ -72,6 +78,7 @@ mod memory_reset;
 mod misalignment_policy;
 mod model_auto_review;
 mod model_list;
+mod model_list_requirements_tests;
 mod model_provider_capabilities_read;
 #[path = "model_provider_enforcement_tests.rs"]
 mod model_provider_enforcement;

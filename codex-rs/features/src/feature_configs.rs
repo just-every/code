@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +32,10 @@ pub struct CodeModeConfigToml {
     /// Experimental: this option and the response format may change or be removed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_show_cell_overhead: Option<bool>,
+    /// Maximum UTF-8 bytes per rendered tool input type, with a 16,000-byte minimum and default.
+    /// For ordinary MCP tools, this is also at least their server's explicitly configured input limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input_schema_max_bytes: Option<NonZeroUsize>,
     /// Exact tool namespaces to omit from the code-mode nested tool surface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excluded_tool_namespaces: Option<Vec<String>>,
@@ -135,8 +140,7 @@ pub struct GuardianV2ConfigToml {
     /// Legacy setting retained for config compatibility; the backend now controls Guardian billing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub free_guardian: Option<bool>,
-    /// Use thread-owned context for sync and async Guardian. Defaults to false.
-    /// Independent of the Guardian v2 `enabled` toggle.
+    /// Deprecated and ignored; thread-owned Guardian context is always enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_context: Option<bool>,
     /// Persist reviewed actions and risk scores to rollout files for debugging.
@@ -293,6 +297,12 @@ pub struct MultiAgentV2ConfigToml {
     /// Expose the multi-agent v2 `wait_agent` tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait_agent_enabled: Option<bool>,
+    /// Disable the model's direct-message tools; spawning and automatic child results remain available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_direct_message: Option<bool>,
+    /// Keep the message board in memory for a training session, including ephemeral sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_board_in_memory: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
 }
@@ -480,6 +490,9 @@ pub struct NetworkProxyConfigToml {
     pub domains: Option<BTreeMap<String, NetworkProxyDomainPermissionToml>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unix_sockets: Option<BTreeMap<String, NetworkProxyUnixSocketPermissionToml>>,
+    /// Permits local servers and direct host-loopback connections and skips the proxy's
+    /// additional private-network destination checks. Proxy domain rules still apply.
+    /// Defaults to true for MXC, which cannot enforce false; otherwise defaults to false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_local_binding: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

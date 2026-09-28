@@ -1678,7 +1678,7 @@ print(json.dumps({"hookSpecificOutput": {
 
     let forked = test
         .thread_manager
-        .fork_thread(
+        .fork_legacy_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(1),
             StartThreadOptions::new(test.config.clone()),
             test.codex.rollout_path().expect("parent rollout path"),
@@ -1936,12 +1936,10 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         .await
         .context("timed out waiting for the async hook to start")?;
 
-    fs::write(
-        test.codex_home_path()
-            .join("async_user_prompt_submit_release"),
-        "ready",
-    )
-    .context("release gated async hook")?;
+    let release_path = test
+        .codex_home_path()
+        .join("async_user_prompt_submit_release");
+    fs::write(&release_path, "ready").context("release gated async hook")?;
 
     let finished_path = test
         .codex_home_path()
@@ -1962,6 +1960,10 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         1,
         "an async hook result from the previous turn must not start a model turn"
     );
+
+    // Keep the next prompt's hook pending so only the first hook's buffered
+    // output can contribute to the next model turn.
+    fs::remove_file(release_path).context("reset the async hook gate")?;
 
     let next_prompt = "observe the buffered async context";
     let next_turn = if automatic_continuation {
@@ -2040,6 +2042,7 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         "buffered async hook context should precede the next user prompt"
     );
 
+    test.codex.shutdown_and_wait().await?;
     Ok(())
 }
 
@@ -2812,12 +2815,8 @@ async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() 
     Ok(())
 }
 
-#[test_case::test_case(/*thread_context_enabled*/ true; "retained context enabled")]
-#[test_case::test_case(/*thread_context_enabled*/ false; "retained context disabled")]
 #[tokio::test]
-async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
-    thread_context_enabled: bool,
-) -> Result<()> {
+async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let (gate_completed_tx, gate_completed_rx) = oneshot::channel();
@@ -2835,11 +2834,11 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
             body: sse_event(ev_output_text_delta("first ")),
         },
         StreamingSseChunk {
-            gate: None,
+            gate: Some(gate_completed_rx),
             body: sse_event(ev_message_item_done("msg-1", "first response")),
         },
         StreamingSseChunk {
-            gate: Some(gate_completed_rx),
+            gate: None,
             body: sse_event(ev_completed("resp-1")),
         },
     ];
@@ -2862,10 +2861,6 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
         })
         .with_config(move |config| {
             trust_discovered_hooks(config);
-            config
-                .features
-                .set_enabled(Feature::GuardianThreadContext, thread_context_enabled)
-                .expect("test context mode");
         });
     let test = builder.build_with_streaming_server(&server).await?;
 
@@ -2907,7 +2902,10 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
     .into_iter()
     .collect::<Vec<_>>();
 
-    sleep(Duration::from_millis(100)).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     assert_eq!(requests.len(), 2);
 
@@ -2922,28 +2920,26 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
     );
 
     let history = test.codex.conversation_history_snapshot().await;
-    assert_eq!(history.retained_context().is_some(), thread_context_enabled);
+    assert!(history.retained_context().is_some());
     let retained = serde_json::to_value(history.retained_context().cloned().unwrap_or_default())?;
+    let messages = retained["user_messages"]
+        .as_array()
+        .expect("retained user messages");
     assert_eq!(
-        retained["user_messages"]
-            .as_array()
-            .expect("retained user messages")
+        messages
             .iter()
-            .map(|message| (message["order"].clone(), message["text"].clone()))
+            .map(|message| message["text"].clone())
             .collect::<Vec<_>>(),
-        if thread_context_enabled {
-            vec![
-                (json!(0), json!("initial prompt")),
-                (json!(1), json!("accepted queued prompt")),
-            ]
-        } else {
-            Vec::new()
-        },
+        vec![json!("initial prompt"), json!("accepted queued prompt")],
     );
-    assert_eq!(
-        retained["next_order"],
-        json!(if thread_context_enabled { 3 } else { 0 })
+    assert!(
+        messages
+            .windows(2)
+            .all(|pair| pair[0]["order"].as_u64() < pair[1]["order"].as_u64())
     );
+    // Three accepted input positions (including the blocked prompt), then
+    // the two completed assistant messages.
+    assert_eq!(retained["next_order"], json!(5));
 
     let hook_inputs = read_user_prompt_submit_hook_inputs(test.codex_home_path())?;
     assert_eq!(hook_inputs.len(), 3);
@@ -3658,8 +3654,8 @@ async fn pre_tool_use_hook_model_tracks_step_after_a_turn_update() -> Result<()>
         .expect("bundled models should parse")
         .models
         .into_iter()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("bundled gpt-5.4 model");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5 model");
     let models = [model_a, model_b]
         .into_iter()
         .map(|slug| {

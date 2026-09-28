@@ -1,8 +1,10 @@
 //! Covers the original starfield appearance, protected content, and composer eligibility.
 
+use super::super::LARGE_PASTE_CHAR_THRESHOLD;
 use super::*;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneParams;
+use crate::bottom_pane::RestrictedInputMode;
 use crate::bottom_pane::chat_composer_history::HistoryEntry;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
@@ -25,6 +27,7 @@ fn pane() -> BottomPane {
         placeholder_text: "Ask Codex to do anything".into(),
         disable_paste_burst: true,
         animations_enabled: true,
+        effects: Default::default(),
         skills: None,
     })
 }
@@ -42,7 +45,7 @@ fn palette<T>(render: impl FnOnce() -> T) -> T {
 fn enabled() -> Tui {
     Tui {
         animations: true,
-        whimsy: true,
+        effects: Default::default(),
         ..Tui::default()
     }
 }
@@ -54,20 +57,19 @@ fn draw(composer: &ChatComposer, width: u16, now: Instant) -> (Buffer, Rect) {
         width,
         composer.desired_height(width),
     );
-    let [padding, _, textarea, _] =
-        composer.layout_areas_with_textarea_right_reserve(area, /*textarea_right_reserve*/ 0);
+    let layout = composer.layout_with_options(area, Default::default());
     let phase = composer.sparkle.phase.replace(Phase::Unarmed);
     let mut buffer = Buffer::empty(area);
     composer.render(area, &mut buffer);
     composer.sparkle.phase.set(phase);
     composer.render_sparkle_at(
-        padding,
-        textarea,
+        layout.composer,
+        layout.textarea,
         composer.cursor_pos(area),
         now,
         &mut buffer,
     );
-    (buffer, textarea)
+    (buffer, layout.textarea)
 }
 
 fn text(buffer: &Buffer) -> String {
@@ -470,31 +472,37 @@ fn disconnected_sparkle_edits_are_tracked_between_renders() {
                 let initial = draw(&pane.composer, /*width*/ 80, now).0;
                 assert_eq!(dots(&initial).is_empty(), model == "gpt-5.5");
                 for key in [KeyCode::Null, KeyCode::Enter, KeyCode::Tab] {
-                    pane.handle_disconnected_key(KeyEvent::new(key, KeyModifiers::NONE));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(key, KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
-                pane.handle_disconnected_key(KeyEvent::new_with_kind(
-                    KeyCode::Char('x'),
-                    KeyModifiers::NONE,
-                    crossterm::event::KeyEventKind::Release,
-                ));
+                pane.handle_restricted_key(
+                    KeyEvent::new_with_kind(
+                        KeyCode::Char('x'),
+                        KeyModifiers::NONE,
+                        crossterm::event::KeyEventKind::Release,
+                    ),
+                    RestrictedInputMode::Disconnected,
+                );
                 assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Untouched);
                 assert_eq!(
                     dots(&draw(&pane.composer, /*width*/ 80, now).0),
                     dots(&initial)
                 );
                 for ch in input.chars() {
-                    pane.handle_disconnected_key(KeyEvent::new(
-                        KeyCode::Char(ch),
-                        KeyModifiers::NONE,
-                    ));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
                 assert_eq!(pane.composer.current_text(), input, "{scenario}");
                 assert_eq!(pane.composer.sparkle.draft.get(), draft, "{scenario}");
                 for _ in input.chars() {
-                    pane.handle_disconnected_key(KeyEvent::new(
-                        KeyCode::Backspace,
-                        KeyModifiers::NONE,
-                    ));
+                    pane.handle_restricted_key(
+                        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                        RestrictedInputMode::Disconnected,
+                    );
                 }
                 assert_eq!(pane.composer.current_text(), "");
                 pane.select_sparkle_model("gpt-6-astra", &enabled());
@@ -716,6 +724,7 @@ fn history_search_preserves_a_held_sparkle_command_without_reclassifying_it() {
                 assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Command);
                 pane.handle_paste("history".into());
                 assert_eq!(pane.composer.current_text(), "history prompt");
+                pane.set_composer_pending_pastes(Vec::new());
                 assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Command);
                 let searching = draw(&pane.composer, /*width*/ 80, during).0;
                 assert!(dots(&searching).is_empty());
@@ -779,16 +788,17 @@ fn cancelling_history_search_preserves_a_typed_command_despite_attachment_previe
 }
 
 #[test]
-fn replacing_a_draft_outside_the_history_preview_dismisses_sparkles_during_search() {
+fn fresh_draft_replacement_ends_search_and_dismisses_sparkles() {
     let mut pane = pane();
     pane.mark_fresh_task_for_sparkle("gpt-5.5", &enabled());
     pane.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert!(pane.composer.history_search_active());
     pane.composer
         .set_text_content("external draft".into(), Vec::new(), Vec::new());
+    assert!(!pane.composer.history_search_active());
     assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Dismissed);
     key(&mut pane, KeyCode::Esc);
-    assert!(pane.composer.is_empty());
+    assert_eq!(pane.composer.current_text(), "external draft");
     assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Dismissed);
 }
 
@@ -867,7 +877,7 @@ fn canceled_commands_remain_eligible_but_inserted_content_and_ordinary_paste_do_
         canceled.select_sparkle_model("astra", &enabled());
         assert!(!dots(&draw(&canceled.composer, /*width*/ 80, now).0).is_empty());
 
-        for input in ["paste draft", "inserted"] {
+        for input in ["paste draft", "inserted", "recovered"] {
             let mut pane = pane();
             pane.mark_fresh_task_for_sparkle("gpt-5.5", &enabled());
             if input == "inserted" {
@@ -877,6 +887,9 @@ fn canceled_commands_remain_eligible_but_inserted_content_and_ordinary_paste_do_
                     InputResult::Command(SlashCommand::Mention)
                 ));
                 pane.composer.insert_str("@");
+            } else if input == "recovered" {
+                pane.composer
+                    .append_recovered_drafts(&"x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1));
             } else {
                 pane.handle_paste(input.to_string());
             }
@@ -885,6 +898,12 @@ fn canceled_commands_remain_eligible_but_inserted_content_and_ordinary_paste_do_
             pane.select_sparkle_model("astra", &enabled());
             assert_eq!(pane.composer.sparkle.draft.get(), SparkleDraft::Dismissed);
             assert!(dots(&draw(&pane.composer, /*width*/ 80, now).0).is_empty());
+            if input == "recovered" {
+                insta::assert_snapshot!(
+                    "cleared_recovered_draft_keeps_sparkle_dismissed",
+                    text(&draw(&pane.composer, /*width*/ 80, now).0)
+                );
+            }
         }
     });
 }
@@ -1049,7 +1068,10 @@ fn focus_startup_work_and_configuration_do_not_extend_a_started_deadline() {
 
         for settings in [
             Tui {
-                whimsy: false,
+                effects: codex_config::types::TuiEffects {
+                    starfield: false,
+                    ..Default::default()
+                },
                 ..enabled()
             },
             Tui {

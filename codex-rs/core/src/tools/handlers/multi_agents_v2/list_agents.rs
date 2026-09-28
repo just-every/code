@@ -1,6 +1,5 @@
 use super::analytics::ToolCallAnalytics;
 use super::*;
-use crate::agent::control::ListedAgent;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
 
@@ -41,17 +40,30 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: ListAgentsArgs = parse_arguments(&arguments)?;
-        session
-            .services
-            .agent_control
-            .register_session_root(session.thread_id, turn.parent_thread_id);
         let agents = session
             .services
             .agent_control
-            .list_agents(&turn.session_source, args.path_prefix.as_deref())
+            .list(
+                session.thread_id,
+                turn.parent_thread_id,
+                &turn.session_source,
+                args.path_prefix.as_deref(),
+            )
             .await
             .map_err(collab_spawn_error)?;
 
+        let agents = agents
+            .into_iter()
+            .map(|agent| ListedAgent {
+                agent_name: agent
+                    .metadata
+                    .agent_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| agent.thread_id.to_string()),
+                agent_status: agent.status,
+            })
+            .collect();
         Ok(boxed_tool_output(ListAgentsResult { agents }))
     }
 }
@@ -66,6 +78,12 @@ impl CoreToolRuntime for Handler {
 #[serde(deny_unknown_fields)]
 struct ListAgentsArgs {
     path_prefix: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListedAgent {
+    agent_name: String,
+    agent_status: AgentStatus,
 }
 
 #[derive(Debug, Serialize)]

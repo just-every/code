@@ -57,6 +57,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use codex_utils_pty::process_group::kill_child_process_group;
+use codex_utils_pty::process_group::kill_process_group;
+use codex_utils_pty::process_group::terminate_process_group;
 
 pub const DEFAULT_EXEC_COMMAND_TIMEOUT_MS: u64 = 10_000;
 
@@ -104,7 +106,6 @@ pub struct ExecParams {
     // TODO(anp): Reconcile these launch settings with TurnEnvironment::sandbox_context
     // so turn-scoped execution uses the selected environment's backend.
     pub windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
-    pub windows_sandbox_private_desktop: bool,
     pub justification: Option<String>,
     pub arg0: Option<String>,
 }
@@ -356,7 +357,6 @@ pub fn build_exec_request(
         network,
         network_environment_id,
         windows_sandbox_level,
-        windows_sandbox_private_desktop,
 
         // TODO: Should arg0 be set on the ExecRequest that is returned?
         arg0: _,
@@ -418,7 +418,6 @@ pub fn build_exec_request(
             },
             use_legacy_landlock,
             windows_sandbox_level,
-            windows_sandbox_private_desktop,
         })
         .map_err(CodexErr::from)?;
     // These hints belong to the native Windows backend. Other backends use
@@ -461,7 +460,6 @@ pub(crate) async fn execute_exec_request(
         windows_sandbox_policy_cwd,
         windows_sandbox_workspace_roots,
         windows_sandbox_level,
-        windows_sandbox_private_desktop,
         permission_profile,
         windows_sandbox_filesystem_overrides,
         network_environment_id,
@@ -492,7 +490,6 @@ pub(crate) async fn execute_exec_request(
         network_environment_id,
         sandbox_permissions: SandboxPermissions::UseDefault,
         windows_sandbox_level,
-        windows_sandbox_private_desktop,
         justification: None,
         arg0,
     };
@@ -631,7 +628,6 @@ async fn exec_windows_sandbox(
         expiration,
         capture_policy,
         windows_sandbox_level,
-        windows_sandbox_private_desktop,
         ..
     } = params;
     if let Some(network) = network.as_ref() {
@@ -705,7 +701,6 @@ async fn exec_windows_sandbox(
                     env_map: env,
                     timeout_ms,
                     cancellation,
-                    use_private_desktop: windows_sandbox_private_desktop,
                     proxy_enforced,
                     network_proxy_restricting_sid,
                     read_roots_override: elevated_read_roots_override.as_deref(),
@@ -728,7 +723,6 @@ async fn exec_windows_sandbox(
                 cancellation,
                 &additional_deny_read_paths,
                 &additional_deny_write_paths,
-                windows_sandbox_private_desktop,
             )
         }
     })
@@ -943,7 +937,6 @@ async fn exec(
         // If applicable, these fields should have been honored upstream of
         // this exec call.
         windows_sandbox_level: _,
-        windows_sandbox_private_desktop: _,
         // These fields are related to approvals, so can be ignored here.
         sandbox_permissions: _,
         justification: _,
@@ -1051,7 +1044,7 @@ async fn consume_output(
                     // remaining members of the original process group.
                     let process_group_id = child.id();
                     let should_escalate = if let Some(process_group_id) = process_group_id {
-                        codex_utils_pty::process_group::terminate_process_group(process_group_id)?
+                        terminate_process_group(process_group_id)?
                     } else {
                         false
                     };
@@ -1066,13 +1059,13 @@ async fn consume_output(
                             if should_escalate
                                 && let Some(process_group_id) = process_group_id
                             {
-                                codex_utils_pty::process_group::kill_process_group(
-                                    process_group_id,
-                                )?;
+                                kill_process_group(process_group_id)?;
                             }
                         }
                         Err(_) => {
-                            kill_child_process_group(&mut child)?;
+                            if let Some(process_group_id) = process_group_id {
+                                kill_process_group(process_group_id)?;
+                            }
                             child.start_kill()?;
                         }
                     }
@@ -1156,8 +1149,7 @@ async fn consume_output(
         match drained {
             Some(Ok(output)) => output,
             failure => {
-                let cleanup = process_group_id
-                    .map_or(Ok(()), codex_utils_pty::process_group::kill_process_group);
+                let cleanup = process_group_id.map_or(Ok(()), kill_process_group);
                 stdout_handle.abort();
                 stderr_handle.abort();
                 if !stdout_done {

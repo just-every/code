@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::ExecServerHandler;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::ProcessId;
 use crate::protocol::ExecParams;
 use crate::protocol::InitializeParams;
@@ -77,8 +77,8 @@ fn windows_command_processor() -> String {
     std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
 }
 
-fn test_runtime_paths() -> ExecServerRuntimePaths {
-    ExecServerRuntimePaths::new(
+fn test_runtime_paths() -> ExecServerRuntimeOptions {
+    ExecServerRuntimeOptions::new(
         std::env::current_exe().expect("current exe"),
         /*codex_linux_sandbox_exe*/ None,
     )

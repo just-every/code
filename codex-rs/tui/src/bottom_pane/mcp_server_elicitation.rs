@@ -49,6 +49,7 @@ use crate::bottom_pane::selection_popup_common::menu_surface_inset;
 use crate::bottom_pane::selection_popup_common::menu_surface_padding_height;
 use crate::bottom_pane::selection_popup_common::render_menu_surface;
 use crate::bottom_pane::selection_popup_common::render_rows;
+use crate::footer_hint::shortcut;
 use crate::key_hint::ShortcutHint;
 use crate::keymap::KeymapContext;
 use crate::keymap::ListAction;
@@ -184,28 +185,6 @@ struct McpServerElicitationAnswerState {
     answer_committed: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FooterTip {
-    text: String,
-    highlight: bool,
-}
-
-impl FooterTip {
-    fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            highlight: false,
-        }
-    }
-
-    fn highlighted(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            highlight: true,
-        }
-    }
-}
-
 impl McpServerElicitationFormRequest {
     pub(crate) fn from_app_server_request(
         thread_id: ThreadId,
@@ -270,9 +249,9 @@ impl McpServerElicitationFormRequest {
             (McpServerElicitationResponseMode::FormContent, Vec::new())
         } else if is_message_only_schema {
             let allow_description = if is_tool_approval_action {
-                "Run the tool and continue."
+                "Run the tool and continue"
             } else {
-                "Allow this request and continue."
+                "Allow this request and continue"
             };
             let mut options = vec![McpServerElicitationOption {
                 label: "Allow".to_string(),
@@ -281,9 +260,9 @@ impl McpServerElicitationFormRequest {
             }];
             if approval_supports_persist_mode(meta, APPROVAL_PERSIST_SESSION_VALUE) {
                 let description = if is_tool_approval_action {
-                    "Run the tool and remember this choice for this session."
+                    "Run the tool and remember this choice for this session"
                 } else {
-                    "Allow this request and remember this choice for this session."
+                    "Allow this request and remember this choice for this session"
                 };
                 options.push(McpServerElicitationOption {
                     label: "Allow for this session".to_string(),
@@ -293,9 +272,9 @@ impl McpServerElicitationFormRequest {
             }
             if approval_supports_persist_mode(meta, APPROVAL_PERSIST_ALWAYS_VALUE) {
                 let description = if is_tool_approval_action {
-                    "Run the tool and remember this choice for future tool calls."
+                    "Run the tool and remember this choice for future tool calls"
                 } else {
-                    "Allow this request and remember this choice for future requests."
+                    "Allow this request and remember this choice for future requests"
                 };
                 options.push(McpServerElicitationOption {
                     label: "Always allow".to_string(),
@@ -313,7 +292,7 @@ impl McpServerElicitationFormRequest {
                 options.extend([
                     McpServerElicitationOption {
                         label: "Deny".to_string(),
-                        description: Some("Decline this request and continue.".to_string()),
+                        description: Some("Decline this request and continue".to_string()),
                         value: Value::String(APPROVAL_DECLINE_VALUE.to_string()),
                     },
                     McpServerElicitationOption {
@@ -942,6 +921,7 @@ impl McpServerElicitationOverlay {
                 let prefix_label = format!("{prefix} {number}. ");
                 let wrap_indent = UnicodeWidthStr::width(prefix_label.as_str());
                 GenericDisplayRow {
+                    selection_style: Some(crate::bottom_pane::selection_style()),
                     name: format!("{prefix_label}{}", option.label),
                     description: option.description.clone(),
                     wrap_indent: Some(wrap_indent),
@@ -988,7 +968,7 @@ impl McpServerElicitationOverlay {
         sections.join("\n\n")
     }
 
-    fn footer_tips(&self) -> Vec<FooterTip> {
+    fn footer_tips(&self) -> Vec<Line<'static>> {
         let mut tips = Vec::new();
         let is_last_field = self.current_index().saturating_add(1) >= self.field_count();
         let submit_hint = if self.current_field_is_select() {
@@ -998,30 +978,34 @@ impl McpServerElicitationOverlay {
         };
         if let Some(submit_hint) = submit_hint.map(ShortcutHint::display_label) {
             if self.field_count() == 1 {
-                tips.push(FooterTip::highlighted(format!("{submit_hint} to submit")));
+                tips.push(shortcut(&submit_hint, "to submit"));
             } else if is_last_field {
-                tips.push(FooterTip::highlighted(format!(
-                    "{submit_hint} to submit all"
-                )));
+                tips.push(shortcut(&submit_hint, "to submit all"));
             } else {
-                tips.push(FooterTip::new(format!("{submit_hint} to submit answer")));
+                tips.push(shortcut(&submit_hint, "to submit answer"));
             }
         }
         if self.field_count() > 1 {
             if self.current_field_is_select() {
-                tips.push(FooterTip::new("←/→ to navigate fields"));
+                tips.push(shortcut("←/→", "to navigate fields"));
             } else {
-                tips.push(FooterTip::new("ctrl + p / ctrl + n change field"));
+                tips.push(shortcut("ctrl+p / ctrl+n", "change field"));
             }
         }
-        tips.push(FooterTip::new("esc to cancel"));
+        tips.push(shortcut("esc", "to cancel"));
         tips
     }
 
-    fn footer_tip_lines(&self, width: u16) -> Vec<Vec<FooterTip>> {
+    fn footer_tip_lines(&self, width: u16) -> Vec<Vec<Line<'static>>> {
         let mut tips = Vec::new();
         if let Some(error) = self.validation_error.as_ref() {
-            tips.push(FooterTip::highlighted(error.clone()));
+            tips.push(Line::from(
+                error
+                    .clone()
+                    .fg(crate::style::accent_color())
+                    .bold()
+                    .not_dim(),
+            ));
         }
         tips.extend(self.footer_tips());
         wrap_footer_tips(width, tips)
@@ -1302,7 +1286,7 @@ impl McpServerElicitationOverlay {
             let line = if answered {
                 Line::from(line.clone())
             } else {
-                Line::from(line.clone()).cyan()
+                Line::from(line.clone()).fg(crate::style::accent_color())
             };
             Paragraph::new(line).render(
                 Rect {
@@ -1350,7 +1334,7 @@ impl McpServerElicitationOverlay {
         let option_tip = if options_hidden {
             let selected = self.selected_option_index().unwrap_or(0).saturating_add(1);
             let total = self.options_len();
-            Some(FooterTip::new(format!("option {selected}/{total}")))
+            Some(Line::from(format!("option {selected}/{total}").dim()))
         } else {
             None
         };
@@ -1372,11 +1356,7 @@ impl McpServerElicitationOverlay {
                 if tip_idx > 0 {
                     spans.push(FOOTER_SEPARATOR.into());
                 }
-                if tip.highlight {
-                    spans.push(tip.text.cyan().bold().not_dim());
-                } else {
-                    spans.push(tip.text.into());
-                }
+                spans.extend(tip.spans);
             }
             let line = Line::from(spans).dim();
             Paragraph::new(line).render(
@@ -1715,12 +1695,12 @@ impl BottomPaneView for McpServerElicitationOverlay {
     }
 }
 
-fn wrap_footer_tips(width: u16, tips: Vec<FooterTip>) -> Vec<Vec<FooterTip>> {
+fn wrap_footer_tips(width: u16, tips: Vec<Line<'static>>) -> Vec<Vec<Line<'static>>> {
     crate::footer_hint::wrap_hint_rows(
         tips,
         width,
         UnicodeWidthStr::width(FOOTER_SEPARATOR),
-        |tip| UnicodeWidthStr::width(tip.text.as_str()),
+        Line::width,
     )
 }
 
@@ -1953,12 +1933,12 @@ mod tests {
                         options: vec![
                             McpServerElicitationOption {
                                 label: "Allow".to_string(),
-                                description: Some("Allow this request and continue.".to_string()),
+                                description: Some("Allow this request and continue".to_string()),
                                 value: Value::String(APPROVAL_ACCEPT_ONCE_VALUE.to_string()),
                             },
                             McpServerElicitationOption {
                                 label: "Deny".to_string(),
-                                description: Some("Decline this request and continue.".to_string()),
+                                description: Some("Decline this request and continue".to_string()),
                                 value: Value::String(APPROVAL_DECLINE_VALUE.to_string()),
                             },
                             McpServerElicitationOption {
@@ -2010,7 +1990,7 @@ mod tests {
                         options: vec![
                             McpServerElicitationOption {
                                 label: "Allow".to_string(),
-                                description: Some("Run the tool and continue.".to_string()),
+                                description: Some("Run the tool and continue".to_string()),
                                 value: Value::String(APPROVAL_ACCEPT_ONCE_VALUE.to_string()),
                             },
                             McpServerElicitationOption {
@@ -2233,7 +2213,7 @@ mod tests {
             overlay
                 .footer_tips()
                 .iter()
-                .all(|tip| !tip.text.contains("submit"))
+                .all(|tip| !tip.to_string().contains("submit"))
         );
     }
 
@@ -2321,7 +2301,7 @@ mod tests {
             overlay
                 .footer_tips()
                 .iter()
-                .all(|tip| !tip.text.contains("submit"))
+                .all(|tip| !tip.to_string().contains("submit"))
         );
     }
 

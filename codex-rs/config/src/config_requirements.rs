@@ -178,7 +178,6 @@ pub struct ConfigRequirements {
     pub auto_review_required_models: Option<Sourced<BTreeSet<String>>>,
     pub permission_profile: ConstrainedWithSource<PermissionProfile>,
     pub windows_sandbox_mode: ConstrainedWithSource<Option<WindowsSandboxModeToml>>,
-    pub windows_sandbox_private_desktop: Option<Sourced<bool>>,
     pub web_search_mode: ConstrainedWithSource<WebSearchMode>,
     pub allow_managed_hooks_only: Option<Sourced<bool>>,
     pub allow_appshots: Option<Sourced<bool>>,
@@ -200,6 +199,8 @@ pub struct ConfigRequirements {
     pub additional_developer_instructions: Option<Sourced<String>>,
     /// Source for the managed guardian policy config, when one is configured.
     pub guardian_policy_config_source: Option<RequirementSource>,
+    /// Source for the managed extra guardian policy, when one is configured.
+    pub guardian_extra_policy_source: Option<RequirementSource>,
 }
 
 impl Default for ConfigRequirements {
@@ -234,7 +235,6 @@ impl Default for ConfigRequirements {
                 Constrained::allow_any(/*initial_value*/ None),
                 /*source*/ None,
             ),
-            windows_sandbox_private_desktop: None,
             web_search_mode: ConstrainedWithSource::new(
                 Constrained::allow_any(WebSearchMode::Cached),
                 /*source*/ None,
@@ -258,6 +258,7 @@ impl Default for ConfigRequirements {
             filesystem: None,
             additional_developer_instructions: None,
             guardian_policy_config_source: None,
+            guardian_extra_policy_source: None,
         }
     }
 }
@@ -435,6 +436,7 @@ pub struct NetworkRequirementsToml {
     /// network enforcement is active. User allowlist entries are ignored.
     pub managed_allowed_domains_only: Option<bool>,
     pub unix_sockets: Option<NetworkUnixSocketPermissionsToml>,
+    /// MXC requires true when managed networking is enabled; an explicit false is rejected.
     pub allow_local_binding: Option<bool>,
     /// Requirements-only header injections. These annotate matching requests
     /// without changing whether non-matching requests are allowed.
@@ -868,7 +870,6 @@ impl fmt::Display for WebSearchModeRequirement {
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct WindowsRequirementsToml {
     pub allowed_sandbox_implementations: Option<Vec<WindowsSandboxImplementationToml>>,
-    pub sandbox_private_desktop: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -880,7 +881,7 @@ pub enum WindowsSandboxImplementationToml {
 
 impl WindowsRequirementsToml {
     pub fn is_empty(&self) -> bool {
-        self.allowed_sandbox_implementations.is_none() && self.sandbox_private_desktop.is_none()
+        self.allowed_sandbox_implementations.is_none()
     }
 }
 
@@ -1072,6 +1073,7 @@ pub struct ConfigRequirementsToml {
     pub models: Option<ModelsRequirementsToml>,
     pub additional_developer_instructions: Option<String>,
     pub guardian_policy_config: Option<String>,
+    pub guardian_extra_policy: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -1177,6 +1179,7 @@ pub struct ConfigRequirementsWithSources {
     pub models: Option<Sourced<ModelsRequirementsToml>>,
     pub additional_developer_instructions: Option<Sourced<String>>,
     pub guardian_policy_config: Option<Sourced<String>>,
+    pub guardian_extra_policy: Option<Sourced<String>>,
 }
 
 impl ConfigRequirementsWithSources {
@@ -1240,6 +1243,7 @@ impl ConfigRequirementsWithSources {
             models: _,
             additional_developer_instructions: _,
             guardian_policy_config: _,
+            guardian_extra_policy: _,
         } = &other;
 
         let mut other = other;
@@ -1249,6 +1253,13 @@ impl ConfigRequirementsWithSources {
             .is_some_and(|value| value.trim().is_empty())
         {
             other.guardian_policy_config = None;
+        }
+        if other
+            .guardian_extra_policy
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            other.guardian_extra_policy = None;
         }
         fill_missing_take!(
             self,
@@ -1294,6 +1305,7 @@ impl ConfigRequirementsWithSources {
                 models,
                 additional_developer_instructions,
                 guardian_policy_config,
+                guardian_extra_policy,
             }
         );
 
@@ -1381,6 +1393,7 @@ impl ConfigRequirementsWithSources {
             models,
             additional_developer_instructions,
             guardian_policy_config,
+            guardian_extra_policy,
         } = self;
         ConfigRequirementsToml {
             allowed_login_methods: allowed_login_methods.map(|sourced| sourced.value),
@@ -1427,6 +1440,7 @@ impl ConfigRequirementsWithSources {
             additional_developer_instructions: additional_developer_instructions
                 .map(|sourced| sourced.value),
             guardian_policy_config: guardian_policy_config.map(|sourced| sourced.value),
+            guardian_extra_policy: guardian_extra_policy.map(|sourced| sourced.value),
         }
     }
 }
@@ -1576,6 +1590,10 @@ impl ConfigRequirementsToml {
                 .guardian_policy_config
                 .as_deref()
                 .is_none_or(|value| value.trim().is_empty())
+            && self
+                .guardian_extra_policy
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
     }
 
     /// Applies the requirements whose values replace config values.
@@ -1613,16 +1631,6 @@ impl ConfigRequirementsToml {
         if let Some(enabled) = self.feedback.as_ref().and_then(|feedback| feedback.enabled) {
             config.feedback.get_or_insert_default().enabled = Some(enabled);
         }
-        if let Some(sandbox_private_desktop) = self
-            .windows
-            .as_ref()
-            .and_then(|windows| windows.sandbox_private_desktop)
-        {
-            config
-                .windows
-                .get_or_insert_default()
-                .sandbox_private_desktop = Some(sandbox_private_desktop);
-        }
     }
 
     /// Returns the exact managed field affected by editing `segments`.
@@ -1634,7 +1642,7 @@ impl ConfigRequirementsToml {
         }) {
             return Some("model_providers");
         }
-        let managed_fields: [(bool, &[&str], &'static str); 10] = [
+        let managed_fields: [(bool, &[&str], &'static str); 9] = [
             (
                 self.model_provider.is_some(),
                 &["model_provider"],
@@ -1664,14 +1672,6 @@ impl ConfigRequirementsToml {
                     .is_some(),
                 &["feedback", "enabled"],
                 "feedback.enabled",
-            ),
-            (
-                self.windows
-                    .as_ref()
-                    .and_then(|windows| windows.sandbox_private_desktop)
-                    .is_some(),
-                &["windows", "sandbox_private_desktop"],
-                "windows.sandbox_private_desktop",
             ),
             (
                 self.cli_auth_credentials_store.is_some(),
@@ -1769,6 +1769,7 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             models: _,
             additional_developer_instructions,
             guardian_policy_config,
+            guardian_extra_policy,
         } = toml;
 
         let auto_review_required_models = auto_review
@@ -1914,74 +1915,62 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
                 /*source*/ None,
             ),
         };
-        let (windows_sandbox_mode, windows_sandbox_private_desktop) = match windows {
+        let windows_sandbox_mode = match windows {
             Some(Sourced {
                 value:
                     WindowsRequirementsToml {
-                        allowed_sandbox_implementations,
-                        sandbox_private_desktop,
+                        allowed_sandbox_implementations: Some(implementations),
                     },
                 source: requirement_source,
             }) => {
-                let sandbox_private_desktop = sandbox_private_desktop
-                    .map(|value| Sourced::new(value, requirement_source.clone()));
-                let sandbox_mode = match allowed_sandbox_implementations {
-                    Some(implementations) => {
-                        if implementations.is_empty() {
-                            return Err(ConstraintError::empty_field(
-                                "windows.allowed_sandbox_implementations",
-                            ));
-                        }
-                        // Prefer elevated when both Windows sandbox implementations are allowed.
-                        let initial_value = if implementations
-                            .contains(&WindowsSandboxImplementationToml::Elevated)
-                        {
-                            WindowsSandboxModeToml::Elevated
-                        } else {
-                            WindowsSandboxModeToml::Unelevated
-                        };
+                if implementations.is_empty() {
+                    return Err(ConstraintError::empty_field(
+                        "windows.allowed_sandbox_implementations",
+                    ));
+                }
+                // Prefer elevated when both Windows sandbox implementations are allowed.
+                let initial_value =
+                    if implementations.contains(&WindowsSandboxImplementationToml::Elevated) {
+                        WindowsSandboxModeToml::Elevated
+                    } else {
+                        WindowsSandboxModeToml::Unelevated
+                    };
 
-                        let requirement_source_for_error = requirement_source.clone();
-                        let constrained = Constrained::new(
-                            Some(initial_value),
-                            move |candidate| match candidate {
-                                Some(WindowsSandboxModeToml::Mxc) => Ok(()),
-                                Some(WindowsSandboxModeToml::Elevated)
-                                    if implementations
-                                        .contains(&WindowsSandboxImplementationToml::Elevated) =>
-                                {
-                                    Ok(())
-                                }
-                                Some(WindowsSandboxModeToml::Unelevated)
-                                    if implementations.contains(
-                                        &WindowsSandboxImplementationToml::Unelevated,
-                                    ) =>
-                                {
-                                    Ok(())
-                                }
-                                _ => Err(ConstraintError::InvalidValue {
-                                    field_name: "windows.sandbox",
-                                    candidate: format!("{candidate:?}"),
-                                    allowed: format!("{implementations:?}"),
-                                    requirement_source: requirement_source_for_error.clone(),
-                                }),
-                            },
-                        )?;
-                        ConstrainedWithSource::new(constrained, Some(requirement_source))
-                    }
-                    None => ConstrainedWithSource::new(
-                        Constrained::allow_any(/*initial_value*/ None),
-                        /*source*/ None,
-                    ),
-                };
-                (sandbox_mode, sandbox_private_desktop)
+                let requirement_source_for_error = requirement_source.clone();
+                let constrained =
+                    Constrained::new(Some(initial_value), move |candidate| match candidate {
+                        Some(WindowsSandboxModeToml::Mxc) => Ok(()),
+                        Some(WindowsSandboxModeToml::Elevated)
+                            if implementations
+                                .contains(&WindowsSandboxImplementationToml::Elevated) =>
+                        {
+                            Ok(())
+                        }
+                        Some(WindowsSandboxModeToml::Unelevated)
+                            if implementations
+                                .contains(&WindowsSandboxImplementationToml::Unelevated) =>
+                        {
+                            Ok(())
+                        }
+                        _ => Err(ConstraintError::InvalidValue {
+                            field_name: "windows.sandbox",
+                            candidate: format!("{candidate:?}"),
+                            allowed: format!("{implementations:?}"),
+                            requirement_source: requirement_source_for_error.clone(),
+                        }),
+                    })?;
+                ConstrainedWithSource::new(constrained, Some(requirement_source))
             }
-            None => (
-                ConstrainedWithSource::new(
-                    Constrained::allow_any(/*initial_value*/ None),
-                    /*source*/ None,
-                ),
-                None,
+            Some(Sourced {
+                value:
+                    WindowsRequirementsToml {
+                        allowed_sandbox_implementations: None,
+                    },
+                ..
+            })
+            | None => ConstrainedWithSource::new(
+                Constrained::allow_any(/*initial_value*/ None),
+                /*source*/ None,
             ),
         };
         let exec_policy = match rules {
@@ -2107,6 +2096,7 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             Sourced::new(FilesystemConstraints::from(value), source)
         });
         let guardian_policy_config_source = guardian_policy_config.map(|sourced| sourced.source);
+        let guardian_extra_policy_source = guardian_extra_policy.map(|sourced| sourced.source);
         Ok(ConfigRequirements {
             allowed_login_methods,
             allowed_chatgpt_workspaces,
@@ -2125,7 +2115,6 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             auto_review_required_models,
             permission_profile,
             windows_sandbox_mode,
-            windows_sandbox_private_desktop,
             web_search_mode,
             allow_managed_hooks_only,
             allow_appshots,
@@ -2143,6 +2132,7 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             filesystem,
             additional_developer_instructions,
             guardian_policy_config_source,
+            guardian_extra_policy_source,
         })
     }
 }
@@ -2218,10 +2208,6 @@ mod tests {
             feedback: Some(FeedbackConfigToml {
                 enabled: Some(false),
             }),
-            windows: Some(WindowsRequirementsToml {
-                sandbox_private_desktop: Some(false),
-                ..Default::default()
-            }),
             ..Default::default()
         };
         let cases: &[(&[&str], Option<&str>)] = &[
@@ -2239,16 +2225,8 @@ mod tests {
             ),
             (&["allow_login_shell"], Some("allow_login_shell")),
             (&["feedback", "enabled"], Some("feedback.enabled")),
-            (
-                &["windows", "sandbox_private_desktop"],
-                Some("windows.sandbox_private_desktop"),
-            ),
             (&[], Some("sqlite_home")),
             (&["feedback"], Some("feedback.enabled")),
-            (
-                &["windows", "sandbox_private_desktop", "value"],
-                Some("windows.sandbox_private_desktop"),
-            ),
             (&["feedback", "other"], None),
             (&["windows", "sandbox"], None),
         ];
@@ -2326,6 +2304,7 @@ mod tests {
             models,
             additional_developer_instructions,
             guardian_policy_config,
+            guardian_extra_policy,
         } = toml;
         ConfigRequirementsWithSources {
             allowed_login_methods: allowed_login_methods
@@ -2392,6 +2371,8 @@ mod tests {
             additional_developer_instructions: additional_developer_instructions
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
             guardian_policy_config: guardian_policy_config
+                .map(|value| Sourced::new(value, RequirementSource::Unknown)),
+            guardian_extra_policy: guardian_extra_policy
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
         }
     }
@@ -2845,13 +2826,13 @@ mod tests {
             enabled: Some(false),
         };
         let windows = WindowsRequirementsToml {
-            allowed_sandbox_implementations: None,
-            sandbox_private_desktop: Some(true),
+            allowed_sandbox_implementations: Some(vec![WindowsSandboxImplementationToml::Elevated]),
         };
         let enforce_residency = ResidencyRequirement::Us;
         let enforce_source = source.clone();
         let additional_developer_instructions = "Follow the company policy.".to_string();
         let guardian_policy_config = "Use the company-managed guardian policy.".to_string();
+        let guardian_extra_policy = "Use the company-managed extra policy.".to_string();
 
         // Intentionally constructed without `..Default::default()` so adding a new field to
         // `ConfigRequirementsToml` forces this test to be updated.
@@ -2898,6 +2879,7 @@ mod tests {
             models: Some(models.clone()),
             additional_developer_instructions: Some(additional_developer_instructions.clone()),
             guardian_policy_config: Some(guardian_policy_config.clone()),
+            guardian_extra_policy: Some(guardian_extra_policy.clone()),
         };
 
         target.merge_unset_fields(source.clone(), other);
@@ -2987,7 +2969,8 @@ mod tests {
                     additional_developer_instructions,
                     source.clone(),
                 )),
-                guardian_policy_config: Some(Sourced::new(guardian_policy_config, source)),
+                guardian_policy_config: Some(Sourced::new(guardian_policy_config, source.clone())),
+                guardian_extra_policy: Some(Sourced::new(guardian_extra_policy, source)),
             }
         );
     }
@@ -3052,6 +3035,7 @@ mod tests {
         let populated_requirements: ConfigRequirementsToml = from_str(
             r#"
                 allowed_approval_policies = ["never"]
+                guardian_extra_policy = "Use the managed extra policy."
             "#,
         )?;
         populated_target.merge_unset_fields(existing_source.clone(), populated_requirements);
@@ -3059,6 +3043,7 @@ mod tests {
         let source: ConfigRequirementsToml = from_str(
             r#"
                 allowed_approval_policies = ["on-request"]
+                guardian_extra_policy = "Use the lower-priority extra policy."
             "#,
         )?;
         let source_location = RequirementSource::MdmManagedPreferences {
@@ -3072,7 +3057,7 @@ mod tests {
             ConfigRequirementsWithSources {
                 allowed_approval_policies: Some(Sourced::new(
                     vec![AskForApproval::Never],
-                    existing_source,
+                    existing_source.clone(),
                 )),
                 allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
@@ -3099,6 +3084,10 @@ mod tests {
                 permissions: None,
                 models: None,
                 guardian_policy_config: None,
+                guardian_extra_policy: Some(Sourced::new(
+                    "Use the managed extra policy.".to_string(),
+                    existing_source,
+                )),
                 ..Default::default()
             }
         );
@@ -3112,29 +3101,35 @@ mod tests {
             RequirementSource::LegacyManagedConfigTomlFromMdm,
             ConfigRequirementsToml {
                 guardian_policy_config: Some("   \n\t".to_string()),
+                guardian_extra_policy: Some("   \n\t".to_string()),
                 ..Default::default()
             },
         );
+        let source = RequirementSource::SystemRequirementsToml {
+            file: system_requirements_toml_file_for_test().expect("system requirements.toml path"),
+        };
         target.merge_unset_fields(
-            RequirementSource::SystemRequirementsToml {
-                file: system_requirements_toml_file_for_test()
-                    .expect("system requirements.toml path"),
-            },
+            source.clone(),
             ConfigRequirementsToml {
                 guardian_policy_config: Some("Use the system guardian policy.".to_string()),
+                guardian_extra_policy: Some("Use the system extra policy.".to_string()),
                 ..Default::default()
             },
         );
 
         assert_eq!(
-            target.guardian_policy_config,
-            Some(Sourced::new(
-                "Use the system guardian policy.".to_string(),
-                RequirementSource::SystemRequirementsToml {
-                    file: system_requirements_toml_file_for_test()
-                        .expect("system requirements.toml path"),
-                },
-            )),
+            target,
+            ConfigRequirementsWithSources {
+                guardian_policy_config: Some(Sourced::new(
+                    "Use the system guardian policy.".to_string(),
+                    source.clone(),
+                )),
+                guardian_extra_policy: Some(Sourced::new(
+                    "Use the system extra policy.".to_string(),
+                    source,
+                )),
+                ..Default::default()
+            },
         );
     }
 
@@ -3145,27 +3140,36 @@ mod tests {
 guardian_policy_config = """
 Use the cloud-managed guardian policy.
 """
+guardian_extra_policy = """
+Use the cloud-managed extra policy.
+"""
 "#,
         )?;
 
         assert_eq!(
-            requirements.guardian_policy_config.as_deref(),
-            Some("Use the cloud-managed guardian policy.\n")
+            requirements,
+            ConfigRequirementsToml {
+                guardian_policy_config: Some(
+                    "Use the cloud-managed guardian policy.\n".to_string()
+                ),
+                guardian_extra_policy: Some("Use the cloud-managed extra policy.\n".to_string()),
+                ..Default::default()
+            }
         );
         Ok(())
     }
 
     #[test]
     fn blank_guardian_policy_config_is_empty() -> Result<()> {
-        let requirements: ConfigRequirementsToml = from_str(
-            r#"
-guardian_policy_config = """
+        for key in ["guardian_policy_config", "guardian_extra_policy"] {
+            let requirements: ConfigRequirementsToml =
+                from_str(&format!("{key} = \"\"\"\n\n\"\"\"\n"))?;
+            assert!(requirements.is_empty(), "{key}");
 
-"""
-"#,
-        )?;
-
-        assert!(requirements.is_empty());
+            let requirements: ConfigRequirementsToml =
+                from_str(&format!("{key} = \"Use the managed policy.\"\n"))?;
+            assert!(!requirements.is_empty(), "{key}");
+        }
         Ok(())
     }
 

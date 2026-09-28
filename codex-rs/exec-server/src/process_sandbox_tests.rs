@@ -40,7 +40,7 @@ use super::prepare_exec_request_with_telemetry;
 #[cfg(unix)]
 use crate::CODEX_ARG0_EXEC_HELPER_ARG1;
 use crate::ExecParams;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 #[cfg(any(unix, windows))]
 use crate::FileSystemSandboxContext;
 use crate::ProcessId;
@@ -49,7 +49,7 @@ use crate::process_telemetry::ProcessTelemetry;
 async fn prepare_exec_request(
     params: &ExecParams,
     env: HashMap<String, String>,
-    runtime_paths: Option<&ExecServerRuntimePaths>,
+    runtime_paths: Option<&ExecServerRuntimeOptions>,
     network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     network_policy_audit_observer: Option<NetworkPolicyAuditObserver>,
 ) -> Result<PreparedExecRequest, JSONRPCErrorError> {
@@ -72,7 +72,7 @@ async fn sandbox_request_wraps_native_argv_on_executor() {
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let self_exe = std::env::current_exe().expect("current executable");
     let runtime_paths =
-        ExecServerRuntimePaths::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
+        ExecServerRuntimeOptions::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
     let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::workspace_write(),
         cwd_uri.clone(),
@@ -192,7 +192,7 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let self_exe = std::env::current_exe().expect("current executable");
     let runtime_paths =
-        ExecServerRuntimePaths::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
+        ExecServerRuntimeOptions::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
     let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::workspace_write(),
         cwd_uri.clone(),
@@ -246,7 +246,7 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
 }
 
 #[cfg(target_os = "macos")]
-fn managed_network_sandbox_request() -> (ExecParams, ExecServerRuntimePaths) {
+fn managed_network_sandbox_request() -> (ExecParams, ExecServerRuntimeOptions) {
     let cwd: AbsolutePathBuf = std::env::current_dir()
         .expect("current directory")
         .try_into()
@@ -254,7 +254,7 @@ fn managed_network_sandbox_request() -> (ExecParams, ExecServerRuntimePaths) {
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let self_exe = std::env::current_exe().expect("current executable");
     let runtime_paths =
-        ExecServerRuntimePaths::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
+        ExecServerRuntimeOptions::new(self_exe.clone(), Some(self_exe)).expect("runtime paths");
     let sandbox = FileSystemSandboxContext::from_permission_profile(
         PermissionProfile::workspace_write(),
         cwd_uri.clone(),
@@ -646,7 +646,7 @@ async fn managed_network_honors_windows_sandbox_level(windows_sandbox_level: Win
         .expect("absolute cwd");
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let self_exe = std::env::current_exe().expect("current executable");
-    let runtime_paths = ExecServerRuntimePaths::new(self_exe, None).expect("runtime paths");
+    let runtime_paths = ExecServerRuntimeOptions::new(self_exe, None).expect("runtime paths");
     let permissions = PermissionProfile::read_only();
     let mut sandbox =
         FileSystemSandboxContext::from_permission_profile(permissions.clone(), cwd_uri.clone());

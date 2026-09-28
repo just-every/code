@@ -7,6 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio_stream::StreamExt;
 
 use super::StartupDraftInitialScreen;
 use super::StartupDraftPump;
@@ -27,8 +28,20 @@ where
     I: Iterator<Item = TuiEvent> + Send + 'static,
 {
     let (tx, rx) = unbounded_channel();
+    let mut blossom = crate::empty_state_animation::EmptyStateAnimation::default();
+    blossom
+        .greeting
+        .set(crate::empty_state_animation::Greeting {
+            phrase: "Pull up a prompt.",
+        })
+        .expect("initial greeting");
+    blossom.start_fresh();
+    let mut header = startup_session_header(/*config*/ None);
+    crate::history_cell::set_session_greeting(header.as_mut(), &blossom.greeting);
     StartupDraftPump {
-        header: startup_session_header(/*config*/ None),
+        header,
+        blossom: std::cell::RefCell::new(blossom),
+        motion: crate::motion::MotionMode::Animated,
         bottom_pane: startup_draft_bottom_pane(
             AppEventSender::new(tx),
             FrameRequester::test_dummy(),
@@ -38,7 +51,12 @@ where
         app_event_rx: rx,
         initial_screen: StartupDraftInitialScreen::Composer,
         session_action: StartupDraftSessionAction::New,
+        resolved_selection: None,
+        configured_cwd: None,
         pending_paste_newline: None,
+        submission_pending: false,
+        key_chord_matcher: Default::default(),
+        key_chords: crate::keymap::RuntimeKeymap::defaults().chords,
     }
 }
 
@@ -48,9 +66,14 @@ pub(crate) fn quiet_startup_test_pump() -> StartupDraftPump {
     pump
 }
 
+pub(crate) fn startup_test_pump_with_input(text: &str) -> StartupDraftPump {
+    let mut pump = startup_test_pump(std::iter::once(TuiEvent::Paste(text.to_string())));
+    pump.events = Box::pin(pump.events.chain(futures::stream::pending()));
+    pump
+}
+
 #[test]
 fn startup_draft_renders_full_empty_and_multiline_composer_frames() {
-    let mut pump = startup_test_pump(std::iter::empty());
     let mut snapshots = Vec::new();
 
     for (label, width, text, session_action) in [
@@ -75,7 +98,15 @@ fn startup_draft_renders_full_empty_and_multiline_composer_frames() {
             StartupDraftSessionAction::New,
         ),
     ] {
+        let mut pump = startup_test_pump(std::iter::empty());
         pump.session_action = session_action;
+        // Resume and fork have no fresh-thread greeting. Exercise the real initial state.
+        if matches!(
+            session_action,
+            StartupDraftSessionAction::Resume | StartupDraftSessionAction::Fork
+        ) {
+            pump.header = startup_session_header(/*config*/ None);
+        }
         pump.bottom_pane
             .set_composer_text(text.to_string(), Vec::new(), Vec::new());
         let renderable =
@@ -121,6 +152,63 @@ fn startup_draft_renders_full_empty_and_multiline_composer_frames() {
     }
 
     insta::assert_snapshot!("startup_draft_full_frames", snapshots.join("\n---\n"));
+}
+
+#[test]
+fn terminal_app_ssh_fallback_renders_inline_startup() {
+    let pump = startup_test_pump(std::iter::empty());
+    let owned_layout = super::layout::OwnedStartupLayout::new(&pump);
+    let mut frames = Vec::new();
+    for terminal_app_over_ssh in [false, true] {
+        let owned = crate::determine_alt_screen_mode(
+            /*no_alt_screen*/ false,
+            codex_config::types::AltScreenMode::Auto,
+            terminal_app_over_ssh,
+        );
+        let renderable = if owned {
+            crate::render::renderable::RenderableItem::Borrowed(&owned_layout)
+        } else {
+            startup_draft_renderable(
+                &pump.header,
+                &pump.bottom_pane,
+                StartupDraftSessionAction::New,
+            )
+        };
+        let width = 48;
+        let height = if owned {
+            16
+        } else {
+            renderable.desired_height(width)
+        };
+        let area = Rect::new(/*x*/ 0, /*y*/ 0, width, height);
+        let mut buffer = Buffer::empty(area);
+        renderable.render(area, &mut buffer);
+        assert!(
+            buffer
+                .content
+                .iter()
+                .any(|cell| { cell.symbol() == ">" && cell.fg == crate::style::accent_color() })
+        );
+        let frame = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frames.push(format!(
+            "terminal_app_over_ssh={terminal_app_over_ssh}, owned={owned}\n{frame}"
+        ));
+    }
+    insta::assert_snapshot!(
+        "terminal_app_ssh_startup",
+        frames
+            .join("\n---\n")
+            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
+    );
 }
 
 #[tokio::test]
@@ -176,11 +264,12 @@ async fn startup_draft_clears_loading_status_when_starting_fresh() {
         let mut pump = startup_test_pump(std::iter::empty());
         pump.initial_screen = initial_screen;
         pump.session_action = session_action;
+        pump.blossom.borrow_mut().dismiss();
         if initial_screen == StartupDraftInitialScreen::Composer {
             pump.bottom_pane.insert_str("draft while loading");
         }
         let mut tui = crate::tui::test_support::make_test_tui().expect("create test terminal");
-        pump.show_initial_screen(&mut tui)
+        pump.redraw_if_visible(&mut tui)
             .expect("respect the initial composer or picker screen");
         let before = if tui.terminal.viewport_area.is_empty() {
             "hidden while picker owns input".to_string()
@@ -190,6 +279,7 @@ async fn startup_draft_clears_loading_status_when_starting_fresh() {
 
         pump.update_session_selection(&mut tui, &SessionSelection::StartFresh)
             .expect("clear the loading status after a fresh-session selection");
+        assert!(pump.blossom.borrow().is_eligible());
         if initial_screen == StartupDraftInitialScreen::SessionPicker {
             assert!(tui.terminal.viewport_area.is_empty());
             pump.show(&mut tui)
@@ -224,21 +314,15 @@ async fn startup_draft_hydrates_its_header_without_moving_the_composer() {
         startup_draft_renderable(&pump.header, &pump.bottom_pane, pump.session_action)
             .desired_height(width);
 
-    assert_eq!(
-        pump.header.raw_lines().last().map(ToString::to_string),
-        Some("directory: loading".to_string())
-    );
+    assert_eq!(pump.header.raw_lines()[2].to_string().trim(), "loading");
     pump.apply_config(&config);
-    let expected_directory = format!(
-        "directory: {}",
-        crate::history_cell::SessionHeaderHistoryCell::format_directory_inner(
-            config.cwd.as_path(),
-            /*max_width*/ None,
-        )
+    let expected_directory = crate::history_cell::SessionHeaderHistoryCell::format_directory_inner(
+        config.cwd.as_path(),
+        /*max_width*/ None,
     );
     assert_eq!(
-        pump.header.raw_lines().last().map(ToString::to_string),
-        Some(expected_directory)
+        pump.header.raw_lines()[2].to_string().trim(),
+        expected_directory
     );
     assert_eq!(
         startup_draft_renderable(&pump.header, &pump.bottom_pane, pump.session_action)
@@ -354,7 +438,7 @@ fn startup_draft_preserves_multiline_editing_without_submitting() {
     assert!(pump.app_event_rx.try_recv().is_err());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn startup_draft_preserves_non_bracketed_multiline_pastes_without_submitting() {
     let events = "first line\n\nsecond line\nthird line"
         .chars()
@@ -374,6 +458,7 @@ async fn startup_draft_preserves_non_bracketed_multiline_pastes_without_submitti
     pump.flush_pending_events(&mut tui)
         .await
         .expect("preserve multiline non-bracketed paste");
+    assert!(!pump.submission_pending);
 
     assert_eq!(
         pump.bottom_pane.composer_text(),
@@ -504,8 +589,15 @@ fn startup_draft_allows_local_editor_shortcuts_without_startup_actions() {
     .expect("use a configured editor movement");
     assert_eq!(pump.bottom_pane.composer_cursor(), 0);
 
-    for key in [
+    handle_startup_draft_key(
+        &mut pump.bottom_pane,
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    )
+    .expect("honor Enter rebound to local newline editing");
+    assert_eq!(pump.bottom_pane.composer_cursor(), 1);
+    assert_eq!(pump.bottom_pane.composer_text(), "\nfirst ");
+
+    for key in [
         KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -528,8 +620,8 @@ fn startup_draft_allows_local_editor_shortcuts_without_startup_actions() {
         )
         .expect("ignore configured plain composer actions");
     }
-    assert_eq!(pump.bottom_pane.composer_cursor(), 0);
-    assert_eq!(pump.bottom_pane.composer_text(), "first ");
+    assert_eq!(pump.bottom_pane.composer_cursor(), 1);
+    assert_eq!(pump.bottom_pane.composer_text(), "\nfirst ");
     assert!(pump.app_event_rx.try_recv().is_err());
 }
 
@@ -626,6 +718,16 @@ async fn startup_draft_applies_editor_keymap_without_enabling_vim() {
     )
     .expect("honor a configured safe editor shortcut");
     assert_eq!(pump.bottom_pane.composer_cursor(), 0);
+    let mut tui = crate::tui::test_support::make_test_tui().expect("create test terminal");
+    pump.handle_event(&mut tui, TuiEvent::Key(KeyEvent::from(KeyCode::Enter)))
+        .expect("confirm draft");
+    pump.apply_config(&config);
+    assert!(pump.submission_pending);
+    config.tui_keymap.composer.submit =
+        Some(codex_config::types::KeybindingsSpec::Many(Vec::new()));
+    pump.apply_config(&config);
+    assert!(!pump.submission_pending);
+    assert_eq!(pump.bottom_pane.composer_text(), "draftx");
 }
 
 #[tokio::test]
@@ -634,7 +736,7 @@ async fn startup_draft_waits_for_onboarding_before_accepting_input() {
     let mut composer_tui =
         crate::tui::test_support::make_test_tui().expect("create composer test terminal");
     composer_pump
-        .show_initial_screen(&mut composer_tui)
+        .redraw_if_visible(&mut composer_tui)
         .expect("draw the composer when no protected screen is expected");
     assert!(!composer_tui.terminal.viewport_area.is_empty());
     drop(composer_tui);
@@ -669,7 +771,7 @@ async fn startup_draft_waits_for_onboarding_before_accepting_input() {
             StartupDraftInitialScreen::Composer
         };
     let mut tui = crate::tui::test_support::make_test_tui().expect("create test terminal");
-    pump.show_initial_screen(&mut tui)
+    pump.redraw_if_visible(&mut tui)
         .expect("keep the composer hidden until onboarding finishes");
 
     pump.flush_pending_events(&mut tui)

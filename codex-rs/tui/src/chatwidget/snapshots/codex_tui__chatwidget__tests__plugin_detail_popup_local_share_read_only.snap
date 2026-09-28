@@ -7,13 +7,14 @@ expression: strip_osc8_for_snapshot(&popup)
   Data shared with this app is subject to the app's terms of service and privacy policy. Learn more.
   Workspace docs.
 
-› 1. Back to plugins  Return to the plugin list.
-  2. Install plugin   Install this plugin now.
+
+› 1. Back to plugins  Return to the plugin list
+  2. Install plugin   Install this plugin now
      Source           Local
      Auth             Auth on install
      Version          remote 7
      Sharing          Private · creator Test User · https://chatgpt.com/codex/plugins/share/docs
-     Skills           No plugin skills.
-     Hooks            No plugin hooks.
-
-  Press esc to close.
+     Skills           No plugin skills
+     Hooks            No plugin hooks
+↓
+  esc close

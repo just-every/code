@@ -8,19 +8,27 @@ production dependency is needed.
 
 | Family | Supported syntax |
 | --- | --- |
-| `flowchart`, `graph` | TD/TB, BT, LR, RL; rectangle and decision labels; directed and labeled `-->` edges; chains, branches, merges, loops |
+| `flowchart`, `graph` | TD/TB (default), BT, LR, RL; rectangle `[label]`, decision `{label}`, and stadium `([label])` nodes; solid `-->`/`---`/`<-->` and dashed `-.->`/`-.-`/`<-.->` edges; pipe labels and spaced directed infix labels (`-- text -->`, `-. text .->`); `&` fan-out/fan-in, chains, branches, merges, loops |
 | `sequenceDiagram` | Implicit participants, `participant`/`actor`, aliases, `->`, `->>`, `-->`, `-->>`, `-x`, `--x`, self-messages, `Note over A[,B]`, nested `loop`/`alt`/`opt`/`critical`/`break`, one labeled `else` per `alt` |
 | `stateDiagram-v2`, `stateDiagram` | Flat states, `state "label" as ID`, descriptions, directed transitions with optional labels, initial/final `[*]`, direction declarations |
 | `classDiagram` | `class ID`, multiline member bodies, `ID : member`, solid/dashed links, association, inheritance, composition, aggregation, dependency, realization, quoted endpoint cardinalities, relationship labels, direction declarations |
 | `erDiagram` | Entities, multiline attribute bodies, `type name [PK, FK, UK] ["comment"]`, all four endpoint cardinalities, identifying/non-identifying relationships, relationship labels, direction declarations |
 
 Identifiers are ASCII letters followed by letters, digits, or underscores. Text
-supports ordinary Unicode and CJK. Full-line `%%` comments and semicolon-separated
-statements are supported; semicolons inside labels are not. Member/attribute bodies
-need a separate statement for each opening brace, member, and closing brace (for
-example `class Order {` followed by member lines and a final `}`). Class member text
-is retained in one compartment, including visibility, signatures, and return types.
-ER attribute types and names use the identifier grammar above.
+supports ordinary Unicode and CJK. Full-line `%%` comments and
+semicolon-separated statements are supported outside flowchart labels, quoted
+tokens, and class bodies. Sequence quotes are literal text; use newlines between
+class members, whose semicolons remain text. Member/attribute bodies need a
+separate statement for each opening brace, member, and closing brace (for
+example `class Order {` followed by member lines and a final `}`). Class member
+text is retained in one compartment, including visibility, signatures, and
+return types. ER attribute types and names use the identifier grammar above.
+
+Flowchart node and edge labels may be enclosed in double quotes. Literal
+ampersands are supported in labels, as is printable punctuation after parsing.
+Quotes protect flowchart label delimiters such as brackets, pipes, and
+semicolons. HTML and entity escapes remain unsupported and return an error
+before statement splitting.
 
 These are explicit subsets, not complete Mermaid compatibility. Compound states,
 flowchart subgraphs, other shapes, sequence activation and parallel fragments,
@@ -32,7 +40,7 @@ on any error; the library never returns a partial diagram.
 
 Graph nodes appear in declaration/first-reference order, in the requested direction.
 Each edge gets its own lane and endpoint positions. Crossings use `╪` and never
-join routes. Decisions use `◇` inside a box. Horizontal layouts
+join routes. Decisions use `◇` inside a box; stadiums use rounded box corners. Horizontal layouts
 reserve a text gutter for every endpoint, which can make connected graphs wide;
 the caller receives `TooWide` if the complete output does not fit.
 
@@ -51,8 +59,8 @@ named participants. States use separate `● initial` and `◎ final` nodes.
 
 ## Limits and evaluation
 
-All inputs are limited to 16 KiB. Graphs allow 16 nodes, 24 edges, and 16 members per
-node. Sequences allow 8 participants, 64 events (including fragment boundaries),
+All inputs are limited to 16 KiB. Graphs allow 16 nodes, 24 edges (after expanding
+`&` groups), and 16 members per node. Each `&` group allows at most 24 node references. Sequences allow 8 participants, 64 events (including fragment boundaries),
 and 4 fragment levels. Source labels and identifiers are limited to 40 display
 cells/ASCII bytes respectively. Rendered canvases are capped at 65,536 cells,
 independent of the caller's maximum width. The library performs no I/O.

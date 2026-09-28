@@ -23,6 +23,7 @@ use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 struct FileArgumentLocation<'a> {
     field_name: &'a str,
@@ -213,10 +214,12 @@ async fn build_uploaded_argument_value(
             OPENAI_FILE_UPLOAD_LIMIT_BYTES,
         )));
     }
-    let contents = fs
-        .read_file_stream(&path_uri, sandbox.as_ref())
-        .await
-        .map_err(|error| contextualize_error(error.to_string()))?;
+    // Keep the initial read permission check before allocating a remote file record.
+    let mut first_contents = Some(
+        fs.read_file_stream(&path_uri, sandbox.as_ref())
+            .await
+            .map_err(|error| contextualize_error(error.to_string()))?,
+    );
     let file_name = path_uri
         .basename()
         .or_else(|| {
@@ -228,6 +231,18 @@ async fn build_uploaded_argument_value(
             })
         })
         .unwrap_or_else(|| "file".to_string());
+    let open_contents = move || {
+        let first_contents = first_contents.take();
+        let fs = Arc::clone(&fs);
+        let path_uri = path_uri.clone();
+        let sandbox = sandbox.clone();
+        async move {
+            match first_contents {
+                Some(contents) => Ok(contents),
+                None => fs.read_file_stream(&path_uri, sandbox.as_ref()).await,
+            }
+        }
+    };
     let upload_auth = codex_model_provider::auth_provider_from_auth(auth);
     let uploaded = upload_openai_file(
         turn_context.config.chatgpt_base_url.trim_end_matches('/'),
@@ -235,7 +250,7 @@ async fn build_uploaded_argument_value(
         &sess.services.openai_file_upload_client_pool,
         file_name,
         metadata.size,
-        contents,
+        open_contents,
         hosted_upload,
     )
     .await
@@ -280,7 +295,8 @@ mod tests {
 
     fn set_primary_environment_cwd(turn_context: &mut TurnContext, cwd: &Path) {
         let cwd = AbsolutePathBuf::try_from(cwd).expect("absolute path");
-        let TurnEnvironmentState::Ready(primary) = &mut turn_context.environments.environments[0]
+        let TurnEnvironmentState::Ready(primary) =
+            &mut turn_context.initial_environments.environments[0]
         else {
             panic!("expected ready primary environment");
         };
@@ -364,30 +380,34 @@ mod tests {
             .expect("write local file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
         let environment = turn_context
-            .environments
+            .initial_environments
             .primary()
             .expect("ready primary environment");
         let selection = environment.selection();
         let environment_config = environment.config().clone();
+        let local_windows_sandbox_type = environment_config.windows_sandbox_type;
         let environments = crate::environment_selection::ThreadEnvironments::new(
             session.services.turn_environments.environment_manager(),
             crate::shell::default_user_shell(),
-            environment_config.clone(),
+            crate::session::ThreadEnvironmentDefaults::new(
+                environment_config,
+                local_windows_sandbox_type,
+            ),
             crate::shell_snapshot::ShellSnapshot::disabled(),
             Default::default(),
             /*non_blocking_snapshots*/ true,
         );
-        environments.update_selections(std::slice::from_ref(&selection), &environment_config);
-        turn_context.environments = environments.snapshot().await;
+        environments.update_selections(std::slice::from_ref(&selection));
+        turn_context.initial_environments = environments.snapshot().await;
         turn_context
-            .environments
+            .initial_environments
             .starting()
             .next()
             .expect("environment should initially be starting")
             .wait_until_ready()
             .await
             .expect("environment should become ready");
-        let step_environments = turn_context.environments.refresh_readiness();
+        let step_environments = turn_context.initial_environments.refresh_readiness();
 
         let mut config = (*turn_context.config).clone();
         config.chatgpt_base_url = format!("{}/backend-api", server.uri());

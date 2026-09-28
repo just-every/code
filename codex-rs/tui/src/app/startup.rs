@@ -2,10 +2,12 @@
 //!
 //! Owns the main app run loop from app-server bootstrap through terminal shutdown. Startup input
 //! remains isolated from protected interactive requests until the initialized composer owns it.
+//! Queued resume history replaces the provisional loading frame only when it is ready to render.
 
 use super::reconnect::ReconnectState;
 use super::*;
 use crate::session_start::SessionStartAction;
+use crate::session_start::SessionStartConfig;
 use crate::session_start::SessionStartOutcome;
 use crate::session_start::cancel_session_start;
 use crate::session_start::complete_session_start;
@@ -99,6 +101,26 @@ pub(super) fn startup_model(
 }
 
 impl App {
+    /// Keep the provisional loading frame until queued history reaches the owned transcript.
+    /// Visible startup decisions and the agent overview must still render immediately.
+    pub(super) fn render_startup_frame(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_event_rx: &mpsc::UnboundedReceiver<AppEvent>,
+    ) -> Result<()> {
+        if tui.is_owned_screen() && !app_event_rx.is_empty() && !self.chat_widget.has_active_view()
+        {
+            return Ok(());
+        }
+        self.chat_widget.pre_draw_tick();
+        self.render_chat_widget_frame(tui, tui.terminal.last_known_screen_size)?;
+        if self.chat_widget.has_active_modal() && self.startup_protected_input_boundary {
+            tui.discard_pending_input_before_interactive_screen()?;
+            self.startup_pending_protected_request = false;
+        }
+        Ok(())
+    }
+
     /// Recognizes queued requests before they become visible protected screens.
     pub(super) fn has_queued_startup_protected_request(&self) -> bool {
         self.startup_protected_input_boundary
@@ -171,17 +193,9 @@ impl App {
             Err(error.into())
         }
 
-        fn render_startup_frame(app: &mut App, tui: &mut tui::Tui) -> Result<()> {
-            app.chat_widget.pre_draw_tick();
-            app.render_chat_widget_frame(tui, tui.terminal.last_known_screen_size)?;
-            if app.chat_widget.has_active_view() && app.startup_protected_input_boundary {
-                tui.discard_pending_input_before_interactive_screen()?;
-                app.startup_pending_protected_request = false;
-            }
-            Ok(())
-        }
-
-        let mut local_settings = crate::local_settings::LocalSettings::from(&config);
+        // Adopt actual launch ownership before constructing session-local preferences.
+        tui.prepare_owned_screen(config.tui_fullscreen_transcript)?;
+        let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
@@ -514,7 +528,10 @@ impl App {
                     let action = SessionStartAction::Resume(model_settings);
                     let resumed = complete_session_start(
                         &mut app_server,
-                        &config,
+                        SessionStartConfig {
+                            config: &config,
+                            local_settings: &local_settings,
+                        },
                         &app_server_target,
                         &target_session,
                         action,
@@ -610,7 +627,10 @@ impl App {
                 let action = SessionStartAction::Fork(permission_mode);
                 let forked = complete_session_start(
                     &mut app_server,
-                    &config,
+                    SessionStartConfig {
+                        config: &config,
+                        local_settings: &local_settings,
+                    },
                     &app_server_target,
                     &target_session,
                     action,
@@ -677,6 +697,12 @@ impl App {
             start_in_agents_overview = true;
         }
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
+        if pending_startup_thread_start && !start_in_agents_overview {
+            chat_widget
+                .empty_state_animation
+                .borrow_mut()
+                .continue_from(&mut startup_draft.blossom.borrow_mut());
+        }
         chat_widget.remote_connection = remote_connection;
         chat_widget.snapshot_local_images = app_server_target.uses_remote_workspace();
         chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
@@ -741,6 +767,9 @@ See the Codex keymap documentation for supported actions and examples."
             keymap: runtime_keymap,
             key_chord_matcher: KeyChordMatcher::default(),
             transcript_cells: Vec::new(),
+            native_history: Default::default(),
+            turn_tips: Default::default(),
+            transcript_view: Default::default(),
             last_rendered_history_tail: None,
             last_thread_usage_status_cell: None,
             pending_thread_usage_history_refresh: false,
@@ -762,6 +791,8 @@ See the Codex keymap documentation for supported actions and examples."
             feedback_audience,
             environment_manager,
             app_server_target,
+            pending_right_click_paste: None,
+            right_click_paste_environment: super::right_click_paste::PasteEnvironment::detect(),
             reconnect: ReconnectState {
                 seen_version_notice: initial_server_version_notice
                     .as_ref()
@@ -779,6 +810,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_realtime_speech_replay: HashMap::new(),
             pending_realtime_transcript_replay: HashMap::new(),
             realtime_replay_order: VecDeque::new(),
+            background_voice: None,
+            background_voice_error: None,
             temporary_structured_requests: HashMap::new(),
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
@@ -817,6 +850,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
             recap: recap::RecapState::default(),
+            #[cfg(test)]
+            _test_codex_home: None,
         };
         if !tui.is_terminal_focused() {
             app.recap.note_focus_lost(Instant::now());
@@ -826,7 +861,7 @@ See the Codex keymap documentation for supported actions and examples."
         if initial_server_version_notice.is_none() {
             app.update_server_version_overview_notice(
                 CODEX_CLI_VERSION,
-                /*older_server*/ None,
+                /*server_version*/ None,
             );
         }
         if start_in_agents_overview {
@@ -911,12 +946,15 @@ See the Codex keymap documentation for supported actions and examples."
         {
             return shutdown_on_startup_error(app_server, err).await;
         }
-        // Input for the cancelled resume/fork must not appear in a later selected session.
-        let mut pending_startup_draft =
-            (!startup_session_cancelled).then(|| startup_draft.into_draft());
+        // Keep cancelled resume/fork text editable, but never carry confirmation to another session.
+        let mut pending_startup_submission =
+            startup_draft.take_submission_intent() && !startup_session_cancelled;
+        let mut pending_startup_draft = Some(startup_draft.into_draft());
         if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
-            app.chat_widget
-                .restore_startup_draft_when_ready(&mut pending_startup_draft);
+            app.chat_widget.restore_startup_input_when_ready(
+                &mut pending_startup_draft,
+                &mut pending_startup_submission,
+            );
         }
 
         #[cfg(windows)]
@@ -929,7 +967,7 @@ See the Codex keymap documentation for supported actions and examples."
 
         let event_stream_started_at = Instant::now();
         tui.schedule_screen_size_recheck(Duration::ZERO);
-        if let Err(err) = render_startup_frame(&mut app, tui) {
+        if let Err(err) = app.render_startup_frame(tui, &app_event_rx) {
             return shutdown_on_startup_error(app_server, err).await;
         }
         let tui_events = tui.event_stream();
@@ -991,6 +1029,16 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                // Reconnect can dismiss an overlay from the server-event path.
+                if app.overlay.is_none() {
+                    if !tui.is_owned_screen() && tui.is_alt_screen_active() {
+                        app.close_transcript_overlay(tui);
+                    } else if let Err(err) =
+                        tui.set_overlay_input(crate::tui::OverlayInput::Default)
+                    {
+                        break Err(err.into());
+                    }
+                }
                 if app.pending_open_resume_picker {
                     app.pending_open_resume_picker = false;
                     match Box::pin(app.open_resume_picker(tui, &mut app_server)).await {
@@ -1065,15 +1113,15 @@ See the Codex keymap documentation for supported actions and examples."
                             AppEvent::InsertHistoryCell(cell)
                                 if cell.as_any().is::<history_cell::SessionInfoCell>()
                         );
-                        let had_active_view = app.chat_widget.has_active_view();
+                        let had_active_modal = app.chat_widget.has_active_modal();
                         match Box::pin(app.handle_event(tui, &mut app_server, event)).await {
                             Ok(AppRunControl::Continue) => {
                                 if is_initial_session_header {
                                     waiting_for_initial_session_header = false;
                                 }
-                                if !had_active_view
-                                    && app.chat_widget.has_active_view()
-                                    && let Err(err) = render_startup_frame(&mut app, tui)
+                                if !had_active_modal
+                                    && app.chat_widget.has_active_modal()
+                                    && let Err(err) = app.render_startup_frame(tui, &app_event_rx)
                                 {
                                     break Err(err);
                                 }
@@ -1209,22 +1257,28 @@ See the Codex keymap documentation for supported actions and examples."
                     app.primary_thread_id,
                 ) {
                     waiting_for_initial_session_configured = false;
-                    let had_active_view = app.chat_widget.has_active_view();
+                    let had_active_modal = app.chat_widget.has_active_modal();
                     if let Err(err) = app.drain_active_thread_events(tui).await {
                         break Err(err);
                     }
-                    if !had_active_view
-                        && app.chat_widget.has_active_view()
-                        && let Err(err) = render_startup_frame(&mut app, tui)
+                    if !had_active_modal
+                        && app.chat_widget.has_active_modal()
+                        && let Err(err) = app.render_startup_frame(tui, &app_event_rx)
                     {
                         break Err(err);
                     }
                 }
                 match control {
                     AppRunControl::Continue => {
+                        if app.reconnect.offline {
+                            pending_startup_submission = false;
+                            app.chat_widget.cancel_startup_submission();
+                        }
                         if app_event_rx.is_empty() && !app.has_queued_startup_protected_request() {
-                            app.chat_widget
-                                .restore_startup_draft_when_ready(&mut pending_startup_draft);
+                            app.chat_widget.restore_startup_input_when_ready(
+                                &mut pending_startup_draft,
+                                &mut pending_startup_submission,
+                            );
                         }
                         #[cfg(windows)]
                         if terminal_color_probe_pending
@@ -1243,6 +1297,7 @@ See the Codex keymap documentation for supported actions and examples."
         }
         let clear_pet_result = tui.clear_ambient_pet_image();
         let clear_result = tui.terminal.clear();
+        // Keep the alternate screen active until the outer guard restores both keyboard stacks.
         let exit_reason = match exit_reason_result {
             Ok(exit_reason) => {
                 clear_pet_result?;

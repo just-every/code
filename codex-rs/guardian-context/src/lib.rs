@@ -30,6 +30,8 @@ pub use section::ContextSection;
 
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
+pub use entry::RetainedTranscriptSource;
+pub use entry::TranscriptContent;
 pub use history::TranscriptHistory;
 pub use transcript::ConversationTranscriptConfig;
 pub use transcript::ConversationTranscriptOptions;
@@ -46,6 +48,7 @@ pub use verified_answers::render_verified_answers;
 
 mod retained_instructions;
 mod sender_user_messages;
+pub use retained_instructions::retained_assistant_message;
 
 mod action;
 mod enforcement;
@@ -171,9 +174,28 @@ pub trait SectionHistory: Send + Sync {
     /// Returns borrowed response items in their original conversation order.
     fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_>;
 
+    /// Original source metadata stays attached to the exact unshortened history item.
+    /// Legacy providers cannot establish completeness from a message ID alone.
+    fn items_with_sources(
+        &self,
+    ) -> Box<dyn Iterator<Item = (&ResponseItem, Option<&codex_history::RetainedSource>)> + Send + '_>
+    {
+        Box::new(self.items().map(|item| (item, None)))
+    }
+
     /// Bounded host-owned facts from the same snapshot as the current items.
     fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
         None
+    }
+
+    /// Renders one bounded retained assistant message through the host's
+    /// contextual-fragment boundary. Hosts with no fragment layer use the
+    /// shared role-labeled rendering while preserving the same size limit.
+    fn render_retained_assistant(
+        &self,
+        message: &codex_history::RetainedUserMessage,
+    ) -> Option<GuardianRootMessage> {
+        retained_assistant_message(message)
     }
 }
 

@@ -45,6 +45,11 @@ mod conflict_tests;
 #[path = "keymap/voice_tests.rs"]
 mod voice_tests;
 
+#[cfg(test)]
+#[path = "keymap/global_find_tests.rs"]
+mod global_find_tests;
+
+pub(crate) use bindings::KeymapActionId;
 pub(crate) use bindings::KeymapContext;
 pub(crate) use bindings::bindings_for_action;
 pub(crate) use bindings::keymap_action_id;
@@ -55,6 +60,7 @@ pub(crate) use chords::KeyChordMatch;
 pub(crate) use chords::KeyChordMatcher;
 pub(crate) use chords::KeymapContextSet;
 pub(crate) use chords::RuntimeChordKeymap;
+pub(crate) use chords::is_dispatch_token_event;
 
 /// Runtime keymap used by TUI input handlers.
 ///
@@ -91,6 +97,12 @@ pub(crate) struct AppKeymap {
     pub(crate) open_agents: Vec<KeyBinding>,
     /// Open transcript overlay.
     pub(crate) open_transcript: Vec<KeyBinding>,
+    /// Find text in the full transcript.
+    pub(crate) find_transcript: Vec<KeyBinding>,
+    /// Focus activity groups in the owned transcript to inspect their details.
+    pub(crate) focus_activity: Vec<KeyBinding>,
+    /// Open retained warnings without replacing the composer.
+    pub(crate) open_warnings: Vec<KeyBinding>,
     /// Open external editor for the current draft.
     pub(crate) open_external_editor: Vec<KeyBinding>,
     /// Copy the last agent response to the clipboard.
@@ -130,7 +142,7 @@ pub(crate) struct ChatKeymap {
     pub(crate) previous_permission_mode: Vec<KeyBinding>,
     /// Switch to the next available permission mode.
     pub(crate) next_permission_mode: Vec<KeyBinding>,
-    /// Move up through async questions, then edit the most recently queued message.
+    /// Move forward through async questions, then edit the most recently queued message.
     pub(crate) edit_queued_message: Vec<KeyBinding>,
     /// Move back through async questions toward the composer.
     pub(crate) prompt_stack_back: Vec<KeyBinding>,
@@ -295,6 +307,7 @@ pub(crate) struct PagerKeymap {
     pub(crate) jump_bottom: Vec<KeyBinding>,
     pub(crate) close: Vec<KeyBinding>,
     pub(crate) close_transcript: Vec<KeyBinding>,
+    pub(crate) find: Vec<KeyBinding>,
     chord_hints: Arc<RuntimeChordKeymap>,
 }
 
@@ -629,13 +642,7 @@ impl RuntimeKeymap {
                     || configured_context_alias_is_used(&keymap.list, alias)
                     || configured_context_alias_is_used(&keymap.approval, alias)
             });
-        let voice_toggle_default_is_shadowed = keymap.chat.toggle_voice.is_none()
-            && (configured_main_surface_alias_is_used(keymap, "f8")
-                || configured_context_alias_is_used(&keymap.vim_search, "f8")
-                || chords.bindings.iter().any(|binding| {
-                    binding.action.context.overlaps(KeymapContext::Chat)
-                        && binding.chord.prefix.parts() == key_hint::plain(KeyCode::F(8)).parts()
-                }));
+
         // Preserve existing Ctrl+X shortcuts and chord prefixes when adding this default.
         let voice_mute_default_is_shadowed = keymap.chat.toggle_voice_mute.is_none()
             && (configured_main_surface_alias_is_used(keymap, "ctrl-x")
@@ -644,6 +651,33 @@ impl RuntimeKeymap {
                         && binding.chord.prefix.parts()
                             == key_hint::ctrl(KeyCode::Char('x')).parts()
                 }));
+
+        // New activity defaults yield to existing custom keys and chord prefixes.
+        let focus_activity_defaults: Vec<_> = defaults
+            .app
+            .focus_activity
+            .iter()
+            .copied()
+            .filter(|binding| {
+                !configured_context_binding_is_used(keymap, *binding)
+                    && !chords.bindings.iter().any(|chord| {
+                        chord.chord.prefix.normalized_parts() == binding.normalized_parts()
+                    })
+            })
+            .collect();
+        // New defaults must not invalidate an existing custom binding or chord prefix.
+        let open_warnings_defaults: Vec<_> = defaults
+            .app
+            .open_warnings
+            .iter()
+            .copied()
+            .filter(|binding| {
+                !configured_context_binding_is_used(keymap, *binding)
+                    && !chords.bindings.iter().any(|chord| {
+                        chord.chord.prefix.normalized_parts() == binding.normalized_parts()
+                    })
+            })
+            .collect();
 
         let app = AppKeymap {
             open_agents: resolve_bindings(
@@ -656,6 +690,17 @@ impl RuntimeKeymap {
                 &defaults.app.open_transcript,
                 "tui.keymap.global.open_transcript",
             )?,
+            find_transcript: resolve_bindings(
+                keymap.global.find_transcript.as_ref(),
+                &defaults.app.find_transcript,
+                "tui.keymap.global.find_transcript",
+            )?,
+            focus_activity: resolve_bindings(
+                keymap.global.focus_activity.as_ref(),
+                &focus_activity_defaults,
+                "tui.keymap.global.focus_activity",
+            )?,
+            open_warnings: open_warnings_defaults,
             open_external_editor: resolve_bindings(
                 keymap.global.open_external_editor.as_ref(),
                 &defaults.app.open_external_editor,
@@ -696,6 +741,15 @@ impl RuntimeKeymap {
                 )?
             },
         };
+
+        // Voice yields to explicitly configured shortcuts and chord prefixes.
+        let voice_toggle_default_is_shadowed = keymap.chat.toggle_voice.is_none()
+            && (configured_main_surface_alias_is_used(keymap, "f8")
+                || configured_context_alias_is_used(&keymap.vim_search, "f8")
+                || chords.bindings.iter().any(|binding| {
+                    binding.action.context.overlaps(KeymapContext::Chat)
+                        && binding.chord.prefix.parts() == key_hint::plain(KeyCode::F(8)).parts()
+                }));
 
         let mut chat = ChatKeymap {
             toggle_voice: if voice_toggle_default_is_shadowed {
@@ -1290,6 +1344,7 @@ impl RuntimeKeymap {
             jump_bottom: resolve_local!(keymap, defaults, pager, jump_bottom),
             close: resolve_local!(keymap, defaults, pager, close),
             close_transcript: resolve_local!(keymap, defaults, pager, close_transcript),
+            find: resolve_local!(keymap, defaults, pager, find),
             chord_hints: Arc::clone(&chords),
         };
 
@@ -1320,7 +1375,11 @@ impl RuntimeKeymap {
             (keymap.agents.rename.as_ref(), &mut agents.rename, "r"),
             (keymap.agents.stop.as_ref(), &mut agents.stop, "x"),
             (keymap.agents.archive.as_ref(), &mut agents.archive, "a"),
-            (keymap.agents.delete.as_ref(), &mut agents.delete, "delete"),
+            (
+                keymap.agents.delete.as_ref(),
+                &mut agents.delete,
+                "backspace",
+            ),
             (keymap.agents.hide.as_ref(), &mut agents.hide, "h"),
             (
                 keymap.agents.toggle_grouping.as_ref(),
@@ -1365,6 +1424,14 @@ impl RuntimeKeymap {
             (
                 keymap.global.open_transcript.as_ref(),
                 app.open_transcript.as_slice(),
+            ),
+            (
+                keymap.global.find_transcript.as_ref(),
+                app.find_transcript.as_slice(),
+            ),
+            (
+                keymap.global.focus_activity.as_ref(),
+                app.focus_activity.as_slice(),
             ),
             (
                 keymap.global.open_external_editor.as_ref(),
@@ -1550,7 +1617,7 @@ impl RuntimeKeymap {
                 });
             }
         }
-        resolved.configure_vim_search(keymap)?;
+        resolved.configure_search(keymap)?;
         resolved.validate_conflicts()?;
         chords::validate_chord_conflicts(&resolved)?;
         chords::install_dispatch_bindings(&mut resolved)?;
@@ -1578,6 +1645,9 @@ impl RuntimeKeymap {
             app: AppKeymap {
                 open_agents: default_bindings![],
                 open_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
+                find_transcript: default_bindings![plain(KeyCode::F(3))],
+                focus_activity: default_bindings![plain(KeyCode::F(4))],
+                open_warnings: default_bindings![plain(KeyCode::F(2))],
                 open_external_editor: default_bindings![ctrl(KeyCode::Char('g'))],
                 copy: default_bindings![ctrl(KeyCode::Char('o'))],
                 clear_terminal: default_bindings![ctrl(KeyCode::Char('l'))],
@@ -1602,8 +1672,8 @@ impl RuntimeKeymap {
                 ],
                 previous_permission_mode: default_bindings![],
                 next_permission_mode: default_bindings![],
-                edit_queued_message: default_bindings![alt(KeyCode::Up), shift(KeyCode::Left)],
-                prompt_stack_back: default_bindings![alt(KeyCode::Down), shift(KeyCode::Right)],
+                edit_queued_message: default_bindings![shift(KeyCode::Left), alt(KeyCode::Up)],
+                prompt_stack_back: default_bindings![shift(KeyCode::Right), alt(KeyCode::Down)],
                 skip_question: default_bindings![ctrl(KeyCode::Char(']'))],
             },
             composer: ComposerKeymap {
@@ -1814,6 +1884,7 @@ impl RuntimeKeymap {
                 jump_bottom: default_bindings![plain(KeyCode::End)],
                 close: default_bindings![plain(KeyCode::Char('q')), ctrl(KeyCode::Char('c'))],
                 close_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
+                find: default_bindings![plain(KeyCode::F(3)), plain(KeyCode::Char('/'))],
                 chord_hints: Arc::default(),
             },
             list: ListKeymap {
@@ -1847,7 +1918,7 @@ impl RuntimeKeymap {
                 rename: default_bindings![plain(KeyCode::Char('r'))],
                 stop: default_bindings![plain(KeyCode::Char('x'))],
                 archive: default_bindings![plain(KeyCode::Char('a'))],
-                delete: default_bindings![plain(KeyCode::Delete)],
+                delete: default_bindings![plain(KeyCode::Backspace)],
                 hide: default_bindings![plain(KeyCode::Char('h'))],
                 toggle_grouping: default_bindings![plain(KeyCode::Char('g'))],
                 chord_hints: Arc::default(),
@@ -1934,6 +2005,9 @@ impl RuntimeKeymap {
         let main_bindings = [
             ("open_agents", self.app.open_agents.as_slice()),
             ("open_transcript", self.app.open_transcript.as_slice()),
+            ("find_transcript", self.app.find_transcript.as_slice()),
+            ("focus_activity", self.app.focus_activity.as_slice()),
+            ("open_warnings", self.app.open_warnings.as_slice()),
             (
                 "open_external_editor",
                 self.app.open_external_editor.as_slice(),
@@ -2037,6 +2111,9 @@ impl RuntimeKeymap {
             [
                 ("open_agents", self.app.open_agents.as_slice()),
                 ("open_transcript", self.app.open_transcript.as_slice()),
+                ("find_transcript", self.app.find_transcript.as_slice()),
+                ("focus_activity", self.app.focus_activity.as_slice()),
+                ("open_warnings", self.app.open_warnings.as_slice()),
                 (
                     "open_external_editor",
                     self.app.open_external_editor.as_slice(),
@@ -2093,6 +2170,9 @@ impl RuntimeKeymap {
             [
                 ("open_agents", self.app.open_agents.as_slice()),
                 ("open_transcript", self.app.open_transcript.as_slice()),
+                ("find_transcript", self.app.find_transcript.as_slice()),
+                ("focus_activity", self.app.focus_activity.as_slice()),
+                ("open_warnings", self.app.open_warnings.as_slice()),
                 (
                     "open_external_editor",
                     self.app.open_external_editor.as_slice(),
@@ -2216,6 +2296,16 @@ impl RuntimeKeymap {
         )?;
 
         validate_unique("list", context_bindings(KeymapContext::List))?;
+        validate_unique(
+            "activity",
+            context_bindings(KeymapContext::List).chain([
+                ("global.focus_activity", self.app.focus_activity.as_slice()),
+                (
+                    "global.find_transcript",
+                    self.app.find_transcript.as_slice(),
+                ),
+            ]),
+        )?;
 
         validate_unique("agents", context_bindings(KeymapContext::Agents))?;
         validate_no_reserved(
@@ -2233,7 +2323,9 @@ impl RuntimeKeymap {
             }
             if bindings.iter().any(|binding| {
                 let (code, modifiers) = binding.normalized_parts();
-                (code == KeyCode::Backspace && modifiers == KeyModifiers::NONE)
+                (action != "delete"
+                    && code == KeyCode::Backspace
+                    && modifiers == KeyModifiers::NONE)
                     || (matches!(code, KeyCode::Char(_)) && crate::key_hint::is_altgr(modifiers))
             }) {
                 return Err(format!(
@@ -2487,23 +2579,27 @@ fn configured_main_surface_alias_is_used(keymap: &TuiKeymap, alias: &str) -> boo
 }
 
 fn configured_context_alias_is_used(context: &impl Serialize, alias: &str) -> bool {
+    parse_keybinding(alias)
+        .is_some_and(|binding| configured_context_binding_is_used(context, binding))
+}
+
+fn configured_context_binding_is_used(context: &impl Serialize, binding: KeyBinding) -> bool {
     let Ok(value) = serde_json::to_value(context) else {
         return false;
     };
-    keymap_value_contains_alias(&value, alias)
+    keymap_value_contains_binding(&value, binding)
 }
 
-fn keymap_value_contains_alias(value: &serde_json::Value, alias: &str) -> bool {
+fn keymap_value_contains_binding(value: &serde_json::Value, binding: KeyBinding) -> bool {
     match value {
         serde_json::Value::String(value) => parse_keybinding(value)
-            .zip(parse_keybinding(alias))
-            .is_some_and(|(a, b)| a.normalized_parts() == b.normalized_parts()),
+            .is_some_and(|configured| configured.normalized_parts() == binding.normalized_parts()),
         serde_json::Value::Array(values) => values
             .iter()
-            .any(|value| keymap_value_contains_alias(value, alias)),
+            .any(|value| keymap_value_contains_binding(value, binding)),
         serde_json::Value::Object(values) => values
             .values()
-            .any(|value| keymap_value_contains_alias(value, alias)),
+            .any(|value| keymap_value_contains_binding(value, binding)),
         serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::Null => {
             false
         }
@@ -2782,12 +2878,6 @@ mod tests {
     }
 
     #[test]
-    fn default_copy_binding_is_ctrl_o() {
-        let runtime = RuntimeKeymap::defaults();
-        assert_eq!(runtime.app.copy, vec![key_hint::ctrl(KeyCode::Char('o'))]);
-    }
-
-    #[test]
     fn permission_shortcuts_reserve_plain_text() {
         for binding in ["a", "shift-a", "2", "space"] {
             let mut keymap = TuiKeymap::default();
@@ -2854,7 +2944,7 @@ mod tests {
         );
         assert_eq!(
             runtime.chat.edit_queued_message,
-            vec![key_hint::alt(KeyCode::Up), key_hint::shift(KeyCode::Left)]
+            vec![key_hint::shift(KeyCode::Left), key_hint::alt(KeyCode::Up)]
         );
         assert_eq!(
             runtime.composer.history_search_previous,

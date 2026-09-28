@@ -25,6 +25,16 @@ The CLI entrypoint supports:
 - `--remote URL --environment-id ID [--name NAME]`
 - `forward --connect ws://HOST:PORT --remote URL --environment-id ID`
 
+## Authentication
+
+Direct WebSocket listeners support app-server's opt-in auth flags, including `--ws-auth capability-token --ws-token-sha256 HEX`, token files, and signed bearer tokens; clients send `Authorization: Bearer TOKEN` on each connection.
+Use a protected transport or TLS proxy for remote access; authentication is checked at connection time and these flags do not apply to stdio, remote registration, or forwarding.
+
+App-server clients can supply the raw token through `environment/add.authBearerToken` or `auth_bearer_token` in an `environments.toml` URL entry; omission preserves unauthenticated behavior.
+Tokens require `wss://` or a loopback destination, are redacted in diagnostics, and are reused on reconnect without automatic refresh.
+
+## Remote connections
+
 Remote mode registers the local exec-server with the environment registry,
 then reconnects to the service-provided rendezvous websocket as the environment.
 Remote communication uses the Noise relay contract; the registry and harness
@@ -468,18 +478,28 @@ The crate exports:
 - `RemoteExecServerConnectArgs`
 - protocol request/response structs for process and filesystem RPCs
 - `DEFAULT_LISTEN_URL` and `ExecServerListenUrlParseError`
-- `ExecServerRuntimePaths`
+- `ExecServerRuntimeOptions`
 - `run_main()` for embedding the websocket server
 - `RemoteEnvironmentConfig` and `run_remote_environment()` for embedding remote
   registration mode
 
-Callers must pass `ExecServerRuntimePaths` and an explicitly configured
+Callers must pass `ExecServerRuntimeOptions` and an explicitly configured
 `HttpClientFactory` to `run_main()`. The top-level `codex exec-server` command
-builds these paths from the `codex` arg0 dispatch state and resolves its HTTP
-client factory from the effective Codex configuration.
+builds the runtime options from the `codex` arg0 dispatch state and startup flags,
+and resolves its HTTP client factory from the effective Codex configuration.
 `RemoteEnvironmentConfig::new(...)` also takes the auth provider and HTTP client
 factory that remote registration mode should use; the CLI builds the auth
 provider from Codex auth state before starting remote mode.
+
+`--proxy-private-ips-via-upstream` (or
+`CODEX_EXEC_SERVER_PROXY_PRIVATE_IPS_VIA_UPSTREAM=true`) allows permitted private IP
+destinations to use an inherited upstream proxy. If no valid proxy configuration
+applies to the request protocol, routing falls back to a direct connection. This
+includes unset, malformed, or unsupported proxy settings. Setting
+`allow_upstream_proxy=false` also keeps routing direct; loopback always stays local.
+Destination policy still applies to every route. Enforcing mandatory upstream routing
+would require a separate fail-closed mode. A connection failure after selecting an
+upstream proxy is returned as an error, without retrying directly.
 
 ## Example session
 

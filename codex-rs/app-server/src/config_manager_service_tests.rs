@@ -736,6 +736,8 @@ async fn psp_feature_configures_first_party_routing() -> Result<()> {
     assert_eq!(
         config.http_client_factory(),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+            .with_system_proxy_fallback()
+            .with_network_policy(config.application_network_policy.clone())
             .with_chatgpt_cookies([HeaderValue::from_static("oai-chat-psp=true")])
     );
     assert_eq!(
@@ -1696,7 +1698,7 @@ async fn read_materializes_default_allow_login_shell() {
 }
 
 #[tokio::test]
-async fn write_value_allows_unmanaged_sibling_of_exact_requirement() {
+async fn write_value_allows_unmanaged_setting_with_exact_requirement() {
     let tmp = tempdir().expect("tempdir");
     let path = tmp.path().join(CONFIG_TOML_FILE);
     std::fs::write(&path, "").unwrap();
@@ -1707,8 +1709,7 @@ async fn write_value_allows_unmanaged_sibling_of_exact_requirement() {
         LoaderOverrides::without_managed_config_for_tests(),
         CloudConfigBundleFixture::loader_with_enterprise_requirement(
             r#"
-[windows]
-sandbox_private_desktop = false
+allow_login_shell = false
 "#,
         ),
     );
@@ -1722,7 +1723,7 @@ sandbox_private_desktop = false
             expected_version: None,
         })
         .await
-        .expect("unmanaged sibling should remain writable");
+        .expect("unmanaged setting should remain writable");
 
     assert!(
         std::fs::read_to_string(path)

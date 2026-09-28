@@ -5,8 +5,12 @@
 
 use super::analytics::ToolCallAnalytics;
 use super::*;
-use crate::agent::control::MessageDeliveryError;
-use crate::agent::control::MessageDeliveryMode;
+use crate::TurnStartOptions;
+use crate::agent::api::AgentInput;
+use crate::agent::api::AgentTarget;
+use crate::agent::api::SendRequest;
+use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
 
 #[derive(Debug, Deserialize)]
@@ -52,23 +56,33 @@ pub(super) async fn handle_message_string_tool(
     } = invocation;
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     analytics.set_receiver(receiver_thread_id);
-    let receiver_agent_path = session
+    let resume_config =
+        build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
+    let receipt = session
         .services
         .agent_control
-        .deliver_message(
-            session.thread_id,
-            &turn,
-            receiver_thread_id,
-            agent_message_from_tool(message, &source),
-            mode,
-        )
+        .send(SendRequest {
+            caller: session.thread_id,
+            target: AgentTarget::Id(receiver_thread_id),
+            resume_config,
+            input: AgentInput::Message {
+                message: agent_message_from_tool(message, &source),
+                mode,
+            },
+            start_options: TurnStartOptions {
+                parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)
+                    .then(|| turn.sub_id.clone()),
+                root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                cyber_access_program: turn.cyber_access_program,
+                ..Default::default()
+            },
+        })
         .await
-        .map_err(|err| match err {
-            MessageDeliveryError::InvalidRequest(message) => {
-                FunctionCallError::RespondToModel(message)
-            }
-            MessageDeliveryError::Agent(err) => collab_agent_error(receiver_thread_id, err),
-        })?;
+        .map_err(|err| collab_v2_agent_error(receiver_thread_id, err))?;
+    let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
+        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
+    })?;
     emit_sub_agent_activity(
         &session,
         &turn,

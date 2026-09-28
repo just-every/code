@@ -157,7 +157,7 @@ use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::WebSearchAction;
 use codex_git_utils::SanitizedGitUrl;
-use codex_git_utils::collect_git_info;
+use codex_git_utils::get_git_origin_url;
 use codex_git_utils::get_git_repo_root;
 use codex_login::default_client::originator;
 use codex_protocol::config_types::ModeKind;
@@ -1270,7 +1270,7 @@ impl AnalyticsReducer {
 
     async fn ingest_turn_resolved_config(
         &mut self,
-        input: TurnResolvedConfigFact,
+        mut input: TurnResolvedConfigFact,
         out: &mut Vec<TrackEventRequest>,
     ) {
         let turn_id = input.turn_id.clone();
@@ -1279,6 +1279,12 @@ impl AnalyticsReducer {
         let turn_state = self.turns.entry(turn_id.clone()).or_default();
         turn_state.thread_id = Some(thread_id);
         turn_state.num_input_images = Some(num_input_images);
+        // Keep the first received plugin inventory, including unknown or empty,
+        // while the remaining resolved config continues updating.
+        if let Some(initial_config) = &turn_state.resolved_config {
+            input.active_plugin_ids_at_turn_start =
+                initial_config.active_plugin_ids_at_turn_start.clone();
+        }
         turn_state.resolved_config = Some(input);
         self.maybe_emit_turn_event(&turn_id, out).await;
     }
@@ -1342,9 +1348,7 @@ impl AnalyticsReducer {
                     };
                     let repo_root = get_git_repo_root(path.as_path());
                     let repo_url = if let Some(root) = repo_root.as_ref() {
-                        collect_git_info(root)
-                            .await
-                            .and_then(|info| info.repository_url)
+                        get_git_origin_url(root).await
                     } else {
                         None
                     };
@@ -2766,6 +2770,7 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
     match item {
         ThreadItem::CommandExecution {
             id,
+            sandbox_type,
             plugin_id,
             script_path,
             source,
@@ -2800,6 +2805,8 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                 CodexCommandExecutionEventRequest {
                     event_type: "codex_command_execution_event",
                     event_params: CodexCommandExecutionEventParams {
+                        sandbox_backend: sandbox_type
+                            .map(|sandbox| sandbox.as_metric_tag().to_string()),
                         model_slug: model_context.map(|context| context.model_slug.clone()),
                         reasoning_effort: model_context
                             .and_then(|context| context.reasoning_effort.clone()),
@@ -3622,6 +3629,7 @@ fn codex_turn_event_params(
         turn_id: _resolved_turn_id,
         thread_id: _resolved_thread_id,
         turn_metadata,
+        active_plugin_ids_at_turn_start,
         num_input_images: _resolved_num_input_images,
         submission_type,
         ephemeral,
@@ -3658,6 +3666,7 @@ fn codex_turn_event_params(
         thread_id,
         session_id: thread_metadata.session_id.clone(),
         turn_id,
+        active_plugin_ids_at_turn_start,
         voice_session_id: turn_state.voice_session_id.clone(),
         root_turn_id: turn_metadata.root_turn_id(),
         turn_trigger: turn_metadata.turn_trigger(),
@@ -3697,6 +3706,7 @@ fn codex_turn_event_params(
         turn_error: completed.turn_error,
         codex_error_kind: codex_error.map(|error| error.kind),
         codex_error_http_status_code: codex_error.and_then(|error| error.http_status_code),
+        usage_limit_window_minutes: codex_error.and_then(|error| error.usage_limit_window_minutes),
         steer_count: Some(turn_state.steer_count),
         total_tool_call_count: Some(turn_state.tool_counts.total),
         shell_command_count: Some(turn_state.tool_counts.shell_command),

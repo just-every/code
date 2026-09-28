@@ -20,23 +20,30 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
     // macOS's default temporary directory leaves too little room for the control socket path.
     let codex_home = tempfile::tempdir_in("/tmp")?;
     write_test_config(codex_home.path(), &repo_root)?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        config_path,
+        format!("{config}\n[tui]\nstatus_line = [\"thread-id\"]\n"),
+    )?;
     let socket = codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
     std::fs::create_dir_all(socket.parent().unwrap())?;
     let listener = UnixListener::bind(socket.as_path())?;
     let (disconnect_tx, mut disconnect_rx) = tokio::sync::oneshot::channel();
     let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
     let server_cwd = repo_root.clone();
+    let id = "00000000-0000-0000-0000-000000000001";
     let server = tokio::spawn(async move {
         let mut methods = Vec::new();
         let mut restore_rx = Some(restore_rx);
-        let id = "00000000-0000-0000-0000-000000000001";
         let thread = json!({
             "id": id, "sessionId": id, "preview": "", "ephemeral": false,
             "modelProvider": "openai", "createdAt": 1, "updatedAt": 2,
             "status": {"type": "active", "activeFlags": []}, "cwd": server_cwd,
             "cliVersion": "0.0.0", "source": "cli", "turns": [{"id": "running", "items": [], "status": "inProgress", "error": null}]
         });
-        for connection in 0..3 {
+        // The first connection checks daemon compatibility before TUI startup.
+        for connection in -1..7 {
             let mut socket = loop {
                 let (stream, _) = listener.accept().await?;
                 // Startup probes the default daemon socket before opening its WebSocket.
@@ -62,7 +69,8 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
                 if connection == 1 && request.method == "initialize" {
                     restore_rx.take().unwrap().await?;
                 }
-                if connection == 1 && request.method == "thread/resume" {
+                // Keep failing past the original five-attempt limit.
+                if (1..=5).contains(&connection) && request.method == "thread/resume" {
                     socket
                         .send(Message::Text(
                             json!({"id": request.id, "error": {
@@ -77,12 +85,21 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
                 }
                 let result = match request.method.as_str() {
                     "initialize" => json!({"userAgent": "reconnect-pty"}),
+                    // An older daemon can omit the client's default-disabled features.
+                    "experimentalFeature/list" => {
+                        json!({"data": (["code_mode_host", "auth_elicitation"].map(|name| json!({
+                        "name": name, "stage": "stable", "displayName": null,
+                        "description": null, "announcement": null,
+                        "enabled": true, "defaultEnabled": true,
+                    }))), "nextCursor": null})
+                    }
                     "account/read" => {
                         json!({"account": {"type": "apiKey"}, "requiresOpenaiAuth": false})
                     }
                     "model/list" => json!({"data": [], "nextCursor": null}),
                     "config/read" => {
-                        json!({"config": {"model": "gpt-5.6-terra", "model_provider": "openai", "projects": {
+                        json!({"config": {"model": "gpt-5.6-terra", "model_provider": "openai",
+                        "tui": {"status_line": ["thread-id"]}, "projects": {
                         server_cwd.to_string_lossy(): {"trust_level": "trusted"}
                     }}, "origins": {}, "layers": []})
                     }
@@ -115,7 +132,7 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
                             .into(),
                     ))
                     .await?;
-                if connection == 2 && request.method == "thread/resume" {
+                if connection == 6 && request.method == "thread/resume" {
                     // Keep the recovered turn running: its output must appear without waiting
                     // for turn/completed or rebuilding the transcript.
                     socket
@@ -135,18 +152,18 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
         }
         Ok::<_, anyhow::Error>(methods)
     });
-    let mut terminal = PtyCodex::start(&repo_root, codex_home, &[])?;
+    let mut terminal = PtyCodex::start(&repo_root, codex_home, &["--no-alt-screen"])?;
     terminal.wait_for_startup()?;
     let mut disconnect_tx = Some(disconnect_tx);
     let mut restore_tx = Some(restore_tx);
     for expected in [
-        "gpt-5.6-terra",
+        id, // The model label does not establish that the client has attached a thread.
         "preserved-draft",
         "Reconnecting",
         "preserved-draft!",
         "fresh-notification-after-reconnect",
     ] {
-        let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
+        let deadline = Instant::now() + Duration::from_secs(/*secs*/ 60);
         while !terminal.screen_contains(expected) && Instant::now() < deadline {
             terminal.read_output(Duration::from_millis(/*millis*/ 20))?;
         }
@@ -156,7 +173,7 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
             terminal.screen_contents()
         );
         match expected {
-            "gpt-5.6-terra" => terminal.write_input(b"preserved-draft")?,
+            ready if ready == id => terminal.write_input(b"preserved-draft")?,
             "preserved-draft" => {
                 disconnect_tx.take().unwrap().send(()).unwrap();
             }
@@ -189,7 +206,7 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
             .iter()
             .filter(|method| *method == "thread/resume")
             .count(),
-        2
+        6
     );
     assert!(!methods.iter().any(|method| method == "turn/start"));
     Ok(())

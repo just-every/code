@@ -1,8 +1,27 @@
+# Guardian circuit-breaker errors
+
+Set `auto_review.circuit_break_action = "strict"` to include `TooManyDenials` in
+`TurnAborted.error` when Guardian reaches its denial limit. App-server exposes it
+as `turn.error.codexErrorInfo = "tooManyDenials"` in notifications and history.
+
+The default, `"default"`, leaves this error unset. Both modes preserve the warning,
+denial limit, and interrupted status; neither emits a separate `Error` event.
+
+# Model catalog provider requirements
+
+`model/list` and periodic model catalog refreshes check the startup provider against
+current managed provider requirements before using the catalog. If that provider no longer
+complies, `model/list` returns JSON-RPC error `-32600` asking the client to restart Codex,
+and background refreshes skip the old endpoint. Requirement load failures also block these
+operations. Checks apply even when the catalog is cached. Existing startup provider selection
+and caching behavior remain in effect while the provider satisfies current requirements.
+
 # MCP App UI
 
 `mcpToolCall.mcpAppUi` records the invoked descriptor's `resourceUri`
-and `preferredModelDisplayMode` (`inline` or `fullscreen`). Descriptors with a widget
-URI default to `inline` when the preference is missing or unsupported. The
+and explicit `preferredModelDisplayMode` (`inline` or `fullscreen`). Missing or
+unsupported preferences leave `mcpAppUi` unset; `mcpAppResourceUri` retains the URI
+so clients can apply resource display defaults. The
 UI information is preserved in tool-call events and saved history so clients can
 render without waiting for the full MCP catalog.
 
@@ -20,6 +39,18 @@ An unused thread is not guaranteed to survive restart. Omitted or null leaves
 the choice unset. Ephemeral threads cannot save it.
 Use `thread/metadata/update` for later changes. This preference does not select
 `turn/start.cyberAccessProgram` or grant access to an access program.
+
+# Application network policy
+
+App-server loads application network policy at startup and existing explicit
+config/account reloads. Local requirements-file edits take effect on
+the next explicit reload or restart. Installing a new policy cancels requests
+that it no longer permits; a failed policy load blocks network traffic.
+
+Embedded app-server installs the same policy-aware requirements loader for clients
+it constructs. The embedding TUI and exec runtime install the same policy before
+creating their telemetry providers, background HTTP clients, and executor
+connections. TUI worktree cloud loaders retain that shared policy on reload.
 
 # User verification cancellation (experimental)
 
@@ -57,6 +88,19 @@ stdio servers. The existing `mcp_2026_07_28` flag still governs eligible other
 servers, regardless of whether their names or URLs resemble hosted Apps.
 App-server does not persist this selection.
 
+## Hosted resource reads
+
+`mcpServer/resource/read` accepts `target: {connectorId, linkId}` for direct hosted app reads without tool discovery. A string `linkId` selects that account; `null` explicitly requests no-auth access subject to backend policy. Do not infer no-auth access from unknown or synthetic links.
+
+`originCallId` with `threadId` takes precedence and retains the originating app/account scope. Requests without `target` retain discovery; `connectorId` continues to restrict reads to that connector. Direct targets require backend support for app/account resource reads.
+
+# Project trust
+
+`thread/start` does not persist project trust for a directory where configuration
+discovery finds no project-root marker, Git checkout, or project-local `.codex`
+directory. Starting a task there does not preapprove project configuration added
+later. Existing trust decisions and permission checks for projects are unchanged.
+
 # Thread removal
 
 `thread/archive` and `thread/delete` reject attempts to remove a live internal
@@ -79,6 +123,12 @@ network connections do not receive this mode, even with a recognized client name
 Before sending verification requests to desktop sessions, deploy a GUI that
 handles the typed verification request, cancellation, and late proofs. The general
 `experimentalApi` opt-in does not identify a compatible GUI version.
+
+Native `openai/userVerification` elicitation requests preserve optional `_meta`
+JSON through MCP transport and `mcpServer/elicitation/request`. Clients may use
+this metadata for extension-specific presentation and must continue to accept
+requests without it. Metadata does not change the challenge bytes or the proof
+returned in the acceptance response.
 
 Local UI clients use five methods. They require the existing
 `experimentalApi` opt-in. The local provider reports
@@ -165,6 +215,12 @@ If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock
 Bedrock login return an error without changing configuration or saved credentials. Remove the
 exporter configuration before selecting another credential source. `aws.credential_export` and
 `aws.profile` cannot be configured together.
+
+Application network restrictions apply to each AWS credential and region HTTP request and to
+the Bedrock destination. Static access keys with an explicit region need no credential discovery.
+AWS profile `credential_process` commands are run by the AWS SDK; their network traffic is outside
+the application's HTTP policy. Configured credential exporters and AWS reauthentication commands
+require unrestricted application policy; policy revocation cancels their active work.
 
 ## Stored thread attachments
 
@@ -266,6 +322,17 @@ This is the server's advertised MCP capabilities object, including its `extensio
 map. It is null when the connection has not initialized successfully; capabilities
 are never inferred from tools or copied from a shared catalog cache.
 
+Pass `serverName` to discover only that server. With `threadId`, the request
+reuses the thread's current MCP connection and tool catalog after any pending
+runtime refresh; discovery then waits only for that server. Without `threadId`,
+discovery creates a connection for the selected server. An unknown name returns an empty page.
+Omitting `serverName` preserves full-inventory discovery.
+
+# MCP OAuth login
+
+`mcpServer/oauth/login` only returns HTTP(S) authorization URLs. Authorization
+endpoints with other schemes fail before client registration or URL return.
+
 # Thread rollback
 
 `thread/rollback` has been removed from the API, including its request and response
@@ -288,6 +355,7 @@ Routing compares origins by scheme, host, and effective port, ignoring API paths
 configured base URL.
 
 Responses HTTP (including compaction) and WebSockets wait for discovery and preserve API paths.
+Guardian v2 classifier HTTP and pooled WebSockets use the same routing.
 HTTP redirects are rejected. `us` and `us_cr` set `X-OpenAI-Account-Routing-Override`;
 `NO_CONSTRAINT` omits it.
 
@@ -307,3 +375,114 @@ compatibility but is not emitted. Non-Windows hosts report `notConfigured`.
 MXC uses the standard `command/exec` streaming and process-control path, including
 ConPTY when `tty` is enabled. The buffered legacy Windows sandbox restrictions on
 process control and custom output caps do not apply to MXC.
+
+### Gateway OAuth sign-in
+
+Providers configured with `gateway_oauth` require a secondary OAuth credential in
+addition to their primary authentication. Clients with a gateway sign-in UI set
+`initialize.capabilities.explicitGatewayOauth: true`, complete initialization, and
+successfully call `account/gatewayOAuth/read` before sending authenticated requests,
+including startup `model/list` and inference requests. Repeat this probe on each
+new connection. A successful `initialize` alone does not confirm support: older
+servers can ignore the unknown capability and retain automatic browser login.
+
+Support for `account/gatewayOAuth/read` and `explicitGatewayOauth` is introduced
+together, so a successful read confirms support even when `required` is `false`
+or `status` is `notReady`. The returned status determines whether sign-in is needed;
+it is separate from the capability check. If the probe fails because the method is
+unsupported, require a server upgrade. Other errors and timeouts also leave
+authenticated requests blocked until a probe succeeds; do not silently fall back
+to automatic login.
+
+With explicit login enabled, app-server refreshes existing credentials, but only the
+`account/gatewayOAuth/login` RPC starts browser authorization. Requests needing
+sign-in fail promptly so the client can offer that flow.
+
+Clients that omit the capability or set it to `false`, including the TUI, retain
+automatic browser authorization after initialization. Startup credential reads
+cannot open a browser before initialization. Explicit opt-in is shared by gateway
+managers using the same home and network configuration within the process and
+cannot be undone by a later connection that omits the capability.
+
+- `account/gatewayOAuth/read` returns the current effective `providerId`,
+  `providerName`, `required`, `status`, and `error`. `required` indicates that this
+  provider uses gateway OAuth, including when already signed in. This operation
+  does not refresh tokens or open a browser; `status` is null for other providers.
+  `notReady` means credentials are not ready. `succeeded` means saved credentials
+  are locally usable, not that a gateway request has been verified. Reads observe
+  usable replacement credentials saved by another process sharing the same home.
+- `account/gatewayOAuth/login` starts authorization and returns `{}` after
+  the credential has been saved. Providers requiring OpenAI authentication need a
+  primary account first. A second login request fails while a login is active.
+  The initiating connection receives a `started` notification with `authUrl`; the
+  client must open that URL in a browser that can reach the server callback port.
+  Other status notifications set `authUrl` to null. Login is rejected if the
+  initiating connection opted out of `account/gatewayOAuth/changed` notifications.
+- `account/gatewayOAuth/cancel` cancels the calling connection's login and returns
+  `{}` after the active login releases its slot, so the client can immediately
+  start another login. Closing that connection also cancels its login and releases
+  the callback listener. Cancellation makes the pending login request fail.
+- `account/gatewayOAuth/changed` reports `notReady`, `started`, `succeeded`, or
+  `failed`, with an optional `error`. Notifications apply to the current effective
+  gateway configuration. Clients can read readiness when connecting and after
+  changing configuration. Notifications follow the standard per-connection
+  `optOutNotificationMethods` setting.
+  These payloads never contain credentials.
+
+Read, login, and cancel take no params. Read and login use the app's current
+provider, reloading configuration and returning an error if it cannot be loaded.
+Status notifications include `providerId`. During browser sign-in, inference
+requests fail promptly and can be retried when sign-in succeeds.
+
+`model/list` also checks gateway authentication before returning cached models.
+If authentication fails after the provider configuration changes, it asks the client
+to restart Codex so the retained catalog and gateway sign-in use the same provider.
+
+## Application network policy
+
+Application policy uses the same managed TOML merge as agent-network requirements:
+higher-priority layers override conflicting values, including `enabled` and each
+domain permission, while non-conflicting domain entries are retained. Omitted
+values inherit from lower layers. After merging, a present network block defaults
+to `enabled = true` and an empty domain map, meaning no external destinations are
+allowed. An effective `enabled = false` disables application destination policy.
+Domain keys are exact ASCII names, normalized to lowercase without a trailing dot
+before merging; wildcards, URLs, ports, invalid permissions, and duplicate
+normalized names are rejected.
+App-server enforces these rules for its HTTP and WebSocket traffic before route
+resolution or connection work, including redirects and reused clients. An allow
+entry permits only HTTPS or WSS to that exact host. Agent-network requirements
+remain separate in `network`.
+
+App-server reloads effective requirements on explicit config or account reloads.
+Local changes or read failures discovered on reload revoke active requests;
+unchanged requirements preserve them. Failed policy loads block traffic until
+requirements load successfully. Invalid request or project configuration does not
+revoke unrelated traffic. Account changes revoke
+outstanding requests and clients retaining the previous account's authorization.
+Policy updates also stop active requests to newly denied destinations. Narrow
+authentication and requirements-discovery clients use local requirements and
+exact endpoint URLs while workspace policy is loading. API-key-only deployments
+do not discover ChatGPT workspace requirements.
+
+SDK transports without destination enforcement, including OTLP exporters and AWS
+credential discovery/signing, are disabled while restrictions apply. Supported
+HTTP, WebSocket, and code-mode gRPC requests use the shared destination checks.
+User-directed Git, SSH, shell, and other subprocess traffic retain their existing
+execution and sandbox policies.
+
+# Item history anchors
+
+`thread/items/list` accepts an optional nullable `cursor`: either an opaque string
+from a previous response or an item anchor such as
+`{"type":"item","itemId":"item-123"}`. An item anchor resumes exclusively after
+that item in the requested pagination order: ascending (the default) returns newer
+items, and descending returns older items. It requires a non-empty `turnId`;
+otherwise the request returns invalid params (`-32602`) with
+`turnId is required when cursor is an item anchor`.
+The item must belong to that turn in the thread's visible history. Empty, unknown,
+and out-of-scope item IDs return invalid params (`-32602`) with
+`cursor.itemId does not identify an item in the requested history scope`.
+Omitted or null cursors preserve normal first-page behavior. Continue anchored
+pages with the returned opaque string `nextCursor`; response fields and
+`backwardsCursor` semantics are unchanged.
