@@ -535,7 +535,10 @@ def generate_v2_all() -> None:
             cwd=sdk_root(),
         )
     _preserve_inline_image_class_names(out_path)
-    _require_nullable_chatgpt_account_email(out_path)
+    _require_nullable_field(out_path, "ChatgptAccount", r"email: str \| None")
+    _require_nullable_field(
+        out_path, "McpResourceReadTarget", r"link_id: Annotated\[\n(?:        .*\n)+    \]"
+    )
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
     _preserve_plan_type_enum(out_path)

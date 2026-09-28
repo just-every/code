@@ -129,6 +129,19 @@ alias(
     actual = ":src_binding_release_aarch64_unknown_linux_gnu",
 )
 
+# Published files contain both pointer compression and the in-process sandbox.
+# Use the source pair together whenever those options differ or a caller needs
+# custom V8 C++ flags. The main-repo flag is shared with the @v8_targets copy
+# of this BUILD file used by rules_rs.
+config_setting(
+    name = "use_rusty_v8_prebuilts",
+    flag_values = {
+        "@//:rusty_v8_from_source": "False",
+        "@v8//:v8_enable_pointer_compression": "True",
+        "@v8//:v8_enable_sandbox": "True",
+    },
+)
+
 alias(
     name = "rusty_v8_archive_for_target",
     actual = select({

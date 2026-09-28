@@ -133,6 +133,7 @@ index 85f31b7..bbc351b 100644
      name = "v8_enable_pointer_compression",
 -    default = "none",
 +    default = "False",
++    visibility = ["//visibility:public"],
  )
  
  # Default setting for v8_enable_pointer_compression.

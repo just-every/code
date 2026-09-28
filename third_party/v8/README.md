@@ -3,18 +3,24 @@
 This directory wires the `v8` crate to exact-version Bazel inputs.
 Bazel consumer builds use:
 
-- upstream `denoland/rusty_v8` release archives on Windows MSVC
-- source-built V8 archives on Darwin, GNU Linux, musl Linux, and Windows GNU
+- Codex-published sandbox archive/binding pairs on Darwin and GNU Linux (x64
+  and arm64), with checksums pinned from the trusted release manifests
+- the existing Codex-published Windows MSVC archives
+- source-built V8 archives on musl Linux and Windows GNU
 
 Local Cargo builds still use upstream prebuilt `rusty_v8` archives by default.
 Selected Cargo CI, release, and package builds override
 `RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` with Codex release assets. Bazel
-sets those variables independently in `MODULE.bazel` to select source-built
-local archives and bindings for its consumer builds.
+sets those variables independently in `MODULE.bazel`, selecting the pair above
+for its consumers. All Bazel compilation modes use the same published V8
+release archive on supported platforms.
 
-The Bazel `v8` crate feature selection enables V8's in-process sandbox for
-Darwin, Linux, and Windows GNU. Windows MSVC remains on upstream non-sandboxed
-prebuilts.
+The Bazel `v8` crate feature selection enables V8's in-process sandbox.
+Darwin/GNU consumers select prebuilts only when both the V8 sandbox and pointer
+compression settings match the published artifact. For source instrumentation
+or custom V8 C++ settings, use `--//:rusty_v8_from_source=true`; the archive
+and binding then both come from the source path. The published release archive
+cannot incorporate local V8 C++ flags or native debug/sanitizer settings.
 
 Current pinned versions:
 
