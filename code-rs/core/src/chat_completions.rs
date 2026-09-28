@@ -46,6 +46,7 @@ pub(crate) async fn stream_chat_completions(
     model_slug: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
+    request_max_output_tokens: Option<u64>,
     responses_originator_header: &str,
     debug_logger: &Arc<Mutex<DebugLogger>>,
     auth_manager: Option<Arc<AuthManager>>,
@@ -348,7 +349,12 @@ pub(crate) async fn stream_chat_completions(
     }
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-    let mut payload = create_chat_completions_payload(model_slug, messages, tools_json);
+    let mut payload = create_chat_completions_payload(
+        model_slug,
+        messages,
+        tools_json,
+        request_max_output_tokens,
+    );
 
     if let Some(openrouter_cfg) = provider.openrouter_config() {
         if let Some(obj) = payload.as_object_mut() {
@@ -595,14 +601,23 @@ fn create_chat_completions_payload(
     model_slug: &str,
     messages: Vec<Value>,
     tools_json: Vec<Value>,
+    request_max_output_tokens: Option<u64>,
 ) -> Value {
-    json!({
+    let mut payload = json!({
         "model": model_slug,
         "messages": messages,
         "stream": true,
         "store": false,
         "tools": tools_json,
-    })
+    });
+
+    if let Some(max_tokens) = request_max_output_tokens
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("max_tokens".to_string(), json!(max_tokens));
+    }
+
+    payload
 }
 
 /// Lightweight SSE processor for the Chat Completions streaming format. The
@@ -1373,6 +1388,7 @@ mod tests {
             "gpt-4.1",
             vec![json!({"role": "user", "content": "what is 2+2?"})],
             Vec::new(),
+            None,
         );
 
         assert_eq!(payload["store"], false);
@@ -1382,6 +1398,31 @@ mod tests {
             body.contains("\"store\":false"),
             "serialized payload should explicitly disable storage: {body}"
         );
+    }
+
+    #[test]
+    fn chat_completions_payload_omits_request_output_cap_by_default() {
+        let payload = create_chat_completions_payload(
+            "gpt-4.1",
+            vec![json!({"role": "user", "content": "what is 2+2?"})],
+            Vec::new(),
+            None,
+        );
+
+        assert!(payload.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn chat_completions_payload_sets_explicit_request_output_cap() {
+        let payload = create_chat_completions_payload(
+            "gpt-4.1",
+            vec![json!({"role": "user", "content": "what is 2+2?"})],
+            Vec::new(),
+            Some(512),
+        );
+
+        assert_eq!(payload["max_tokens"], 512);
+        assert!(payload.get("max_completion_tokens").is_none());
     }
 
     #[test]

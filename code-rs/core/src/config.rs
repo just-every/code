@@ -274,6 +274,9 @@ pub struct Config {
     /// Maximum number of output tokens.
     pub model_max_output_tokens: Option<u64>,
 
+    /// Explicit request-level output token cap.
+    pub model_request_max_output_tokens: Option<u64>,
+
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
 
@@ -685,6 +688,9 @@ pub struct ConfigToml {
 
     /// Maximum number of output tokens.
     pub model_max_output_tokens: Option<u64>,
+
+    /// Explicit request-level output token cap.
+    pub model_request_max_output_tokens: Option<u64>,
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
@@ -1382,6 +1388,9 @@ impl Config {
         let model_max_output_tokens = cfg
             .model_max_output_tokens
             .or(model_family.max_output_tokens);
+        let model_request_max_output_tokens = config_profile
+            .model_request_max_output_tokens
+            .or(cfg.model_request_max_output_tokens);
         let mut model_auto_compact_token_limit = cfg.model_auto_compact_token_limit;
         let (context_mode_window, context_mode_auto_compact_limit) =
             resolve_context_mode_limits(&model, context_mode, &model_family);
@@ -1659,6 +1668,7 @@ impl Config {
             model_family,
             model_context_window,
             model_max_output_tokens,
+            model_request_max_output_tokens,
             model_auto_compact_token_limit,
             context_mode,
             model_provider_id,
@@ -2521,6 +2531,7 @@ model_reasoning_summary = "detailed"
 [profiles.gpt3]
 model = "gpt-3.5-turbo"
 model_provider = "openai-chat-completions"
+model_request_max_output_tokens = 512
 
 [profiles.zdr]
 model = "o3"
@@ -2684,6 +2695,10 @@ model_verbosity = "high"
         );
         assert_eq!(Some(16_385), gpt3_profile_config.model_context_window);
         assert_eq!(Some(4_096), gpt3_profile_config.model_max_output_tokens);
+        assert_eq!(
+            Some(512),
+            gpt3_profile_config.model_request_max_output_tokens
+        );
         assert_eq!("openai-chat-completions", gpt3_profile_config.model_provider_id);
         assert_eq!(
             fixture.openai_chat_completions_provider,

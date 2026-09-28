@@ -764,6 +764,7 @@ impl ModelClient {
                     model_slug,
                     &self.client,
                     &self.provider,
+                    self.config.model_request_max_output_tokens,
                     self.config.responses_originator_header.as_str(),
                     &self.debug_logger,
                     self.auth_manager.clone(),

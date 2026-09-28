@@ -715,6 +715,14 @@ In general, Codex knows the context window for the most common OpenAI models, bu
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
 
+## model_request_max_output_tokens
+
+Explicit request-level output token cap. When using a provider configured with
+`wire_api = "chat"`, Code sends this value as Chat Completions `max_tokens`.
+If this setting is omitted, Code does not send a request output cap and the
+provider chooses its default. Use `model_max_output_tokens` for model metadata;
+use this setting only when you want to cap each request.
+
 ## tool_output_max_bytes
 
 Maximum number of bytes of tool output (including shell command output and file reads) to include in a model request. Defaults to 32 KiB. Increase this if you need to send larger outputs to the model (note the exec capture cap remains 32 MiB per stream).

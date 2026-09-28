@@ -907,6 +907,14 @@ In general, Code knows the context window for the most common OpenAI models, but
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
 
+## model_request_max_output_tokens
+
+Explicit request-level output token cap. When using a provider configured with
+`wire_api = "chat"`, Code sends this value as Chat Completions `max_tokens`.
+If this setting is omitted, Code does not send a request output cap and the
+provider chooses its default. Use `model_max_output_tokens` for model metadata;
+use this setting only when you want to cap each request.
+
 ## tool_output_max_bytes
 
 Maximum number of bytes of tool output (including shell command output and file reads) to include in a model request. Defaults to 32 KiB. Increase this if you need to send larger outputs to the model (note the exec capture cap remains 32 MiB per stream).
@@ -1086,6 +1094,7 @@ Project commands appear in the TUI via `/cmd <name>` and run through the standar
 | `model_provider` | string | Provider id from `model_providers` (default: `openai`). |
 | `model_context_window` | number | Context window tokens. |
 | `model_max_output_tokens` | number | Max output tokens. |
+| `model_request_max_output_tokens` | number | Explicit request output cap; sent as Chat Completions `max_tokens` for `wire_api = "chat"`. |
 | `approval_policy` | `untrusted` \| `on-failure` \| `on-request` \| `never` | When to prompt for approval. |
 | `sandbox_mode` | `read-only` \| `workspace-write` \| `danger-full-access` | OS sandbox policy. |
 | `sandbox_workspace_write.writable_roots` | array<string> | Extra writable roots in workspace‑write. |
