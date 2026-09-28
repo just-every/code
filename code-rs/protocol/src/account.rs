@@ -13,6 +13,7 @@ pub enum PlanType {
     Plus,
     Pro,
     ProLite,
+    ProMax,
     Team,
     #[serde(rename = "self_serve_business_prolite")]
     #[ts(rename = "self_serve_business_prolite")]
@@ -54,6 +55,7 @@ mod tests {
     fn business_plan_types_use_expected_wire_names() {
         for (plan_type, wire_name) in [
             (PlanType::ProLite, "prolite"),
+            (PlanType::ProMax, "promax"),
             (
                 PlanType::SelfServeBusinessProLite,
                 "self_serve_business_prolite",

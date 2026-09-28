@@ -464,6 +464,7 @@ pub fn login_with_chatgpt_auth_tokens(
             "plus" => PlanType::Known(KnownPlan::Plus),
             "pro" => PlanType::Known(KnownPlan::Pro),
             "prolite" => PlanType::Known(KnownPlan::ProLite),
+            "promax" => PlanType::Known(KnownPlan::ProMax),
             "team" => PlanType::Known(KnownPlan::Team),
             "self_serve_business_prolite" => PlanType::Known(KnownPlan::SelfServeBusinessProLite),
             "self_serve_business_usage_based" => {
@@ -1188,12 +1189,12 @@ mod tests {
     }
 
     #[test]
-    fn prolite_account_supports_pro_only_models() {
+    fn promax_account_supports_pro_only_models() {
         let auth = CodexAuth::from_tokens_with_originator(
             TokenData {
                 id_token: IdTokenInfo {
                     email: Some("user@example.com".to_string()),
-                    chatgpt_plan_type: Some(PlanType::Known(KnownPlan::ProLite)),
+                    chatgpt_plan_type: Some(PlanType::Known(KnownPlan::ProMax)),
                     chatgpt_account_is_fedramp: false,
                     raw_jwt: "header.payload.signature".to_string(),
                 },

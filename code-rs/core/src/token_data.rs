@@ -98,8 +98,15 @@ impl PlanType {
     }
 
     pub(crate) fn supports_pro_only_models(&self) -> bool {
-        matches!(self, Self::Known(KnownPlan::Pro | KnownPlan::ProLite))
-            || matches!(self, Self::Unknown(plan) if plan.eq_ignore_ascii_case("prolite"))
+        matches!(
+            self,
+            Self::Known(KnownPlan::Pro | KnownPlan::ProLite | KnownPlan::ProMax)
+        ) || matches!(
+            self,
+            Self::Unknown(plan)
+                if plan.eq_ignore_ascii_case("prolite")
+                    || plan.eq_ignore_ascii_case("promax")
+        )
     }
 }
 
@@ -111,6 +118,7 @@ pub(crate) enum KnownPlan {
     Plus,
     Pro,
     ProLite,
+    ProMax,
     Team,
     #[serde(rename = "self_serve_business_prolite")]
     SelfServeBusinessProLite,
@@ -136,6 +144,7 @@ impl KnownPlan {
             Self::Plus => "plus",
             Self::Pro => "pro",
             Self::ProLite => "prolite",
+            Self::ProMax => "promax",
             Self::Team => "team",
             Self::SelfServeBusinessProLite => "self_serve_business_prolite",
             Self::SelfServeBusinessUsageBased => "self_serve_business_usage_based",
@@ -287,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn prolite_plan_supports_pro_only_models() {
+    fn pro_family_plans_support_pro_only_models() {
         #[derive(Serialize)]
         struct Header {
             alg: &'static str,
@@ -300,7 +309,7 @@ mod tests {
         let payload = serde_json::json!({
             "email": "user@example.com",
             "https://api.openai.com/auth": {
-                "chatgpt_plan_type": "prolite"
+                "chatgpt_plan_type": "promax"
             }
         });
 
@@ -315,7 +324,7 @@ mod tests {
 
         let info = parse_id_token(&fake_jwt).expect("should parse");
         let plan = info.chatgpt_plan_type.expect("plan should parse");
-        assert_eq!(plan.as_string(), "prolite");
+        assert_eq!(plan.as_string(), "promax");
         assert!(plan.supports_pro_only_models());
     }
 

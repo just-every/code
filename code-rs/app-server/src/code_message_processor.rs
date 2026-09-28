@@ -2096,6 +2096,10 @@ mod tests {
     fn parse_plan_type_is_case_insensitive() {
         assert_eq!(parse_plan_type(Some("Pro".to_string())), PlanType::Pro);
         assert_eq!(
+            parse_plan_type(Some("promax".to_string())),
+            PlanType::ProMax
+        );
+        assert_eq!(
             parse_plan_type(Some("BUSINESS".to_string())),
             PlanType::Business
         );
@@ -2286,7 +2290,11 @@ fn parse_plan_type(plan: Option<String>) -> PlanType {
         "go" => PlanType::Go,
         "plus" => PlanType::Plus,
         "pro" => PlanType::Pro,
+        "prolite" => PlanType::ProLite,
+        "promax" => PlanType::ProMax,
         "team" => PlanType::Team,
+        "self_serve_business_prolite" => PlanType::SelfServeBusinessProLite,
+        "self_serve_business_usage_based" => PlanType::SelfServeBusinessUsageBased,
         "business" => PlanType::Business,
         "ent26" => PlanType::Ent26,
         "enterprise" => PlanType::Enterprise,
