@@ -7,6 +7,13 @@
 
 - (none)
 
+## [0.6.195] - 2026-09-28
+
+- Core: cap chat request output to keep requests within supported limits. (f0b4e097)
+- Core: add Pro Max plan type support for account metadata. (56ae603b)
+- Core: refresh upstream parity with app-server, MCP, and build stability updates. (b8bfc970)
+- Release: restore GPT-5.4 release preflight metadata. (bd0bf538)
+
 ## [0.6.194] - 2026-09-27
 
 - Core: expose per-app tool exposure configuration in app-server config schemas. (fd76b22c, a6d4741d)

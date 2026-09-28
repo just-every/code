@@ -1,19 +1,19 @@
-## @just-every/code v0.6.194
+## @just-every/code v0.6.195
 
-This release adds app-level tool exposure controls, preserves upstream model parity, and improves release publishing stability.
+This release caps chat request output, adds Pro Max plan support, and refreshes upstream parity updates.
 
 ### Changes
 
-- Core: expose per-app tool exposure configuration in app-server config schemas.
-- Core: align flex-tier model metadata with upstream parity.
-- Core: keep credential debug output redacted across auth token data.
-- Release: reduce R2 upload concurrency and rely on standard retries for publishing stability.
+- Core: cap chat request output to keep requests within supported limits.
+- Core: add Pro Max plan type support for account metadata.
+- Core: refresh upstream parity with app-server, MCP, and build stability updates.
+- Release: restore GPT-5.4 release preflight metadata.
 
 ### Install
 
-```sh
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.193...v0.6.194
+Compare: https://github.com/just-every/code/compare/v0.6.194...v0.6.195
