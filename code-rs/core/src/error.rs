@@ -92,6 +92,10 @@ pub enum CodexErr {
     #[error("stream disconnected before completion: {0}")]
     Stream(String, Option<RetryAfter>, Option<String>),
 
+    /// The Responses API stopped sampling because of an unspecified content filter.
+    #[error("stream error: Incomplete response returned, reason: content_filter")]
+    ContentFilter,
+
     /// A retryable upstream rate limit received inside the response stream.
     #[error("rate limit exceeded: {0}")]
     RateLimitExceeded(String, Option<RetryAfter>, Option<String>),

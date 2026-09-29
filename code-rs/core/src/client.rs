@@ -233,6 +233,13 @@ fn is_server_overloaded_error(error: &Error) -> bool {
     matches!(error.code.as_deref(), Some("server_is_overloaded"))
 }
 
+fn is_content_filter_error(error: &Error) -> bool {
+    matches!(
+        (error.r#type.as_deref(), error.code.as_deref()),
+        (Some("content_filter"), _) | (_, Some("content_filter"))
+    )
+}
+
 fn is_reasoning_summary_rejected(error: &Error) -> bool {
     let param_matches = matches!(error.param.as_deref(), Some("reasoning.summary"));
     let code_matches = matches!(error.code.as_deref(), Some("unsupported_value"));
@@ -3100,6 +3107,8 @@ async fn process_sse<S>(
                                     response_error = Some(CodexErr::QuotaExceeded);
                                 } else if is_server_overloaded_error(&error) {
                                     response_error = Some(CodexErr::ServerOverloaded);
+                                } else if is_content_filter_error(&error) {
+                                    response_error = Some(CodexErr::ContentFilter);
                                 } else {
                                     let retry_after = try_parse_retry_after(&error, Utc::now());
                                     let message = error.message.unwrap_or_default();
@@ -3136,6 +3145,10 @@ async fn process_sse<S>(
                         .and_then(Value::as_str)
                 });
                 let reason = reason.unwrap_or("unknown");
+                if reason == "content_filter" {
+                    let _ = tx_event.send(Err(CodexErr::ContentFilter)).await;
+                    return;
+                }
                 let message = format!("Incomplete response returned, reason: {reason}");
                 let event = CodexErr::Stream(message, None, Some(request_id.clone()));
                 let _ = tx_event.send(Err(event)).await;

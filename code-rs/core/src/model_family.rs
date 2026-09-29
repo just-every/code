@@ -26,6 +26,8 @@ const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+const CONTENT_FILTER_GUIDANCE: &str = "Your previous response was blocked by a content filter. Do not treat this as a transient failure or try to reproduce or work around the blocked content through repeated attempts, altered formatting, splitting, encoding, tools, subagents, or later wakes. Briefly explain the limitation and offer a permitted alternative. Continue unrelated authorized work.";
+const MAX_CONTENT_FILTER_GUIDANCE_BYTES: usize = 512;
 
 const CONTEXT_WINDOW_272K: u64 = 272_000;
 const CONTEXT_WINDOW_200K: u64 = 200_000;
@@ -164,6 +166,9 @@ pub struct ModelFamily {
 
     // Instructions to use for querying the model
     pub base_instructions: String,
+
+    /// Developer guidance appended when a retry follows a content-filter stop.
+    pub content_filter_guidance: String,
 }
 
 pub(crate) fn base_instructions_override_for_personality(
@@ -218,6 +223,7 @@ macro_rules! model_family {
             supports_image_detail_original: false,
             supports_image_generation: false,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
+            content_filter_guidance: CONTENT_FILTER_GUIDANCE.to_string(),
         };
         // apply overrides
         $(
@@ -240,6 +246,16 @@ fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
     let upstream_instructions = model_info.get_model_instructions(/*personality*/ None);
     if !upstream_instructions.trim().is_empty() {
         family.base_instructions = upstream_instructions;
+    }
+    if let Some(guidance) = model_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.content_filter_guidance.as_deref())
+        .map(str::trim)
+        .filter(|guidance| !guidance.is_empty())
+        .filter(|guidance| guidance.len() <= MAX_CONTENT_FILTER_GUIDANCE_BYTES)
+    {
+        family.content_filter_guidance = guidance.to_string();
     }
     family.context_window = model_info
         .resolved_context_window()
@@ -555,6 +571,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         supports_image_detail_original: false,
         supports_image_generation: false,
         base_instructions: BASE_INSTRUCTIONS.to_string(),
+        content_filter_guidance: CONTENT_FILTER_GUIDANCE.to_string(),
     })
 }
 

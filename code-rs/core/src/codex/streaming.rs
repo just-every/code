@@ -3514,6 +3514,7 @@ async fn run_turn(
 
                 // Use the configured provider-specific stream retry budget.
                 let max_retries = tc.client.get_provider().stream_max_retries();
+                let is_content_filter = is_content_filter_error(&e);
                 let req_id = match &e {
                     CodexErr::Stream(_, _, req) | CodexErr::RateLimitExceeded(_, _, req) => {
                         req.clone()
@@ -3646,8 +3647,11 @@ async fn run_turn(
                     // Surface retry information to any UI/front‑end so the
                     // user understands what is happening instead of staring
                     // at a seemingly frozen screen.
-                    let mut retry_message =
-                        format!("stream error: {e}; retrying in {delay:?}");
+                    let mut retry_message = if is_content_filter {
+                        format!("response blocked by content filter; retrying in {delay:?}")
+                    } else {
+                        format!("stream error: {e}; retrying in {delay:?}")
+                    };
                     if let Some(eta) = retry_eta {
                         retry_message.push_str(&format!(" (next attempt at {eta})"));
                     }
@@ -3657,6 +3661,12 @@ async fn run_turn(
                     // the next request's input so we do not lose tool progress
                     // or already-finalized items.
                     drain_scratchpad_into_attempt(&mut attempt_input);
+                    if is_content_filter {
+                        append_content_filter_guidance(
+                            &mut attempt_input,
+                            &effective_family.content_filter_guidance,
+                        );
+                    }
 
                     tokio::time::sleep(delay).await;
                 } else {
@@ -4163,6 +4173,28 @@ fn should_retry_stream_after_error(
     max_retries: u64,
 ) -> bool {
     !has_tool_responses && retries < max_retries
+}
+
+fn is_content_filter_error(error: &CodexErr) -> bool {
+    matches!(error, CodexErr::ContentFilter)
+}
+
+fn append_content_filter_guidance(attempt_input: &mut Vec<ResponseItem>, guidance: &str) {
+    let guidance = guidance.trim();
+    if guidance.is_empty() {
+        return;
+    }
+    attempt_input.push(ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "<content_filter_guidance>\n{guidance}\n</content_filter_guidance>"
+            ),
+        }],
+        end_turn: None,
+        phase: None,
+    });
 }
 
 fn should_handle_response_item_after_turn_validation(item: &ResponseItem) -> bool {

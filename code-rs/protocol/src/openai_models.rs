@@ -533,6 +533,10 @@ impl ModelInfo {
 /// instructions_* is populated and valid, it will override base_instructions.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelMessages {
+    /// Developer guidance after a content-filter block. Missing, null, blank, or values over
+    /// 512 UTF-8 bytes use the bundled guidance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_filter_guidance: Option<String>,
     pub instructions_template: Option<String>,
     pub instructions_variables: Option<ModelInstructionsVariables>,
     pub approvals: Option<ApprovalMessages>,
@@ -879,6 +883,7 @@ mod tests {
     #[test]
     fn get_model_instructions_uses_template_when_placeholder_present() {
         let model = test_model(Some(ModelMessages {
+            content_filter_guidance: None,
             instructions_template: Some("Hello {{ personality }}".to_string()),
             instructions_variables: Some(personality_variables()),
             approvals: None,
@@ -892,6 +897,7 @@ mod tests {
     #[test]
     fn get_model_instructions_always_strips_placeholder() {
         let model = test_model(Some(ModelMessages {
+            content_filter_guidance: None,
             instructions_template: Some("Hello\n{{ personality }}".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
@@ -915,6 +921,7 @@ mod tests {
         assert_eq!(model.get_model_instructions(None), "Hello\n");
 
         let model_no_personality = test_model(Some(ModelMessages {
+            content_filter_guidance: None,
             instructions_template: Some("Hello\n{{ personality }}".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
@@ -941,6 +948,7 @@ mod tests {
     #[test]
     fn get_model_instructions_falls_back_when_template_is_missing() {
         let model = test_model(Some(ModelMessages {
+            content_filter_guidance: None,
             instructions_template: None,
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
@@ -1032,6 +1040,7 @@ mod tests {
             serde_json::from_str(r#"{"instructions_template":null,"instructions_variables":null}"#)
                 .expect("model messages should deserialize");
 
+        assert_eq!(messages.content_filter_guidance, None);
         assert_eq!(messages.approvals, None);
     }
 
