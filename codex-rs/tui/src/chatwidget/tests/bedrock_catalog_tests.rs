@@ -13,13 +13,13 @@ async fn bedrock_astra_model_and_reasoning_pickers() {
         (
             "mantle",
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
-            "openai.gpt-6-sol",
+            "openai.gpt-6.1-sol",
             "openai.gpt-6-astra",
         ),
         (
             "runtime",
             ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None),
-            "global.openai.gpt-6-sol",
+            "global.openai.gpt-6.1-sol",
             "global.openai.gpt-6-astra",
         ),
     ] {
@@ -30,12 +30,19 @@ async fn bedrock_astra_model_and_reasoning_pickers() {
                 HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             )
             .await;
+        assert_eq!(
+            presets
+                .iter()
+                .find(|preset| preset.is_default)
+                .map(|preset| preset.model.as_str()),
+            Some(default_model),
+        );
         let astra = presets
             .iter()
             .find(|model| model.model == astra_model)
             .expect("Astra preset")
             .clone();
-        let (mut chat, _events, _ops) = make_chatwidget_manual(Some(default_model)).await;
+        let (mut chat, mut events, _ops) = make_chatwidget_manual(Some(default_model)).await;
         chat.thread_id = Some(ThreadId::new());
         chat.model_catalog = Arc::new(ModelCatalog::new(presets));
         chat.open_model_popup();
@@ -48,6 +55,35 @@ async fn bedrock_astra_model_and_reasoning_pickers() {
         assert_chatwidget_snapshot!(
             format!("bedrock_{name}_astra_reasoning"),
             render_bottom_popup(&chat, /*width*/ 100)
+        );
+        chat.handle_key_event(KeyEvent::from(KeyCode::Char('5')));
+        let advanced =
+            std::iter::from_fn(|| events.try_recv().ok()).find_map(|event| match event {
+                AppEvent::OpenAdvancedReasoningPopup { model } => Some(model),
+                _ => None,
+            });
+        chat.open_advanced_reasoning_popup(advanced.expect("advanced reasoning popup"));
+        assert_chatwidget_snapshot!(
+            format!("bedrock_{name}_astra_advanced_reasoning"),
+            render_bottom_popup(&chat, /*width*/ 100)
+        );
+        chat.handle_key_event(KeyEvent::from(KeyCode::Char('2')));
+        let selected =
+            std::iter::from_fn(|| events.try_recv().ok()).find_map(|event| match event {
+                AppEvent::AstraSelectedFromModelPicker {
+                    thread_id,
+                    model,
+                    action: AstraModelPickerAction::ApplyAdvancedReasoning { effort },
+                } => Some((thread_id, model, effort)),
+                _ => None,
+            });
+        assert_eq!(
+            selected,
+            Some((
+                chat.thread_id.expect("active thread"),
+                astra_model.to_string(),
+                ReasoningEffortConfig::Ultra,
+            ))
         );
     }
 }

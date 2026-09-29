@@ -54,6 +54,8 @@ mod approvals;
 mod audio_truncation;
 mod auth_recovery_policy;
 mod auto_review;
+#[path = "bedrock_multi_agent_tests.rs"]
+mod bedrock_multi_agent;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;
@@ -216,7 +218,10 @@ mod tool_lifecycle;
 mod tool_parallelism;
 mod tools;
 mod truncation;
+#[path = "turn_error_details_tests.rs"]
+mod turn_error_details;
 mod turn_input_submission;
+mod turn_phase_trace;
 mod turn_state;
 mod unified_exec;
 #[path = "unified_exec_launch_failure_tests.rs"]

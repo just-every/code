@@ -44,6 +44,10 @@ pub(super) struct AgentsOverviewState {
     pub(super) usage_disabled: bool,
     pub(super) activity: HashMap<ThreadId, super::agents_overview_details::AgentsOverviewActivity>,
     pub(super) initialized: bool,
+    pub(super) discovery: super::agents_overview_discovery::AgentsOverviewDiscovery,
+    pub(super) show_more_requested: bool,
+    /// Vacancies left by lifecycle removals, filled without expanding the visible window.
+    pub(super) refill_count: usize,
     pub(super) request_id: Option<Uuid>,
     pub(super) refresh_pending: bool,
     pub(super) refresh_thread_ids: HashSet<ThreadId>,
@@ -159,6 +163,9 @@ impl App {
         }
         self.agents_overview.request_id = None;
         self.agents_overview.refresh_task = None;
+        let refill_succeeded = result
+            .as_ref()
+            .is_ok_and(|refresh| refresh.recent_seed_complete);
         {
             let mut state = self
                 .agents_overview
@@ -166,17 +173,31 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.loading = false;
-            state.refresh_failed = !result
-                .as_ref()
-                .is_ok_and(|refresh| refresh.recent_seed_complete);
+            state.refresh_failed = !refill_succeeded;
         }
         match result {
             Ok(refresh) => {
                 self.agents_overview.initialized = refresh.recent_seed_complete;
+                if let Some(discovery) = refresh.discovery {
+                    if !discovery.has_more() {
+                        self.agents_overview.refill_count = 0;
+                        self.agents_overview.show_more_requested = false;
+                    }
+                    self.agents_overview.initialized = true;
+                    self.agents_overview
+                        .view_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .has_more = discovery.has_more();
+                    self.agents_overview.discovery = discovery;
+                }
                 self.agents_overview
                     .last_messages
                     .extend(refresh.last_messages);
                 for (thread_id, thread) in refresh.threads {
+                    if self.agents_overview.removed_threads.contains(&thread_id) {
+                        continue;
+                    }
                     if let Some(mut thread) = thread {
                         if thread.ephemeral {
                             self.agents_overview.threads.remove(&thread_id);
@@ -184,6 +205,17 @@ impl App {
                             self.agents_overview.activity.remove(&thread_id);
                             self.agents_overview.usage.remove(&thread_id);
                             continue;
+                        }
+                        if !self.agents_overview.threads.contains_key(&thread_id)
+                            && !self.agents_overview.hidden_threads.contains(&thread_id)
+                            && thread.parent_thread_id.is_none()
+                            && !matches!(
+                                thread.source,
+                                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                            )
+                        {
+                            self.agents_overview.refill_count =
+                                self.agents_overview.refill_count.saturating_sub(1);
                         }
                         thread.turns.clear();
                         self.agents_overview.threads.insert(thread_id, Some(thread));
@@ -213,7 +245,12 @@ impl App {
                 self.track_agents_overview_notification(&notification);
             }
         }
-        if std::mem::take(&mut self.agents_overview.refresh_pending) {
+        if std::mem::take(&mut self.agents_overview.refresh_pending)
+            || (refill_succeeded
+                && (self.agents_overview.refill_count > 0
+                    || self.agents_overview.show_more_requested)
+                && self.agents_overview.discovery.has_more())
+        {
             self.refresh_changed_agents_overview_threads(app_server);
         }
         self.repaint_agents_overview();
@@ -498,7 +535,10 @@ impl App {
                         app_server,
                         &mut resume_config,
                         target_thread.cwd.as_path(),
-                        Some(&target_thread),
+                        crate::onboarding::DirectoryTrustOptions {
+                            resumed_thread: Some(&target_thread),
+                            ..Default::default()
+                        },
                         /*startup_draft*/ None,
                     )
                     .await
@@ -512,14 +552,18 @@ impl App {
                 loading::draw(tui)?;
             }
             let baseline_approval = resume_config.permissions.approval_policy.value();
+            let baseline_reviewer = resume_config.approvals_reviewer;
             let baseline_permissions =
                 RuntimePermissionProfileOverride::from_config(&resume_config);
             let resume_model_settings = match target_thread.status {
                 codex_app_server_protocol::ThreadStatus::NotLoaded => {
-                    self.apply_runtime_policy_overrides(
+                    if let Err(error) = self.apply_runtime_policy_overrides(
                         &mut resume_config,
                         RuntimePolicyOverrideScope::ExplicitOnly,
-                    );
+                    ) {
+                        self.add_agents_overview_error(format!("{error:#}"));
+                        return Ok(AppRunControl::Continue);
+                    }
                     if matches!(self.runtime_approval_policy_override,
                         Some(RuntimeApprovalPolicyOverride::Explicit(policy))
                             if policy.to_core() != resume_config.permissions.approval_policy.value())
@@ -567,11 +611,12 @@ impl App {
                 (blank, false)
             } else {
                 match app_server
-                    .resume_thread(
+                    .resume_thread_with_permission_overrides(
                         &local_settings,
                         resume_config.clone(),
                         root_thread_id,
                         resume_model_settings,
+                        self.resume_permission_overrides(&resume_config),
                     )
                     .await
                 {
@@ -665,7 +710,11 @@ impl App {
                     }
                 }
             }
-            // Explicit choices carry across cold resumes and new sessions.
+            // Read-only views retain explicit choices but never another task's restored state.
+            let preserve_explicit_permissions = preserve_explicit_permissions || read_only;
+            self.runtime_approvals_reviewer_override = self
+                .runtime_approvals_reviewer_override
+                .filter(|_| preserve_explicit_permissions);
             self.runtime_approval_policy_override =
                 self.runtime_approval_policy_override.filter(|policy| {
                     preserve_explicit_permissions
@@ -724,22 +773,27 @@ impl App {
                     .set_workspace_roots(self.config.permissions.workspace_roots().to_vec());
             }
             self.config = destination_config;
-            let approval = self.config.permissions.approval_policy.value();
-            if self
-                .runtime_approval_policy_override
-                .is_none_or(|policy| policy.policy().to_core() != approval)
-            {
-                self.runtime_approval_policy_override = (approval != baseline_approval)
-                    .then_some(RuntimeApprovalPolicyOverride::Restored(approval.into()));
-            }
-            if self
-                .runtime_permission_profile_override
-                .as_ref()
-                .is_none_or(|profile| !profile.matches_config(&self.config))
-            {
-                self.runtime_permission_profile_override = (!baseline_permissions
-                    .matches_config(&self.config))
-                .then(|| RuntimePermissionProfileOverride::from_restored_config(&self.config));
+            if !read_only {
+                let approval = self.config.permissions.approval_policy.value();
+                if self
+                    .runtime_approval_policy_override
+                    .is_none_or(|policy| policy.policy().to_core() != approval)
+                {
+                    self.runtime_approval_policy_override = (approval != baseline_approval)
+                        .then_some(RuntimeApprovalPolicyOverride::Restored(approval.into()));
+                }
+                if self
+                    .runtime_permission_profile_override
+                    .as_ref()
+                    .is_none_or(|profile| !profile.matches_config(&self.config))
+                {
+                    self.runtime_permission_profile_override = (!baseline_permissions
+                        .matches_config(&self.config)
+                        || baseline_reviewer != self.config.approvals_reviewer)
+                        .then(|| {
+                            RuntimePermissionProfileOverride::from_restored_config(&self.config)
+                        });
+                }
             }
             // A new session has no descendants. Scanning every loaded thread here
             // adds a serial round trip per agent before the composer can render.
@@ -888,7 +942,7 @@ impl App {
                 app_server,
                 &mut config,
                 &trust_cwd,
-                /*resumed_thread*/ None,
+                crate::onboarding::DirectoryTrustOptions::default(),
                 startup_draft.as_deref_mut(),
             )
             .await
@@ -911,16 +965,14 @@ impl App {
             );
             return None;
         }
-        // New sessions use the destination settings plus explicit user choices, not
-        // a permission snapshot inherited when attaching to another task.
-        self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::ExplicitOnly);
         let defaults_cwd = match app_server.thread_params_mode() {
             crate::app_server_session::ThreadParamsMode::Embedded => config.cwd.as_path(),
             crate::app_server_session::ThreadParamsMode::Remote => remote_cwd
                 .as_deref()
                 .or_else(|| app_server.remote_cwd_override())
                 .unwrap_or(Path::new(".")),
-        };
+        }
+        .to_path_buf();
         if let Some(draft) = startup_draft.as_deref_mut() {
             draft.apply_config(&config);
         }
@@ -930,12 +982,20 @@ impl App {
             tui,
             crate::config_update::read_effective_config_if_supported(
                 app_server.request_handle(),
-                defaults_cwd,
+                &defaults_cwd,
             ),
         )
         .await
         {
             Ok(Some(defaults)) => {
+                crate::projectless::apply_defaults(
+                    &mut config,
+                    &self.harness_overrides,
+                    app_server,
+                    &self.environment_manager,
+                    &defaults,
+                );
+                let defaults = defaults.config;
                 server_model_cleared = defaults.model.is_none();
                 let use_server_provider = matches!(
                     app_server.thread_params_mode(),
@@ -972,6 +1032,13 @@ impl App {
                 ));
                 return None;
             }
+        }
+        // New sessions inherit explicit choices, not permissions restored from another task.
+        if let Err(error) = self
+            .apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::ExplicitOnly)
+        {
+            self.add_agents_overview_error(format!("{error:#}"));
+            return None;
         }
         apply_managed_new_thread_defaults(
             &mut config,

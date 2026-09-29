@@ -1495,19 +1495,10 @@ url = "https://example.com/allowed-mcp"
     Ok(())
 }
 
-#[test_case("disabled")]
-#[test_case("enterprise")]
 #[tokio::test]
-async fn plugin_install_skips_mcp_oauth_managed_by_plugin_config(case: &str) -> Result<()> {
+async fn plugin_install_skips_mcp_oauth_for_disabled_server() -> Result<()> {
     let oauth_server = MockServer::start().await;
-    let endpoint = format!("{}/mcp", oauth_server.uri());
-    let mcp_settings = match case {
-        "disabled" => "enabled = false".to_string(),
-        "enterprise" => format!(
-            "ema_auth = {{ url = '{endpoint}', resource = '{endpoint}', client_id = 'resource-client', authorization_server_issuer = 'https://as.example' }}"
-        ),
-        _ => unreachable!("unknown test case"),
-    };
+    let mcp_settings = "enabled = false";
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join("config.toml"),
@@ -1566,7 +1557,7 @@ plugins = true
             .and_then(|plugins| plugins.get("sample-plugin@debug"))
             .and_then(|plugin| plugin.get("mcp_servers"))
             .and_then(|servers| servers.get("sample-mcp")),
-        Some(&toml::from_str::<toml::Value>(&mcp_settings)?)
+        Some(&toml::from_str::<toml::Value>(mcp_settings)?)
     );
     Ok(())
 }
@@ -2047,10 +2038,20 @@ async fn plugin_oauth_login_preserves_registered_callbacks_or_uses_legacy_fallba
     )
     .await??;
     assert_eq!(
+        completed.login_id.as_deref(),
+        Some(
+            response
+                .login_id
+                .as_deref()
+                .expect("login response should contain an ID")
+        )
+    );
+    assert_eq!(
         completed,
         McpServerOauthLoginCompletedNotification {
             name: "sample-mcp".to_string(),
             thread_id: None,
+            login_id: response.login_id,
             success: true,
             error: None,
         }

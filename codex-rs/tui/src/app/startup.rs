@@ -24,6 +24,7 @@ fn spawn_startup_thread_start(
     let thread_params_mode = app_server.thread_params_mode();
     let remote_cwd_override = app_server.remote_cwd_override().map(Path::to_path_buf);
     let thread_tool_transport = app_server.thread_tool_transport();
+    let model_provider_override = app_server.model_provider_override.clone();
     tokio::spawn(async move {
         let result = crate::app_server_session::start_thread_with_request_handle(
             request_handle,
@@ -32,6 +33,7 @@ fn spawn_startup_thread_start(
             thread_params_mode,
             remote_cwd_override,
             thread_tool_transport,
+            model_provider_override,
         )
         .await
         .and_then(|started| {
@@ -44,12 +46,19 @@ fn spawn_startup_thread_start(
     });
 }
 
+#[derive(Default)]
+pub(super) struct FreshStartupDefaults {
+    pub(super) server_defaults_read: bool,
+    pub(super) prompt_windows_sandbox: bool,
+}
+
 pub(super) async fn prepare_fresh_startup_config(
     config: &mut Config,
     app_server: &AppServerSession,
     cli_kv_overrides: &[(String, TomlValue)],
     harness_overrides: &ConfigOverrides,
-) -> Result<bool> {
+    environments: &EnvironmentManager,
+) -> Result<FreshStartupDefaults> {
     let defaults_cwd = match app_server.thread_params_mode() {
         crate::app_server_session::ThreadParamsMode::Embedded => config.cwd.as_path(),
         crate::app_server_session::ThreadParamsMode::Remote => {
@@ -61,12 +70,20 @@ pub(super) async fn prepare_fresh_startup_config(
         defaults_cwd,
     )
     .await?;
+    let mut prompt_windows_sandbox = false;
     if let Some(defaults) = defaults.as_ref() {
         super::new_session::overlay_new_session_defaults(
             config,
-            defaults,
+            &defaults.config,
             cli_kv_overrides,
             harness_overrides,
+        );
+        prompt_windows_sandbox = crate::projectless::apply_defaults(
+            config,
+            harness_overrides,
+            app_server,
+            environments,
+            defaults,
         );
     }
     apply_managed_new_thread_defaults(
@@ -75,7 +92,10 @@ pub(super) async fn prepare_fresh_startup_config(
         cli_kv_overrides,
         harness_overrides,
     );
-    Ok(defaults.is_some())
+    Ok(FreshStartupDefaults {
+        server_defaults_read: defaults.is_some(),
+        prompt_windows_sandbox,
+    })
 }
 
 pub(super) fn startup_model(
@@ -212,6 +232,7 @@ impl App {
 
         let harness_overrides =
             normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
+        app_server.model_provider_override = harness_overrides.model_provider.clone();
         let bootstrap = match startup_bootstrap {
             Some(bootstrap) => bootstrap,
             None => match startup_draft
@@ -242,7 +263,7 @@ impl App {
                 config.model_reasoning_effort = None;
             }
         }
-        let server_defaults_read = if matches!(
+        let startup_defaults = if matches!(
             &session_selection,
             SessionSelection::StartFresh | SessionSelection::Exit
         ) {
@@ -254,16 +275,17 @@ impl App {
                         &app_server,
                         &cli_kv_overrides,
                         &harness_overrides,
+                        &environment_manager,
                     ),
                 )
                 .await
             {
-                Ok(Ok(defaults_read)) => defaults_read,
+                Ok(Ok(defaults)) => defaults,
                 Ok(Err(err)) => return shutdown_on_startup_error(app_server, err).await,
                 Err(err) => return shutdown_on_startup_error(app_server, err).await,
             }
         } else {
-            false
+            FreshStartupDefaults::default()
         };
         if matches!(&session_selection, SessionSelection::AgentsOverview) {
             apply_managed_new_thread_defaults(
@@ -273,7 +295,7 @@ impl App {
                 &harness_overrides,
             );
         }
-        let mut model = startup_model(&config, &bootstrap, server_defaults_read);
+        let mut model = startup_model(&config, &bootstrap, startup_defaults.server_defaults_read);
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
             &app_server_target,
@@ -486,11 +508,15 @@ impl App {
                 let resumed = match startup_draft
                     .run_until(
                         tui,
-                        app_server.resume_thread(
+                        app_server.resume_thread_with_permission_overrides(
                             &local_settings,
                             config.clone(),
                             target_session.thread_id,
                             model_settings,
+                            crate::resume_permissions::ResumePermissions::from_overrides(
+                                &config,
+                                &harness_overrides,
+                            ),
                         ),
                     )
                     .await
@@ -525,7 +551,13 @@ impl App {
                         Err(err) => return shutdown_on_startup_error(app_server, err).await,
                     }
                 } else {
-                    let action = SessionStartAction::Resume(model_settings);
+                    let action = SessionStartAction::Resume(
+                        model_settings,
+                        crate::resume_permissions::ResumePermissions::from_overrides(
+                            &config,
+                            &harness_overrides,
+                        ),
+                    );
                     let resumed = complete_session_start(
                         &mut app_server,
                         SessionStartConfig {
@@ -760,6 +792,7 @@ See the Codex keymap documentation for supported actions and examples."
             loader_overrides,
             cloud_config_bundle,
             runtime_approval_policy_override: None,
+            runtime_approvals_reviewer_override: None,
             runtime_permission_profile_override: None,
             pending_server_profiles: HashMap::new(),
             file_search,
@@ -803,7 +836,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState {
-                prompt_after_trust: should_prompt_windows_sandbox_nux_at_startup,
+                prompt_after_trust: should_prompt_windows_sandbox_nux_at_startup
+                    || startup_defaults.prompt_windows_sandbox,
                 ..Default::default()
             },
             thread_event_channels: HashMap::new(),
@@ -847,6 +881,8 @@ See the Codex keymap documentation for supported actions and examples."
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
             rate_limit_refresh_state: Default::default(),
+            pending_mcp_login_start: None,
+            active_mcp_login_ids: HashMap::new(),
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
             recap: recap::RecapState::default(),

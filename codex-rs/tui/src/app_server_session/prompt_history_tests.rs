@@ -31,6 +31,12 @@ async fn lifecycle_metadata_uses_local_prompt_history() -> Result<()> {
             .codex_home(server_home.path().to_path_buf())
             .build()
             .await?;
+        crate::legacy_core::config::set_project_trust_level(
+            server_home.path(),
+            &std::env::current_dir()?,
+            codex_protocol::config_types::TrustLevel::Trusted,
+        )
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
         config.history.persistence = HistoryPersistence::None;
         config.history.max_bytes = Some(1);
         let thread_id = ThreadId::from_string(
@@ -64,6 +70,7 @@ async fn lifecycle_metadata_uses_local_prompt_history() -> Result<()> {
             mode,
             /*remote_cwd_override*/ None,
             app_server.thread_tool_transport(),
+            /*model_provider_override*/ None,
         )
         .await?;
         assert_eq!(startup.session.message_history, expected);

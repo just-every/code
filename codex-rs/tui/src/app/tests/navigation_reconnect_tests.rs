@@ -133,6 +133,8 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             .last_messages
             .insert(selected, "Pre-disconnect answer".into());
         app.agents_overview.initialized = overview_initialized;
+        // This task was unarchived elsewhere while disconnected.
+        app.agents_overview.removed_threads.insert(added);
         let view = app.agents_overview_view(
             stale.clone(),
             Some(if previous_thread.is_some() {
@@ -192,6 +194,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 let socket = tokio_tungstenite::accept_async(stream).await?;
                 methods.extend(serve_reconnect_requests(socket, |request| std::future::ready({
                     match request.method.as_str() {
+                        "config/read" => Some(json!({"error": {"code": -32601, "message": "unsupported"}})),
                         "thread/loaded/list" if connection == 0 => None,
                         "thread/resume" if connection == 1 && previous_thread.is_some() => None,
                         "thread/resume" if request.params.as_ref().unwrap()["threadId"] != child.to_string() && !server_available.load(std::sync::atomic::Ordering::SeqCst) => Some(json!({"error": {"code": -32600, "message": "thread no longer exists"}})),
@@ -275,6 +278,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 last_messages: HashMap::new(),
                 threads: HashMap::new(),
                 recent_seed_complete: false,
+                discovery: None,
             }),
         );
         assert_eq!(app.agents_overview.visible_thread_ids.len(), 2);
@@ -426,6 +430,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 last_messages: HashMap::new(),
                 threads: stale_threads,
                 recent_seed_complete: true,
+                discovery: None,
             }),
         );
         assert!(!app.agents_overview.visible_thread_ids.contains(&vanished));

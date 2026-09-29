@@ -1,13 +1,17 @@
-//! Enterprise MCP configuration and registration provenance.
+//! Enterprise MCP configuration and account-scoped credential names.
 //!
 //! Only host, user, or managed configuration selects the IdP. Plugin declarations
 //! and project settings may not redirect the enterprise credential source.
 
 use std::io;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
 
 use codex_features::Feature;
 
@@ -15,7 +19,6 @@ use crate::ConfigLayerSource;
 use crate::ConfigLayerStack;
 use crate::McpServerConfig;
 use crate::McpServerTransportConfig;
-use crate::types::PluginMcpServerEmaAuthConfig;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -71,9 +74,42 @@ impl McpEmaRegistration {
     }
 }
 
+/// Account identity that owns an enterprise OAuth credential.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct McpEmaAuthScope {
+    user_id: String,
+    workspace_id: String,
+}
+
+impl McpEmaAuthScope {
+    pub fn new(user_id: String, workspace_id: String) -> Option<Self> {
+        (!user_id.trim().is_empty() && !workspace_id.trim().is_empty()).then_some(Self {
+            user_id,
+            workspace_id,
+        })
+    }
+}
+
+impl McpServerIdpOAuthConfig {
+    /// Shared by allowed MCP resources, but never by another account or IdP client.
+    pub fn credential_name(&self, scope: &McpEmaAuthScope) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"codex-ema-idp-credential-v1\0");
+        for part in [
+            &scope.user_id,
+            &scope.workspace_id,
+            &self.issuer,
+            &self.client_id,
+        ] {
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part.as_bytes());
+        }
+        format!("ema-idp:{}", URL_SAFE_NO_PAD.encode(digest.finalize()))
+    }
+}
+
 impl McpEnterpriseManagedAuthConfig {
     /// Resolves the trusted profile and checks provenance at a config load boundary.
-    /// Plugin endpoints are checked later, when their declarations are materialized.
     pub fn resolve(
         stack: &ConfigLayerStack,
         fallback: Option<&Self>,
@@ -139,17 +175,13 @@ impl McpServerConfig {
         self.oauth.as_ref()?.ema_registration.as_ref()
     }
 
-    /// Called once on a materialized catalog, after configuration provenance and
-    /// plugin endpoint policy have been checked. Runtime consumers use the result.
+    /// Called once on a materialized catalog after configuration provenance is checked.
     pub fn resolve_ema_registration(
         &mut self,
         idp: &McpServerIdpOAuthConfig,
     ) -> Result<(), &'static str> {
         if let Some(oauth) = &mut self.oauth {
             oauth.ema_registration = None;
-            if let Some(error) = oauth.ema_registration_error {
-                return Err(error);
-            }
         }
         if !matches!(self.auth, crate::McpServerAuth::EmaAuth) {
             return Err("enterprise registration requires ema_auth");
@@ -201,22 +233,6 @@ impl McpServerConfig {
         }
         Ok(())
     }
-}
-
-fn plugin_ema_registration(
-    config: &toml::Value,
-    plugin_name: &str,
-    server_name: &str,
-) -> Option<PluginMcpServerEmaAuthConfig> {
-    config
-        .get("plugins")?
-        .get(plugin_name)?
-        .get("mcp_servers")?
-        .get(server_name)?
-        .get("ema_auth")?
-        .clone()
-        .try_into()
-        .ok()
 }
 
 fn has_trusted_atomic_registration(
@@ -299,54 +315,6 @@ fn validate_ema_auth_sources(
         }
     }
 
-    let effective_config = stack.effective_config();
-    let Some(plugins) = effective_config
-        .get("plugins")
-        .and_then(toml::Value::as_table)
-    else {
-        return Ok(());
-    };
-    for (plugin_name, plugin) in plugins {
-        let Some(plugin_servers) = plugin.get("mcp_servers").and_then(toml::Value::as_table) else {
-            continue;
-        };
-        for (server_name, server) in plugin_servers {
-            let Some(ema_auth) = server.get("ema_auth") else {
-                continue;
-            };
-            let non_project_server = non_project
-                .get("plugins")
-                .and_then(|plugins| plugins.get(plugin_name))
-                .and_then(|plugin| plugin.get("mcp_servers"))
-                .and_then(|servers| servers.get(server_name));
-            if reenabled_over_non_project_denial(
-                server.get("enabled").and_then(toml::Value::as_bool) != Some(false),
-                non_project_server,
-            ) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "project configuration cannot re-enable enterprise MCP plugin `{plugin_name}` server `{server_name}`"
-                    ),
-                ));
-            }
-            let effective = ema_auth
-                .clone()
-                .try_into::<PluginMcpServerEmaAuthConfig>()
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            if !has_trusted_atomic_registration(stack, &non_project, |config| {
-                plugin_ema_registration(config, plugin_name, server_name)
-                    .is_some_and(|registration| registration == effective)
-            }) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "enterprise MCP registration for plugin `{plugin_name}` server `{server_name}` must be defined in one non-project config layer"
-                    ),
-                ));
-            }
-        }
-    }
     Ok(())
 }
 

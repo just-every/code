@@ -118,6 +118,9 @@ mod guardian_heartbeat;
 #[path = "scenarios_preparation.rs"]
 mod preparation;
 
+#[path = "scenarios_content_filter.rs"]
+mod content_filter;
+
 #[path = "scenarios_shared_instructions.rs"]
 mod shared_instructions;
 
@@ -126,6 +129,9 @@ mod mxc;
 
 #[path = "scenarios_tools_namespace_budget.rs"]
 mod tools_namespace_budget;
+
+#[path = "scenarios_skill_catalog_dedup.rs"]
+mod skill_catalog_dedup;
 
 fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();

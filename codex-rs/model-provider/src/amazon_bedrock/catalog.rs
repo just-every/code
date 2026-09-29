@@ -2,6 +2,7 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_TERRA_MODEL_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_ASTRA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID;
@@ -9,14 +10,13 @@ use codex_models_manager::bundled_models_response;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
-use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::WebSearchToolType;
-use codex_protocol::protocol::MultiAgentVersion;
 
 const GPT_5_BEDROCK_CONTEXT_WINDOW: i64 = 272_000;
 const GPT_5_6_SOL_OPENAI_MODEL_ID: &str = "gpt-5.6-sol";
 const GPT_5_6_TERRA_OPENAI_MODEL_ID: &str = "gpt-5.6-terra";
 const GPT_5_6_LUNA_OPENAI_MODEL_ID: &str = "gpt-5.6-luna";
+const GPT_6_1_SOL_OPENAI_MODEL_ID: &str = "gpt-6.1-sol";
 const GPT_6_SOL_OPENAI_MODEL_ID: &str = "gpt-6-sol";
 const GPT_6_LUNA_OPENAI_MODEL_ID: &str = "gpt-6-luna";
 const GPT_6_ASTRA_OPENAI_MODEL_ID: &str = "gpt-6-astra";
@@ -26,9 +26,9 @@ pub(crate) fn static_model_catalog() -> ModelsResponse {
     normalize_bedrock_catalog(ModelsResponse {
         models: vec![
             bedrock_model(
-                bundled_openai_model(GPT_6_SOL_OPENAI_MODEL_ID),
-                AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
-                "GPT-6 Sol",
+                bundled_openai_model(GPT_6_1_SOL_OPENAI_MODEL_ID),
+                AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID,
+                "GPT-6.1 Sol",
                 /*priority*/ 0,
             ),
             bedrock_model(
@@ -38,34 +38,40 @@ pub(crate) fn static_model_catalog() -> ModelsResponse {
                 /*priority*/ 1,
             ),
             bedrock_model(
+                bundled_openai_model(GPT_6_SOL_OPENAI_MODEL_ID),
+                AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
+                "GPT-6 Sol",
+                /*priority*/ 2,
+            ),
+            bedrock_model(
                 bundled_openai_model(GPT_6_LUNA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID,
                 "GPT-6 Luna",
-                /*priority*/ 2,
+                /*priority*/ 3,
             ),
             bedrock_model(
                 bundled_openai_model(GPT_5_6_SOL_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID,
                 "GPT-5.6 Sol",
-                /*priority*/ 3,
+                /*priority*/ 4,
             ),
             bedrock_model(
                 bundled_openai_model(GPT_5_6_TERRA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_TERRA_MODEL_ID,
                 "GPT-5.6 Terra",
-                /*priority*/ 4,
+                /*priority*/ 5,
             ),
             bedrock_model(
                 bundled_openai_model(GPT_5_6_LUNA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID,
                 "GPT-5.6 Luna",
-                /*priority*/ 5,
+                /*priority*/ 6,
             ),
             gpt_5_bedrock_model(
                 GPT_5_5_OPENAI_MODEL_ID,
                 AMAZON_BEDROCK_GPT_5_5_MODEL_ID,
                 "GPT-5.5",
-                /*priority*/ 6,
+                /*priority*/ 7,
             ),
         ],
     })
@@ -90,8 +96,6 @@ pub(crate) fn normalize_bedrock_catalog(mut catalog: ModelsResponse) -> ModelsRe
         model.default_service_tier = None;
         // Bedrock rejects the `search_content_types` field used by multimodal search.
         model.web_search_tool_type = WebSearchToolType::Text;
-        // Bedrock does not support the response items used by multi-agent V2.
-        model.multi_agent_version = Some(MultiAgentVersion::V1);
     }
     catalog
 }
@@ -129,9 +133,6 @@ fn bedrock_model(
     model.use_responses_lite = false;
     model.tool_mode = None;
     model
-        .supported_reasoning_levels
-        .retain(|level| level.effort != ReasoningEffort::Ultra);
-    model
 }
 
 fn bundled_openai_model(slug: &str) -> ModelInfo {
@@ -146,6 +147,7 @@ fn bundled_openai_model(slug: &str) -> ModelInfo {
 #[cfg(test)]
 mod tests {
     use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+    use codex_protocol::protocol::MultiAgentVersion;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -161,8 +163,9 @@ mod tests {
                 .map(|model| model.slug.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
+                AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID,
                 AMAZON_BEDROCK_GPT_6_ASTRA_MODEL_ID,
+                AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
                 AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID,
                 AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID,
                 AMAZON_BEDROCK_GPT_5_6_TERRA_MODEL_ID,
@@ -189,13 +192,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (
-                    AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
+                    AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID,
                     Some(GPT_5_BEDROCK_CONTEXT_WINDOW),
                     Some(872_000),
                     WebSearchToolType::Text,
                 ),
                 (
                     AMAZON_BEDROCK_GPT_6_ASTRA_MODEL_ID,
+                    Some(GPT_5_BEDROCK_CONTEXT_WINDOW),
+                    Some(872_000),
+                    WebSearchToolType::Text,
+                ),
+                (
+                    AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
                     Some(GPT_5_BEDROCK_CONTEXT_WINDOW),
                     Some(872_000),
                     WebSearchToolType::Text,
@@ -236,21 +245,30 @@ mod tests {
 
     #[test]
     fn configured_bedrock_catalogs_normalize_unsupported_model_capabilities() {
-        let model = bundled_openai_model(GPT_5_5_OPENAI_MODEL_ID);
-        let mut expected = model.clone();
-        expected.additional_speed_tiers.clear();
-        expected.service_tiers.clear();
-        expected.default_service_tier = None;
-        expected.web_search_tool_type = WebSearchToolType::Text;
-        expected.multi_agent_version = Some(MultiAgentVersion::V1);
+        let models = [
+            Some(MultiAgentVersion::V2),
+            Some(MultiAgentVersion::V1),
+            Some(MultiAgentVersion::Disabled),
+            None,
+        ]
+        .into_iter()
+        .map(|version| {
+            let mut model = bundled_openai_model(GPT_5_5_OPENAI_MODEL_ID);
+            model.multi_agent_version = version;
+            model
+        })
+        .collect::<Vec<_>>();
+        let mut expected = models.clone();
+        for model in &mut expected {
+            model.additional_speed_tiers.clear();
+            model.service_tiers.clear();
+            model.default_service_tier = None;
+            model.web_search_tool_type = WebSearchToolType::Text;
+        }
 
         assert_eq!(
-            normalize_bedrock_catalog(ModelsResponse {
-                models: vec![model],
-            }),
-            ModelsResponse {
-                models: vec![expected],
-            }
+            normalize_bedrock_catalog(ModelsResponse { models }),
+            ModelsResponse { models: expected }
         );
     }
 
@@ -278,34 +296,40 @@ mod tests {
 
         for (mut expected, slug, display_name, priority) in [
             (
+                bundled_openai_model(GPT_6_1_SOL_OPENAI_MODEL_ID),
+                AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID,
+                "GPT-6.1 Sol",
+                0,
+            ),
+            (
                 bundled_openai_model(GPT_6_SOL_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID,
                 "GPT-6 Sol",
-                0,
+                2,
             ),
             (
                 bundled_openai_model(GPT_6_LUNA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID,
                 "GPT-6 Luna",
-                2,
+                3,
             ),
             (
                 bundled_openai_model(GPT_5_6_SOL_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID,
                 "GPT-5.6 Sol",
-                3,
+                4,
             ),
             (
                 bundled_openai_model(GPT_5_6_TERRA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_TERRA_MODEL_ID,
                 "GPT-5.6 Terra",
-                4,
+                5,
             ),
             (
                 bundled_openai_model(GPT_5_6_LUNA_OPENAI_MODEL_ID),
                 AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID,
                 "GPT-5.6 Luna",
-                5,
+                6,
             ),
             (
                 bundled_openai_model(GPT_6_ASTRA_OPENAI_MODEL_ID),
@@ -322,14 +346,10 @@ mod tests {
             expected.upgrade = None;
             expected.use_responses_lite = false;
             expected.tool_mode = None;
-            expected
-                .supported_reasoning_levels
-                .retain(|level| level.effort != ReasoningEffort::Ultra);
             expected.additional_speed_tiers.clear();
             expected.service_tiers.clear();
             expected.default_service_tier = None;
             expected.web_search_tool_type = WebSearchToolType::Text;
-            expected.multi_agent_version = Some(MultiAgentVersion::V1);
 
             assert_eq!(
                 catalog.models.iter().find(|model| model.slug == slug),
