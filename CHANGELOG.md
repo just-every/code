@@ -7,6 +7,12 @@
 
 - (none)
 
+## [0.6.196] - 2026-09-29
+
+- Core: add retry guidance when content filters block model output. (56c4c049)
+- Core: enable enterprise MCP sign-in and clean up account-scoped grants. (4994306e)
+- Release: balance Windows Bazel test shards using duration estimates for steadier CI. (7e049b3e)
+
 ## [0.6.195] - 2026-09-28
 
 - Core: cap chat request output to keep requests within supported limits. (f0b4e097)

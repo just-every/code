@@ -1,13 +1,12 @@
-## @just-every/code v0.6.195
+## @just-every/code v0.6.196
 
-This release caps chat request output, adds Pro Max plan support, and refreshes upstream parity updates.
+This release improves content-filter retry guidance, enterprise MCP sign-in cleanup, and Windows CI stability.
 
 ### Changes
 
-- Core: cap chat request output to keep requests within supported limits.
-- Core: add Pro Max plan type support for account metadata.
-- Core: refresh upstream parity with app-server, MCP, and build stability updates.
-- Release: restore GPT-5.4 release preflight metadata.
+- Core: add retry guidance when content filters block model output.
+- Core: enable enterprise MCP sign-in and clean up account-scoped grants.
+- Release: balance Windows Bazel test shards using duration estimates for steadier CI.
 
 ### Install
 
@@ -16,4 +15,4 @@ npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.194...v0.6.195
+Compare: https://github.com/just-every/code/compare/v0.6.195...v0.6.196
