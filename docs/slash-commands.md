@@ -122,7 +122,7 @@ Implementation Notes
   following model slugs to the LLM for multi-agent runs: `code-gpt-5.5`,
   `code-gpt-5.4`, `code-gpt-5.4-mini`,
   `claude-opus-4.8`, `gemini-3.1-pro`,
-  `claude-sonnet-4.6`, `gemini-3.5-flash`,
+  `claude-sonnet-4.6`, `gemini-3.6-flash`,
   `claude-haiku-4.5`, and `qwen-3-coder` (with
   `cloud-gpt-5.1-codex-max` gated by `CODE_ENABLE_CLOUD_AGENT_MODEL`). (`gemini`
   resolves to `gemini-3.5-flash`.) You can replace or pin this set via

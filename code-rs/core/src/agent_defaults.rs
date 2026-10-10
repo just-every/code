@@ -47,7 +47,10 @@ pub const DEFAULT_AGENT_NAMES: &[&str] = &[
     "gemini-3.1-pro",
     // Straightforward / cost-aware
     "claude-sonnet-4.6",
-    "gemini-3.5-flash",
+    // 2026-10-10 — gemini-3.5-flash was deprecated by Google; all traffic is
+    // auto-redirected to gemini-3.6-flash. Default updated to make the
+    // redirect explicit. See validation.rs for the legacy alias map.
+    "gemini-3.6-flash",
     "github-copilot",
     // Mixed/general and alternates
     "claude-haiku-4.5",
@@ -249,13 +252,16 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
         pro_only: false,
     },
     AgentModelSpec {
-        slug: "gemini-3.5-flash",
+        // 2026-10-10 — gemini-3.5-flash was deprecated by Google; we now point
+        // this slot at gemini-3.6-flash so logs, billing and CLI slugs match
+        // reality. The legacy slug is kept below as a deprecated alias.
+        slug: "gemini-3.6-flash",
         family: "antigravity",
         cli: "agy",
         read_only_args: ANTIGRAVITY_FLASH_READ_ONLY,
         write_args: ANTIGRAVITY_FLASH_WRITE,
         model_args: &[],
-        description: "Antigravity CLI default powered by Gemini 3.5 Flash; fast forward path for Google agents.",
+        description: "Antigravity CLI default powered by Gemini 3.6 Flash; fast forward path for Google agents. Replaces the deprecated gemini-3.5-flash (auto-redirected by Google as of July 2026).",
         enabled_by_default: true,
         aliases: &[
             "gemini",
@@ -265,6 +271,9 @@ const AGENT_MODEL_SPECS: &[AgentModelSpec] = &[
             "gemini-2.5-flash",
             "antigravity",
             "agy",
+            // Legacy alias kept for back-compat — see config/validation.rs
+            // for the redirect logic and the deprecation warning.
+            "gemini-3.5-flash",
         ],
         gating_env: None,
         is_frontline: false,

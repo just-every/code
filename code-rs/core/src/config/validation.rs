@@ -214,11 +214,15 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
     }
 
     // Upgrade Gemini Flash aliases to the Antigravity CLI forward path.
+    // 2026-10-10 — gemini-3.5-flash was deprecated by Google (all traffic
+    // auto-redirects to gemini-3.6-flash). Mapped all Gemini Flash
+    // slugs to gemini-3.6-flash; the legacy gemini-3.5-flash id is still
+    // accepted as an alias of gemini-3.6-flash (see agent_defaults.rs).
     if matches!(
         slug.to_ascii_lowercase().as_str(),
-        "gemini-2.5-flash" | "gemini-3-flash" | "gemini-3-flash-preview"
+        "gemini-2.5-flash" | "gemini-3-flash" | "gemini-3-flash-preview" | "gemini-3.5-flash"
     ) {
-        return Some("gemini-3.5-flash".to_string());
+        return Some("gemini-3.6-flash".to_string());
     }
 
     // Keep codex variants on their existing line; upgrades are surfaced via the

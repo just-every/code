@@ -3145,7 +3145,10 @@ model_verbosity = "high"
         upgrade_legacy_model_slugs(&mut cfg);
 
         assert_eq!(cfg.model.as_deref(), Some("claude-opus-4.8"));
-        assert_eq!(cfg.review_model.as_deref(), Some("gemini-3.5-flash"));
+        // 2026-10-10 — gemini-3.5-flash is deprecated and the legacy-slug
+        // upgrade now maps every Flash slug (including the explicit
+        // "gemini-3.5-flash") to gemini-3.6-flash. See config/validation.rs.
+        assert_eq!(cfg.review_model.as_deref(), Some("gemini-3.6-flash"));
         let profile = cfg.profiles.get("claude").expect("profile exists");
         assert_eq!(profile.model.as_deref(), Some("claude-sonnet-4.6"));
     }
