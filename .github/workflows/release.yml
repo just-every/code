@@ -445,10 +445,10 @@ jobs:
             artifact: code-aarch64-unknown-linux-musl
           # (GNU variants omitted to reduce asset duplication; npm defaults to musl)
           # macOS builds
-          - os: macos-14
+          - os: macos-15
             target: x86_64-apple-darwin
             artifact: code-x86_64-apple-darwin
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             artifact: code-aarch64-apple-darwin
           # Windows build
