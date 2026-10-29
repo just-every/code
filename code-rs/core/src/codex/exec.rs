@@ -1,6 +1,19 @@
 use super::*;
 use super::session::{HookGuard, RunningExecMeta};
 
+fn project_hook_execution_policy() -> (SandboxType, SandboxPolicy) {
+    // codex-rs runs configured hooks through a dedicated command runtime rather
+    // than the model-tool sandbox. code-rs does not have that split runtime
+    // yet, so keep the equivalent policy at this single hook boundary.
+    //
+    // Project hooks are explicitly configured local integrations, not
+    // model-generated commands. Give them the existing full-access execution
+    // policy so they can use networking and external state, including when
+    // invoked during a subagent turn. This applies only to hooks; ordinary
+    // model commands and project commands still use the session policy.
+    (SandboxType::None, SandboxPolicy::DangerFullAccess)
+}
+
 fn synthetic_exec_end_payload(cancelled: bool) -> (i32, String) {
     if cancelled {
         (130, "Command cancelled by user.".to_string())
@@ -973,11 +986,11 @@ impl Session {
             apply_patch: None,
         };
 
-        let sandbox_type = self.resolve_internal_sandbox(false);
+        let (sandbox_type, sandbox_policy) = project_hook_execution_policy();
         let exec_args = ExecInvokeArgs {
             params: exec_params,
             sandbox_type,
-            sandbox_policy: &self.sandbox_policy,
+            sandbox_policy: &sandbox_policy,
             sandbox_cwd: self.get_cwd(),
             code_linux_sandbox_exe: &self.code_linux_sandbox_exe,
             stdout_stream: None,
@@ -1105,8 +1118,11 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::materialize_shell_script;
+    use super::project_hook_execution_policy;
     use crate::exec::DeferredShellScript;
     use crate::exec::ExecParams;
+    use crate::exec::SandboxType;
+    use crate::protocol::SandboxPolicy;
     use crate::shell::BashShell;
     use crate::shell::Shell;
     use std::collections::HashMap;
@@ -1171,5 +1187,13 @@ mod tests {
                 "printf hello".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn project_hooks_use_full_access_execution_policy() {
+        let (sandbox_type, sandbox_policy) = project_hook_execution_policy();
+
+        assert_eq!(sandbox_type, SandboxType::None);
+        assert_eq!(sandbox_policy, SandboxPolicy::DangerFullAccess);
     }
 }
